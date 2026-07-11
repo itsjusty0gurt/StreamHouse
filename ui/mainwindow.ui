@@ -11,7 +11,7 @@
    </rect>
   </property>
   <property name="windowTitle">
-   <string>MainWindow</string>
+   <string>Sally AI</string>
   </property>
   <widget class="QWidget" name="centralwidget">
    <layout class="QHBoxLayout" name="horizontalLayout_2">
@@ -19,6 +19,22 @@
      <layout class="QHBoxLayout" name="horizontalLayout">
       <item>
        <widget class="QFrame" name="navigationFrame">
+        <property name="styleSheet">
+         <string notr="true">QPushButton {
+    border: none;
+    border-radius: 5px;
+    padding: 8px 12px;
+    text-align: left;
+}
+QPushButton:hover {
+    background-color: palette(midlight);
+}
+QPushButton:checked {
+    background-color: palette(highlight);
+    color: palette(highlighted-text);
+    font-weight: bold;
+}</string>
+        </property>
         <property name="minimumSize">
          <size>
           <width>170</width>
@@ -40,18 +56,28 @@
         <layout class="QVBoxLayout" name="verticalLayout">
          <item>
           <widget class="QPushButton" name="dashboardButton">
+           <property name="checkable"><bool>true</bool></property>
            <property name="text">
             <string>Dashboard</string>
            </property>
           </widget>
          </item>
          <item>
-          <widget class="QPushButton" name="twitchbutton">
+         <widget class="QPushButton" name="twitchButton">
+          <property name="checkable"><bool>true</bool></property>
            <property name="text">
             <string>Twitch</string>
            </property>
-          </widget>
-         </item>
+         </widget>
+        </item>
+        <item>
+         <widget class="QPushButton" name="logsButton">
+          <property name="checkable"><bool>true</bool></property>
+          <property name="text">
+           <string>Logs</string>
+          </property>
+         </widget>
+        </item>
          <item>
           <spacer name="verticalSpacer">
            <property name="orientation">
@@ -67,6 +93,7 @@
          </item>
          <item>
           <widget class="QPushButton" name="settingsButton">
+           <property name="checkable"><bool>true</bool></property>
            <property name="text">
             <string>Settings</string>
            </property>
@@ -77,8 +104,88 @@
       </item>
       <item>
        <widget class="QStackedWidget" name="mainStack">
-        <widget class="QWidget" name="dashboardPage"/>
-        <widget class="QWidget" name="settingsPage"/>
+        <widget class="QWidget" name="dashboardPage">
+         <layout class="QVBoxLayout" name="dashboardLayout">
+          <item>
+           <widget class="QLabel" name="dashboardTitleLabel">
+            <property name="font">
+             <font><pointsize>18</pointsize><bold>true</bold></font>
+            </property>
+            <property name="text"><string>Sally Status</string></property>
+           </widget>
+          </item>
+          <item>
+           <layout class="QFormLayout" name="serviceStatusLayout">
+            <item row="0" column="0"><widget class="QLabel" name="coreNameLabel"><property name="text"><string>Sally Core</string></property></widget></item>
+            <item row="0" column="1"><widget class="QLabel" name="coreStatusLabel"><property name="text"><string>Ready</string></property></widget></item>
+            <item row="1" column="0"><widget class="QLabel" name="aiNameLabel"><property name="text"><string>AI Provider</string></property></widget></item>
+            <item row="1" column="1"><widget class="QLabel" name="aiStatusLabel"><property name="text"><string>Not configured</string></property></widget></item>
+            <item row="2" column="0"><widget class="QLabel" name="twitchNameLabel"><property name="text"><string>Twitch</string></property></widget></item>
+            <item row="2" column="1"><widget class="QLabel" name="twitchStatusLabel"><property name="text"><string>Disconnected</string></property></widget></item>
+            <item row="3" column="0"><widget class="QLabel" name="obsNameLabel"><property name="text"><string>OBS</string></property></widget></item>
+            <item row="3" column="1"><widget class="QLabel" name="obsStatusLabel"><property name="text"><string>Disconnected</string></property></widget></item>
+            <item row="4" column="0"><widget class="QLabel" name="voiceNameLabel"><property name="text"><string>Voice</string></property></widget></item>
+            <item row="4" column="1"><widget class="QLabel" name="voiceStatusLabel"><property name="text"><string>Disabled</string></property></widget></item>
+           </layout>
+          </item>
+          <item><spacer name="dashboardSpacer"><property name="orientation"><enum>Qt::Orientation::Vertical</enum></property><property name="sizeHint" stdset="0"><size><width>20</width><height>40</height></size></property></spacer></item>
+         </layout>
+        </widget>
+        <widget class="QWidget" name="logsPage">
+         <layout class="QVBoxLayout" name="logsLayout">
+          <item><widget class="QLabel" name="logsTitleLabel"><property name="font"><font><pointsize>18</pointsize><bold>true</bold></font></property><property name="text"><string>Application Logs</string></property></widget></item>
+          <item><widget class="QPlainTextEdit" name="logOutput"><property name="readOnly"><bool>true</bool></property><property name="maximumBlockCount"><number>2000</number></property><property name="placeholderText"><string>Live log messages will appear here.</string></property></widget></item>
+          <item>
+           <layout class="QHBoxLayout" name="logTestButtonsLayout">
+            <item><widget class="QPushButton" name="testInfoButton"><property name="text"><string>Test Info</string></property></widget></item>
+            <item><widget class="QPushButton" name="testWarningButton"><property name="text"><string>Test Warning</string></property></widget></item>
+            <item><widget class="QPushButton" name="testErrorButton"><property name="text"><string>Test Error</string></property></widget></item>
+           </layout>
+          </item>
+         </layout>
+        </widget>
+        <widget class="QWidget" name="settingsPage">
+         <layout class="QVBoxLayout" name="settingsLayout">
+          <item><widget class="QLabel" name="settingsTitleLabel"><property name="font"><font><pointsize>18</pointsize><bold>true</bold></font></property><property name="text"><string>Settings</string></property></widget></item>
+          <item>
+           <widget class="QGroupBox" name="generalSettingsGroup">
+            <property name="title"><string>General</string></property>
+            <layout class="QFormLayout" name="generalSettingsLayout">
+             <item row="0" column="0"><widget class="QLabel" name="startupPageLabel"><property name="text"><string>Startup page</string></property></widget></item>
+             <item row="0" column="1"><widget class="QComboBox" name="startupPageCombo"/></item>
+            </layout>
+           </widget>
+          </item>
+          <item>
+           <widget class="QGroupBox" name="loggingSettingsGroup">
+            <property name="title"><string>Logging</string></property>
+            <layout class="QFormLayout" name="loggingSettingsLayout">
+             <item row="0" column="0"><widget class="QLabel" name="logLevelLabel"><property name="text"><string>Minimum log level</string></property></widget></item>
+             <item row="0" column="1"><widget class="QComboBox" name="logLevelCombo"/></item>
+             <item row="1" column="0"><widget class="QLabel" name="uiLogLimitLabel"><property name="text"><string>UI log entry limit</string></property></widget></item>
+             <item row="1" column="1"><widget class="QSpinBox" name="uiLogLimitSpin"><property name="minimum"><number>100</number></property><property name="maximum"><number>10000</number></property><property name="singleStep"><number>100</number></property></widget></item>
+            </layout>
+           </widget>
+          </item>
+          <item>
+           <widget class="QGroupBox" name="developerSettingsGroup">
+            <property name="title"><string>Developer</string></property>
+            <layout class="QVBoxLayout" name="developerSettingsLayout">
+             <item><widget class="QCheckBox" name="showDeveloperToolsCheck"><property name="text"><string>Show log test controls</string></property></widget></item>
+            </layout>
+           </widget>
+          </item>
+          <item><widget class="QLabel" name="settingsStatusLabel"><property name="text"><string/></property></widget></item>
+          <item><spacer name="settingsSpacer"><property name="orientation"><enum>Qt::Orientation::Vertical</enum></property><property name="sizeHint" stdset="0"><size><width>20</width><height>40</height></size></property></spacer></item>
+          <item>
+           <layout class="QHBoxLayout" name="settingsButtonsLayout">
+            <item><spacer name="settingsButtonSpacer"><property name="orientation"><enum>Qt::Orientation::Horizontal</enum></property><property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property></spacer></item>
+            <item><widget class="QPushButton" name="resetSettingsButton"><property name="text"><string>Reset Defaults</string></property></widget></item>
+            <item><widget class="QPushButton" name="saveSettingsButton"><property name="text"><string>Save Settings</string></property></widget></item>
+           </layout>
+          </item>
+         </layout>
+        </widget>
         <widget class="QWidget" name="twitchPage"/>
        </widget>
       </item>

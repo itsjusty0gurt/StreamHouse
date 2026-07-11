@@ -9,6 +9,8 @@ from pathlib import Path
 from time import perf_counter
 from typing import ClassVar
 
+from config.version import VERSION
+
 
 class DefaultLogFieldsFilter(logging.Filter):
     """Ensures every log record contains Sally's custom fields."""
@@ -58,8 +60,7 @@ class SallyFormatter(logging.Formatter):
     @staticmethod
     def _center_left_bias(text: str, width: int) -> str:
         """
-        Center text, placing an extra padding space on the left
-        when the total padding is odd.
+        Center text while placing an odd extra padding space on the left.
         """
 
         text = str(text)
@@ -169,15 +170,17 @@ class Logger:
         logger.setLevel(level)
         logger.propagate = False
 
+        # Prevent duplicate output if setup is called again.
         logger.handlers.clear()
         logger.filters.clear()
 
         default_fields_filter = DefaultLogFieldsFilter()
 
+        # Spaces are used instead of vertical separators.
         log_format = (
-            "%(asctime)s.%(msecs)03d | "
-            "[%(level_display)s] | "
-            "[%(source)s] "
+            "%(asctime)s.%(msecs)03d  "
+            "[%(level_display)s]  "
+            "[%(source)s]  "
             "%(message)s"
         )
 
@@ -230,7 +233,7 @@ class Logger:
 
     @classmethod
     def _ensure_setup(cls) -> logging.Logger:
-        """Set up logging automatically if it has not been configured."""
+        """Set up logging automatically if needed."""
 
         if cls._logger is None:
             cls.setup()
@@ -244,12 +247,7 @@ class Logger:
 
     @classmethod
     def _clean_source(cls, source: str) -> str:
-        """
-        Normalize a source name.
-
-        Long names are shortened to fit the source badge. The formatter
-        handles centering.
-        """
+        """Normalize and limit a source name."""
 
         clean_source = source.strip().upper()
 
@@ -359,6 +357,35 @@ class Logger:
         )
 
     @classmethod
+    def add_handler(cls, handler: logging.Handler) -> None:
+        """Attach an additional output handler to Sally's logger."""
+
+        logger = cls._ensure_setup()
+
+        if handler not in logger.handlers:
+            logger.addHandler(handler)
+
+    @classmethod
+    def remove_handler(cls, handler: logging.Handler) -> None:
+        """Detach and close an additional output handler."""
+
+        logger = cls._ensure_setup()
+
+        if handler in logger.handlers:
+            logger.removeHandler(handler)
+            handler.close()
+
+    @classmethod
+    def set_level(cls, level: int) -> None:
+        """Set the minimum level for Sally's logger and its handlers."""
+
+        logger = cls._ensure_setup()
+        logger.setLevel(level)
+
+        for handler in logger.handlers:
+            handler.setLevel(level)
+
+    @classmethod
     def timer_start(cls, timer_name: str) -> None:
         """Start a named performance timer."""
 
@@ -376,7 +403,7 @@ class Logger:
         source: str = "TIMER",
     ) -> float | None:
         """
-        Stop a named timer, log its duration, and return the result.
+        Stop a named timer, log its duration, and return the duration.
         """
 
         start_time = cls._timers.pop(
@@ -393,11 +420,13 @@ class Logger:
 
         elapsed_seconds = perf_counter() - start_time
 
+        if elapsed_seconds < 1:
+            elapsed_text = f"{elapsed_seconds * 1000:.0f} ms"
+        else:
+            elapsed_text = f"{elapsed_seconds:.3f} seconds"
+
         cls.info(
-            (
-                f'"{timer_name}" completed in '
-                f"{elapsed_seconds:.3f} seconds."
-            ),
+            f"{timer_name} complete ({elapsed_text}).",
             source=source,
         )
 
@@ -441,41 +470,22 @@ class Logger:
 
     @classmethod
     def _write_startup_banner(cls) -> None:
-        """Write Sally's startup information."""
+        """Write one easy-to-spot startup banner."""
 
-        separator = "=" * 70
+        separator = "=" * 60
 
-        cls.info(
-            separator,
-            source="SYSTEM",
+        banner = (
+            f"\n{separator}\n"
+            " Sally AI Bot\n"
+            "\n"
+            f" Version : {VERSION}\n"
+            f" Python  : {platform.python_version()}\n"
+            f" Platform: {platform.system()} {platform.release()}\n"
+            f" Started : {datetime.now():%Y-%m-%d %H:%M:%S}\n"
+            f"{separator}"
         )
 
         cls.info(
-            "Sally AI Bot",
-            source="SYSTEM",
-        )
-
-        cls.info(
-            "Version: 0.0.1",
-            source="SYSTEM",
-        )
-
-        cls.info(
-            f"Python: {platform.python_version()}",
-            source="SYSTEM",
-        )
-
-        cls.info(
-            f"Platform: {platform.system()} {platform.release()}",
-            source="SYSTEM",
-        )
-
-        cls.info(
-            f"Started: {datetime.now():%Y-%m-%d %H:%M:%S}",
-            source="SYSTEM",
-        )
-
-        cls.info(
-            separator,
+            banner,
             source="SYSTEM",
         )

@@ -3,3 +3,6 @@ __pycache__/
 *.pyc
 .env
 .vscode/
+config/settings.json
+logs/*.log
+logs/archive/
