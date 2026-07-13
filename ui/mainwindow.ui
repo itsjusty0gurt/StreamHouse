@@ -22,9 +22,9 @@
         <property name="styleSheet">
          <string notr="true">QPushButton {
     border: none;
-    border-radius: 5px;
-    padding: 8px 12px;
-    text-align: left;
+    border-radius: 0px;
+    padding: 0px;
+    min-height: 40px;
 }
 QPushButton:hover {
     background-color: palette(midlight);
@@ -54,6 +54,11 @@ QPushButton:checked {
          <enum>QFrame::Shadow::Raised</enum>
         </property>
         <layout class="QVBoxLayout" name="verticalLayout">
+         <property name="spacing"><number>0</number></property>
+         <property name="leftMargin"><number>0</number></property>
+         <property name="topMargin"><number>0</number></property>
+         <property name="rightMargin"><number>0</number></property>
+         <property name="bottomMargin"><number>0</number></property>
          <item>
           <widget class="QPushButton" name="dashboardButton">
            <property name="checkable"><bool>true</bool></property>
@@ -66,7 +71,7 @@ QPushButton:checked {
          <widget class="QPushButton" name="twitchButton">
           <property name="checkable"><bool>true</bool></property>
            <property name="text">
-            <string>Twitch</string>
+            <string>Your Channel</string>
            </property>
          </widget>
         </item>
@@ -168,10 +173,24 @@ QPushButton:checked {
            </widget>
           </item>
           <item>
+           <widget class="QGroupBox" name="twitchChatSettingsGroup">
+            <property name="title"><string>Twitch Chat</string></property>
+            <layout class="QFormLayout" name="twitchChatSettingsLayout">
+             <item row="0" column="0"><widget class="QLabel" name="twitchChatTimestampLabel"><property name="text"><string>Timestamps</string></property></widget></item>
+             <item row="0" column="1"><widget class="QCheckBox" name="twitchChatTimestampCheck"><property name="text"><string>Show message timestamps</string></property></widget></item>
+             <item row="1" column="0"><widget class="QLabel" name="twitchChatFontLabel"><property name="text"><string>Font</string></property></widget></item>
+             <item row="1" column="1"><widget class="QFontComboBox" name="twitchChatFontCombo"/></item>
+             <item row="2" column="0"><widget class="QLabel" name="twitchChatFontSizeLabel"><property name="text"><string>Font size</string></property></widget></item>
+             <item row="2" column="1"><widget class="QSpinBox" name="twitchChatFontSizeSpin"><property name="minimum"><number>8</number></property><property name="maximum"><number>24</number></property><property name="suffix"><string> pt</string></property></widget></item>
+            </layout>
+           </widget>
+          </item>
+          <item>
            <widget class="QGroupBox" name="developerSettingsGroup">
             <property name="title"><string>Developer</string></property>
             <layout class="QVBoxLayout" name="developerSettingsLayout">
-             <item><widget class="QCheckBox" name="showDeveloperToolsCheck"><property name="text"><string>Show log test controls</string></property></widget></item>
+             <item><widget class="QCheckBox" name="showDeveloperToolsCheck"><property name="text"><string>Enable developer tools</string></property></widget></item>
+             <item><widget class="QPushButton" name="toggleDeveloperToolsButton"><property name="text"><string>Open Developer Tools</string></property></widget></item>
             </layout>
            </widget>
           </item>
@@ -186,7 +205,117 @@ QPushButton:checked {
           </item>
          </layout>
         </widget>
-        <widget class="QWidget" name="twitchPage"/>
+        <widget class="QWidget" name="twitchPage">
+         <layout class="QVBoxLayout" name="twitchPageLayout">
+          <item><widget class="QLabel" name="twitchTitleLabel"><property name="font"><font><pointsize>18</pointsize><bold>true</bold></font></property><property name="text"><string>Your Channel</string></property></widget></item>
+          <item>
+           <widget class="QGroupBox" name="twitchConnectionGroup">
+            <property name="title"><string>Connection</string></property>
+            <layout class="QGridLayout" name="twitchConnectionLayout">
+             <item row="0" column="0"><widget class="QLabel" name="twitchAccountLabel"><property name="text"><string>Twitch account</string></property></widget></item>
+             <item row="0" column="1"><widget class="QLabel" name="twitchAccountStatusLabel"><property name="text"><string>Not signed in</string></property><property name="textInteractionFlags"><set>Qt::TextInteractionFlag::TextSelectableByMouse</set></property></widget></item>
+             <item row="0" column="2">
+              <layout class="QHBoxLayout" name="twitchAuthButtonsLayout">
+               <item><widget class="QPushButton" name="twitchSignInButton"><property name="text"><string>Sign in with Twitch</string></property></widget></item>
+               <item><widget class="QPushButton" name="twitchSignOutButton"><property name="enabled"><bool>false</bool></property><property name="text"><string>Sign out</string></property></widget></item>
+              </layout>
+             </item>
+             <item row="1" column="0"><widget class="QLabel" name="twitchChannelLabel"><property name="text"><string>Your channel</string></property></widget></item>
+             <item row="1" column="1" colspan="2"><widget class="QLineEdit" name="twitchChannelEdit"><property name="placeholderText"><string>Streamer channel name</string></property></widget></item>
+             <item row="2" column="0"><widget class="QLabel" name="twitchConnectionStatusNameLabel"><property name="text"><string>Status</string></property></widget></item>
+             <item row="2" column="1"><widget class="QLabel" name="twitchConnectionStatusLabel"><property name="text"><string>Disconnected</string></property></widget></item>
+             <item row="2" column="2">
+              <layout class="QHBoxLayout" name="twitchConnectionButtonsLayout">
+               <item><widget class="QPushButton" name="twitchConnectButton"><property name="text"><string>Connect</string></property></widget></item>
+               <item><widget class="QPushButton" name="twitchDisconnectButton"><property name="enabled"><bool>false</bool></property><property name="text"><string>Disconnect</string></property></widget></item>
+              </layout>
+             </item>
+             <item row="3" column="0"><widget class="QLabel" name="twitchListenerNameLabel"><property name="text"><string>Local listener</string></property></widget></item>
+             <item row="3" column="1" colspan="2"><widget class="QLabel" name="twitchListenerUrlLabel"><property name="text"><string>Stopped</string></property><property name="textInteractionFlags"><set>Qt::TextInteractionFlag::TextSelectableByMouse</set></property></widget></item>
+            </layout>
+           </widget>
+          </item>
+          <item><widget class="QLabel" name="twitchErrorLabel"><property name="styleSheet"><string notr="true">color: #d9534f;</string></property><property name="text"><string/></property><property name="wordWrap"><bool>true</bool></property></widget></item>
+          <item>
+           <widget class="QTabWidget" name="twitchDetailTabs">
+            <property name="currentIndex"><number>0</number></property>
+            <widget class="QWidget" name="twitchChatTab">
+             <attribute name="title"><string>Chat</string></attribute>
+             <layout class="QVBoxLayout" name="twitchChatTabLayout">
+              <item>
+               <layout class="QHBoxLayout" name="twitchChatHeaderLayout">
+                <item><widget class="QLabel" name="twitchChatCountLabel"><property name="font"><font><bold>true</bold></font></property><property name="text"><string>Chat - 0 messages</string></property></widget></item>
+                <item><spacer name="twitchChatHeaderSpacer"><property name="orientation"><enum>Qt::Orientation::Horizontal</enum></property><property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property></spacer></item>
+                <item><widget class="QPushButton" name="clearTwitchChatButton"><property name="text"><string>Clear Chat</string></property></widget></item>
+               </layout>
+              </item>
+              <item><widget class="QTextBrowser" name="twitchChatOutput"><property name="styleSheet"><string notr="true">QTextBrowser {
+    background-color: #18181b;
+    color: #efeff1;
+    border: 1px solid #303034;
+    border-radius: 7px;
+    padding: 8px;
+    selection-background-color: #9147ff;
+}</string></property><property name="openExternalLinks"><bool>false</bool></property></widget></item>
+              <item>
+               <layout class="QHBoxLayout" name="twitchSendLayout">
+                <item><widget class="QLineEdit" name="twitchSendEdit"><property name="enabled"><bool>false</bool></property><property name="placeholderText"><string>Send a message as the signed-in Twitch account</string></property><property name="maxLength"><number>500</number></property></widget></item>
+                <item><widget class="QPushButton" name="twitchSendButton"><property name="enabled"><bool>false</bool></property><property name="text"><string>Send</string></property></widget></item>
+               </layout>
+              </item>
+              <item>
+               <widget class="QGroupBox" name="twitchSimulationGroup">
+                <property name="title"><string>Developer Simulation</string></property>
+                <layout class="QGridLayout" name="twitchSimulationLayout">
+                 <item row="0" column="0"><widget class="QLabel" name="simulationUsernameLabel"><property name="text"><string>Username</string></property></widget></item>
+                 <item row="0" column="1"><widget class="QLineEdit" name="simulationUsernameEdit"><property name="text"><string>test_viewer</string></property></widget></item>
+                 <item row="1" column="0"><widget class="QLabel" name="simulationMessageLabel"><property name="text"><string>Message</string></property></widget></item>
+                 <item row="1" column="1"><widget class="QLineEdit" name="simulationMessageEdit"><property name="placeholderText"><string>Hello Sally!</string></property></widget></item>
+                 <item row="2" column="1"><widget class="QPushButton" name="simulateTwitchMessageButton"><property name="enabled"><bool>false</bool></property><property name="text"><string>Simulate Message</string></property></widget></item>
+                </layout>
+               </widget>
+              </item>
+             </layout>
+            </widget>
+            <widget class="QWidget" name="twitchEventsTab">
+             <attribute name="title"><string>Events</string></attribute>
+             <layout class="QVBoxLayout" name="twitchEventsTabLayout">
+              <item>
+               <widget class="QGroupBox" name="twitchEventSimulatorGroup">
+                <property name="title"><string>Developer Event Simulator</string></property>
+                <layout class="QGridLayout" name="twitchEventSimulatorLayout">
+                 <item row="0" column="0"><widget class="QLabel" name="twitchEventTypeLabel"><property name="text"><string>Event type</string></property></widget></item>
+                 <item row="0" column="1"><widget class="QComboBox" name="twitchEventTypeCombo"/></item>
+                 <item row="0" column="2"><widget class="QLabel" name="twitchEventVersionLabel"><property name="text"><string>Version</string></property></widget></item>
+                 <item row="0" column="3"><widget class="QLineEdit" name="twitchEventVersionEdit"><property name="maximumWidth"><number>80</number></property><property name="text"><string>1</string></property></widget></item>
+                 <item row="1" column="0" colspan="4"><widget class="QPlainTextEdit" name="twitchEventPayloadEdit"><property name="maximumHeight"><number>140</number></property><property name="placeholderText"><string>Editable Twitch EventSub JSON payload</string></property></widget></item>
+                 <item row="2" column="2"><widget class="QPushButton" name="resetTwitchEventPayloadButton"><property name="text"><string>Reset Payload</string></property></widget></item>
+                 <item row="2" column="3"><widget class="QPushButton" name="sendTwitchEventButton"><property name="enabled"><bool>false</bool></property><property name="text"><string>Send Signed Event</string></property></widget></item>
+                </layout>
+               </widget>
+              </item>
+              <item>
+               <layout class="QHBoxLayout" name="twitchEventFiltersLayout">
+                <item><widget class="QLineEdit" name="twitchEventSearchEdit"><property name="placeholderText"><string>Search events...</string></property></widget></item>
+                <item><widget class="QComboBox" name="twitchEventResultCombo"/></item>
+                <item><widget class="QCheckBox" name="pauseTwitchEventsCheck"><property name="text"><string>Pause follow</string></property></widget></item>
+                <item><widget class="QPushButton" name="clearTwitchEventsButton"><property name="text"><string>Clear Events</string></property></widget></item>
+               </layout>
+              </item>
+              <item><widget class="QTableWidget" name="twitchEventTable"><property name="editTriggers"><set>QAbstractItemView::EditTrigger::NoEditTriggers</set></property><property name="alternatingRowColors"><bool>true</bool></property><property name="selectionBehavior"><enum>QAbstractItemView::SelectionBehavior::SelectRows</enum></property><property name="selectionMode"><enum>QAbstractItemView::SelectionMode::SingleSelection</enum></property></widget></item>
+              <item><widget class="QPlainTextEdit" name="twitchEventDetails"><property name="readOnly"><bool>true</bool></property><property name="placeholderText"><string>Select an event to inspect its sanitized headers and JSON payload.</string></property></widget></item>
+              <item>
+               <layout class="QHBoxLayout" name="twitchEventDetailsButtonsLayout">
+                <item><spacer name="twitchEventDetailsSpacer"><property name="orientation"><enum>Qt::Orientation::Horizontal</enum></property><property name="sizeHint" stdset="0"><size><width>40</width><height>20</height></size></property></spacer></item>
+                <item><widget class="QPushButton" name="copyTwitchEventButton"><property name="enabled"><bool>false</bool></property><property name="text"><string>Copy Details</string></property></widget></item>
+               </layout>
+              </item>
+             </layout>
+            </widget>
+           </widget>
+          </item>
+         </layout>
+        </widget>
        </widget>
       </item>
      </layout>

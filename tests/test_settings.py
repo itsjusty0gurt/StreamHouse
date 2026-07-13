@@ -26,6 +26,9 @@ class SettingsStoreTests(unittest.TestCase):
             log_level="WARNING",
             ui_log_limit=750,
             show_developer_tools=False,
+            twitch_chat_show_timestamps=False,
+            twitch_chat_font_family="Consolas",
+            twitch_chat_font_size=13,
         )
 
         self.store.save(expected)
@@ -41,6 +44,9 @@ class SettingsStoreTests(unittest.TestCase):
                     "log_level": "NOISY",
                     "ui_log_limit": 99_999,
                     "show_developer_tools": "yes",
+                    "twitch_chat_show_timestamps": "yes",
+                    "twitch_chat_font_family": "",
+                    "twitch_chat_font_size": 100,
                 }
             ),
             encoding="utf-8",
@@ -52,12 +58,23 @@ class SettingsStoreTests(unittest.TestCase):
         self.assertEqual(settings.log_level, "DEBUG")
         self.assertEqual(settings.ui_log_limit, 10_000)
         self.assertTrue(settings.show_developer_tools)
+        self.assertTrue(settings.twitch_chat_show_timestamps)
+        self.assertEqual(settings.twitch_chat_font_family, "Segoe UI")
+        self.assertEqual(settings.twitch_chat_font_size, 24)
 
     def test_non_object_json_is_rejected(self) -> None:
         self.settings_path.write_text("[]", encoding="utf-8")
 
         with self.assertRaises(ValueError):
             self.store.load()
+
+    def test_legacy_memories_startup_page_migrates_to_ai(self) -> None:
+        self.settings_path.write_text(
+            json.dumps({"startup_page": "Memories"}),
+            encoding="utf-8",
+        )
+
+        self.assertEqual(self.store.load().startup_page, "AI")
 
 
 if __name__ == "__main__":

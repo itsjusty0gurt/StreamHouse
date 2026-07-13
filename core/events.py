@@ -118,10 +118,6 @@ class Events:
             )
 
         if not listeners:
-            Logger.debug(
-                f'Event "{clean_event_name}" had no listeners.',
-                source="EVENTS",
-            )
             return 0
 
         Logger.debug(

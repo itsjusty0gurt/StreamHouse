@@ -1,12 +1,19 @@
 from __future__ import annotations
 
+import os
 import sys
 
+from PySide6.QtCore import QTimer
+from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication
 
 from core.events import Events
 from core.logger import Logger
+from twitch.service import TwitchService
+from twitch.auth import TwitchAuthService
 from ui.main_window import MainWindow
+from core.resources import resource_path
+from config.version import VERSION
 
 
 def register_events() -> None:
@@ -68,6 +75,10 @@ def run() -> None:
     application = QApplication(sys.argv)
     application.setApplicationName("Sally AI Bot")
     application.setOrganizationName("Sally AI")
+    application.setApplicationVersion(VERSION)
+    application.setWindowIcon(
+        QIcon(str(resource_path("assets/sally-icon.png")))
+    )
 
     register_events()
 
@@ -76,8 +87,18 @@ def run() -> None:
         source="UI",
     )
 
-    window = MainWindow()
+    twitch_auth = TwitchAuthService()
+    twitch_service = TwitchService(auth=twitch_auth)
+    window = MainWindow(
+        twitch_service=twitch_service,
+        twitch_auth=twitch_auth,
+    )
     window.show()
+    twitch_auth.restore()
+
+    if os.environ.get("SALLY_SMOKE_TEST") == "1":
+        QTimer.singleShot(750, window.close)
+        QTimer.singleShot(900, application.quit)
 
     Logger.info(
         "Main window displayed.",
@@ -112,4 +133,5 @@ def run() -> None:
             source="APP",
         )
 
+    Logger.shutdown()
     sys.exit(exit_code)

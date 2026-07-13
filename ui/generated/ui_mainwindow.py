@@ -15,11 +15,13 @@ from PySide6.QtGui import (QBrush, QColor, QConicalGradient, QCursor,
     QFont, QFontDatabase, QGradient, QIcon,
     QImage, QKeySequence, QLinearGradient, QPainter,
     QPalette, QPixmap, QRadialGradient, QTransform)
-from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QFormLayout,
-    QFrame, QGroupBox, QHBoxLayout, QLabel,
-    QMainWindow, QMenuBar, QPlainTextEdit, QPushButton,
-    QSizePolicy, QSpacerItem, QSpinBox, QStackedWidget,
-    QStatusBar, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QComboBox,
+    QFontComboBox, QFormLayout, QFrame, QGridLayout,
+    QGroupBox, QHBoxLayout, QHeaderView, QLabel,
+    QLineEdit, QMainWindow, QMenuBar, QPlainTextEdit,
+    QPushButton, QSizePolicy, QSpacerItem, QSpinBox,
+    QStackedWidget, QStatusBar, QTabWidget, QTableWidget,
+    QTableWidgetItem, QTextBrowser, QVBoxLayout, QWidget)
 
 class Ui_MainWindow(object):
     def setupUi(self, MainWindow):
@@ -36,9 +38,9 @@ class Ui_MainWindow(object):
         self.navigationFrame.setObjectName(u"navigationFrame")
         self.navigationFrame.setStyleSheet(u"QPushButton {\n"
 "    border: none;\n"
-"    border-radius: 5px;\n"
-"    padding: 8px 12px;\n"
-"    text-align: left;\n"
+"    border-radius: 0px;\n"
+"    padding: 0px;\n"
+"    min-height: 40px;\n"
 "}\n"
 "QPushButton:hover {\n"
 "    background-color: palette(midlight);\n"
@@ -53,7 +55,9 @@ class Ui_MainWindow(object):
         self.navigationFrame.setFrameShape(QFrame.Shape.StyledPanel)
         self.navigationFrame.setFrameShadow(QFrame.Shadow.Raised)
         self.verticalLayout = QVBoxLayout(self.navigationFrame)
+        self.verticalLayout.setSpacing(0)
         self.verticalLayout.setObjectName(u"verticalLayout")
+        self.verticalLayout.setContentsMargins(0, 0, 0, 0)
         self.dashboardButton = QPushButton(self.navigationFrame)
         self.dashboardButton.setObjectName(u"dashboardButton")
         self.dashboardButton.setCheckable(True)
@@ -255,6 +259,45 @@ class Ui_MainWindow(object):
 
         self.settingsLayout.addWidget(self.loggingSettingsGroup)
 
+        self.twitchChatSettingsGroup = QGroupBox(self.settingsPage)
+        self.twitchChatSettingsGroup.setObjectName(u"twitchChatSettingsGroup")
+        self.twitchChatSettingsLayout = QFormLayout(self.twitchChatSettingsGroup)
+        self.twitchChatSettingsLayout.setObjectName(u"twitchChatSettingsLayout")
+        self.twitchChatTimestampLabel = QLabel(self.twitchChatSettingsGroup)
+        self.twitchChatTimestampLabel.setObjectName(u"twitchChatTimestampLabel")
+
+        self.twitchChatSettingsLayout.setWidget(0, QFormLayout.ItemRole.LabelRole, self.twitchChatTimestampLabel)
+
+        self.twitchChatTimestampCheck = QCheckBox(self.twitchChatSettingsGroup)
+        self.twitchChatTimestampCheck.setObjectName(u"twitchChatTimestampCheck")
+
+        self.twitchChatSettingsLayout.setWidget(0, QFormLayout.ItemRole.FieldRole, self.twitchChatTimestampCheck)
+
+        self.twitchChatFontLabel = QLabel(self.twitchChatSettingsGroup)
+        self.twitchChatFontLabel.setObjectName(u"twitchChatFontLabel")
+
+        self.twitchChatSettingsLayout.setWidget(1, QFormLayout.ItemRole.LabelRole, self.twitchChatFontLabel)
+
+        self.twitchChatFontCombo = QFontComboBox(self.twitchChatSettingsGroup)
+        self.twitchChatFontCombo.setObjectName(u"twitchChatFontCombo")
+
+        self.twitchChatSettingsLayout.setWidget(1, QFormLayout.ItemRole.FieldRole, self.twitchChatFontCombo)
+
+        self.twitchChatFontSizeLabel = QLabel(self.twitchChatSettingsGroup)
+        self.twitchChatFontSizeLabel.setObjectName(u"twitchChatFontSizeLabel")
+
+        self.twitchChatSettingsLayout.setWidget(2, QFormLayout.ItemRole.LabelRole, self.twitchChatFontSizeLabel)
+
+        self.twitchChatFontSizeSpin = QSpinBox(self.twitchChatSettingsGroup)
+        self.twitchChatFontSizeSpin.setObjectName(u"twitchChatFontSizeSpin")
+        self.twitchChatFontSizeSpin.setMinimum(8)
+        self.twitchChatFontSizeSpin.setMaximum(24)
+
+        self.twitchChatSettingsLayout.setWidget(2, QFormLayout.ItemRole.FieldRole, self.twitchChatFontSizeSpin)
+
+
+        self.settingsLayout.addWidget(self.twitchChatSettingsGroup)
+
         self.developerSettingsGroup = QGroupBox(self.settingsPage)
         self.developerSettingsGroup.setObjectName(u"developerSettingsGroup")
         self.developerSettingsLayout = QVBoxLayout(self.developerSettingsGroup)
@@ -263,6 +306,11 @@ class Ui_MainWindow(object):
         self.showDeveloperToolsCheck.setObjectName(u"showDeveloperToolsCheck")
 
         self.developerSettingsLayout.addWidget(self.showDeveloperToolsCheck)
+
+        self.toggleDeveloperToolsButton = QPushButton(self.developerSettingsGroup)
+        self.toggleDeveloperToolsButton.setObjectName(u"toggleDeveloperToolsButton")
+
+        self.developerSettingsLayout.addWidget(self.toggleDeveloperToolsButton)
 
 
         self.settingsLayout.addWidget(self.developerSettingsGroup)
@@ -298,6 +346,304 @@ class Ui_MainWindow(object):
         self.mainStack.addWidget(self.settingsPage)
         self.twitchPage = QWidget()
         self.twitchPage.setObjectName(u"twitchPage")
+        self.twitchPageLayout = QVBoxLayout(self.twitchPage)
+        self.twitchPageLayout.setObjectName(u"twitchPageLayout")
+        self.twitchTitleLabel = QLabel(self.twitchPage)
+        self.twitchTitleLabel.setObjectName(u"twitchTitleLabel")
+        self.twitchTitleLabel.setFont(font)
+
+        self.twitchPageLayout.addWidget(self.twitchTitleLabel)
+
+        self.twitchConnectionGroup = QGroupBox(self.twitchPage)
+        self.twitchConnectionGroup.setObjectName(u"twitchConnectionGroup")
+        self.twitchConnectionLayout = QGridLayout(self.twitchConnectionGroup)
+        self.twitchConnectionLayout.setObjectName(u"twitchConnectionLayout")
+        self.twitchAccountLabel = QLabel(self.twitchConnectionGroup)
+        self.twitchAccountLabel.setObjectName(u"twitchAccountLabel")
+
+        self.twitchConnectionLayout.addWidget(self.twitchAccountLabel, 0, 0, 1, 1)
+
+        self.twitchAccountStatusLabel = QLabel(self.twitchConnectionGroup)
+        self.twitchAccountStatusLabel.setObjectName(u"twitchAccountStatusLabel")
+        self.twitchAccountStatusLabel.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+
+        self.twitchConnectionLayout.addWidget(self.twitchAccountStatusLabel, 0, 1, 1, 1)
+
+        self.twitchAuthButtonsLayout = QHBoxLayout()
+        self.twitchAuthButtonsLayout.setObjectName(u"twitchAuthButtonsLayout")
+        self.twitchSignInButton = QPushButton(self.twitchConnectionGroup)
+        self.twitchSignInButton.setObjectName(u"twitchSignInButton")
+
+        self.twitchAuthButtonsLayout.addWidget(self.twitchSignInButton)
+
+        self.twitchSignOutButton = QPushButton(self.twitchConnectionGroup)
+        self.twitchSignOutButton.setObjectName(u"twitchSignOutButton")
+        self.twitchSignOutButton.setEnabled(False)
+
+        self.twitchAuthButtonsLayout.addWidget(self.twitchSignOutButton)
+
+
+        self.twitchConnectionLayout.addLayout(self.twitchAuthButtonsLayout, 0, 2, 1, 1)
+
+        self.twitchChannelLabel = QLabel(self.twitchConnectionGroup)
+        self.twitchChannelLabel.setObjectName(u"twitchChannelLabel")
+
+        self.twitchConnectionLayout.addWidget(self.twitchChannelLabel, 1, 0, 1, 1)
+
+        self.twitchChannelEdit = QLineEdit(self.twitchConnectionGroup)
+        self.twitchChannelEdit.setObjectName(u"twitchChannelEdit")
+
+        self.twitchConnectionLayout.addWidget(self.twitchChannelEdit, 1, 1, 1, 2)
+
+        self.twitchConnectionStatusNameLabel = QLabel(self.twitchConnectionGroup)
+        self.twitchConnectionStatusNameLabel.setObjectName(u"twitchConnectionStatusNameLabel")
+
+        self.twitchConnectionLayout.addWidget(self.twitchConnectionStatusNameLabel, 2, 0, 1, 1)
+
+        self.twitchConnectionStatusLabel = QLabel(self.twitchConnectionGroup)
+        self.twitchConnectionStatusLabel.setObjectName(u"twitchConnectionStatusLabel")
+
+        self.twitchConnectionLayout.addWidget(self.twitchConnectionStatusLabel, 2, 1, 1, 1)
+
+        self.twitchConnectionButtonsLayout = QHBoxLayout()
+        self.twitchConnectionButtonsLayout.setObjectName(u"twitchConnectionButtonsLayout")
+        self.twitchConnectButton = QPushButton(self.twitchConnectionGroup)
+        self.twitchConnectButton.setObjectName(u"twitchConnectButton")
+
+        self.twitchConnectionButtonsLayout.addWidget(self.twitchConnectButton)
+
+        self.twitchDisconnectButton = QPushButton(self.twitchConnectionGroup)
+        self.twitchDisconnectButton.setObjectName(u"twitchDisconnectButton")
+        self.twitchDisconnectButton.setEnabled(False)
+
+        self.twitchConnectionButtonsLayout.addWidget(self.twitchDisconnectButton)
+
+
+        self.twitchConnectionLayout.addLayout(self.twitchConnectionButtonsLayout, 2, 2, 1, 1)
+
+        self.twitchListenerNameLabel = QLabel(self.twitchConnectionGroup)
+        self.twitchListenerNameLabel.setObjectName(u"twitchListenerNameLabel")
+
+        self.twitchConnectionLayout.addWidget(self.twitchListenerNameLabel, 3, 0, 1, 1)
+
+        self.twitchListenerUrlLabel = QLabel(self.twitchConnectionGroup)
+        self.twitchListenerUrlLabel.setObjectName(u"twitchListenerUrlLabel")
+        self.twitchListenerUrlLabel.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+
+        self.twitchConnectionLayout.addWidget(self.twitchListenerUrlLabel, 3, 1, 1, 2)
+
+
+        self.twitchPageLayout.addWidget(self.twitchConnectionGroup)
+
+        self.twitchErrorLabel = QLabel(self.twitchPage)
+        self.twitchErrorLabel.setObjectName(u"twitchErrorLabel")
+        self.twitchErrorLabel.setStyleSheet(u"color: #d9534f;")
+        self.twitchErrorLabel.setWordWrap(True)
+
+        self.twitchPageLayout.addWidget(self.twitchErrorLabel)
+
+        self.twitchDetailTabs = QTabWidget(self.twitchPage)
+        self.twitchDetailTabs.setObjectName(u"twitchDetailTabs")
+        self.twitchChatTab = QWidget()
+        self.twitchChatTab.setObjectName(u"twitchChatTab")
+        self.twitchChatTabLayout = QVBoxLayout(self.twitchChatTab)
+        self.twitchChatTabLayout.setObjectName(u"twitchChatTabLayout")
+        self.twitchChatHeaderLayout = QHBoxLayout()
+        self.twitchChatHeaderLayout.setObjectName(u"twitchChatHeaderLayout")
+        self.twitchChatCountLabel = QLabel(self.twitchChatTab)
+        self.twitchChatCountLabel.setObjectName(u"twitchChatCountLabel")
+        font1 = QFont()
+        font1.setBold(True)
+        self.twitchChatCountLabel.setFont(font1)
+
+        self.twitchChatHeaderLayout.addWidget(self.twitchChatCountLabel)
+
+        self.twitchChatHeaderSpacer = QSpacerItem(40, 20, QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+
+        self.twitchChatHeaderLayout.addItem(self.twitchChatHeaderSpacer)
+
+        self.clearTwitchChatButton = QPushButton(self.twitchChatTab)
+        self.clearTwitchChatButton.setObjectName(u"clearTwitchChatButton")
+
+        self.twitchChatHeaderLayout.addWidget(self.clearTwitchChatButton)
+
+
+        self.twitchChatTabLayout.addLayout(self.twitchChatHeaderLayout)
+
+        self.twitchChatOutput = QTextBrowser(self.twitchChatTab)
+        self.twitchChatOutput.setObjectName(u"twitchChatOutput")
+        self.twitchChatOutput.setStyleSheet(u"QTextBrowser {\n"
+"    background-color: #18181b;\n"
+"    color: #efeff1;\n"
+"    border: 1px solid #303034;\n"
+"    border-radius: 7px;\n"
+"    padding: 8px;\n"
+"    selection-background-color: #9147ff;\n"
+"}")
+        self.twitchChatOutput.setOpenExternalLinks(False)
+
+        self.twitchChatTabLayout.addWidget(self.twitchChatOutput)
+
+        self.twitchSendLayout = QHBoxLayout()
+        self.twitchSendLayout.setObjectName(u"twitchSendLayout")
+        self.twitchSendEdit = QLineEdit(self.twitchChatTab)
+        self.twitchSendEdit.setObjectName(u"twitchSendEdit")
+        self.twitchSendEdit.setEnabled(False)
+        self.twitchSendEdit.setMaxLength(500)
+
+        self.twitchSendLayout.addWidget(self.twitchSendEdit)
+
+        self.twitchSendButton = QPushButton(self.twitchChatTab)
+        self.twitchSendButton.setObjectName(u"twitchSendButton")
+        self.twitchSendButton.setEnabled(False)
+
+        self.twitchSendLayout.addWidget(self.twitchSendButton)
+
+
+        self.twitchChatTabLayout.addLayout(self.twitchSendLayout)
+
+        self.twitchSimulationGroup = QGroupBox(self.twitchChatTab)
+        self.twitchSimulationGroup.setObjectName(u"twitchSimulationGroup")
+        self.twitchSimulationLayout = QGridLayout(self.twitchSimulationGroup)
+        self.twitchSimulationLayout.setObjectName(u"twitchSimulationLayout")
+        self.simulationUsernameLabel = QLabel(self.twitchSimulationGroup)
+        self.simulationUsernameLabel.setObjectName(u"simulationUsernameLabel")
+
+        self.twitchSimulationLayout.addWidget(self.simulationUsernameLabel, 0, 0, 1, 1)
+
+        self.simulationUsernameEdit = QLineEdit(self.twitchSimulationGroup)
+        self.simulationUsernameEdit.setObjectName(u"simulationUsernameEdit")
+
+        self.twitchSimulationLayout.addWidget(self.simulationUsernameEdit, 0, 1, 1, 1)
+
+        self.simulationMessageLabel = QLabel(self.twitchSimulationGroup)
+        self.simulationMessageLabel.setObjectName(u"simulationMessageLabel")
+
+        self.twitchSimulationLayout.addWidget(self.simulationMessageLabel, 1, 0, 1, 1)
+
+        self.simulationMessageEdit = QLineEdit(self.twitchSimulationGroup)
+        self.simulationMessageEdit.setObjectName(u"simulationMessageEdit")
+
+        self.twitchSimulationLayout.addWidget(self.simulationMessageEdit, 1, 1, 1, 1)
+
+        self.simulateTwitchMessageButton = QPushButton(self.twitchSimulationGroup)
+        self.simulateTwitchMessageButton.setObjectName(u"simulateTwitchMessageButton")
+        self.simulateTwitchMessageButton.setEnabled(False)
+
+        self.twitchSimulationLayout.addWidget(self.simulateTwitchMessageButton, 2, 1, 1, 1)
+
+
+        self.twitchChatTabLayout.addWidget(self.twitchSimulationGroup)
+
+        self.twitchDetailTabs.addTab(self.twitchChatTab, "")
+        self.twitchEventsTab = QWidget()
+        self.twitchEventsTab.setObjectName(u"twitchEventsTab")
+        self.twitchEventsTabLayout = QVBoxLayout(self.twitchEventsTab)
+        self.twitchEventsTabLayout.setObjectName(u"twitchEventsTabLayout")
+        self.twitchEventSimulatorGroup = QGroupBox(self.twitchEventsTab)
+        self.twitchEventSimulatorGroup.setObjectName(u"twitchEventSimulatorGroup")
+        self.twitchEventSimulatorLayout = QGridLayout(self.twitchEventSimulatorGroup)
+        self.twitchEventSimulatorLayout.setObjectName(u"twitchEventSimulatorLayout")
+        self.twitchEventTypeLabel = QLabel(self.twitchEventSimulatorGroup)
+        self.twitchEventTypeLabel.setObjectName(u"twitchEventTypeLabel")
+
+        self.twitchEventSimulatorLayout.addWidget(self.twitchEventTypeLabel, 0, 0, 1, 1)
+
+        self.twitchEventTypeCombo = QComboBox(self.twitchEventSimulatorGroup)
+        self.twitchEventTypeCombo.setObjectName(u"twitchEventTypeCombo")
+
+        self.twitchEventSimulatorLayout.addWidget(self.twitchEventTypeCombo, 0, 1, 1, 1)
+
+        self.twitchEventVersionLabel = QLabel(self.twitchEventSimulatorGroup)
+        self.twitchEventVersionLabel.setObjectName(u"twitchEventVersionLabel")
+
+        self.twitchEventSimulatorLayout.addWidget(self.twitchEventVersionLabel, 0, 2, 1, 1)
+
+        self.twitchEventVersionEdit = QLineEdit(self.twitchEventSimulatorGroup)
+        self.twitchEventVersionEdit.setObjectName(u"twitchEventVersionEdit")
+        self.twitchEventVersionEdit.setMaximumWidth(80)
+
+        self.twitchEventSimulatorLayout.addWidget(self.twitchEventVersionEdit, 0, 3, 1, 1)
+
+        self.twitchEventPayloadEdit = QPlainTextEdit(self.twitchEventSimulatorGroup)
+        self.twitchEventPayloadEdit.setObjectName(u"twitchEventPayloadEdit")
+        self.twitchEventPayloadEdit.setMaximumHeight(140)
+
+        self.twitchEventSimulatorLayout.addWidget(self.twitchEventPayloadEdit, 1, 0, 1, 4)
+
+        self.resetTwitchEventPayloadButton = QPushButton(self.twitchEventSimulatorGroup)
+        self.resetTwitchEventPayloadButton.setObjectName(u"resetTwitchEventPayloadButton")
+
+        self.twitchEventSimulatorLayout.addWidget(self.resetTwitchEventPayloadButton, 2, 2, 1, 1)
+
+        self.sendTwitchEventButton = QPushButton(self.twitchEventSimulatorGroup)
+        self.sendTwitchEventButton.setObjectName(u"sendTwitchEventButton")
+        self.sendTwitchEventButton.setEnabled(False)
+
+        self.twitchEventSimulatorLayout.addWidget(self.sendTwitchEventButton, 2, 3, 1, 1)
+
+
+        self.twitchEventsTabLayout.addWidget(self.twitchEventSimulatorGroup)
+
+        self.twitchEventFiltersLayout = QHBoxLayout()
+        self.twitchEventFiltersLayout.setObjectName(u"twitchEventFiltersLayout")
+        self.twitchEventSearchEdit = QLineEdit(self.twitchEventsTab)
+        self.twitchEventSearchEdit.setObjectName(u"twitchEventSearchEdit")
+
+        self.twitchEventFiltersLayout.addWidget(self.twitchEventSearchEdit)
+
+        self.twitchEventResultCombo = QComboBox(self.twitchEventsTab)
+        self.twitchEventResultCombo.setObjectName(u"twitchEventResultCombo")
+
+        self.twitchEventFiltersLayout.addWidget(self.twitchEventResultCombo)
+
+        self.pauseTwitchEventsCheck = QCheckBox(self.twitchEventsTab)
+        self.pauseTwitchEventsCheck.setObjectName(u"pauseTwitchEventsCheck")
+
+        self.twitchEventFiltersLayout.addWidget(self.pauseTwitchEventsCheck)
+
+        self.clearTwitchEventsButton = QPushButton(self.twitchEventsTab)
+        self.clearTwitchEventsButton.setObjectName(u"clearTwitchEventsButton")
+
+        self.twitchEventFiltersLayout.addWidget(self.clearTwitchEventsButton)
+
+
+        self.twitchEventsTabLayout.addLayout(self.twitchEventFiltersLayout)
+
+        self.twitchEventTable = QTableWidget(self.twitchEventsTab)
+        self.twitchEventTable.setObjectName(u"twitchEventTable")
+        self.twitchEventTable.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.twitchEventTable.setAlternatingRowColors(True)
+        self.twitchEventTable.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.twitchEventTable.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+
+        self.twitchEventsTabLayout.addWidget(self.twitchEventTable)
+
+        self.twitchEventDetails = QPlainTextEdit(self.twitchEventsTab)
+        self.twitchEventDetails.setObjectName(u"twitchEventDetails")
+        self.twitchEventDetails.setReadOnly(True)
+
+        self.twitchEventsTabLayout.addWidget(self.twitchEventDetails)
+
+        self.twitchEventDetailsButtonsLayout = QHBoxLayout()
+        self.twitchEventDetailsButtonsLayout.setObjectName(u"twitchEventDetailsButtonsLayout")
+        self.twitchEventDetailsSpacer = QSpacerItem(40, 20, QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+
+        self.twitchEventDetailsButtonsLayout.addItem(self.twitchEventDetailsSpacer)
+
+        self.copyTwitchEventButton = QPushButton(self.twitchEventsTab)
+        self.copyTwitchEventButton.setObjectName(u"copyTwitchEventButton")
+        self.copyTwitchEventButton.setEnabled(False)
+
+        self.twitchEventDetailsButtonsLayout.addWidget(self.copyTwitchEventButton)
+
+
+        self.twitchEventsTabLayout.addLayout(self.twitchEventDetailsButtonsLayout)
+
+        self.twitchDetailTabs.addTab(self.twitchEventsTab, "")
+
+        self.twitchPageLayout.addWidget(self.twitchDetailTabs)
+
         self.mainStack.addWidget(self.twitchPage)
 
         self.horizontalLayout.addWidget(self.mainStack)
@@ -316,13 +662,16 @@ class Ui_MainWindow(object):
 
         self.retranslateUi(MainWindow)
 
+        self.twitchDetailTabs.setCurrentIndex(0)
+
+
         QMetaObject.connectSlotsByName(MainWindow)
     # setupUi
 
     def retranslateUi(self, MainWindow):
         MainWindow.setWindowTitle(QCoreApplication.translate("MainWindow", u"Sally AI", None))
         self.dashboardButton.setText(QCoreApplication.translate("MainWindow", u"Dashboard", None))
-        self.twitchButton.setText(QCoreApplication.translate("MainWindow", u"Twitch", None))
+        self.twitchButton.setText(QCoreApplication.translate("MainWindow", u"Your Channel", None))
         self.logsButton.setText(QCoreApplication.translate("MainWindow", u"Logs", None))
         self.settingsButton.setText(QCoreApplication.translate("MainWindow", u"Settings", None))
         self.dashboardTitleLabel.setText(QCoreApplication.translate("MainWindow", u"Sally Status", None))
@@ -347,10 +696,56 @@ class Ui_MainWindow(object):
         self.loggingSettingsGroup.setTitle(QCoreApplication.translate("MainWindow", u"Logging", None))
         self.logLevelLabel.setText(QCoreApplication.translate("MainWindow", u"Minimum log level", None))
         self.uiLogLimitLabel.setText(QCoreApplication.translate("MainWindow", u"UI log entry limit", None))
+        self.twitchChatSettingsGroup.setTitle(QCoreApplication.translate("MainWindow", u"Twitch Chat", None))
+        self.twitchChatTimestampLabel.setText(QCoreApplication.translate("MainWindow", u"Timestamps", None))
+        self.twitchChatTimestampCheck.setText(QCoreApplication.translate("MainWindow", u"Show message timestamps", None))
+        self.twitchChatFontLabel.setText(QCoreApplication.translate("MainWindow", u"Font", None))
+        self.twitchChatFontSizeLabel.setText(QCoreApplication.translate("MainWindow", u"Font size", None))
+        self.twitchChatFontSizeSpin.setSuffix(QCoreApplication.translate("MainWindow", u" pt", None))
         self.developerSettingsGroup.setTitle(QCoreApplication.translate("MainWindow", u"Developer", None))
-        self.showDeveloperToolsCheck.setText(QCoreApplication.translate("MainWindow", u"Show log test controls", None))
+        self.showDeveloperToolsCheck.setText(QCoreApplication.translate("MainWindow", u"Enable developer tools", None))
+        self.toggleDeveloperToolsButton.setText(QCoreApplication.translate("MainWindow", u"Open Developer Tools", None))
         self.settingsStatusLabel.setText("")
         self.resetSettingsButton.setText(QCoreApplication.translate("MainWindow", u"Reset Defaults", None))
         self.saveSettingsButton.setText(QCoreApplication.translate("MainWindow", u"Save Settings", None))
+        self.twitchTitleLabel.setText(QCoreApplication.translate("MainWindow", u"Your Channel", None))
+        self.twitchConnectionGroup.setTitle(QCoreApplication.translate("MainWindow", u"Connection", None))
+        self.twitchAccountLabel.setText(QCoreApplication.translate("MainWindow", u"Twitch account", None))
+        self.twitchAccountStatusLabel.setText(QCoreApplication.translate("MainWindow", u"Not signed in", None))
+        self.twitchSignInButton.setText(QCoreApplication.translate("MainWindow", u"Sign in with Twitch", None))
+        self.twitchSignOutButton.setText(QCoreApplication.translate("MainWindow", u"Sign out", None))
+        self.twitchChannelLabel.setText(QCoreApplication.translate("MainWindow", u"Your channel", None))
+        self.twitchChannelEdit.setPlaceholderText(QCoreApplication.translate("MainWindow", u"Streamer channel name", None))
+        self.twitchConnectionStatusNameLabel.setText(QCoreApplication.translate("MainWindow", u"Status", None))
+        self.twitchConnectionStatusLabel.setText(QCoreApplication.translate("MainWindow", u"Disconnected", None))
+        self.twitchConnectButton.setText(QCoreApplication.translate("MainWindow", u"Connect", None))
+        self.twitchDisconnectButton.setText(QCoreApplication.translate("MainWindow", u"Disconnect", None))
+        self.twitchListenerNameLabel.setText(QCoreApplication.translate("MainWindow", u"Local listener", None))
+        self.twitchListenerUrlLabel.setText(QCoreApplication.translate("MainWindow", u"Stopped", None))
+        self.twitchErrorLabel.setText("")
+        self.twitchChatCountLabel.setText(QCoreApplication.translate("MainWindow", u"Chat - 0 messages", None))
+        self.clearTwitchChatButton.setText(QCoreApplication.translate("MainWindow", u"Clear Chat", None))
+        self.twitchSendEdit.setPlaceholderText(QCoreApplication.translate("MainWindow", u"Send a message as the signed-in Twitch account", None))
+        self.twitchSendButton.setText(QCoreApplication.translate("MainWindow", u"Send", None))
+        self.twitchSimulationGroup.setTitle(QCoreApplication.translate("MainWindow", u"Developer Simulation", None))
+        self.simulationUsernameLabel.setText(QCoreApplication.translate("MainWindow", u"Username", None))
+        self.simulationUsernameEdit.setText(QCoreApplication.translate("MainWindow", u"test_viewer", None))
+        self.simulationMessageLabel.setText(QCoreApplication.translate("MainWindow", u"Message", None))
+        self.simulationMessageEdit.setPlaceholderText(QCoreApplication.translate("MainWindow", u"Hello Sally!", None))
+        self.simulateTwitchMessageButton.setText(QCoreApplication.translate("MainWindow", u"Simulate Message", None))
+        self.twitchDetailTabs.setTabText(self.twitchDetailTabs.indexOf(self.twitchChatTab), QCoreApplication.translate("MainWindow", u"Chat", None))
+        self.twitchEventSimulatorGroup.setTitle(QCoreApplication.translate("MainWindow", u"Developer Event Simulator", None))
+        self.twitchEventTypeLabel.setText(QCoreApplication.translate("MainWindow", u"Event type", None))
+        self.twitchEventVersionLabel.setText(QCoreApplication.translate("MainWindow", u"Version", None))
+        self.twitchEventVersionEdit.setText(QCoreApplication.translate("MainWindow", u"1", None))
+        self.twitchEventPayloadEdit.setPlaceholderText(QCoreApplication.translate("MainWindow", u"Editable Twitch EventSub JSON payload", None))
+        self.resetTwitchEventPayloadButton.setText(QCoreApplication.translate("MainWindow", u"Reset Payload", None))
+        self.sendTwitchEventButton.setText(QCoreApplication.translate("MainWindow", u"Send Signed Event", None))
+        self.twitchEventSearchEdit.setPlaceholderText(QCoreApplication.translate("MainWindow", u"Search events...", None))
+        self.pauseTwitchEventsCheck.setText(QCoreApplication.translate("MainWindow", u"Pause follow", None))
+        self.clearTwitchEventsButton.setText(QCoreApplication.translate("MainWindow", u"Clear Events", None))
+        self.twitchEventDetails.setPlaceholderText(QCoreApplication.translate("MainWindow", u"Select an event to inspect its sanitized headers and JSON payload.", None))
+        self.copyTwitchEventButton.setText(QCoreApplication.translate("MainWindow", u"Copy Details", None))
+        self.twitchDetailTabs.setTabText(self.twitchDetailTabs.indexOf(self.twitchEventsTab), QCoreApplication.translate("MainWindow", u"Events", None))
     # retranslateUi
 

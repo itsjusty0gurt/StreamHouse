@@ -10,6 +10,7 @@ from time import perf_counter
 from typing import ClassVar
 
 from config.version import VERSION
+from core.paths import user_data_root
 
 
 class DefaultLogFieldsFilter(logging.Filter):
@@ -147,8 +148,7 @@ class Logger:
         if cls._logger is not None:
             return
 
-        project_root = Path(__file__).resolve().parent.parent
-        logs_directory = project_root / "logs"
+        logs_directory = user_data_root() / "logs"
         archive_directory = logs_directory / "archive"
 
         logs_directory.mkdir(
@@ -244,6 +244,19 @@ class Logger:
             )
 
         return cls._logger
+
+    @classmethod
+    def shutdown(cls) -> None:
+        """Flush and close Sally-owned handlers."""
+        if cls._logger is None:
+            return
+        for handler in list(cls._logger.handlers):
+            try:
+                handler.flush()
+                handler.close()
+            finally:
+                cls._logger.removeHandler(handler)
+        cls._logger = None
 
     @classmethod
     def _clean_source(cls, source: str) -> str:
