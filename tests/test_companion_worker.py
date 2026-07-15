@@ -29,7 +29,7 @@ class CompanionRefreshWorkerTests(unittest.TestCase):
             scopes=(
                 "moderator:read:chatters",
                 "moderation:read",
-                "moderator:read:vips",
+                "channel:read:vips",
                 "channel:read:subscriptions",
             ),
             user_id="42",

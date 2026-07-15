@@ -64,6 +64,21 @@ class ChatterHistoryStoreTests(unittest.TestCase):
             restored.load()
             self.assertTrue(restored.is_bot("bot-1"))
 
+    def test_manual_display_group_persists(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "chatters.json"
+            store = ChatterHistoryStore(path)
+            store.observe_message("1", "Viewer")
+            store.set_manual_group("1", "Regulars")
+            store.save()
+
+            restored = ChatterHistoryStore(path)
+            restored.load()
+            self.assertEqual(restored.records["1"].manual_group, "Regulars")
+
+            with self.assertRaises(ValueError):
+                restored.set_manual_group("1", "Moderators")
+
     def test_snapshot_persists_all_observed_roles(self) -> None:
         store = ChatterHistoryStore(Path("unused.json"))
         store.observe_snapshot(
@@ -106,6 +121,64 @@ class ChatterHistoryStoreTests(unittest.TestCase):
 
         store.delete_memory("1", str(memory["id"]))
         self.assertEqual(store.records["1"].memories, [])
+
+    def test_generated_memory_review_duplicate_and_conflict(self) -> None:
+        store = ChatterHistoryStore(Path("unused.json"))
+        store.observe_message("1", "Viewer")
+        first = store.propose_memory(
+            "1",
+            "Favorite game is Portal 2",
+            "Game",
+            confidence=0.8,
+            evidence=({"text": "Portal 2 is my favorite"},),
+            key="favorite-game",
+        )
+        self.assertEqual(first["status"], "pending")
+        store.review_memory("1", str(first["id"]), True)
+
+        duplicate = store.propose_memory(
+            "1",
+            "Favorite game is Portal 2",
+            "Game",
+            confidence=0.95,
+            evidence=({"text": "Still Portal 2"},),
+            key="favorite-game",
+        )
+        self.assertIs(duplicate, first)
+        self.assertEqual(len(duplicate["evidence"]), 2)
+        self.assertEqual(duplicate["confidence"], 0.95)
+
+        replacement = store.propose_memory(
+            "1",
+            "Favorite game is The Witness",
+            "Game",
+            confidence=0.7,
+            key="favorite-game",
+        )
+        self.assertEqual(replacement["conflicts_with"], first["id"])
+        store.review_memory("1", str(replacement["id"]), True)
+        self.assertEqual(first["status"], "superseded")
+        self.assertTrue(first["archived"])
+
+    def test_memory_privacy_summary_and_relevance(self) -> None:
+        store = ChatterHistoryStore(Path("unused.json"))
+        store.observe_message("1", "Viewer")
+        puzzle = store.add_memory("1", "Enjoys difficult puzzle games", "Preference")
+        store.add_memory("1", "Drinks green tea", "Preference")
+        store.update_memory("1", str(puzzle["id"]), pinned=True)
+
+        summary = store.viewer_summary("1")
+        self.assertIn("Viewer", summary)
+        self.assertIn("puzzle", summary)
+        relevant = store.relevant_memories("1", "recommend a puzzle game")
+        self.assertEqual(relevant[0]["id"], puzzle["id"])
+
+        pending = store.propose_memory("1", "Owns a cat", key="pet")
+        store.set_memory_enabled("1", False)
+        self.assertEqual(pending["status"], "rejected")
+        self.assertEqual(store.approved_memories("1"), [])
+        with self.assertRaises(PermissionError):
+            store.propose_memory("1", "Likes jazz")
 
     def test_tracks_session_messages_events_and_profile(self) -> None:
         store = ChatterHistoryStore(Path("unused.json"))

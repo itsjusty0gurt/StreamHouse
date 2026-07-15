@@ -11,6 +11,23 @@ from core.migrations import migrate_payload
 from core.paths import user_data_root
 
 
+def _normalize_memory(values: dict[str, Any]) -> dict[str, Any]:
+    """Fill structured-memory fields on legacy and current records."""
+    memory = dict(values)
+    source = str(memory.get("source", "manual"))
+    memory["source"] = source
+    memory.setdefault("status", "approved" if source == "manual" else "pending")
+    memory.setdefault("confidence", 1.0 if source == "manual" else 0.5)
+    memory.setdefault("evidence", [])
+    memory.setdefault("key", "")
+    memory.setdefault("last_confirmed_at", memory.get("created_at", ""))
+    memory.setdefault("conflicts_with", "")
+    memory.setdefault("rejection_reason", "")
+    memory.setdefault("pinned", False)
+    memory.setdefault("archived", False)
+    return memory
+
+
 @dataclass(slots=True)
 class ChatterRecord:
     user_id: str
@@ -30,6 +47,8 @@ class ChatterRecord:
     session_messages: dict[str, int] = field(default_factory=dict)
     timeline: list[dict[str, Any]] = field(default_factory=list)
     role_history: list[dict[str, Any]] = field(default_factory=list)
+    memory_enabled: bool = True
+    manual_group: str = ""
 
     @classmethod
     def from_dict(cls, values: dict[str, Any]) -> ChatterRecord:
@@ -48,7 +67,7 @@ class ChatterRecord:
             roles=[str(role) for role in values.get("roles", [])],
             followed_at=str(values.get("followed_at", "")),
             memories=[
-                dict(memory)
+                _normalize_memory(memory)
                 for memory in values.get("memories", [])
                 if isinstance(memory, dict)
             ],
@@ -72,6 +91,8 @@ class ChatterRecord:
                 for item in values.get("role_history", [])[-100:]
                 if isinstance(item, dict)
             ],
+            memory_enabled=bool(values.get("memory_enabled", True)),
+            manual_group=str(values.get("manual_group", "")),
         )
 
 
@@ -204,12 +225,172 @@ class ChatterHistoryStore:
             "updated_at": now,
             "pinned": False,
             "archived": False,
+            "status": "approved",
+            "confidence": 1.0,
+            "evidence": [],
+            "key": "",
+            "last_confirmed_at": now,
+            "conflicts_with": "",
+            "rejection_reason": "",
         }
         if not memory["text"]:
             raise ValueError("Memory text is required.")
         record.memories.append(memory)
         self.dirty = True
         return memory
+
+    def propose_memory(
+        self,
+        user_id: str,
+        text: str,
+        category: str = "General",
+        *,
+        confidence: float = 0.5,
+        evidence: Iterable[dict[str, Any]] = (),
+        key: str = "",
+        source: str = "ai",
+    ) -> dict[str, Any]:
+        """Queue an extracted memory, merging exact duplicates when possible."""
+        record = self.records[user_id]
+        if not record.memory_enabled:
+            raise PermissionError("AI memory is disabled for this viewer.")
+        clean_text = text.strip()[:1000]
+        if not clean_text:
+            raise ValueError("Memory text is required.")
+        clean_key = key.strip().casefold()[:100]
+        normalized = " ".join(clean_text.casefold().split())
+        now = datetime.now(timezone.utc).isoformat()
+        clean_evidence = [
+            {
+                "text": str(item.get("text", ""))[:500],
+                "timestamp": str(item.get("timestamp", ""))[:50],
+                "message_id": str(item.get("message_id", ""))[:100],
+            }
+            for item in evidence
+            if isinstance(item, dict) and str(item.get("text", "")).strip()
+        ][:20]
+        conflict_id = ""
+        for existing in record.memories:
+            existing_text = " ".join(
+                str(existing.get("text", "")).casefold().split()
+            )
+            if existing_text == normalized:
+                prior = list(existing.get("evidence", []))
+                existing["evidence"] = (prior + clean_evidence)[-20:]
+                existing["confidence"] = max(
+                    float(existing.get("confidence", 0.0)),
+                    max(0.0, min(float(confidence), 1.0)),
+                )
+                existing["last_confirmed_at"] = now
+                existing["updated_at"] = now
+                self.dirty = True
+                return existing
+            if (
+                clean_key
+                and clean_key == str(existing.get("key", "")).casefold()
+                and existing.get("status") != "rejected"
+            ):
+                conflict_id = str(existing.get("id", ""))
+        memory = {
+            "id": uuid4().hex,
+            "text": clean_text,
+            "category": category.strip()[:50] or "General",
+            "source": source.strip()[:50] or "ai",
+            "created_at": now,
+            "updated_at": now,
+            "last_confirmed_at": now,
+            "pinned": False,
+            "archived": False,
+            "status": "pending",
+            "confidence": max(0.0, min(float(confidence), 1.0)),
+            "evidence": clean_evidence,
+            "key": clean_key,
+            "conflicts_with": conflict_id,
+            "rejection_reason": "",
+        }
+        record.memories.append(memory)
+        self.dirty = True
+        return memory
+
+    def review_memory(
+        self,
+        user_id: str,
+        memory_id: str,
+        approved: bool,
+        rejection_reason: str = "",
+    ) -> dict[str, Any]:
+        memory = self.get_memory(user_id, memory_id)
+        memory["status"] = "approved" if approved else "rejected"
+        memory["rejection_reason"] = (
+            "" if approved else rejection_reason.strip()[:500]
+        )
+        memory["updated_at"] = datetime.now(timezone.utc).isoformat()
+        conflict_id = str(memory.get("conflicts_with", ""))
+        if approved and conflict_id:
+            try:
+                replaced = self.get_memory(user_id, conflict_id)
+            except KeyError:
+                pass
+            else:
+                replaced["status"] = "superseded"
+                replaced["archived"] = True
+                replaced["updated_at"] = memory["updated_at"]
+            memory["conflicts_with"] = ""
+        self.dirty = True
+        return memory
+
+    def set_memory_enabled(self, user_id: str, enabled: bool) -> None:
+        record = self.records[user_id]
+        record.memory_enabled = bool(enabled)
+        if not enabled:
+            for memory in record.memories:
+                if memory.get("status") == "pending":
+                    memory["status"] = "rejected"
+                    memory["rejection_reason"] = "Viewer memory disabled"
+        self.dirty = True
+
+    def approved_memories(self, user_id: str) -> list[dict[str, Any]]:
+        record = self.records[user_id]
+        if not record.memory_enabled:
+            return []
+        return [
+            memory
+            for memory in record.memories
+            if memory.get("status", "approved") == "approved"
+            and not bool(memory.get("archived", False))
+        ]
+
+    def viewer_summary(self, user_id: str) -> str:
+        record = self.records[user_id]
+        groups = list(record.roles)
+        if self.is_regular(user_id):
+            groups.append("Regular")
+        memories = self.approved_memories(user_id)
+        facts = "; ".join(str(item.get("text", "")) for item in memories[:6])
+        summary = (
+            f"{record.user_name or record.user_id} is a "
+            f"{', '.join(groups) or 'viewer'} with {record.message_count} observed "
+            f"messages across {len(record.active_days)} active day(s)."
+        )
+        return f"{summary} Known context: {facts}." if facts else summary
+
+    def relevant_memories(
+        self,
+        user_id: str,
+        query: str,
+        limit: int = 5,
+    ) -> list[dict[str, Any]]:
+        terms = {term for term in query.casefold().split() if len(term) > 2}
+        ranked = []
+        for memory in self.approved_memories(user_id):
+            text_terms = set(str(memory.get("text", "")).casefold().split())
+            overlap = len(terms & text_terms)
+            score = overlap * 10 + int(bool(memory.get("pinned"))) * 5
+            score += float(memory.get("confidence", 0.0))
+            if not terms or overlap or memory.get("pinned"):
+                ranked.append((score, memory))
+        ranked.sort(key=lambda item: item[0], reverse=True)
+        return [memory for _score, memory in ranked[: max(limit, 0)]]
 
     def update_memory(
         self,
@@ -377,11 +558,20 @@ class ChatterHistoryStore:
         record = self.records.get(user_id)
         return bool(record and record.is_bot)
 
+    def set_manual_group(self, user_id: str, group: str) -> None:
+        """Override a chatter's local display group without changing Twitch roles."""
+        allowed = {"", "Regulars", "Bots", "Viewers"}
+        if group not in allowed:
+            raise ValueError(f"Unsupported local chatter group: {group}")
+        record = self.records[user_id]
+        record.manual_group = group
+        self.dirty = True
+
     def save(self) -> None:
         if not self.dirty:
             return
         payload = {
-            "version": 3,
+            "version": 5,
             "chatters": {
                 user_id: asdict(record)
                 for user_id, record in self.records.items()

@@ -6,7 +6,7 @@ from typing import Any
 
 CURRENT_VERSIONS = {
     "activity": 1,
-    "chatters": 3,
+    "chatters": 5,
     "sessions": 1,
 }
 
@@ -34,5 +34,7 @@ def migrate_payload(kind: str, payload: dict[str, Any]) -> dict[str, Any]:
                 record.setdefault("session_messages", {})
                 record.setdefault("timeline", [])
                 record.setdefault("role_history", [])
+                record.setdefault("memory_enabled", True)
+                record.setdefault("manual_group", "")
     migrated["version"] = target
     return migrated

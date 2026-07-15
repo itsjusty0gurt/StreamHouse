@@ -34,6 +34,22 @@ class AppSettings:
     twitch_chat_show_timestamps: bool = True
     twitch_chat_font_family: str = "Segoe UI"
     twitch_chat_font_size: int = 10
+    local_ai_enabled: bool = True
+    local_ai_endpoint: str = "http://127.0.0.1:11434"
+    local_ai_model: str = "qwen3:14b"
+    ai_memory_reasoning_enabled: bool = True
+    ai_memory_message_threshold: int = 10
+    ai_response_decisions_enabled: bool = True
+    ai_auto_send_replies: bool = False
+    ai_response_max_age_seconds: int = 15
+    ai_response_min_interval_seconds: int = 8
+    ai_personality: str = (
+        "Warm, quick-witted, curious, and conversational. Match the streamer's "
+        "energy, keep replies concise, and sound like a genuine cohost rather "
+        "than a customer-service assistant."
+    )
+    ai_allow_mild_profanity: bool = False
+    ai_allow_strong_profanity: bool = False
 
     @classmethod
     def from_dict(cls, values: dict[str, Any]) -> AppSettings:
@@ -86,6 +102,85 @@ class AppSettings:
             font_size = defaults.twitch_chat_font_size
         font_size = min(max(font_size, 8), 24)
 
+        local_ai_enabled = values.get("local_ai_enabled", defaults.local_ai_enabled)
+        if not isinstance(local_ai_enabled, bool):
+            local_ai_enabled = defaults.local_ai_enabled
+        local_ai_endpoint = values.get(
+            "local_ai_endpoint", defaults.local_ai_endpoint
+        )
+        if not isinstance(local_ai_endpoint, str) or not local_ai_endpoint.strip():
+            local_ai_endpoint = defaults.local_ai_endpoint
+        local_ai_endpoint = local_ai_endpoint.strip().rstrip("/")[:500]
+        if not local_ai_endpoint.startswith(("http://", "https://")):
+            local_ai_endpoint = defaults.local_ai_endpoint
+        local_ai_model = values.get("local_ai_model", defaults.local_ai_model)
+        if not isinstance(local_ai_model, str) or not local_ai_model.strip():
+            local_ai_model = defaults.local_ai_model
+        local_ai_model = local_ai_model.strip()[:200]
+        memory_reasoning_enabled = values.get(
+            "ai_memory_reasoning_enabled",
+            defaults.ai_memory_reasoning_enabled,
+        )
+        if not isinstance(memory_reasoning_enabled, bool):
+            memory_reasoning_enabled = defaults.ai_memory_reasoning_enabled
+        memory_message_threshold = values.get(
+            "ai_memory_message_threshold",
+            defaults.ai_memory_message_threshold,
+        )
+        if not isinstance(memory_message_threshold, int) or isinstance(
+            memory_message_threshold, bool
+        ):
+            memory_message_threshold = defaults.ai_memory_message_threshold
+        memory_message_threshold = min(max(memory_message_threshold, 5), 50)
+        response_decisions_enabled = values.get(
+            "ai_response_decisions_enabled",
+            defaults.ai_response_decisions_enabled,
+        )
+        if not isinstance(response_decisions_enabled, bool):
+            response_decisions_enabled = defaults.ai_response_decisions_enabled
+        auto_send_replies = values.get(
+            "ai_auto_send_replies",
+            defaults.ai_auto_send_replies,
+        )
+        if not isinstance(auto_send_replies, bool):
+            auto_send_replies = defaults.ai_auto_send_replies
+        response_max_age = values.get(
+            "ai_response_max_age_seconds",
+            defaults.ai_response_max_age_seconds,
+        )
+        if not isinstance(response_max_age, int) or isinstance(
+            response_max_age, bool
+        ):
+            response_max_age = defaults.ai_response_max_age_seconds
+        response_max_age = min(max(response_max_age, 5), 60)
+        response_min_interval = values.get(
+            "ai_response_min_interval_seconds",
+            defaults.ai_response_min_interval_seconds,
+        )
+        if not isinstance(response_min_interval, int) or isinstance(
+            response_min_interval, bool
+        ):
+            response_min_interval = defaults.ai_response_min_interval_seconds
+        response_min_interval = min(max(response_min_interval, 3), 60)
+        personality = values.get("ai_personality", defaults.ai_personality)
+        if not isinstance(personality, str) or not personality.strip():
+            personality = defaults.ai_personality
+        personality = personality.strip()[:2_000]
+        allow_mild_profanity = values.get(
+            "ai_allow_mild_profanity",
+            defaults.ai_allow_mild_profanity,
+        )
+        if not isinstance(allow_mild_profanity, bool):
+            allow_mild_profanity = defaults.ai_allow_mild_profanity
+        allow_strong_profanity = values.get(
+            "ai_allow_strong_profanity",
+            defaults.ai_allow_strong_profanity,
+        )
+        if not isinstance(allow_strong_profanity, bool):
+            allow_strong_profanity = defaults.ai_allow_strong_profanity
+        if allow_strong_profanity:
+            allow_mild_profanity = True
+
         return cls(
             startup_page=startup_page,
             log_level=log_level,
@@ -94,6 +189,18 @@ class AppSettings:
             twitch_chat_show_timestamps=show_timestamps,
             twitch_chat_font_family=font_family,
             twitch_chat_font_size=font_size,
+            local_ai_enabled=local_ai_enabled,
+            local_ai_endpoint=local_ai_endpoint,
+            local_ai_model=local_ai_model,
+            ai_memory_reasoning_enabled=memory_reasoning_enabled,
+            ai_memory_message_threshold=memory_message_threshold,
+            ai_response_decisions_enabled=response_decisions_enabled,
+            ai_auto_send_replies=auto_send_replies,
+            ai_response_max_age_seconds=response_max_age,
+            ai_response_min_interval_seconds=response_min_interval,
+            ai_personality=personality,
+            ai_allow_mild_profanity=allow_mild_profanity,
+            ai_allow_strong_profanity=allow_strong_profanity,
         )
 
 

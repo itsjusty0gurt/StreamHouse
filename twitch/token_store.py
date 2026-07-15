@@ -24,6 +24,11 @@ class TwitchTokenStore:
     def __init__(self, path: Path | None = None) -> None:
         self.path = path or user_data_root() / "twitch-token.dat"
 
+    @classmethod
+    def bot_account(cls) -> TwitchTokenStore:
+        """Return the independent encrypted store for Sally's chat identity."""
+        return cls(user_data_root() / "twitch-bot-token.dat")
+
     @staticmethod
     def _blob(data: bytes) -> tuple[_DataBlob, object]:
         buffer = ctypes.create_string_buffer(data)

@@ -29,6 +29,18 @@ class SettingsStoreTests(unittest.TestCase):
             twitch_chat_show_timestamps=False,
             twitch_chat_font_family="Consolas",
             twitch_chat_font_size=13,
+            local_ai_enabled=True,
+            local_ai_endpoint="http://localhost:11434",
+            local_ai_model="qwen3:14b",
+            ai_memory_reasoning_enabled=False,
+            ai_memory_message_threshold=15,
+            ai_response_decisions_enabled=False,
+            ai_auto_send_replies=True,
+            ai_response_max_age_seconds=25,
+            ai_response_min_interval_seconds=12,
+            ai_personality="Dry, playful, and concise.",
+            ai_allow_mild_profanity=True,
+            ai_allow_strong_profanity=True,
         )
 
         self.store.save(expected)
@@ -47,6 +59,18 @@ class SettingsStoreTests(unittest.TestCase):
                     "twitch_chat_show_timestamps": "yes",
                     "twitch_chat_font_family": "",
                     "twitch_chat_font_size": 100,
+                    "local_ai_enabled": "yes",
+                    "local_ai_endpoint": "not-a-url",
+                    "local_ai_model": "",
+                    "ai_memory_reasoning_enabled": "yes",
+                    "ai_memory_message_threshold": 500,
+                    "ai_response_decisions_enabled": "yes",
+                    "ai_auto_send_replies": "yes",
+                    "ai_response_max_age_seconds": 500,
+                    "ai_response_min_interval_seconds": 0,
+                    "ai_personality": "",
+                    "ai_allow_mild_profanity": "yes",
+                    "ai_allow_strong_profanity": "yes",
                 }
             ),
             encoding="utf-8",
@@ -61,6 +85,29 @@ class SettingsStoreTests(unittest.TestCase):
         self.assertTrue(settings.twitch_chat_show_timestamps)
         self.assertEqual(settings.twitch_chat_font_family, "Segoe UI")
         self.assertEqual(settings.twitch_chat_font_size, 24)
+        self.assertTrue(settings.local_ai_enabled)
+        self.assertEqual(settings.local_ai_endpoint, "http://127.0.0.1:11434")
+        self.assertEqual(settings.local_ai_model, "qwen3:14b")
+        self.assertTrue(settings.ai_memory_reasoning_enabled)
+        self.assertEqual(settings.ai_memory_message_threshold, 50)
+        self.assertTrue(settings.ai_response_decisions_enabled)
+        self.assertFalse(settings.ai_auto_send_replies)
+        self.assertEqual(settings.ai_response_max_age_seconds, 60)
+        self.assertEqual(settings.ai_response_min_interval_seconds, 3)
+        self.assertIn("quick-witted", settings.ai_personality)
+        self.assertFalse(settings.ai_allow_mild_profanity)
+        self.assertFalse(settings.ai_allow_strong_profanity)
+
+    def test_strong_language_permission_also_enables_mild_language(self) -> None:
+        settings = AppSettings.from_dict(
+            {
+                "ai_allow_mild_profanity": False,
+                "ai_allow_strong_profanity": True,
+            }
+        )
+
+        self.assertTrue(settings.ai_allow_mild_profanity)
+        self.assertTrue(settings.ai_allow_strong_profanity)
 
     def test_non_object_json_is_rejected(self) -> None:
         self.settings_path.write_text("[]", encoding="utf-8")

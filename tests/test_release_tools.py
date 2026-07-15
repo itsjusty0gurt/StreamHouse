@@ -60,9 +60,11 @@ class ReleaseToolsTests(unittest.TestCase):
             {"version": 1, "chatters": {"1": {"user_name": "Viewer"}}},
         )
         record = migrated["chatters"]["1"]
-        self.assertEqual(migrated["version"], 3)
+        self.assertEqual(migrated["version"], 5)
+        self.assertEqual(record["manual_group"], "")
         self.assertEqual(record["timeline"], [])
         self.assertEqual(record["private_notes"], "")
+        self.assertTrue(record["memory_enabled"])
 
     def test_release_controller_creates_daily_backup(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

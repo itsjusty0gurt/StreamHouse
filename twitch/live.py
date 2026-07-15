@@ -41,6 +41,8 @@ class TwitchHelixClient:
     AD_SCHEDULE_URL = "https://api.twitch.tv/helix/channels/ads"
     SNOOZE_AD_URL = "https://api.twitch.tv/helix/channels/ads/schedule/snooze"
     COMMERCIAL_URL = "https://api.twitch.tv/helix/channels/commercial"
+    BANS_URL = "https://api.twitch.tv/helix/moderation/bans"
+    DELETE_CHAT_URL = "https://api.twitch.tv/helix/moderation/chat"
     CHAT_SUBSCRIPTIONS = (
         "channel.chat.message",
         "channel.chat.notification",
@@ -142,6 +144,14 @@ class TwitchHelixClient:
                 token,
             )
 
+    def create_activity_subscriptions(
+        self,
+        session_id: str,
+        broadcaster_user_id: str,
+        chatter_user_id: str,
+        token: TwitchToken,
+    ) -> tuple[str, ...]:
+
         scopes = set(token.scopes)
         activity_specs = []
         if "moderator:read:followers" in scopes:
@@ -165,10 +175,15 @@ class TwitchHelixClient:
                 {"broadcaster_user_id": broadcaster_user_id},
             ))
         activity_specs.append(("channel.raid", "1", {"to_broadcaster_user_id": broadcaster_user_id}))
+        warnings = []
         for event_type, version, condition in activity_specs:
-            self._create_subscription(
-                event_type, version, condition, session_id, token
-            )
+            try:
+                self._create_subscription(
+                    event_type, version, condition, session_id, token
+                )
+            except (OSError, ValueError, URLError) as error:
+                warnings.append(f"{event_type}: {error}")
+        return tuple(warnings)
 
     def _create_subscription(
         self,
@@ -186,14 +201,25 @@ class TwitchHelixClient:
         }).encode("utf-8")
         headers = self._headers(token)
         headers["Content-Type"] = "application/json"
-        self._read_json(
-            Request(
-                self.SUBSCRIPTIONS_URL,
-                data=body,
-                headers=headers,
-                method="POST",
+        try:
+            self._read_json(
+                Request(
+                    self.SUBSCRIPTIONS_URL,
+                    data=body,
+                    headers=headers,
+                    method="POST",
+                )
             )
-        )
+        except HTTPError as error:
+            try:
+                detail = error.read().decode("utf-8", errors="replace")
+            except OSError:
+                detail = ""
+            raise ValueError(
+                f'Twitch rejected EventSub subscription "{event_type}" '
+                f"with HTTP {error.code}"
+                + (f": {detail}" if detail else ".")
+            ) from error
 
     def send_chat_message(
         self,
@@ -229,6 +255,55 @@ class TwitchHelixClient:
             )
             raise ValueError(detail)
         return str(result.get("message_id", ""))
+
+    def ban_user(
+        self,
+        broadcaster_id: str,
+        moderator_id: str,
+        user_id: str,
+        token: TwitchToken,
+        *,
+        duration: int | None = None,
+        reason: str = "",
+    ) -> None:
+        data: dict[str, Any] = {"user_id": user_id}
+        if duration is not None:
+            data["duration"] = min(max(int(duration), 1), 1_209_600)
+        if reason.strip():
+            data["reason"] = reason.strip()[:500]
+        body = json.dumps({"data": data}).encode("utf-8")
+        headers = self._headers(token)
+        headers["Content-Type"] = "application/json"
+        url = f"{self.BANS_URL}?{urlencode({'broadcaster_id': broadcaster_id, 'moderator_id': moderator_id})}"
+        self._read_json(Request(url, data=body, headers=headers, method="POST"))
+
+    def unban_user(
+        self,
+        broadcaster_id: str,
+        moderator_id: str,
+        user_id: str,
+        token: TwitchToken,
+    ) -> None:
+        url = f"{self.BANS_URL}?{urlencode({'broadcaster_id': broadcaster_id, 'moderator_id': moderator_id, 'user_id': user_id})}"
+        with urlopen(
+            Request(url, headers=self._headers(token), method="DELETE"),
+            timeout=15,
+        ):
+            pass
+
+    def delete_chat_message(
+        self,
+        broadcaster_id: str,
+        moderator_id: str,
+        message_id: str,
+        token: TwitchToken,
+    ) -> None:
+        url = f"{self.DELETE_CHAT_URL}?{urlencode({'broadcaster_id': broadcaster_id, 'moderator_id': moderator_id, 'message_id': message_id})}"
+        with urlopen(
+            Request(url, headers=self._headers(token), method="DELETE"),
+            timeout=15,
+        ):
+            pass
 
     def get_badge_urls(
         self,

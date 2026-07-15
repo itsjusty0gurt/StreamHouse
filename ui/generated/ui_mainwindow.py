@@ -723,7 +723,7 @@ class Ui_MainWindow(object):
         self.twitchListenerNameLabel.setText(QCoreApplication.translate("MainWindow", u"Local listener", None))
         self.twitchListenerUrlLabel.setText(QCoreApplication.translate("MainWindow", u"Stopped", None))
         self.twitchErrorLabel.setText("")
-        self.twitchChatCountLabel.setText(QCoreApplication.translate("MainWindow", u"Chat - 0 messages", None))
+        self.twitchChatCountLabel.setText(QCoreApplication.translate("MainWindow", u"Chat", None))
         self.clearTwitchChatButton.setText(QCoreApplication.translate("MainWindow", u"Clear Chat", None))
         self.twitchSendEdit.setPlaceholderText(QCoreApplication.translate("MainWindow", u"Send a message as the signed-in Twitch account", None))
         self.twitchSendButton.setText(QCoreApplication.translate("MainWindow", u"Send", None))

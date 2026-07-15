@@ -74,6 +74,9 @@ class TwitchServiceTests(unittest.TestCase):
             helix.create_chat_subscriptions.assert_called_once_with(
                 "session-1", "channel-1", "bot-1", token
             )
+            helix.create_activity_subscriptions.assert_called_once_with(
+                "session-1", "channel-1", "bot-1", token
+            )
             self.assertIs(service.state, TwitchConnectionState.CONNECTED)
             self.assertEqual(
                 service.badge_url("moderator", "1"),
@@ -86,6 +89,92 @@ class TwitchServiceTests(unittest.TestCase):
             )
         finally:
             service.disconnect()
+
+    @patch("twitch.service.TwitchEventSubSocket")
+    def test_separate_bot_token_reads_and_sends_chat(self, socket_type: Mock) -> None:
+        broadcaster = TwitchToken(
+            "broadcaster-access",
+            "refresh",
+            999,
+            ["channel:bot", "channel:read:subscriptions"],
+            user_id="channel-1",
+            login="streamer",
+        )
+        bot = TwitchToken(
+            "bot-access",
+            "refresh",
+            999,
+            ["user:read:chat", "user:write:chat", "user:bot"],
+            user_id="bot-1",
+            login="sallybot",
+        )
+        helix = Mock()
+        helix.get_user.return_value = {"id": "channel-1"}
+        helix.get_badge_urls.return_value = {}
+        service = TwitchService(
+            auth=Mock(token=broadcaster),
+            bot_auth=Mock(token=bot),
+            helix=helix,
+        )
+
+        try:
+            self.assertTrue(service.connect("streamer"))
+            service._receive_live_welcome("session-1")
+            service._receive_activity_welcome("activity-session-1")
+            self.assertTrue(service.send_message("Hello from Sally"))
+
+            helix.create_chat_subscriptions.assert_called_once_with(
+                "session-1", "channel-1", "bot-1", bot
+            )
+            helix.create_activity_subscriptions.assert_called_once_with(
+                "activity-session-1",
+                "channel-1",
+                "channel-1",
+                broadcaster,
+            )
+            self.assertEqual(socket_type.return_value.open.call_count, 2)
+            helix.send_chat_message.assert_called_once_with(
+                "channel-1", "bot-1", "Hello from Sally", bot
+            )
+            self.assertTrue(
+                service.send_message("Hello from streamer", as_bot=False)
+            )
+            self.assertEqual(
+                helix.send_chat_message.call_args_list[-1],
+                unittest.mock.call(
+                    "channel-1",
+                    "channel-1",
+                    "Hello from streamer",
+                    broadcaster,
+                ),
+            )
+        finally:
+            service.disconnect()
+
+    def test_same_account_cannot_fill_broadcaster_and_bot_slots(self) -> None:
+        token = TwitchToken(
+            "access",
+            "refresh",
+            999,
+            ["user:read:chat", "user:write:chat"],
+            user_id="same-1",
+            login="sallybot",
+        )
+        helix = Mock()
+        helix.get_user.return_value = {"id": "same-1"}
+        service = TwitchService(
+            auth=Mock(token=token),
+            bot_auth=Mock(token=token),
+            helix=helix,
+        )
+        errors = []
+        Events.subscribe(
+            "twitch_error",
+            lambda message: errors.append(message),
+        )
+
+        self.assertFalse(service.connect("sallybot"))
+        self.assertIn("same Twitch account", errors[0])
 
     def test_chat_moderation_notification_emits_notice(self) -> None:
         notices = []
@@ -107,6 +196,33 @@ class TwitchServiceTests(unittest.TestCase):
         self.assertEqual(len(notices), 1)
         self.assertEqual(notices[0].kind, "delete")
         self.assertEqual(notices[0].target_message_id, "message-1")
+
+    def test_moderation_actions_use_signed_in_identity(self) -> None:
+        token = TwitchToken(
+            access_token="access",
+            refresh_token="refresh",
+            expires_at=999,
+            scopes=["moderator:manage:banned_users"],
+            user_id="moderator-1",
+            login="streamer",
+        )
+        helix = Mock()
+        service = TwitchService(auth=Mock(token=token), helix=helix)
+        service.broadcaster_user_id = "channel-1"
+
+        self.assertTrue(
+            service.moderate_user(
+                "timeout", "viewer-1", duration=600, reason="spam"
+            )
+        )
+        helix.ban_user.assert_called_once_with(
+            "channel-1",
+            "moderator-1",
+            "viewer-1",
+            token,
+            duration=600,
+            reason="spam",
+        )
 
     def test_disconnect_returns_to_disconnected(self) -> None:
         self.service.connect("channel")

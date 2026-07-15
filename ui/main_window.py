@@ -2,13 +2,17 @@ import json
 import csv
 import logging
 import re
+from collections import deque
+from time import monotonic
+from urllib.parse import urlencode
+from uuid import uuid4
 from dataclasses import asdict
 from datetime import datetime, timezone
 from html import escape
 from pathlib import Path
 
 from PySide6.QtCore import QThreadPool, QTimer, Qt, Slot
-from PySide6.QtGui import QCloseEvent, QColor, QFont
+from PySide6.QtGui import QCloseEvent, QColor, QCursor, QFont
 from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
@@ -27,6 +31,7 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QPushButton,
     QSizePolicy,
@@ -45,8 +50,16 @@ from PySide6.QtWidgets import (
 from core.events import Events
 from core.logger import Logger
 from core.settings import AppSettings, SettingsStore
+from ai.providers import OllamaProvider
+from ai.memory_extractor import BufferedChatMessage
+from ai.memory import build_viewer_context
+from ai.response_engine import ResponseDecision, ResponseMessage
 from core.window_state import WindowStateStore
-from config.twitch import TWITCH_COMPANION_SCOPES, TWITCH_SCOPES
+from config.twitch import (
+    TWITCH_BOT_SCOPES,
+    TWITCH_COMPANION_SCOPES,
+    TWITCH_SCOPES,
+)
 from twitch.catalog import EVENTSUB_SUBSCRIPTIONS, EventSubSubscription
 from twitch.auth import TwitchAuthService, TwitchAuthState
 from twitch.activity import format_twitch_activity
@@ -62,6 +75,7 @@ from twitch.models import (
     TwitchMessage,
 )
 from twitch.service import TwitchConnectionState, TwitchService
+from twitch.token_store import TwitchTokenStore
 from twitch.session_history import StreamSessionStore, StreamSessionTracker
 from twitch.health import TwitchHealth
 from twitch.analytics import AnalyticsSnapshot, build_analytics
@@ -76,6 +90,8 @@ from ui.companion_worker import (
     CompanionRefreshWorker,
 )
 from ui.controllers.release_controller import ReleaseController
+from ui.memory_worker import MemoryExtractionResult, MemoryExtractionWorker
+from ui.response_worker import ResponseBatchResult, ResponseDecisionWorker
 
 
 class MainWindow(QMainWindow):
@@ -83,6 +99,7 @@ class MainWindow(QMainWindow):
         self,
         twitch_service: TwitchService | None = None,
         twitch_auth: TwitchAuthService | None = None,
+        twitch_bot_auth: TwitchAuthService | None = None,
         window_state_store: WindowStateStore | None = None,
         chatter_history_store: ChatterHistoryStore | None = None,
         activity_history_store: ActivityHistoryStore | None = None,
@@ -94,6 +111,13 @@ class MainWindow(QMainWindow):
 
         self.twitch_service = twitch_service or TwitchService()
         self.twitch_auth = twitch_auth or TwitchAuthService()
+        self.twitch_bot_auth = twitch_bot_auth or TwitchAuthService(
+            store=TwitchTokenStore.bot_account(),
+            scopes=TWITCH_BOT_SCOPES,
+            event_name="twitch_bot_auth_changed",
+            account_label="Sally bot",
+        )
+        self.twitch_service.bot_auth = self.twitch_bot_auth
         self.window_state_store = window_state_store or WindowStateStore()
         self.chatter_history = (
             chatter_history_store or ChatterHistoryStore()
@@ -134,6 +158,22 @@ class MainWindow(QMainWindow):
         self.companion_refresh_request_id = 0
         self.companion_refresh_in_flight = False
         self.companion_warning_cache: set[str] = set()
+        self.last_companion_result: CompanionRefreshResult | None = None
+        self.memory_reasoning_thread_pool = QThreadPool(self)
+        self.memory_reasoning_thread_pool.setMaxThreadCount(1)
+        self.memory_message_buffers: dict[
+            str, deque[BufferedChatMessage]
+        ] = {}
+        self.memory_extraction_in_flight: set[str] = set()
+        self.memory_extraction_retry_after: dict[str, float] = {}
+        self.response_decision_thread_pool = QThreadPool(self)
+        self.response_decision_thread_pool.setMaxThreadCount(1)
+        self.response_decision_queue: deque[ResponseMessage] = deque(
+            maxlen=100
+        )
+        self.response_decision_in_flight = False
+        self.recent_ai_chat: deque[dict[str, str]] = deque(maxlen=100)
+        self.last_auto_reply_at = 0.0
         self.followers_backfilled = False
         self.ui = Ui_MainWindow()
         self.ui.setupUi(self)
@@ -158,6 +198,7 @@ class MainWindow(QMainWindow):
         self._build_stream_companion()
         self._build_ai_page()
         self._build_release_tools()
+        self._build_ai_settings()
         self.twitch_status_bar_label = QLabel("Twitch: Signed out")
         self.statusBar().addPermanentWidget(self.twitch_status_bar_label)
 
@@ -202,6 +243,9 @@ class MainWindow(QMainWindow):
             self.handle_twitch_diagnostic
         )
         self.twitch_bridge.auth_changed.connect(self.handle_twitch_auth_changed)
+        self.twitch_bridge.bot_auth_changed.connect(
+            self.handle_twitch_bot_auth_changed
+        )
         self.twitch_bridge.notice_received.connect(self.handle_twitch_notice)
         self.twitch_bridge.activity_received.connect(self.handle_twitch_activity)
         Events.subscribe(
@@ -223,6 +267,10 @@ class MainWindow(QMainWindow):
         Events.subscribe(
             "twitch_auth_changed",
             self.twitch_bridge.handle_auth_changed,
+        )
+        Events.subscribe(
+            "twitch_bot_auth_changed",
+            self.twitch_bridge.handle_bot_auth_changed,
         )
         Events.subscribe(
             "twitch_notice_received",
@@ -256,6 +304,12 @@ class MainWindow(QMainWindow):
         self.ui.twitchConnectButton.clicked.connect(self.connect_twitch)
         self.ui.twitchSignInButton.clicked.connect(self.twitch_auth.sign_in)
         self.ui.twitchSignOutButton.clicked.connect(self.twitch_auth.sign_out)
+        self.twitch_bot_sign_in_button.clicked.connect(
+            self.twitch_bot_auth.sign_in
+        )
+        self.twitch_bot_sign_out_button.clicked.connect(
+            self.twitch_bot_auth.sign_out
+        )
         self.ui.twitchDisconnectButton.clicked.connect(
             self.disconnect_twitch
         )
@@ -344,6 +398,9 @@ class MainWindow(QMainWindow):
         self.auth_maintenance_timer = QTimer(self)
         self.auth_maintenance_timer.setInterval(30 * 60 * 1000)
         self.auth_maintenance_timer.timeout.connect(self.twitch_auth.maintain)
+        self.auth_maintenance_timer.timeout.connect(
+            self.twitch_bot_auth.maintain
+        )
         self.auth_maintenance_timer.start()
         self.companion_refresh_timer = QTimer(self)
         self.companion_refresh_timer.setInterval(60_000)
@@ -418,6 +475,21 @@ class MainWindow(QMainWindow):
         )
         if event_index >= 0:
             self.ui.twitchDetailTabs.removeTab(event_index)
+        self.ui.twitchDetailTabs.tabBar().hide()
+        self.ui.twitchChatCountLabel.hide()
+
+        self.ui.twitchEventsTabLayout.removeWidget(
+            self.ui.twitchEventSimulatorGroup
+        )
+        self.logs_tabs = QTabWidget(self.ui.logsPage)
+        self.logs_tabs.setObjectName("logsTabs")
+        application_log_page = QWidget(self.logs_tabs)
+        application_log_layout = QVBoxLayout(application_log_page)
+        self.ui.logsLayout.removeWidget(self.ui.logOutput)
+        application_log_layout.addWidget(self.ui.logOutput)
+        self.logs_tabs.addTab(application_log_page, "Application")
+        self.logs_tabs.addTab(self.ui.twitchEventsTab, "Twitch Events")
+        self.ui.logsLayout.insertWidget(1, self.logs_tabs)
 
         developer_events_page = QWidget(tabs)
         developer_events_layout = QVBoxLayout(developer_events_page)
@@ -429,7 +501,7 @@ class MainWindow(QMainWindow):
         )
         developer_events_layout.addWidget(listener_group)
         developer_events_layout.addWidget(self.ui.twitchEventSimulatorGroup)
-        developer_events_layout.addWidget(self.ui.twitchEventsTab)
+        developer_events_layout.addStretch()
         tabs.addTab(developer_events_page, "Events")
 
         channel_splitter = QSplitter(Qt.Orientation.Horizontal, self.ui.twitchPage)
@@ -466,6 +538,29 @@ class MainWindow(QMainWindow):
         self.connections_page = QWidget()
         connections_layout = QVBoxLayout(self.connections_page)
         connections_layout.addWidget(self.ui.twitchConnectionGroup)
+        bot_account_group = QGroupBox("Sally Chat Account")
+        bot_account_layout = QFormLayout(bot_account_group)
+        self.twitch_bot_account_status_label = QLabel("Not signed in")
+        self.twitch_bot_account_status_label.setWordWrap(True)
+        self.twitch_bot_sign_in_button = QPushButton(
+            "Sign in with a Bot Account"
+        )
+        self.twitch_bot_sign_out_button = QPushButton("Sign Out Bot")
+        self.twitch_bot_sign_out_button.setEnabled(False)
+        bot_actions = QHBoxLayout()
+        bot_actions.addWidget(self.twitch_bot_sign_in_button)
+        bot_actions.addWidget(self.twitch_bot_sign_out_button)
+        bot_account_help = QLabel(
+            "Optional. When connected, Sally reads and sends chat as this "
+            "separate Twitch account. Channel controls continue using your "
+            "broadcaster account. On Twitch's activation page, make sure the "
+            "browser is signed into the bot account."
+        )
+        bot_account_help.setWordWrap(True)
+        bot_account_layout.addRow("Bot identity", self.twitch_bot_account_status_label)
+        bot_account_layout.addRow("", bot_actions)
+        bot_account_layout.addRow("", bot_account_help)
+        connections_layout.addWidget(bot_account_group)
         connections_layout.addWidget(self.ui.twitchErrorLabel)
         health_group = QGroupBox("Connection Health")
         health_layout = QFormLayout(health_group)
@@ -541,13 +636,13 @@ class MainWindow(QMainWindow):
 
         chatter_panel = QWidget()
         chatter_layout = QVBoxLayout(chatter_panel)
-        chatter_title = QLabel("Chatters")
-        chatter_title.setStyleSheet("font-weight:bold;")
+        self.chatter_title_label = QLabel("Chatters (0)")
+        self.chatter_title_label.setStyleSheet("font-weight:bold;")
         self.chatter_list = QTreeWidget()
         self.chatter_list.setHeaderHidden(True)
         chatter_panel.setMinimumWidth(120)
         chatter_panel.setMaximumWidth(210)
-        chatter_layout.addWidget(chatter_title)
+        chatter_layout.addWidget(self.chatter_title_label)
         chatter_layout.addWidget(self.chatter_list)
         self.twitch_channel_splitter.insertWidget(1, chatter_panel)
         activity_panel = QWidget()
@@ -580,6 +675,23 @@ class MainWindow(QMainWindow):
         self.twitch_channel_splitter.setCollapsible(1, False)
         self.twitch_channel_splitter.setCollapsible(2, False)
         activity_panel.setMinimumWidth(300)
+
+        self.channel_tabs = QTabWidget(self.ui.twitchPage)
+        self.channel_tabs.setObjectName("channelTabs")
+        self.ui.twitchPageLayout.replaceWidget(
+            self.twitch_channel_splitter,
+            self.channel_tabs,
+        )
+        self.channel_tabs.addTab(self.twitch_channel_splitter, "Chat")
+        self.chatter_list.setContextMenuPolicy(
+            Qt.ContextMenuPolicy.CustomContextMenu
+        )
+        self.chatter_list.customContextMenuRequested.connect(
+            self._show_chatter_tree_context_menu
+        )
+        self.ui.twitchChatOutput.chatter_context_requested.connect(
+            self._show_chatter_context_menu
+        )
 
     def _build_ai_page(self) -> None:
         self.ai_button = QPushButton("AI")
@@ -682,8 +794,31 @@ class MainWindow(QMainWindow):
 
         ai_memories = QGroupBox("AI Memories")
         ai_layout = QVBoxLayout(ai_memories)
+        self.memory_summary_label = QLabel("Select a viewer to build a summary.")
+        self.memory_summary_label.setWordWrap(True)
+        self.memory_summary_label.setStyleSheet(
+            "background:#18181b; padding:8px; border:1px solid #3a3a3d;"
+        )
+        ai_layout.addWidget(self.memory_summary_label)
+        memory_controls = QHBoxLayout()
+        self.memory_enabled_check = QCheckBox("Allow AI memory for this viewer")
+        self.memory_status_filter = QComboBox()
+        self.memory_status_filter.addItems(("All", "Pending review", "Approved"))
+        memory_controls.addWidget(self.memory_enabled_check)
+        memory_controls.addStretch()
+        memory_controls.addWidget(QLabel("Show"))
+        memory_controls.addWidget(self.memory_status_filter)
+        ai_layout.addLayout(memory_controls)
         self.memory_ai_list = QListWidget()
+        self.memory_reasoning_status_label = QLabel(
+            "Local memory reasoning is waiting for enough chat context."
+        )
+        self.memory_reasoning_status_label.setWordWrap(True)
+        ai_layout.addWidget(self.memory_reasoning_status_label)
         ai_layout.addWidget(self.memory_ai_list)
+        self.memory_detail_label = QLabel("Select a memory to inspect its evidence.")
+        self.memory_detail_label.setWordWrap(True)
+        ai_layout.addWidget(self.memory_detail_label)
         memory_actions = QHBoxLayout()
         self.add_memory_button = QPushButton("Add")
         self.edit_memory_button = QPushButton("Edit")
@@ -692,6 +827,8 @@ class MainWindow(QMainWindow):
         self.delete_memory_button = QPushButton("Delete")
         self.export_memory_button = QPushButton("Export Viewer")
         self.erase_memories_button = QPushButton("Erase Memories")
+        self.approve_memory_button = QPushButton("Approve")
+        self.reject_memory_button = QPushButton("Reject")
         self.show_archived_memories_check = QCheckBox("Show archived")
         for button in (
             self.add_memory_button,
@@ -701,6 +838,8 @@ class MainWindow(QMainWindow):
             self.delete_memory_button,
             self.export_memory_button,
             self.erase_memories_button,
+            self.approve_memory_button,
+            self.reject_memory_button,
         ):
             memory_actions.addWidget(button)
         memory_actions.addStretch()
@@ -748,6 +887,8 @@ class MainWindow(QMainWindow):
         splitter.setStretchFactor(1, 3)
         page_layout.addWidget(splitter)
         self.ai_tabs.addTab(self.memories_page, "Memories")
+        self._build_reply_review_tab()
+        self._build_personality_tab()
         sessions_page = QWidget()
         sessions_layout = QVBoxLayout(sessions_page)
         self.session_summary_label = QLabel("No active stream session")
@@ -772,7 +913,7 @@ class MainWindow(QMainWindow):
         )
         sessions_layout.addWidget(self.session_summary_label)
         sessions_layout.addWidget(self.session_table)
-        self.ai_tabs.addTab(sessions_page, "Stream Sessions")
+        self.channel_tabs.addTab(sessions_page, "Stream Sessions")
         analytics_page = QWidget()
         analytics_layout = QVBoxLayout(analytics_page)
         analytics_toolbar = QHBoxLayout()
@@ -854,13 +995,16 @@ class MainWindow(QMainWindow):
         retention_layout.addWidget(self.analytics_cleanup_button)
         retention_layout.addStretch()
         analytics_layout.addLayout(retention_layout)
-        self.ai_tabs.addTab(analytics_page, "Analytics")
+        self.channel_tabs.addTab(analytics_page, "Analytics")
         self.ui.mainStack.addWidget(self.ai_page)
         self.memory_search_edit.textChanged.connect(
             self._refresh_memory_viewer_list
         )
         self.memory_viewer_list.currentItemChanged.connect(
             self._show_memory_viewer
+        )
+        self.memory_ai_list.currentItemChanged.connect(
+            self._show_memory_details
         )
         self.add_memory_button.clicked.connect(self._add_viewer_memory)
         self.edit_memory_button.clicked.connect(self._edit_viewer_memory)
@@ -871,6 +1015,14 @@ class MainWindow(QMainWindow):
         self.delete_memory_button.clicked.connect(self._delete_viewer_memory)
         self.export_memory_button.clicked.connect(self._export_viewer_memory)
         self.erase_memories_button.clicked.connect(self._erase_viewer_memories)
+        self.approve_memory_button.clicked.connect(self._approve_viewer_memory)
+        self.reject_memory_button.clicked.connect(self._reject_viewer_memory)
+        self.memory_enabled_check.toggled.connect(self._set_viewer_memory_enabled)
+        self.memory_status_filter.currentTextChanged.connect(
+            lambda _text: self._show_memory_viewer(
+                self.memory_viewer_list.currentItem(), None
+            )
+        )
         self.show_archived_memories_check.toggled.connect(
             lambda _checked: self._show_memory_viewer(
                 self.memory_viewer_list.currentItem(),
@@ -903,6 +1055,116 @@ class MainWindow(QMainWindow):
         )
         self._refresh_analytics()
         self.twitch_channel_splitter.setSizes([1000, 170, 420])
+
+    def _build_reply_review_tab(self) -> None:
+        page = QWidget(self.ai_tabs)
+        layout = QVBoxLayout(page)
+        self.reply_decision_status_label = QLabel(
+            "Waiting for live Twitch messages. Auto-send is off by default."
+        )
+        self.reply_decision_status_label.setWordWrap(True)
+        self.reply_review_table = QTableWidget(0, 6)
+        self.reply_review_table.setHorizontalHeaderLabels(
+            ("Age", "Viewer", "Message", "Decision", "Draft reply", "Reason")
+        )
+        self.reply_review_table.setSelectionBehavior(
+            QTableWidget.SelectionBehavior.SelectRows
+        )
+        self.reply_review_table.setSelectionMode(
+            QTableWidget.SelectionMode.SingleSelection
+        )
+        self.reply_review_table.setEditTriggers(
+            QTableWidget.EditTrigger.NoEditTriggers
+        )
+        header = self.reply_review_table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(5, QHeaderView.ResizeMode.Stretch)
+        actions = QHBoxLayout()
+        self.send_reply_draft_button = QPushButton("Send Selected")
+        self.edit_send_reply_button = QPushButton("Edit & Send")
+        self.dismiss_reply_button = QPushButton("Dismiss")
+        self.clear_reply_decisions_button = QPushButton("Clear History")
+        actions.addWidget(self.send_reply_draft_button)
+        actions.addWidget(self.edit_send_reply_button)
+        actions.addWidget(self.dismiss_reply_button)
+        actions.addStretch()
+        actions.addWidget(self.clear_reply_decisions_button)
+        layout.addWidget(self.reply_decision_status_label)
+        layout.addWidget(self.reply_review_table, 1)
+        layout.addLayout(actions)
+        self.ai_tabs.addTab(page, "Reply Review")
+        self.send_reply_draft_button.clicked.connect(
+            self._send_selected_reply_draft
+        )
+        self.edit_send_reply_button.clicked.connect(
+            self._edit_and_send_reply_draft
+        )
+        self.dismiss_reply_button.clicked.connect(
+            self._dismiss_reply_decision
+        )
+        self.clear_reply_decisions_button.clicked.connect(
+            lambda: self.reply_review_table.setRowCount(0)
+        )
+
+    def _build_personality_tab(self) -> None:
+        page = QWidget(self.ai_tabs)
+        layout = QVBoxLayout(page)
+        introduction = QLabel(
+            "Describe how Sally should sound and behave in chat. These rules "
+            "are included in every live reply decision."
+        )
+        introduction.setWordWrap(True)
+        self.ai_personality_edit = QTextEdit()
+        self.ai_personality_edit.setPlaceholderText(
+            "Example: Playful, confident, concise, and fond of dry humor..."
+        )
+        self.ai_personality_edit.setMinimumHeight(180)
+        language_group = QGroupBox("Language Permissions")
+        language_layout = QVBoxLayout(language_group)
+        self.ai_allow_mild_profanity_check = QCheckBox(
+            "Allow occasional mild profanity"
+        )
+        self.ai_allow_strong_profanity_check = QCheckBox(
+            "Allow strong profanity / foul language"
+        )
+        warning = QLabel(
+            "Slurs, hateful language, harassment, and targeted sexual language "
+            "remain prohibited regardless of these choices."
+        )
+        warning.setWordWrap(True)
+        language_layout.addWidget(self.ai_allow_mild_profanity_check)
+        language_layout.addWidget(self.ai_allow_strong_profanity_check)
+        language_layout.addWidget(warning)
+        self.ai_personality_save_button = QPushButton("Save Personality")
+        self.ai_personality_status_label = QLabel("")
+        layout.addWidget(introduction)
+        layout.addWidget(self.ai_personality_edit, 1)
+        layout.addWidget(language_group)
+        layout.addWidget(self.ai_personality_save_button)
+        layout.addWidget(self.ai_personality_status_label)
+        self.ai_tabs.addTab(page, "Personality")
+        self.ai_personality_page = page
+        self.ai_allow_strong_profanity_check.toggled.connect(
+            self._strong_profanity_toggled
+        )
+        self.ai_personality_save_button.clicked.connect(
+            self._save_personality
+        )
+
+    @Slot(bool)
+    def _strong_profanity_toggled(self, enabled: bool) -> None:
+        if enabled:
+            self.ai_allow_mild_profanity_check.setChecked(True)
+
+    @Slot()
+    def _save_personality(self) -> None:
+        self.save_settings()
+        if self.ui.settingsStatusLabel.text() == "Settings saved.":
+            self.ai_personality_status_label.setText("Personality saved.")
 
     @Slot()
     def toggle_developer_tools(self) -> None:
@@ -979,15 +1241,77 @@ class MainWindow(QMainWindow):
             self.twitch_status_bar_label.setText("Twitch: Signed out")
             self.run_ad_button.setEnabled(False)
             self.snooze_ad_button.setEnabled(False)
+            self.ui.twitchSendEdit.setPlaceholderText(
+                "Sign in with your channel account to send a message"
+            )
         elif signed_in:
             scopes = set(self.twitch_auth.token.scopes) if self.twitch_auth.token else set()
             self.run_ad_button.setEnabled("channel:edit:commercial" in scopes)
             self.snooze_ad_button.setEnabled("channel:manage:ads" in scopes)
             self.ui.twitchChannelEdit.setText(detail)
+            self.ui.twitchSendEdit.setPlaceholderText(
+                f"Send a message as @{detail}"
+            )
             self.twitch_status_bar_label.setText(f"Twitch: @{detail}")
             if self.twitch_service.state is not TwitchConnectionState.CONNECTED:
                 self.connect_twitch()
             self.refresh_stream_companion()
+
+    @Slot(object, str)
+    def handle_twitch_bot_auth_changed(
+        self,
+        state: TwitchAuthState,
+        detail: str,
+    ) -> None:
+        signed_in = state is TwitchAuthState.SIGNED_IN
+        waiting = state is TwitchAuthState.WAITING
+        missing = (
+            self.twitch_bot_auth.missing_scopes(set(TWITCH_BOT_SCOPES))
+            if signed_in
+            else set()
+        )
+        if signed_in:
+            status = f"@{detail}"
+            if missing:
+                status += " — update permissions: " + ", ".join(sorted(missing))
+            broadcaster_token = self.twitch_auth.token
+            bot_token = self.twitch_bot_auth.token
+            if (
+                broadcaster_token is not None
+                and bot_token is not None
+                and broadcaster_token.user_id == bot_token.user_id
+            ):
+                status += " — same account as broadcaster"
+        else:
+            status = detail
+        self.twitch_bot_account_status_label.setText(status)
+        self.twitch_bot_sign_in_button.setEnabled(
+            (not signed_in or bool(missing)) and not waiting
+        )
+        self.twitch_bot_sign_in_button.setText(
+            "Update Bot Permissions"
+            if signed_in and missing
+            else "Sign in with a Bot Account"
+        )
+        self.twitch_bot_sign_out_button.setEnabled(signed_in or waiting)
+        if state is TwitchAuthState.ERROR:
+            self.handle_twitch_error(f"Bot sign-in failed: {detail}")
+
+        # EventSub chat subscriptions are tied to the reading identity. Reopen
+        # the socket when that identity changes, while keeping channel controls
+        # on the broadcaster token.
+        if (
+            self.twitch_auth.token is not None
+            and self.twitch_service.channel
+            and state
+            in {
+                TwitchAuthState.SIGNED_IN,
+                TwitchAuthState.SIGNED_OUT,
+            }
+        ):
+            channel = self.twitch_service.channel
+            self.twitch_service.disconnect()
+            self.twitch_service.connect(channel)
 
     @Slot()
     def disconnect_twitch(self) -> None:
@@ -997,7 +1321,10 @@ class MainWindow(QMainWindow):
     @Slot()
     def send_twitch_message(self) -> None:
         self.ui.twitchErrorLabel.clear()
-        if self.twitch_service.send_message(self.ui.twitchSendEdit.text()):
+        if self.twitch_service.send_message(
+            self.ui.twitchSendEdit.text(),
+            as_bot=False,
+        ):
             self.ui.twitchSendEdit.clear()
 
     @Slot()
@@ -1089,9 +1416,17 @@ class MainWindow(QMainWindow):
 
     @Slot(object)
     def handle_twitch_message(self, chat_message: TwitchMessage) -> None:
+        configured_bot_id = (
+            self.twitch_bot_auth.token.user_id
+            if self.twitch_bot_auth.token is not None
+            else ""
+        )
         is_bot = any(
             badge.set_id in {"bot", "verified-bot"}
             for badge in chat_message.badges
+        ) or (
+            bool(configured_bot_id)
+            and chat_message.user_id == configured_bot_id
         )
         if chat_message.user_id:
             new_viewer = (
@@ -1112,6 +1447,8 @@ class MainWindow(QMainWindow):
                 self._refresh_memory_viewer_list()
         if is_bot and chat_message.user_id:
             self.known_bot_user_ids.add(chat_message.user_id)
+        self._buffer_message_for_memory_reasoning(chat_message, is_bot)
+        self._queue_response_decision(chat_message, is_bot)
         received_time = chat_message.received_at.astimezone().strftime(
             "%H:%M:%S"
         )
@@ -1151,13 +1488,28 @@ class MainWindow(QMainWindow):
         if not self.twitch_chat_has_content:
             self.ui.twitchChatOutput.clear()
 
+        context_url = "sally-chat-context://message?" + urlencode(
+            {
+                "user_id": chat_message.user_id,
+                "user_name": chat_message.username,
+                "message_id": chat_message.message_id,
+            }
+        )
+
         self.ui.twitchChatOutput.append(
-            "<div style='margin: 4px 2px 7px 2px;'>"
+            "<div class='chat-message' "
+            f"data-user-id='{escape(chat_message.user_id)}' "
+            f"data-user-name='{escape(chat_message.username)}' "
+            f"data-message-id='{escape(chat_message.message_id)}' "
+            "style='margin: 4px 2px 7px 2px;'>"
+            f"<a class='chat-context-target' href='{escape(context_url)}'></a>"
+            "<span class='chat-content'>"
             f"{timestamp_html}"
             f"{badges_html}"
             f"<span style='color: {username_color}; font-weight: 600;'>"
             f"{username}:</span>"
             f" <span style='color: #efeff1;'>{message}</span>"
+            "</span>"
             "</div>"
         )
         self.twitch_message_count += 1
@@ -1168,6 +1520,465 @@ class MainWindow(QMainWindow):
 
         scroll_bar = self.ui.twitchChatOutput.verticalScrollBar()
         scroll_bar.setValue(scroll_bar.maximum())
+
+    def _buffer_message_for_memory_reasoning(
+        self,
+        chat_message: TwitchMessage,
+        is_bot: bool,
+    ) -> None:
+        if not (
+            self.settings.local_ai_enabled
+            and self.settings.ai_memory_reasoning_enabled
+        ):
+            return
+        user_id = chat_message.user_id
+        if (
+            not user_id
+            or user_id == self.twitch_service.broadcaster_user_id
+            or is_bot
+            or user_id in self.known_bot_user_ids
+        ):
+            return
+        record = self.chatter_history.records.get(user_id)
+        if (
+            record is None
+            or not record.memory_enabled
+            or record.is_bot
+            or record.manual_group == "Bots"
+        ):
+            return
+        text = " ".join(chat_message.text.strip().split())[:500]
+        if len(text) < 4 or text.startswith(("/", "!")):
+            return
+        buffer = self.memory_message_buffers.setdefault(
+            user_id,
+            deque(maxlen=30),
+        )
+        timestamp = chat_message.received_at.astimezone(
+            timezone.utc
+        ).isoformat()
+        buffer.append(
+            BufferedChatMessage(
+                buffer_id=(
+                    chat_message.message_id
+                    or f"local-{uuid4().hex}"
+                ),
+                message_id=chat_message.message_id,
+                user_id=user_id,
+                user_name=chat_message.username,
+                text=text,
+                timestamp=timestamp,
+            )
+        )
+        self._start_memory_extraction_if_ready(user_id)
+
+    def _start_memory_extraction_if_ready(self, user_id: str) -> None:
+        buffer = self.memory_message_buffers.get(user_id)
+        if (
+            buffer is None
+            or len(buffer) < self.settings.ai_memory_message_threshold
+            or user_id in self.memory_extraction_in_flight
+            or monotonic()
+            < self.memory_extraction_retry_after.get(user_id, 0.0)
+        ):
+            return
+        record = self.chatter_history.records.get(user_id)
+        if record is None or not record.memory_enabled:
+            self.memory_message_buffers.pop(user_id, None)
+            return
+        messages = tuple(buffer)
+        existing = tuple(
+            str(memory.get("text", ""))
+            for memory in record.memories
+            if memory.get("status", "approved") in {"approved", "pending"}
+            and not memory.get("archived", False)
+        )
+        worker = MemoryExtractionWorker(
+            user_id,
+            record.user_name,
+            messages,
+            existing,
+            self.settings.local_ai_endpoint,
+            self.settings.local_ai_model,
+        )
+        worker.signals.completed.connect(self._apply_memory_extraction)
+        worker.signals.failed.connect(self._memory_extraction_failed)
+        self.memory_extraction_in_flight.add(user_id)
+        self.memory_reasoning_status_label.setText(
+            f"Analyzing recent chat from {record.user_name} locally…"
+        )
+        self.memory_reasoning_thread_pool.start(worker)
+
+    @Slot(object)
+    def _apply_memory_extraction(
+        self,
+        result: MemoryExtractionResult,
+    ) -> None:
+        self.memory_extraction_in_flight.discard(result.user_id)
+        self.memory_extraction_retry_after.pop(result.user_id, None)
+        self._remove_analyzed_memory_messages(
+            result.user_id,
+            result.buffer_ids,
+        )
+        record = self.chatter_history.records.get(result.user_id)
+        if (
+            record is None
+            or not record.memory_enabled
+            or not self.settings.local_ai_enabled
+            or not self.settings.ai_memory_reasoning_enabled
+        ):
+            return
+        added = 0
+        for proposal in result.proposals:
+            before = len(record.memories)
+            self.chatter_history.propose_memory(
+                result.user_id,
+                proposal.text,
+                proposal.category,
+                confidence=proposal.confidence,
+                evidence=proposal.evidence,
+                key=proposal.key,
+                source=f"local-ai:{self.settings.local_ai_model}",
+            )
+            if len(record.memories) > before:
+                added += 1
+        if result.proposals:
+            self._save_chatter_history()
+            self._refresh_memory_viewer_list()
+            current = self.memory_viewer_list.currentItem()
+            if (
+                current is not None
+                and str(current.data(Qt.ItemDataRole.UserRole))
+                == result.user_id
+            ):
+                self._show_memory_viewer(current, None)
+        self.memory_reasoning_status_label.setText(
+            f"Analyzed {len(result.buffer_ids)} messages from "
+            f"{result.user_name}; found {len(result.proposals)} candidate(s) "
+            f"and added {added} pending proposal(s)."
+        )
+        self._start_memory_extraction_if_ready(result.user_id)
+
+    @Slot(str, object, str)
+    def _memory_extraction_failed(
+        self,
+        user_id: str,
+        _buffer_ids: object,
+        error: str,
+    ) -> None:
+        self.memory_extraction_in_flight.discard(user_id)
+        self.memory_extraction_retry_after[user_id] = monotonic() + 300
+        self.memory_reasoning_status_label.setText(
+            "Local memory reasoning could not run; it will retry after more chat."
+        )
+        Logger.warning(
+            f"Local memory extraction failed: {error}",
+            source="AI",
+        )
+
+    def _remove_analyzed_memory_messages(
+        self,
+        user_id: str,
+        buffer_ids: tuple[str, ...],
+    ) -> None:
+        buffer = self.memory_message_buffers.get(user_id)
+        if buffer is None:
+            return
+        analyzed = set(buffer_ids)
+        remaining = [
+            message for message in buffer
+            if message.buffer_id not in analyzed
+        ]
+        if remaining:
+            self.memory_message_buffers[user_id] = deque(
+                remaining,
+                maxlen=30,
+            )
+        else:
+            self.memory_message_buffers.pop(user_id, None)
+
+    def _queue_response_decision(
+        self,
+        chat_message: TwitchMessage,
+        is_bot: bool,
+    ) -> None:
+        if not (
+            self.settings.local_ai_enabled
+            and self.settings.ai_response_decisions_enabled
+        ):
+            return
+        user_id = chat_message.user_id
+        text = " ".join(chat_message.text.strip().split())[:500]
+        broadcaster_trigger = (
+            user_id == self.twitch_service.broadcaster_user_id
+            and text.casefold().startswith("hey sally")
+        )
+        if (
+            not user_id
+            or (
+                user_id == self.twitch_service.broadcaster_user_id
+                and not broadcaster_trigger
+            )
+            or is_bot
+            or user_id in self.known_bot_user_ids
+        ):
+            return
+        if not text:
+            return
+        viewer_context = build_viewer_context(
+            self.chatter_history,
+            user_id,
+            text,
+            limit=5,
+        )
+        request = ResponseMessage(
+            request_id=uuid4().hex,
+            message_id=chat_message.message_id,
+            user_id=user_id,
+            user_name=chat_message.username,
+            text=text,
+            received_at=chat_message.received_at.astimezone(
+                timezone.utc
+            ).isoformat(),
+            memory_summary=str(viewer_context.get("summary", "")),
+            memories=tuple(
+                str(memory.get("text", ""))
+                for memory in viewer_context.get("memories", [])
+                if isinstance(memory, dict)
+            ),
+        )
+        if len(self.response_decision_queue) == self.response_decision_queue.maxlen:
+            dropped = self.response_decision_queue.popleft()
+            self._add_reply_decision(
+                ResponseDecision(
+                    request_id=dropped.request_id,
+                    message_id=dropped.message_id,
+                    user_id=dropped.user_id,
+                    user_name=dropped.user_name,
+                    source_text=dropped.text,
+                    received_at=dropped.received_at,
+                    decision="ignore",
+                    reply="",
+                    reason="Decision queue reached its safety limit.",
+                    confidence=1.0,
+                )
+            )
+        self.response_decision_queue.append(request)
+        self.recent_ai_chat.append(
+            {
+                "speaker": "viewer",
+                "viewer": chat_message.username,
+                "message": text,
+            }
+        )
+        self._start_next_response_batch()
+
+    def _start_next_response_batch(self) -> None:
+        if (
+            self.response_decision_in_flight
+            or not self.response_decision_queue
+            or not self.settings.local_ai_enabled
+            or not self.settings.ai_response_decisions_enabled
+        ):
+            return
+        batch = tuple(
+            self.response_decision_queue.popleft()
+            for _ in range(min(8, len(self.response_decision_queue)))
+        )
+        worker = ResponseDecisionWorker(
+            batch,
+            tuple(self.recent_ai_chat),
+            self.settings.local_ai_endpoint,
+            self.settings.local_ai_model,
+            self.settings.ai_personality,
+            self.settings.ai_allow_mild_profanity,
+            self.settings.ai_allow_strong_profanity,
+        )
+        worker.signals.completed.connect(self._apply_response_batch)
+        worker.signals.failed.connect(self._response_batch_failed)
+        self.response_decision_in_flight = True
+        self.reply_decision_status_label.setText(
+            f"Sally is evaluating {len(batch)} live message(s)…"
+        )
+        self.response_decision_thread_pool.start(worker)
+
+    @Slot(object)
+    def _apply_response_batch(self, result: ResponseBatchResult) -> None:
+        self.response_decision_in_flight = False
+        reply_count = 0
+        sent_count = 0
+        for decision in result.decisions:
+            if decision.decision == "reply":
+                reply_count += 1
+            sent = self._maybe_auto_send_reply(decision)
+            sent_count += int(sent)
+            self._add_reply_decision(decision, sent=sent)
+        self.reply_decision_status_label.setText(
+            f"Evaluated {len(result.decisions)} message(s): "
+            f"{reply_count} reply draft(s), {sent_count} auto-sent."
+        )
+        self._start_next_response_batch()
+
+    @Slot(object, str)
+    def _response_batch_failed(
+        self,
+        messages: object,
+        error: str,
+    ) -> None:
+        self.response_decision_in_flight = False
+        for message in messages if isinstance(messages, tuple) else ():
+            if not isinstance(message, ResponseMessage):
+                continue
+            self._add_reply_decision(
+                ResponseDecision(
+                    request_id=message.request_id,
+                    message_id=message.message_id,
+                    user_id=message.user_id,
+                    user_name=message.user_name,
+                    source_text=message.text,
+                    received_at=message.received_at,
+                    decision="ignore",
+                    reply="",
+                    reason=f"Local AI unavailable: {error}"[:300],
+                    confidence=0.0,
+                )
+            )
+        self.reply_decision_status_label.setText(
+            "Local AI reply evaluation failed; continuing with newer chat."
+        )
+        Logger.warning(
+            f"Local reply decision failed: {error}",
+            source="AI",
+        )
+        self._start_next_response_batch()
+
+    def _decision_age_seconds(self, decision: ResponseDecision) -> float:
+        try:
+            received = datetime.fromisoformat(
+                decision.received_at.replace("Z", "+00:00")
+            )
+        except ValueError:
+            return float("inf")
+        return max(
+            (datetime.now(timezone.utc) - received).total_seconds(),
+            0.0,
+        )
+
+    def _maybe_auto_send_reply(self, decision: ResponseDecision) -> bool:
+        if not (
+            self.settings.ai_auto_send_replies
+            and decision.decision == "reply"
+            and decision.reply
+            and decision.confidence >= 0.65
+            and self._decision_age_seconds(decision)
+            <= self.settings.ai_response_max_age_seconds
+            and monotonic() - self.last_auto_reply_at
+            >= self.settings.ai_response_min_interval_seconds
+            and self.twitch_service.state is TwitchConnectionState.CONNECTED
+        ):
+            return False
+        if not self.twitch_service.send_message(decision.reply):
+            return False
+        self.last_auto_reply_at = monotonic()
+        self._remember_sally_reply(decision.reply)
+        return True
+
+    def _remember_sally_reply(self, reply: str) -> None:
+        clean = " ".join(reply.strip().split())[:500]
+        if not clean:
+            return
+        bot_name = (
+            self.twitch_bot_auth.token.login
+            if self.twitch_bot_auth.token is not None
+            else "Sally"
+        )
+        self.recent_ai_chat.append(
+            {
+                "speaker": "sally",
+                "viewer": bot_name or "Sally",
+                "message": clean,
+            }
+        )
+
+    def _add_reply_decision(
+        self,
+        decision: ResponseDecision,
+        *,
+        sent: bool = False,
+    ) -> None:
+        table = self.reply_review_table
+        table.insertRow(0)
+        age = self._decision_age_seconds(decision)
+        stale = age > self.settings.ai_response_max_age_seconds
+        decision_text = (
+            "SENT"
+            if sent
+            else "STALE"
+            if stale and decision.decision == "reply"
+            else f"{decision.decision.upper()} {decision.confidence:.0%}"
+        )
+        values = (
+            f"{int(age)}s" if age != float("inf") else "--",
+            decision.user_name,
+            decision.source_text,
+            decision_text,
+            decision.reply,
+            decision.reason,
+        )
+        for column, value in enumerate(values):
+            item = QTableWidgetItem(value)
+            if column == 0:
+                item.setData(Qt.ItemDataRole.UserRole, decision)
+            table.setItem(0, column, item)
+        if table.rowCount() > 100:
+            table.removeRow(table.rowCount() - 1)
+        if decision.decision == "reply" and not sent:
+            table.selectRow(0)
+
+    def _selected_reply_decision(self) -> ResponseDecision | None:
+        row = self.reply_review_table.currentRow()
+        item = self.reply_review_table.item(row, 0) if row >= 0 else None
+        decision = (
+            item.data(Qt.ItemDataRole.UserRole) if item is not None else None
+        )
+        return decision if isinstance(decision, ResponseDecision) else None
+
+    @Slot()
+    def _send_selected_reply_draft(self) -> None:
+        decision = self._selected_reply_decision()
+        if decision is None or not decision.reply:
+            return
+        if self.twitch_service.send_message(decision.reply):
+            self._remember_sally_reply(decision.reply)
+            row = self.reply_review_table.currentRow()
+            self.reply_review_table.item(row, 3).setText("SENT")
+            self.reply_decision_status_label.setText(
+                f"Sent Sally's reply to {decision.user_name}."
+            )
+
+    @Slot()
+    def _edit_and_send_reply_draft(self) -> None:
+        decision = self._selected_reply_decision()
+        if decision is None or not decision.reply:
+            return
+        reply, accepted = QInputDialog.getMultiLineText(
+            self,
+            f"Reply to {decision.user_name}",
+            "Twitch message:",
+            decision.reply,
+        )
+        clean = " ".join(reply.strip().split())[:400]
+        if accepted and clean and self.twitch_service.send_message(clean):
+            self._remember_sally_reply(clean)
+            row = self.reply_review_table.currentRow()
+            self.reply_review_table.item(row, 3).setText("SENT (EDITED)")
+            self.reply_review_table.item(row, 4).setText(clean)
+
+    @Slot()
+    def _dismiss_reply_decision(self) -> None:
+        row = self.reply_review_table.currentRow()
+        if row >= 0:
+            self.reply_review_table.removeRow(row)
 
     @staticmethod
     def _linkify(text: str) -> str:
@@ -1292,10 +2103,7 @@ class MainWindow(QMainWindow):
         return colors[color_index]
 
     def _update_twitch_chat_count(self) -> None:
-        noun = "message" if self.twitch_message_count == 1 else "messages"
-        self.ui.twitchChatCountLabel.setText(
-            f"Chat - {self.twitch_message_count} {noun}"
-        )
+        self.ui.twitchChatCountLabel.setText("Chat")
 
     def _show_empty_twitch_chat(self) -> None:
         self.twitch_chat_has_content = False
@@ -1446,6 +2254,69 @@ class MainWindow(QMainWindow):
         self.ui.logLevelCombo.addItems(AppSettings.LOG_LEVELS)
         self._settings_to_controls(self.settings)
 
+    def _build_ai_settings(self) -> None:
+        group = QGroupBox("Local AI", self.ui.settingsPage)
+        layout = QFormLayout(group)
+        self.local_ai_enabled_check = QCheckBox("Use local AI when available")
+        self.local_ai_endpoint_edit = QLineEdit()
+        self.local_ai_model_edit = QLineEdit()
+        self.local_ai_test_button = QPushButton("Test Local AI")
+        self.local_ai_status_label = QLabel("Not tested")
+        self.ai_memory_reasoning_check = QCheckBox(
+            "Propose viewer memories from live chat"
+        )
+        self.ai_memory_threshold_spin = QSpinBox()
+        self.ai_memory_threshold_spin.setRange(5, 50)
+        self.ai_memory_threshold_spin.setSuffix(" messages")
+        self.ai_response_decisions_check = QCheckBox(
+            "Evaluate eligible live chat messages"
+        )
+        self.ai_auto_send_replies_check = QCheckBox(
+            "Automatically send fresh AI replies (experimental)"
+        )
+        self.ai_auto_send_replies_check.setToolTip(
+            "When enabled, Sally may post model-generated replies to Twitch."
+        )
+        self.ai_response_max_age_spin = QSpinBox()
+        self.ai_response_max_age_spin.setRange(5, 60)
+        self.ai_response_max_age_spin.setSuffix(" seconds")
+        self.ai_response_interval_spin = QSpinBox()
+        self.ai_response_interval_spin.setRange(3, 60)
+        self.ai_response_interval_spin.setSuffix(" seconds")
+        layout.addRow("Enabled", self.local_ai_enabled_check)
+        layout.addRow("Endpoint", self.local_ai_endpoint_edit)
+        layout.addRow("Model", self.local_ai_model_edit)
+        layout.addRow("Memory reasoning", self.ai_memory_reasoning_check)
+        layout.addRow("Analyze after", self.ai_memory_threshold_spin)
+        layout.addRow("Reply decisions", self.ai_response_decisions_check)
+        layout.addRow("Auto-send", self.ai_auto_send_replies_check)
+        layout.addRow("Reply freshness", self.ai_response_max_age_spin)
+        layout.addRow("Minimum reply gap", self.ai_response_interval_spin)
+        layout.addRow("", self.local_ai_test_button)
+        layout.addRow("Status", self.local_ai_status_label)
+        self.ui.settingsLayout.insertWidget(3, group)
+        self.local_ai_test_button.clicked.connect(self._test_local_ai)
+
+    @Slot()
+    def _test_local_ai(self) -> None:
+        provider = OllamaProvider(
+            self.local_ai_endpoint_edit.text().strip(),
+            self.local_ai_model_edit.text().strip(),
+            timeout=5.0,
+        )
+        status = provider.status()
+        if not status.available:
+            self.local_ai_status_label.setText(f"Unavailable: {status.error}")
+            return
+        if provider.model not in status.models:
+            self.local_ai_status_label.setText(
+                f"Connected; model {provider.model} is not installed"
+            )
+            return
+        self.local_ai_status_label.setText(
+            f"Ready: {provider.model} ({len(status.models)} local model(s))"
+        )
+
     def _settings_to_controls(self, settings: AppSettings) -> None:
         self.ui.startupPageCombo.setCurrentText(settings.startup_page)
         self.ui.logLevelCombo.setCurrentText(settings.log_level)
@@ -1461,6 +2332,34 @@ class MainWindow(QMainWindow):
         )
         self.ui.twitchChatFontSizeSpin.setValue(
             settings.twitch_chat_font_size
+        )
+        self.local_ai_enabled_check.setChecked(settings.local_ai_enabled)
+        self.local_ai_endpoint_edit.setText(settings.local_ai_endpoint)
+        self.local_ai_model_edit.setText(settings.local_ai_model)
+        self.ai_memory_reasoning_check.setChecked(
+            settings.ai_memory_reasoning_enabled
+        )
+        self.ai_memory_threshold_spin.setValue(
+            settings.ai_memory_message_threshold
+        )
+        self.ai_response_decisions_check.setChecked(
+            settings.ai_response_decisions_enabled
+        )
+        self.ai_auto_send_replies_check.setChecked(
+            settings.ai_auto_send_replies
+        )
+        self.ai_response_max_age_spin.setValue(
+            settings.ai_response_max_age_seconds
+        )
+        self.ai_response_interval_spin.setValue(
+            settings.ai_response_min_interval_seconds
+        )
+        self.ai_personality_edit.setPlainText(settings.ai_personality)
+        self.ai_allow_mild_profanity_check.setChecked(
+            settings.ai_allow_mild_profanity
+        )
+        self.ai_allow_strong_profanity_check.setChecked(
+            settings.ai_allow_strong_profanity
         )
 
     def _settings_from_controls(self) -> AppSettings:
@@ -1478,6 +2377,34 @@ class MainWindow(QMainWindow):
                 self.ui.twitchChatFontCombo.currentFont().family()
             ),
             twitch_chat_font_size=self.ui.twitchChatFontSizeSpin.value(),
+            local_ai_enabled=self.local_ai_enabled_check.isChecked(),
+            local_ai_endpoint=self.local_ai_endpoint_edit.text(),
+            local_ai_model=self.local_ai_model_edit.text(),
+            ai_memory_reasoning_enabled=(
+                self.ai_memory_reasoning_check.isChecked()
+            ),
+            ai_memory_message_threshold=(
+                self.ai_memory_threshold_spin.value()
+            ),
+            ai_response_decisions_enabled=(
+                self.ai_response_decisions_check.isChecked()
+            ),
+            ai_auto_send_replies=(
+                self.ai_auto_send_replies_check.isChecked()
+            ),
+            ai_response_max_age_seconds=(
+                self.ai_response_max_age_spin.value()
+            ),
+            ai_response_min_interval_seconds=(
+                self.ai_response_interval_spin.value()
+            ),
+            ai_personality=self.ai_personality_edit.toPlainText(),
+            ai_allow_mild_profanity=(
+                self.ai_allow_mild_profanity_check.isChecked()
+            ),
+            ai_allow_strong_profanity=(
+                self.ai_allow_strong_profanity_check.isChecked()
+            ),
         )
 
     def _apply_settings(self, settings: AppSettings) -> None:
@@ -1494,6 +2421,26 @@ class MainWindow(QMainWindow):
         )
         self.ui.twitchChatOutput.setFont(chat_font)
         self.ui.twitchChatOutput.document().setDefaultFont(chat_font)
+        if not (
+            settings.local_ai_enabled
+            and settings.ai_memory_reasoning_enabled
+        ):
+            self.memory_message_buffers.clear()
+            self.memory_reasoning_status_label.setText(
+                "Local memory reasoning is disabled."
+            )
+        elif self.memory_reasoning_status_label.text().endswith("disabled."):
+            self.memory_reasoning_status_label.setText(
+                "Local memory reasoning is waiting for enough chat context."
+            )
+        if not (
+            settings.local_ai_enabled
+            and settings.ai_response_decisions_enabled
+        ):
+            self.response_decision_queue.clear()
+            self.reply_decision_status_label.setText(
+                "Local AI reply decisions are disabled."
+            )
 
     def _show_startup_page(self) -> None:
         page_actions = {
@@ -1595,6 +2542,14 @@ class MainWindow(QMainWindow):
         )
         self.memory_tags_edit.setText(", ".join(record.tags))
         self.memory_private_notes_edit.setPlainText(record.private_notes)
+        self.memory_enabled_check.blockSignals(True)
+        self.memory_enabled_check.setChecked(record.memory_enabled)
+        self.memory_enabled_check.blockSignals(False)
+        self.memory_summary_label.setText(
+            str(self.chatter_history.viewer_summary(user_id))
+            if record.memory_enabled
+            else "AI memory is disabled for this viewer. No memories are supplied to Sally."
+        )
         session_rows = sorted(
             record.session_messages.items(),
             reverse=True,
@@ -1633,6 +2588,17 @@ class MainWindow(QMainWindow):
             if self.show_archived_memories_check.isChecked()
             or not bool(memory.get("archived", False))
         ]
+        selected_status = self.memory_status_filter.currentText()
+        if selected_status == "Pending review":
+            visible_memories = [
+                memory for memory in visible_memories
+                if memory.get("status", "approved") == "pending"
+            ]
+        elif selected_status == "Approved":
+            visible_memories = [
+                memory for memory in visible_memories
+                if memory.get("status", "approved") == "approved"
+            ]
         if visible_memories:
             visible_memories.sort(
                 key=lambda memory: (
@@ -1643,8 +2609,12 @@ class MainWindow(QMainWindow):
             for memory in visible_memories:
                 prefix = "★ " if memory.get("pinned") else ""
                 category = str(memory.get("category", "General"))
+                status = str(memory.get("status", "approved")).upper()
+                confidence = float(memory.get("confidence", 1.0))
+                conflict = " | CONFLICT" if memory.get("conflicts_with") else ""
                 item = QListWidgetItem(
-                    f"{prefix}[{category}] {memory.get('text', 'Memory')}"
+                    f"{prefix}[{status} | {category} | {confidence:.0%}{conflict}] "
+                    f"{memory.get('text', 'Memory')}"
                 )
                 item.setData(
                     Qt.ItemDataRole.UserRole,
@@ -1653,7 +2623,7 @@ class MainWindow(QMainWindow):
                 self.memory_ai_list.addItem(item)
         else:
             self.memory_ai_list.addItem(
-                "No memories yet. Add a manual memory to begin."
+                "No memories match this review filter."
             )
 
     @Slot()
@@ -1797,6 +2767,85 @@ class MainWindow(QMainWindow):
         if not user_id or not memory_id:
             return None
         return user_id, memory_id
+
+    @Slot(object, object)
+    def _show_memory_details(self, current: object, _previous: object) -> None:
+        if not isinstance(current, QListWidgetItem):
+            self.memory_detail_label.setText(
+                "Select a memory to inspect its evidence."
+            )
+            return
+        context = self._selected_memory_context()
+        if context is None:
+            return
+        user_id, memory_id = context
+        memory = self.chatter_history.get_memory(user_id, memory_id)
+        evidence = [
+            str(item.get("text", ""))
+            for item in memory.get("evidence", [])
+            if isinstance(item, dict) and item.get("text")
+        ]
+        details = [
+            f"Source: {memory.get('source', 'manual')}",
+            f"Confidence: {float(memory.get('confidence', 1.0)):.0%}",
+            "Created: " + self._format_memory_timestamp(
+                str(memory.get("created_at", ""))
+            ),
+            "Last confirmed: " + self._format_memory_timestamp(
+                str(memory.get("last_confirmed_at", ""))
+            ),
+        ]
+        if memory.get("conflicts_with"):
+            details.append("Conflict: may replace an existing memory")
+        if memory.get("rejection_reason"):
+            details.append(f"Rejection: {memory['rejection_reason']}")
+        details.append(
+            "Evidence: " + (" | ".join(evidence[:3]) if evidence else "Manual entry")
+        )
+        self.memory_detail_label.setText("\n".join(details))
+
+    @Slot(bool)
+    def _set_viewer_memory_enabled(self, enabled: bool) -> None:
+        viewer_item = self.memory_viewer_list.currentItem()
+        if viewer_item is None:
+            return
+        user_id = str(viewer_item.data(Qt.ItemDataRole.UserRole))
+        self.chatter_history.set_memory_enabled(user_id, enabled)
+        if not enabled:
+            self.memory_message_buffers.pop(user_id, None)
+        self._save_chatter_history()
+        self._show_memory_viewer(viewer_item, None)
+        state = "enabled" if enabled else "disabled"
+        self.statusBar().showMessage(f"Viewer AI memory {state}.", 5000)
+
+    @Slot()
+    def _approve_viewer_memory(self) -> None:
+        context = self._selected_memory_context()
+        if context is None:
+            return
+        user_id, memory_id = context
+        self.chatter_history.review_memory(user_id, memory_id, True)
+        self._save_chatter_history()
+        self._show_memory_viewer(self.memory_viewer_list.currentItem(), None)
+
+    @Slot()
+    def _reject_viewer_memory(self) -> None:
+        context = self._selected_memory_context()
+        if context is None:
+            return
+        reason, accepted = QInputDialog.getText(
+            self,
+            "Reject AI Memory",
+            "Reason (optional)",
+        )
+        if not accepted:
+            return
+        user_id, memory_id = context
+        self.chatter_history.review_memory(
+            user_id, memory_id, False, reason
+        )
+        self._save_chatter_history()
+        self._show_memory_viewer(self.memory_viewer_list.currentItem(), None)
 
     @Slot()
     def _add_viewer_memory(self) -> None:
@@ -1996,6 +3045,7 @@ class MainWindow(QMainWindow):
     ) -> None:
         if result.request_id != self.companion_refresh_request_id:
             return
+        self.last_companion_result = result
         self.companion_refresh_in_flight = False
         snapshot = result.snapshot
         if self.session_tracker.observe_stream(snapshot.get("stream")):
@@ -2070,6 +3120,7 @@ class MainWindow(QMainWindow):
     ) -> None:
         self.chatter_list.clear()
         if not result.can_read_chatters:
+            self.chatter_title_label.setText("Chatters")
             self.chatter_list.addTopLevelItem(
                 QTreeWidgetItem(["Connections > Update Permissions"])
             )
@@ -2086,7 +3137,7 @@ class MainWindow(QMainWindow):
             ),
         )
         self._refresh_memory_viewer_list()
-        groups = {
+        groups: dict[str, list[tuple[str, str]]] = {
             "Moderators": [],
             "VIPs": [],
             "Subscribers": [],
@@ -2097,27 +3148,187 @@ class MainWindow(QMainWindow):
         for chatter in result.chatters:
             user_id = str(chatter.get("user_id", ""))
             user_name = str(chatter.get("user_name", ""))
-            if user_id in result.moderator_ids:
-                groups["Moderators"].append(user_name)
-            elif user_id in result.vip_ids:
-                groups["VIPs"].append(user_name)
-            elif user_id in result.subscriber_ids:
-                groups["Subscribers"].append(user_name)
-            elif (
-                user_id in self.known_bot_user_ids
+            if user_id == self.twitch_service.broadcaster_user_id:
+                continue
+            record = self.chatter_history.records.get(user_id)
+            manual_group = record.manual_group if record else ""
+            is_bot = (
+                manual_group == "Bots"
+                or user_id in self.known_bot_user_ids
                 or self.chatter_history.is_bot(user_id)
-            ):
-                groups["Bots"].append(user_name)
+            )
+            if is_bot:
+                groups["Bots"].append((user_name, user_id))
+            elif user_id in result.moderator_ids:
+                groups["Moderators"].append((user_name, user_id))
+            elif user_id in result.vip_ids:
+                groups["VIPs"].append((user_name, user_id))
+            elif user_id in result.subscriber_ids:
+                groups["Subscribers"].append((user_name, user_id))
+            elif manual_group:
+                groups[manual_group].append((user_name, user_id))
             elif self.chatter_history.is_regular(user_id):
-                groups["Regulars"].append(user_name)
+                groups["Regulars"].append((user_name, user_id))
             else:
-                groups["Viewers"].append(user_name)
+                groups["Viewers"].append((user_name, user_id))
         for group_name, users in groups.items():
             group_item = QTreeWidgetItem([f"{group_name} ({len(users)})"])
-            for user_name in sorted(users, key=str.casefold):
-                group_item.addChild(QTreeWidgetItem([user_name]))
+            for user_name, user_id in sorted(
+                users, key=lambda user: user[0].casefold()
+            ):
+                child = QTreeWidgetItem([user_name])
+                child.setData(
+                    0,
+                    Qt.ItemDataRole.UserRole,
+                    {"user_id": user_id, "user_name": user_name},
+                )
+                group_item.addChild(child)
             self.chatter_list.addTopLevelItem(group_item)
             group_item.setExpanded(True)
+        visible_chatter_count = sum(len(users) for users in groups.values())
+        self.chatter_title_label.setText(
+            f"Chatters ({visible_chatter_count:,})"
+        )
+
+    @Slot(object)
+    def _show_chatter_tree_context_menu(self, position) -> None:
+        item = self.chatter_list.itemAt(position)
+        if item is None or item.parent() is None:
+            return
+        details = item.data(0, Qt.ItemDataRole.UserRole)
+        if not isinstance(details, dict):
+            return
+        self._show_chatter_context_menu(
+            str(details.get("user_id", "")),
+            str(details.get("user_name", "")),
+            "",
+        )
+
+    @Slot(str, str, str)
+    def _show_chatter_context_menu(
+        self,
+        user_id: str,
+        user_name: str,
+        message_id: str,
+    ) -> None:
+        if not user_id:
+            return
+        menu = QMenu(self)
+        heading = menu.addAction(user_name or user_id)
+        heading.setEnabled(False)
+        move_menu = menu.addMenu("Move to local group")
+        record = self.chatter_history.records.get(user_id)
+        current_group = record.manual_group if record else ""
+        for title, group in (
+            ("Automatic", ""),
+            ("Regulars", "Regulars"),
+            ("Bots", "Bots"),
+            ("Viewers", "Viewers"),
+        ):
+            action = move_menu.addAction(title)
+            action.setCheckable(True)
+            action.setChecked(current_group == group)
+            action.triggered.connect(
+                lambda _checked=False, selected=group: self._set_local_chatter_group(
+                    user_id, selected
+                )
+            )
+
+        menu.addSeparator()
+        token = self.twitch_auth.token
+        scopes = set(token.scopes) if token is not None else set()
+        can_ban = (
+            "moderator:manage:banned_users" in scopes
+            and bool(self.twitch_service.broadcaster_user_id)
+        )
+        can_delete = (
+            "moderator:manage:chat_messages" in scopes
+            and bool(self.twitch_service.broadcaster_user_id)
+            and bool(message_id)
+        )
+        for title, action_name, duration in (
+            ("Timeout 10 minutes", "timeout", 600),
+            ("Timeout 1 hour", "timeout", 3600),
+            ("Ban…", "ban", None),
+            ("Remove ban / timeout", "unban", None),
+        ):
+            action = menu.addAction(title)
+            action.setEnabled(can_ban)
+            action.triggered.connect(
+                lambda _checked=False, name=action_name, seconds=duration: self._run_moderation_action(
+                    name,
+                    user_id,
+                    user_name,
+                    duration=seconds,
+                )
+            )
+        delete_action = menu.addAction("Delete this message")
+        delete_action.setEnabled(can_delete)
+        delete_action.triggered.connect(
+            lambda _checked=False: self._run_moderation_action(
+                "delete_message",
+                user_id,
+                user_name,
+                message_id=message_id,
+            )
+        )
+        if not can_ban or (message_id and not can_delete):
+            menu.addSeparator()
+            permissions = menu.addAction("Enable moderation permissions…")
+            permissions.triggered.connect(self.twitch_auth.sign_in)
+        menu.exec(QCursor.pos())
+
+    def _set_local_chatter_group(self, user_id: str, group: str) -> None:
+        if user_id not in self.chatter_history.records:
+            return
+        self.chatter_history.set_manual_group(user_id, group)
+        self.chatter_history.save()
+        if self.last_companion_result is not None:
+            self._apply_chatter_groups(self.last_companion_result)
+        self._refresh_memory_viewer_list()
+
+    def _run_moderation_action(
+        self,
+        action: str,
+        user_id: str,
+        user_name: str,
+        *,
+        message_id: str = "",
+        duration: int | None = None,
+    ) -> None:
+        reason = ""
+        if action == "ban":
+            reason, accepted = QInputDialog.getText(
+                self,
+                f"Ban {user_name}",
+                "Reason (optional):",
+            )
+            if not accepted:
+                return
+        labels = {
+            "timeout": f"timeout {user_name}",
+            "ban": f"ban {user_name}",
+            "unban": f"remove the ban or timeout for {user_name}",
+            "delete_message": f"delete {user_name}'s message",
+        }
+        answer = QMessageBox.question(
+            self,
+            "Confirm Twitch moderation",
+            f"Are you sure you want to {labels[action]}?",
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        if self.twitch_service.moderate_user(
+            action,
+            user_id,
+            message_id=message_id,
+            duration=duration,
+            reason=reason,
+        ):
+            self.statusBar().showMessage(
+                f"Twitch moderation completed for {user_name}.",
+                5000,
+            )
 
     def _refresh_session_history(self) -> None:
         if not hasattr(self, "session_table"):
@@ -2569,6 +3780,13 @@ class MainWindow(QMainWindow):
         self.companion_refresh_request_id += 1
         self.companion_thread_pool.clear()
         self.companion_thread_pool.waitForDone(2_000)
+        self.memory_reasoning_thread_pool.clear()
+        self.memory_reasoning_thread_pool.waitForDone(2_000)
+        self.memory_message_buffers.clear()
+        self.response_decision_thread_pool.clear()
+        self.response_decision_thread_pool.waitForDone(2_000)
+        self.response_decision_queue.clear()
+        self.recent_ai_chat.clear()
         self.twitch_service.disconnect()
         Events.unsubscribe(
             "twitch_status_changed",
@@ -2589,6 +3807,10 @@ class MainWindow(QMainWindow):
         Events.unsubscribe(
             "twitch_auth_changed",
             self.twitch_bridge.handle_auth_changed,
+        )
+        Events.unsubscribe(
+            "twitch_bot_auth_changed",
+            self.twitch_bridge.handle_bot_auth_changed,
         )
         Events.unsubscribe(
             "twitch_notice_received",

@@ -2,18 +2,22 @@ import logging
 import os
 import unittest
 from datetime import datetime, timezone
+from pathlib import Path
 from unittest.mock import Mock, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QPoint, Qt
+from PySide6.QtGui import QContextMenuEvent
 from PySide6.QtWidgets import QApplication
 from PySide6.QtTest import QTest
 
 from core.logger import Logger
 from core.settings import AppSettings
+from ai.memory_extractor import ExtractedMemory
+from ai.response_engine import ResponseDecision
 from twitch.auth import TwitchAuthState
-from twitch.chatter_history import ChatterRecord
+from twitch.chatter_history import ChatterHistoryStore, ChatterRecord
 from twitch.service import TwitchConnectionState
 from twitch.models import (
     TwitchChatNotice,
@@ -25,6 +29,8 @@ from twitch.models import (
     TwitchMessageFragment,
 )
 from ui.main_window import MainWindow
+from ui.memory_worker import MemoryExtractionResult
+from ui.response_worker import ResponseBatchResult
 
 
 class MainWindowTests(unittest.TestCase):
@@ -145,20 +151,30 @@ class MainWindowTests(unittest.TestCase):
         self.window.memory_search_edit.setText("missing")
         self.assertEqual(self.window.memory_viewer_list.count(), 0)
 
-    def test_ai_workspace_contains_analytics_dashboard(self) -> None:
-        tab_names = [
+    def test_channel_workspace_contains_sessions_and_analytics(self) -> None:
+        ai_tab_names = [
             self.window.ai_tabs.tabText(index)
             for index in range(self.window.ai_tabs.count())
         ]
+        channel_tab_names = [
+            self.window.channel_tabs.tabText(index)
+            for index in range(self.window.channel_tabs.count())
+        ]
         self.assertEqual(
-            tab_names,
-            ["Memories", "Stream Sessions", "Analytics"],
+            ai_tab_names,
+            ["Memories", "Reply Review", "Personality"],
+        )
+        self.assertEqual(
+            channel_tab_names,
+            ["Chat", "Stream Sessions", "Analytics"],
         )
         self.assertEqual(
             self.window.analytics_labels["sessions"].text(),
             "0",
         )
         self.assertEqual(self.window.analytics_range_combo.count(), 4)
+        self.assertTrue(self.window.ui.twitchDetailTabs.tabBar().isHidden())
+        self.assertTrue(self.window.ui.twitchChatCountLabel.isHidden())
 
     def test_every_primary_page_and_ai_tab_is_constructed(self) -> None:
         pages = (
@@ -171,6 +187,18 @@ class MainWindowTests(unittest.TestCase):
         )
         self.assertTrue(all(page is not None for page in pages))
         self.assertEqual(self.window.ai_tabs.count(), 3)
+        self.assertEqual(self.window.channel_tabs.count(), 3)
+        self.assertEqual(
+            [
+                self.window.logs_tabs.tabText(index)
+                for index in range(self.window.logs_tabs.count())
+            ],
+            ["Application", "Twitch Events"],
+        )
+        self.assertEqual(
+            self.window.logs_tabs.indexOf(self.window.ui.twitchEventsTab),
+            1,
+        )
         self.assertTrue(self.window.create_backup_button.isEnabled())
 
     def test_window_geometry_is_restored_and_saved(self) -> None:
@@ -258,6 +286,8 @@ class MainWindowTests(unittest.TestCase):
             twitch_chat_show_timestamps=False,
             twitch_chat_font_family="Consolas",
             twitch_chat_font_size=14,
+            local_ai_endpoint="http://localhost:11434",
+            local_ai_model="qwen3:14b",
         )
 
         self.window._settings_to_controls(settings)
@@ -271,6 +301,24 @@ class MainWindowTests(unittest.TestCase):
         )
         self.assertTrue(self.window.developer_dock.isHidden())
         self.assertFalse(self.window.ui.twitchChatTimestampCheck.isChecked())
+        self.assertEqual(
+            self.window.local_ai_endpoint_edit.text(),
+            "http://localhost:11434",
+        )
+        self.assertEqual(self.window.local_ai_model_edit.text(), "qwen3:14b")
+        self.assertTrue(self.window.ai_memory_reasoning_check.isChecked())
+        self.assertEqual(self.window.ai_memory_threshold_spin.value(), 10)
+        self.assertTrue(self.window.ai_response_decisions_check.isChecked())
+        self.assertFalse(self.window.ai_auto_send_replies_check.isChecked())
+        self.assertEqual(self.window.ai_response_max_age_spin.value(), 15)
+        self.assertEqual(self.window.ai_response_interval_spin.value(), 8)
+        self.assertIn("quick-witted", self.window.ai_personality_edit.toPlainText())
+        self.assertFalse(
+            self.window.ai_allow_mild_profanity_check.isChecked()
+        )
+        self.assertFalse(
+            self.window.ai_allow_strong_profanity_check.isChecked()
+        )
         self.assertEqual(self.window.ui.twitchChatFontSizeSpin.value(), 14)
         self.assertEqual(
             self.window.ui.twitchChatOutput.document()
@@ -347,7 +395,7 @@ class MainWindowTests(unittest.TestCase):
         self.assertTrue(chat_lines[0].endswith("viewer: Hello Sally!"))
         self.assertEqual(
             self.window.ui.twitchChatCountLabel.text(),
-            "Chat - 1 message",
+            "Chat",
         )
         self.assertEqual(self.window.ui.simulationMessageEdit.text(), "")
 
@@ -358,7 +406,7 @@ class MainWindowTests(unittest.TestCase):
         )
         self.assertEqual(
             self.window.ui.twitchChatCountLabel.text(),
-            "Chat - 0 messages",
+            "Chat",
         )
 
         self.window.ui.twitchDisconnectButton.click()
@@ -382,6 +430,55 @@ class MainWindowTests(unittest.TestCase):
         self.assertIn("ABCDEFGH", self.window.ui.twitchAccountStatusLabel.text())
         self.assertFalse(self.window.ui.twitchSignInButton.isEnabled())
         self.assertTrue(self.window.ui.twitchSignOutButton.isEnabled())
+
+    def test_bot_auth_has_independent_connection_controls(self) -> None:
+        self.window.twitch_bot_auth.token = Mock(
+            scopes=["user:read:chat", "user:write:chat", "user:bot"],
+            user_id="bot-1",
+            login="sallybot",
+        )
+
+        self.window.handle_twitch_bot_auth_changed(
+            TwitchAuthState.SIGNED_IN,
+            "sallybot",
+        )
+
+        self.assertEqual(
+            self.window.twitch_bot_account_status_label.text(),
+            "@sallybot",
+        )
+        self.assertFalse(self.window.twitch_bot_sign_in_button.isEnabled())
+        self.assertTrue(self.window.twitch_bot_sign_out_button.isEnabled())
+
+        self.window.response_decision_thread_pool.start = Mock()
+        self.window.handle_twitch_message(
+            TwitchMessage(
+                username="sallybot",
+                text="A message Sally just sent",
+                received_at=datetime.now(timezone.utc),
+                message_id="bot-message-1",
+                user_id="bot-1",
+            )
+        )
+        self.window.response_decision_thread_pool.start.assert_not_called()
+
+    def test_personality_language_permissions_are_saved(self) -> None:
+        self.window.settings_store.save = Mock()
+        self.window.ai_personality_edit.setPlainText(
+            "Dry, playful, and very concise."
+        )
+        self.window.ai_allow_strong_profanity_check.setChecked(True)
+
+        self.window._save_personality()
+
+        saved = self.window.settings_store.save.call_args.args[0]
+        self.assertEqual(saved.ai_personality, "Dry, playful, and very concise.")
+        self.assertTrue(saved.ai_allow_mild_profanity)
+        self.assertTrue(saved.ai_allow_strong_profanity)
+        self.assertEqual(
+            self.window.ai_personality_status_label.text(),
+            "Personality saved.",
+        )
 
     def test_signed_in_user_can_update_missing_permissions_without_sign_out(self) -> None:
         self.window.auto_upgrade_permissions = True
@@ -427,7 +524,8 @@ class MainWindowTests(unittest.TestCase):
         self.window.ui.twitchSendButton.click()
 
         self.window.twitch_service.send_message.assert_called_once_with(
-            "Hello Twitch"
+            "Hello Twitch",
+            as_bot=False,
         )
         self.assertEqual(self.window.ui.twitchSendEdit.text(), "")
 
@@ -465,7 +563,7 @@ class MainWindowTests(unittest.TestCase):
             scopes=[
                 "moderator:read:chatters",
                 "moderation:read",
-                "moderator:read:vips",
+                "channel:read:vips",
                 "channel:read:subscriptions",
             ],
         )
@@ -480,11 +578,14 @@ class MainWindowTests(unittest.TestCase):
                 {"user_id": "2", "user_name": "VipOne"},
                 {"user_id": "3", "user_name": "SubOne"},
                 {"user_id": "4", "user_name": "ViewerOne"},
+                {"user_id": "5", "user_name": "BotMod"},
+                {"user_id": "42", "user_name": "Streamer"},
             ]
         )
         self.window.twitch_service.helix.get_chat_roles = Mock(
-            return_value=({"1"}, {"2"}, {"3"})
+            return_value=({"1", "5"}, {"2"}, {"3"})
         )
+        self.window.known_bot_user_ids.add("5")
         self.window.companion_thread_pool.start = Mock(
             side_effect=lambda worker: worker.run()
         )
@@ -495,11 +596,12 @@ class MainWindowTests(unittest.TestCase):
         self.assertEqual(self.window.stream_live_label.text(), "Offline")
         self.assertEqual(self.window.stream_followers_label.text(), "123 followers")
         self.assertEqual(self.window.stream_subscribers_label.text(), "7 subscribers")
+        self.assertEqual(self.window.chatter_title_label.text(), "Chatters (5)")
         expected_groups = (
             ("Moderators (1)", "ModOne"),
             ("VIPs (1)", "VipOne"),
             ("Subscribers (1)", "SubOne"),
-            ("Bots (0)", None),
+            ("Bots (1)", "BotMod"),
             ("Regulars (0)", None),
             ("Viewers (1)", "ViewerOne"),
         )
@@ -508,6 +610,28 @@ class MainWindowTests(unittest.TestCase):
             self.assertEqual(group.text(0), group_text)
             if child_text is not None:
                 self.assertEqual(group.child(0).text(0), child_text)
+
+        viewer = self.window.chatter_list.topLevelItem(5).child(0)
+        details = viewer.data(0, Qt.ItemDataRole.UserRole)
+        self.assertEqual(details["user_id"], "4")
+        self.chatter_history_store.records["4"] = ChatterRecord(
+            user_id="4",
+            user_name="ViewerOne",
+            first_seen="2026-07-12T00:00:00+00:00",
+            last_seen="2026-07-12T00:00:00+00:00",
+        )
+        self.chatter_history_store.set_manual_group.side_effect = (
+            lambda user_id, group: setattr(
+                self.chatter_history_store.records[user_id],
+                "manual_group",
+                group,
+            )
+        )
+        self.window._set_local_chatter_group("4", "Regulars")
+        self.assertEqual(
+            self.window.chatter_list.topLevelItem(4).child(0).text(0),
+            "ViewerOne",
+        )
 
         self.window.handle_twitch_auth_changed(
             TwitchAuthState.SIGNED_IN,
@@ -619,11 +743,24 @@ class MainWindowTests(unittest.TestCase):
         self.assertIn("<script>not markup</script>", plain_text)
         self.assertNotIn("<script>not markup</script>", rendered_html)
 
+    def test_twitch_chat_context_menu_uses_qcontextmenu_position(self) -> None:
+        event = QContextMenuEvent(
+            QContextMenuEvent.Reason.Mouse,
+            QPoint(4, 4),
+            QPoint(4, 4),
+        )
+
+        self.window.ui.twitchChatOutput.contextMenuEvent(event)
+
+        self.assertTrue(event.isAccepted())
+
     def test_twitch_emote_is_rendered_as_cached_cdn_image(self) -> None:
         message = TwitchMessage(
             username="viewer",
             text="Kappa",
             received_at=datetime.now(timezone.utc),
+            message_id="message-1",
+            user_id="viewer-1",
             fragments=(
                 TwitchMessageFragment(
                     type=TwitchFragmentType.EMOTE,
@@ -638,6 +775,215 @@ class MainWindowTests(unittest.TestCase):
         rendered_html = self.window.ui.twitchChatOutput.toHtml()
         self.assertIn("/emoticons/v2/25/static/dark/1.0", rendered_html)
         self.assertIn("width='20'", rendered_html)
+        self.assertIn("data-user-id='viewer-1'", rendered_html)
+        self.assertIn("data-message-id='message-1'", rendered_html)
+
+    def test_live_chat_starts_local_memory_reasoning_at_threshold(self) -> None:
+        self.window.settings.ai_memory_message_threshold = 5
+        self.window.settings.ai_response_decisions_enabled = False
+        self.chatter_history_store.records["viewer-1"] = ChatterRecord(
+            user_id="viewer-1",
+            user_name="Viewer",
+            first_seen="2026-07-13T00:00:00+00:00",
+            last_seen="2026-07-13T00:00:00+00:00",
+        )
+        self.window.memory_reasoning_thread_pool.start = Mock()
+
+        for index in range(5):
+            self.window.handle_twitch_message(
+                TwitchMessage(
+                    username="Viewer",
+                    text=f"I keep working on my puzzle game, update {index}.",
+                    received_at=datetime.now(timezone.utc),
+                    message_id=f"message-{index}",
+                    user_id="viewer-1",
+                )
+            )
+
+        self.window.memory_reasoning_thread_pool.start.assert_called_once()
+        self.assertIn("viewer-1", self.window.memory_extraction_in_flight)
+        self.assertEqual(
+            len(self.window.memory_message_buffers["viewer-1"]),
+            5,
+        )
+
+    def test_memory_reasoning_skips_broadcaster_and_bots(self) -> None:
+        self.window.twitch_service.broadcaster_user_id = "streamer-1"
+        for user_id in ("streamer-1", "bot-1"):
+            self.chatter_history_store.records[user_id] = ChatterRecord(
+                user_id=user_id,
+                user_name=user_id,
+                first_seen="2026-07-13T00:00:00+00:00",
+                last_seen="2026-07-13T00:00:00+00:00",
+                is_bot=user_id == "bot-1",
+            )
+        self.window.known_bot_user_ids.add("bot-1")
+
+        for user_id in ("streamer-1", "bot-1"):
+            self.window.handle_twitch_message(
+                TwitchMessage(
+                    username=user_id,
+                    text="I like puzzle games.",
+                    received_at=datetime.now(timezone.utc),
+                    message_id=f"message-{user_id}",
+                    user_id=user_id,
+                )
+            )
+
+        self.assertNotIn("streamer-1", self.window.memory_message_buffers)
+        self.assertNotIn("bot-1", self.window.memory_message_buffers)
+
+    def test_memory_reasoning_creates_pending_review_proposal(self) -> None:
+        store = ChatterHistoryStore(Path("unused.json"))
+        store.observe_message("viewer-1", "Viewer")
+        self.window.chatter_history = store
+        self.window._save_chatter_history = Mock()
+        result = MemoryExtractionResult(
+            user_id="viewer-1",
+            user_name="Viewer",
+            buffer_ids=("one",),
+            proposals=(
+                ExtractedMemory(
+                    text="Viewer is building a puzzle game",
+                    category="Project",
+                    key="current-project",
+                    confidence=0.9,
+                    evidence=(
+                        {
+                            "text": "I am building a puzzle game.",
+                            "timestamp": "2026-07-13T00:00:00+00:00",
+                            "message_id": "message-1",
+                        },
+                    ),
+                ),
+            ),
+        )
+
+        self.window._apply_memory_extraction(result)
+
+        memory = store.records["viewer-1"].memories[0]
+        self.assertEqual(memory["status"], "pending")
+        self.assertEqual(memory["source"], "local-ai:qwen3:14b")
+        self.assertEqual(memory["evidence"][0]["message_id"], "message-1")
+
+    def test_live_chat_starts_local_reply_decision(self) -> None:
+        store = ChatterHistoryStore(Path("unused.json"))
+        store.observe_message("viewer-1", "Viewer")
+        self.window.chatter_history = store
+        self.window._save_chatter_history = Mock()
+        self.window.response_decision_thread_pool.start = Mock()
+
+        self.window.handle_twitch_message(
+            TwitchMessage(
+                username="Viewer",
+                text="Sally, what game should we play next?",
+                received_at=datetime.now(timezone.utc),
+                message_id="message-reply-1",
+                user_id="viewer-1",
+            )
+        )
+
+        self.window.response_decision_thread_pool.start.assert_called_once()
+        self.assertTrue(self.window.response_decision_in_flight)
+        self.assertEqual(len(self.window.recent_ai_chat), 1)
+        self.assertEqual(self.window.recent_ai_chat.maxlen, 100)
+
+    def test_broadcaster_can_trigger_sally_without_enabling_reply_loops(self) -> None:
+        store = ChatterHistoryStore(Path("unused.json"))
+        store.observe_message("streamer-1", "Streamer")
+        self.window.chatter_history = store
+        self.window._save_chatter_history = Mock()
+        self.window.twitch_service.broadcaster_user_id = "streamer-1"
+        self.window.response_decision_thread_pool.start = Mock()
+
+        for message_id, text in (
+            ("ordinary", "That was a fun match."),
+            ("trigger", "hey sally, say hello to chat"),
+        ):
+            self.window.handle_twitch_message(
+                TwitchMessage(
+                    username="Streamer",
+                    text=text,
+                    received_at=datetime.now(timezone.utc),
+                    message_id=message_id,
+                    user_id="streamer-1",
+                )
+            )
+
+        self.window.response_decision_thread_pool.start.assert_called_once()
+        worker = self.window.response_decision_thread_pool.start.call_args.args[0]
+        self.assertEqual(worker.messages[0].message_id, "trigger")
+
+    def test_reply_decision_is_added_to_review_without_auto_send(self) -> None:
+        self.window.twitch_service.send_message = Mock(return_value=True)
+        decision = ResponseDecision(
+            request_id="request-1",
+            message_id="message-1",
+            user_id="viewer-1",
+            user_name="Viewer",
+            source_text="Sally, hello!",
+            received_at=datetime.now(timezone.utc).isoformat(),
+            decision="reply",
+            reply="Hey Viewer!",
+            reason="Sally was directly addressed.",
+            confidence=0.9,
+        )
+
+        self.window._apply_response_batch(ResponseBatchResult((decision,)))
+
+        self.window.twitch_service.send_message.assert_not_called()
+        self.assertEqual(self.window.reply_review_table.rowCount(), 1)
+        self.assertEqual(
+            self.window.reply_review_table.item(0, 4).text(),
+            "Hey Viewer!",
+        )
+
+    def test_auto_send_requires_opt_in_and_rejects_stale_replies(self) -> None:
+        self.window.twitch_service.state = TwitchConnectionState.CONNECTED
+        self.window.twitch_service.send_message = Mock(return_value=True)
+        fresh = ResponseDecision(
+            request_id="request-1",
+            message_id="message-1",
+            user_id="viewer-1",
+            user_name="Viewer",
+            source_text="Sally?",
+            received_at=datetime.now(timezone.utc).isoformat(),
+            decision="reply",
+            reply="I'm here!",
+            reason="Directly addressed.",
+            confidence=0.9,
+        )
+
+        self.assertFalse(self.window._maybe_auto_send_reply(fresh))
+        self.window.settings.ai_auto_send_replies = True
+        self.assertTrue(self.window._maybe_auto_send_reply(fresh))
+        self.assertEqual(
+            self.window.recent_ai_chat[-1],
+            {
+                "speaker": "sally",
+                "viewer": "Sally",
+                "message": "I'm here!",
+            },
+        )
+
+        stale = ResponseDecision(
+            request_id="request-2",
+            message_id="message-2",
+            user_id="viewer-1",
+            user_name="Viewer",
+            source_text="Old question",
+            received_at="2026-01-01T00:00:00+00:00",
+            decision="reply",
+            reply="Late answer",
+            reason="Question.",
+            confidence=0.9,
+        )
+        self.window.last_auto_reply_at = 0.0
+        self.assertFalse(self.window._maybe_auto_send_reply(stale))
+        self.assertEqual(
+            self.window.twitch_service.send_message.call_args_list,
+            [unittest.mock.call("I'm here!")],
+        )
 
     def test_twitch_chat_turns_urls_into_links(self) -> None:
         self.window.ui.twitchChannelEdit.setText("channel")

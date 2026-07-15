@@ -7,6 +7,11 @@ Sally uses Twitch's current Helix and EventSub APIs rather than IRC.
 - `twitch/auth.py` implements the public-client Device Code flow.
 - Access and refresh tokens are encrypted with Windows DPAPI by
   `twitch/token_store.py`.
+- The broadcaster and optional Sally bot identities use separate encrypted
+  token files. The broadcaster token owns channel analytics and moderation;
+  the bot token reads and sends chat as the bot account.
+- The broadcaster grants `channel:bot`. The bot login requests
+  `user:read:chat`, `user:write:chat`, and `user:bot`.
 - Existing tokens survive application and EventSub disconnects. Only explicit
   sign-out deletes credentials.
 - When Sally adds scopes, it starts an upgrade flow once and Twitch asks the
@@ -17,7 +22,10 @@ Sally uses Twitch's current Helix and EventSub APIs rather than IRC.
 - `twitch/live.py` resolves Helix resources and owns the EventSub WebSocket.
 - The WebSocket handles welcome, keepalive, reconnect, notification,
   revocation, and duplicate message IDs.
-- Chat and authorized activity subscriptions share one socket.
+- With one identity, chat and authorized activity subscriptions share a socket.
+  With a separate bot identity, Sally opens a bot-authorized chat socket and a
+  broadcaster-authorized activity socket because Twitch binds WebSocket
+  subscriptions to the authorizing user.
 - Paginated Helix collections are followed until Twitch omits the next cursor.
 - Temporary GET failures and rate limits use bounded retry/backoff.
 
@@ -34,10 +42,16 @@ diagnostic stream is separate from the human-readable Activity Feed.
 
 ## UI responsibilities
 
-- **Your Channel** is the stream companion: overview, chat, grouped chatters,
-  Activity Feed, and eligible ad controls.
-- **Connections** contains OAuth and transport details.
-- **Developer Tools** contains simulators and raw EventSub diagnostics.
+- **Your Channel** is the stream companion: Chat, Stream Sessions, and Analytics
+  tabs plus the overview, grouped chatters, Activity Feed, and eligible ad
+  controls. The broadcaster is excluded from the grouped chatter total. Chat
+  and the chatter list share right-click local grouping and permission-aware
+  Twitch moderation actions.
+- **Connections** contains independent broadcaster and optional bot OAuth
+  controls plus transport details.
+- **Logs > Twitch Events** contains searchable raw EventSub diagnostics and
+  sanitized payload details.
+- **Developer Tools** contains message and event simulators.
 - The companion splitter, activity filter, window geometry, and dock state are
   restored with `core/window_state.py`.
 

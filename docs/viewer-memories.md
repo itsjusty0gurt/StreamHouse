@@ -16,22 +16,30 @@ store and shows observed participation statistics and Twitch roles.
 
 ## AI-memory boundary
 
-Each viewer record reserves a list of structured memory objects. Automatic AI
-memory creation is intentionally disabled until the product has controls for
-consent, provenance, confidence, editing, deletion, and complete opt-out. Raw
-chat transcripts are not stored by the chatter-history feature.
+Each viewer record contains structured memory objects with review status,
+confidence, evidence, provenance, creation time, confirmation time, and a stable
+fact key. Proposed AI memories remain pending until approved. Same-key changes
+are flagged as conflicts; approving the replacement archives the older fact.
+Exact duplicates confirm the existing memory instead of creating another copy.
 
 Manual memories can be created, edited, pinned, archived, deleted, exported,
 or erased. Each carries a category, source, and creation/update timestamps.
-Automated extraction remains disabled.
+Local model extraction analyzes short RAM-only per-viewer chat batches and may
+create evidence-backed pending proposals. No model may silently add approved
+memory. The broadcaster, bots, opted-out viewers, and sensitive inferred facts
+are excluded.
+Per-viewer opt-out rejects pending proposals and prevents the AI context builder
+from returning summaries or memories. Context retrieval includes only approved,
+non-archived memories and ranks them by prompt relevance, pinning, and confidence.
 
-## Related AI tabs
+## Related channel tabs
 
-The Stream Sessions tab records peak viewers, messages, follows,
+The Your Channel workspace owns the operational stream data. Its Stream
+Sessions tab records peak viewers, messages, follows,
 subscriptions, cheers, and raids. An active session is persisted and resumed
 after an application restart rather than being ended when Sally closes.
 
-The Analytics tab aggregates sessions and viewer participation over all time or
+Its Analytics tab aggregates sessions and viewer participation over all time or
 the last 7, 30, or 90 days. It includes stream and engagement totals, new and
 returning viewers, regular counts, session comparison, top viewers, CSV/JSON
 export, and configurable local session retention.
@@ -42,4 +50,5 @@ Viewer profiles also track session attendance, message counts per session,
 non-content Twitch events, role changes, engagement streaks, private notes, and
 manual tags. Timeline filters cover follows, subscriptions, cheers, raids,
 rewards, and roles. Duplicate records can be merged, and timeline/session data
-can be exported to CSV. Sally stores message counts but not raw message text.
+can be exported to CSV. Sally does not retain a general raw chat log. A pending
+or approved AI proposal retains only its cited evidence excerpts for review.

@@ -88,7 +88,7 @@ class CompanionRefreshWorker(QRunnable):
                     warnings.append(f"chatters: {error}")
                 role_scopes = {
                     "moderation:read",
-                    "moderator:read:vips",
+                    "channel:read:vips",
                     "channel:read:subscriptions",
                 }
                 if can_read_chatters and role_scopes.issubset(scopes):

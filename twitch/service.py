@@ -35,9 +35,11 @@ class TwitchService:
     def __init__(
         self,
         auth: TwitchAuthService | None = None,
+        bot_auth: TwitchAuthService | None = None,
         helix: TwitchHelixClient | None = None,
     ) -> None:
         self.auth = auth
+        self.bot_auth = bot_auth
         self.helix = helix or TwitchHelixClient()
         self.state = TwitchConnectionState.DISCONNECTED
         self.channel = ""
@@ -52,6 +54,7 @@ class TwitchService:
         )
         self.local_listener = LocalEventSubListener(self.webhook_processor)
         self.live_socket: TwitchEventSubSocket | None = None
+        self.activity_socket: TwitchEventSubSocket | None = None
         self.broadcaster_user_id = ""
         self.badge_urls: dict[tuple[str, str], str] = {}
 
@@ -114,6 +117,21 @@ class TwitchService:
         try:
             broadcaster = self.helix.get_user(channel, token)
             self.broadcaster_user_id = str(broadcaster["id"])
+            bot_token = (
+                self.bot_auth.token
+                if self.bot_auth is not None
+                else None
+            )
+            if (
+                bot_token is not None
+                and bot_token.user_id
+                and bot_token.user_id == token.user_id
+            ):
+                raise ValueError(
+                    "Your channel and Sally bot are signed into the same "
+                    "Twitch account. Sign the channel account in as the "
+                    "streamer and keep the separate bot account in the bot slot."
+                )
             self.local_listener.start()
         except (HTTPError, URLError, OSError, ValueError, KeyError) as error:
             self.channel = ""
@@ -142,6 +160,26 @@ class TwitchService:
             on_bus_event=self._publish_bus_event,
         )
         self.live_socket.open()
+        chat_token = self._chat_token()
+        if (
+            chat_token is not None
+            and token.user_id
+            and chat_token.user_id
+            and token.user_id != chat_token.user_id
+        ):
+            # Twitch binds WebSocket subscriptions to the authorizing user.
+            # A separate bot therefore needs its own chat socket, while channel
+            # activity remains on a broadcaster-authorized socket.
+            self.activity_socket = TwitchEventSubSocket(
+                on_welcome=self._receive_activity_welcome,
+                on_message=self._receive_chat_message,
+                on_notification=self._receive_notification,
+                on_diagnostic=self._receive_diagnostic,
+                on_revocation=self._receive_revocation,
+                on_error=self._receive_activity_error,
+                on_bus_event=self._publish_bus_event,
+            )
+            self.activity_socket.open()
         Logger.info(
             f'Opening live EventSub connection for "{channel}".',
             source="TWITCH",
@@ -149,17 +187,26 @@ class TwitchService:
         return True
 
     def _receive_live_welcome(self, session_id: str) -> None:
-        token = self.auth.token if self.auth is not None else None
-        if token is None or not token.user_id:
+        broadcaster_token = self.auth.token if self.auth is not None else None
+        chat_token = self._chat_token()
+        if chat_token is None or not chat_token.user_id:
             self._report_error("The Twitch sign-in is missing its user identity.")
             return
         try:
             self.helix.create_chat_subscriptions(
                 session_id,
                 self.broadcaster_user_id,
-                token.user_id,
-                token,
+                chat_token.user_id,
+                chat_token,
             )
+            if broadcaster_token is not None and self.activity_socket is None:
+                warnings = self.helix.create_activity_subscriptions(
+                    session_id,
+                    self.broadcaster_user_id,
+                    broadcaster_token.user_id,
+                    broadcaster_token,
+                )
+                self._log_activity_warnings(warnings)
         except (HTTPError, URLError, OSError, ValueError) as error:
             self._report_error(f"Could not subscribe to Twitch chat: {error}")
             if self.live_socket is not None:
@@ -171,10 +218,50 @@ class TwitchService:
             source="TWITCH",
         )
 
+    def _receive_activity_welcome(self, session_id: str) -> None:
+        token = self.auth.token if self.auth is not None else None
+        if token is None or not token.user_id:
+            Logger.warning(
+                "Channel activity EventSub is missing broadcaster identity.",
+                source="TWITCH",
+            )
+            return
+        try:
+            warnings = self.helix.create_activity_subscriptions(
+                session_id,
+                self.broadcaster_user_id,
+                token.user_id,
+                token,
+            )
+        except (HTTPError, URLError, OSError, ValueError) as error:
+            Logger.warning(
+                f"Could not subscribe to optional Twitch activity: {error}",
+                source="TWITCH",
+            )
+            return
+        self._log_activity_warnings(warnings)
+
+    @staticmethod
+    def _log_activity_warnings(warnings: object) -> None:
+        if not isinstance(warnings, (tuple, list)):
+            return
+        for warning in warnings:
+            Logger.warning(
+                f"Optional Twitch activity subscription unavailable: {warning}",
+                source="TWITCH",
+            )
+
+    @staticmethod
+    def _receive_activity_error(message: str) -> None:
+        Logger.warning(
+            f"Twitch activity EventSub connection issue: {message}",
+            source="TWITCH",
+        )
+
     def _receive_live_error(self, message: str) -> None:
         self._report_error(message)
 
-    def send_message(self, text: str) -> bool:
+    def send_message(self, text: str, *, as_bot: bool = True) -> bool:
         clean_text = text.strip()
         if self.state is not TwitchConnectionState.CONNECTED:
             self._report_error(
@@ -182,7 +269,11 @@ class TwitchService:
                 change_state=False,
             )
             return False
-        token = self.auth.token if self.auth is not None else None
+        token = (
+            self._chat_token()
+            if as_bot
+            else self.auth.token if self.auth is not None else None
+        )
         if token is None or not token.user_id:
             self._report_error("Sign in with Twitch before sending.", change_state=False)
             return False
@@ -201,8 +292,68 @@ class TwitchService:
             return False
         return True
 
+    def _chat_token(self):
+        if self.bot_auth is not None and self.bot_auth.token is not None:
+            return self.bot_auth.token
+        return self.auth.token if self.auth is not None else None
+
     def badge_url(self, set_id: str, badge_id: str) -> str:
         return self.badge_urls.get((set_id, badge_id), "")
+
+    def moderate_user(
+        self,
+        action: str,
+        user_id: str,
+        *,
+        message_id: str = "",
+        duration: int | None = None,
+        reason: str = "",
+    ) -> bool:
+        """Apply a moderation action using the signed-in Twitch identity."""
+        token = self.auth.token if self.auth is not None else None
+        if token is None or not token.user_id or not self.broadcaster_user_id:
+            self._report_error(
+                "Connect your Twitch account before moderating chat.",
+                change_state=False,
+            )
+            return False
+        try:
+            if action in {"timeout", "ban"}:
+                self.helix.ban_user(
+                    self.broadcaster_user_id,
+                    token.user_id,
+                    user_id,
+                    token,
+                    duration=duration if action == "timeout" else None,
+                    reason=reason,
+                )
+            elif action == "unban":
+                self.helix.unban_user(
+                    self.broadcaster_user_id,
+                    token.user_id,
+                    user_id,
+                    token,
+                )
+            elif action == "delete_message" and message_id:
+                self.helix.delete_chat_message(
+                    self.broadcaster_user_id,
+                    token.user_id,
+                    message_id,
+                    token,
+                )
+            else:
+                raise ValueError("Unsupported Twitch moderation action.")
+        except (HTTPError, URLError, OSError, ValueError) as error:
+            self._report_error(
+                f"Twitch moderation failed: {error}",
+                change_state=False,
+            )
+            return False
+        Logger.info(
+            f'Twitch moderation action "{action}" completed for user {user_id}.',
+            source="TWITCH",
+        )
+        return True
 
     def disconnect(self) -> bool:
         if self.state is TwitchConnectionState.DISCONNECTED:
@@ -213,6 +364,10 @@ class TwitchService:
             self.live_socket.close()
             self.live_socket.deleteLater()
             self.live_socket = None
+        if self.activity_socket is not None:
+            self.activity_socket.close()
+            self.activity_socket.deleteLater()
+            self.activity_socket = None
         self.local_listener.stop()
         self.channel = ""
         self.broadcaster_user_id = ""

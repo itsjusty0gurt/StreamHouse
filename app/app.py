@@ -11,6 +11,8 @@ from core.events import Events
 from core.logger import Logger
 from twitch.service import TwitchService
 from twitch.auth import TwitchAuthService
+from twitch.token_store import TwitchTokenStore
+from config.twitch import TWITCH_BOT_SCOPES
 from ui.main_window import MainWindow
 from core.resources import resource_path
 from config.version import VERSION
@@ -88,13 +90,24 @@ def run() -> None:
     )
 
     twitch_auth = TwitchAuthService()
-    twitch_service = TwitchService(auth=twitch_auth)
+    twitch_bot_auth = TwitchAuthService(
+        store=TwitchTokenStore.bot_account(),
+        scopes=TWITCH_BOT_SCOPES,
+        event_name="twitch_bot_auth_changed",
+        account_label="Sally bot",
+    )
+    twitch_service = TwitchService(
+        auth=twitch_auth,
+        bot_auth=twitch_bot_auth,
+    )
     window = MainWindow(
         twitch_service=twitch_service,
         twitch_auth=twitch_auth,
+        twitch_bot_auth=twitch_bot_auth,
     )
     window.show()
     twitch_auth.restore()
+    twitch_bot_auth.restore()
 
     if os.environ.get("SALLY_SMOKE_TEST") == "1":
         QTimer.singleShot(750, window.close)

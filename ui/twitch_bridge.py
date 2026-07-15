@@ -20,6 +20,7 @@ class TwitchEventBridge(QObject):
     error_received = Signal(str)
     diagnostic_received = Signal(object)
     auth_changed = Signal(object, str)
+    bot_auth_changed = Signal(object, str)
     notice_received = Signal(object)
     activity_received = Signal(object)
 
@@ -35,6 +36,13 @@ class TwitchEventBridge(QObject):
         detail: str,
     ) -> None:
         self.auth_changed.emit(state, detail)
+
+    def handle_bot_auth_changed(
+        self,
+        state: TwitchAuthState,
+        detail: str,
+    ) -> None:
+        self.bot_auth_changed.emit(state, detail)
 
     def handle_status_changed(
         self,

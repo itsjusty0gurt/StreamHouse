@@ -58,9 +58,12 @@ class TwitchAuthClient:
             raise ValueError("Twitch returned an invalid response.")
         return payload
 
-    def start_device_flow(self) -> dict[str, Any]:
+    def start_device_flow(
+        self,
+        scopes: tuple[str, ...] = TWITCH_SCOPES,
+    ) -> dict[str, Any]:
         body = urlencode(
-            {"client_id": TWITCH_CLIENT_ID, "scopes": " ".join(TWITCH_SCOPES)}
+            {"client_id": TWITCH_CLIENT_ID, "scopes": " ".join(scopes)}
         ).encode("ascii")
         return self._request_json(Request(self.DEVICE_URL, data=body, method="POST"))
 
@@ -121,9 +124,15 @@ class TwitchAuthService:
         self,
         client: TwitchAuthClient | None = None,
         store: TwitchTokenStore | None = None,
+        scopes: tuple[str, ...] = TWITCH_SCOPES,
+        event_name: str = "twitch_auth_changed",
+        account_label: str = "Twitch",
     ) -> None:
         self.client = client or TwitchAuthClient()
         self.store = store or TwitchTokenStore()
+        self.scopes = tuple(scopes)
+        self.event_name = event_name
+        self.account_label = account_label
         self.state = TwitchAuthState.SIGNED_OUT
         self.token: TwitchToken | None = None
         self._cancel = threading.Event()
@@ -192,7 +201,7 @@ class TwitchAuthService:
                 if error.code != 401 or not token.refresh_token:
                     raise
                 self.token = self.client.validate(self.client.refresh(token))
-            missing_scopes = set(TWITCH_SCOPES) - set(self.token.scopes)
+            missing_scopes = set(self.scopes) - set(self.token.scopes)
             if missing_scopes:
                 Logger.info(
                     "Saved Twitch login is missing newer optional permissions: "
@@ -238,7 +247,7 @@ class TwitchAuthService:
 
     def _device_flow(self) -> None:
         try:
-            values = self.client.start_device_flow()
+            values = self.client.start_device_flow(self.scopes)
             code = str(values["user_code"])
             verification_url = str(values["verification_uri"])
             interval = max(int(values.get("interval", 5)), 1)
@@ -251,7 +260,7 @@ class TwitchAuthService:
             while not self._cancel.wait(interval) and time.monotonic() < deadline:
                 try:
                     token = self.client.exchange_device_code(
-                        str(values["device_code"]), list(TWITCH_SCOPES)
+                        str(values["device_code"]), list(self.scopes)
                     )
                 except HTTPError as error:
                     if error.code == 400:
@@ -270,4 +279,4 @@ class TwitchAuthService:
 
     def _set_state(self, state: TwitchAuthState, detail: str) -> None:
         self.state = state
-        Events.emit("twitch_auth_changed", state=state, detail=detail)
+        Events.emit(self.event_name, state=state, detail=detail)
