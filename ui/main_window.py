@@ -194,6 +194,7 @@ class MainWindow(QMainWindow):
         self.recent_ai_chat: deque[dict[str, str]] = deque(maxlen=100)
         self.last_auto_reply_at = 0.0
         self.last_interjection_at = 0.0
+        self.viewer_messages_since_sally_reply = 0
         self.closed_ai_conversations: dict[str, datetime] = {}
         self.current_memory_stream_id = ""
         self.memory_promo_message_count = 0
@@ -1585,6 +1586,8 @@ class MainWindow(QMainWindow):
                 )
             self._maybe_promote_sally_memory()
         if not memory_command and not training_command:
+            if not is_bot:
+                self.viewer_messages_since_sally_reply += 1
             self._maybe_announce_training_capture()
             self._buffer_message_for_memory_reasoning(chat_message, is_bot)
             self._queue_response_decision(chat_message, is_bot)
@@ -2067,14 +2070,29 @@ class MainWindow(QMainWindow):
         user_id = chat_message.user_id
         text = " ".join(chat_message.text.strip().split())[:500]
         received_at = chat_message.received_at.astimezone(timezone.utc)
+        directed_at_sally, reply_to_sally = self._sally_address_signals(
+            chat_message, text
+        )
         (
             conversation_continuation,
             previous_sally_reply,
             response_expected,
         ) = self._conversation_context(user_id, text, received_at)
-        directed_at_sally, reply_to_sally = self._sally_address_signals(
-            chat_message, text
+        third_person_reference = bool(
+            conversation_continuation
+            and not directed_at_sally
+            and re.search(r"\b(?:she|her|hers)\b", text, flags=re.IGNORECASE)
         )
+        addressed_to_other = self._message_addresses_other(
+            chat_message, text, user_id
+        )
+        if conversation_continuation and (
+            third_person_reference or addressed_to_other
+        ):
+            self.closed_ai_conversations[user_id] = received_at
+            conversation_continuation = False
+            previous_sally_reply = ""
+            response_expected = False
         if (
             not user_id
             or is_bot
@@ -2111,6 +2129,8 @@ class MainWindow(QMainWindow):
             response_expected=response_expected,
             directed_at_sally=directed_at_sally,
             reply_to_sally=reply_to_sally,
+            third_person_reference=third_person_reference,
+            addressed_to_other=addressed_to_other,
         )
         if len(self.response_decision_queue) == self.response_decision_queue.maxlen:
             dropped = self.response_decision_queue.popleft()
@@ -2180,6 +2200,48 @@ class MainWindow(QMainWindow):
             )
         )
         return directed or reply_to_sally, reply_to_sally
+
+    def _message_addresses_other(
+        self,
+        chat_message: TwitchMessage,
+        text: str,
+        user_id: str,
+    ) -> bool:
+        bot_token = self.twitch_bot_auth.token
+        bot_user_id = str(getattr(bot_token, "user_id", "") or "")
+        bot_login = str(getattr(bot_token, "login", "") or "").casefold()
+        if chat_message.reply is not None:
+            parent_id = chat_message.reply.parent_user_id
+            parent_login = chat_message.reply.parent_user_login.casefold()
+            if (
+                parent_id
+                and parent_id != user_id
+                and parent_id != bot_user_id
+                and parent_login not in {"sally", bot_login}
+            ):
+                return True
+        for fragment in chat_message.fragments:
+            mention = fragment.mention
+            if mention is None:
+                continue
+            if (
+                mention.user_id not in {user_id, bot_user_id}
+                and mention.user_login.casefold() not in {"sally", bot_login}
+            ):
+                return True
+        for other_id, record in self.chatter_history.records.items():
+            if other_id in {user_id, bot_user_id}:
+                continue
+            other_name = str(getattr(record, "user_name", "") or "").strip()
+            if not other_name:
+                continue
+            if re.search(
+                rf"(?:@|\b(?:eh|hey|yo)\s+){re.escape(other_name)}\b",
+                text,
+                flags=re.IGNORECASE,
+            ):
+                return True
+        return False
 
     def _conversation_context(
         self,
@@ -2369,9 +2431,9 @@ class MainWindow(QMainWindow):
         required = (
             ResponseDecisionEngine.requires_reply(decision.source_text)
             or decision.response_expected
-            or decision.engagement_type == "direct"
+            or decision.solicited
         )
-        interjection = decision.engagement_type == "interjection"
+        interjection = not required
         maximum_age = (
             max(self.settings.ai_response_max_age_seconds, 120)
             if required
@@ -2389,8 +2451,12 @@ class MainWindow(QMainWindow):
                 not interjection
                 or (
                     self.settings.ai_interjections_enabled
-                    and decision.confidence >= 0.82
+                    and decision.confidence >= 0.88
+                    and self.viewer_messages_since_sally_reply
+                    >= self.settings.ai_interjection_min_messages
                     and monotonic() - self.last_interjection_at
+                    >= self.settings.ai_interjection_min_interval_seconds
+                    and monotonic() - self.last_auto_reply_at
                     >= self.settings.ai_interjection_min_interval_seconds
                 )
             )
@@ -2423,6 +2489,7 @@ class MainWindow(QMainWindow):
         clean = " ".join(reply.strip().split())[:500]
         if not clean:
             return
+        self.viewer_messages_since_sally_reply = 0
         bot_name = (
             self.twitch_bot_auth.token.login
             if self.twitch_bot_auth.token is not None
@@ -2982,6 +3049,9 @@ class MainWindow(QMainWindow):
         self.ai_interjection_interval_spin = QSpinBox()
         self.ai_interjection_interval_spin.setRange(60, 1800)
         self.ai_interjection_interval_spin.setSuffix(" seconds")
+        self.ai_interjection_min_messages_spin = QSpinBox()
+        self.ai_interjection_min_messages_spin.setRange(2, 50)
+        self.ai_interjection_min_messages_spin.setSuffix(" messages")
         self.ai_training_capture_check = QCheckBox(
             "Allow opt-in classifier training capture"
         )
@@ -3005,6 +3075,9 @@ class MainWindow(QMainWindow):
         layout.addRow("Conversation window", self.ai_conversation_followup_spin)
         layout.addRow("Co-host interjections", self.ai_interjections_check)
         layout.addRow("Interjection cooldown", self.ai_interjection_interval_spin)
+        layout.addRow(
+            "Chat before interjection", self.ai_interjection_min_messages_spin
+        )
         layout.addRow("Training capture", self.ai_training_capture_check)
         layout.addRow("", self.local_ai_test_button)
         layout.addRow("Status", self.local_ai_status_label)
@@ -3098,6 +3171,9 @@ class MainWindow(QMainWindow):
         self.ai_interjection_interval_spin.setValue(
             settings.ai_interjection_min_interval_seconds
         )
+        self.ai_interjection_min_messages_spin.setValue(
+            settings.ai_interjection_min_messages
+        )
         self.ai_training_capture_check.setChecked(
             settings.ai_training_capture_enabled
         )
@@ -3158,6 +3234,9 @@ class MainWindow(QMainWindow):
             ai_interjections_enabled=self.ai_interjections_check.isChecked(),
             ai_interjection_min_interval_seconds=(
                 self.ai_interjection_interval_spin.value()
+            ),
+            ai_interjection_min_messages=(
+                self.ai_interjection_min_messages_spin.value()
             ),
             ai_training_capture_enabled=(
                 self.ai_training_capture_check.isChecked()

@@ -54,7 +54,7 @@ repeat `hey sally`. An answer to a question Sally asked, or a new question from
 that viewer, is treated as requiring a response. The window expires rather than
 leaving Sally permanently attached to one conversation.
 
-Sally also recognizes her name anywhere in a message and Twitch's native reply
+Sally also recognizes direct forms of her name and Twitch's native reply
 metadata, so `hey sally` is not a required trigger. The local model receives
 recent turn order and can recognize when wording is implicitly directed at her.
 Each decision reports whether a Sally/viewer exchange starts, continues, ends,
@@ -62,12 +62,16 @@ or remains unchanged. Clear goodbyes, closing thanks, and topic changes therefor
 close the conversation immediately instead of waiting only for the timer.
 
 Optional **Co-host interjections** let Sally occasionally add a relevant joke or
-useful observation even when nobody directly addresses her. These use a stricter
-confidence threshold and a separate three-minute cooldown by default. The prompt
-requires interjections to be rare, specific, and worthwhile and tells Sally to
-stay out of short acknowledgements, viewer-to-viewer greetings, arguments, and
-personal conversations. Both the feature and its cooldown are configurable in
-Settings.
+useful observation even when nobody directly addresses her. They are off by
+default, require at least 88% model confidence, at least six viewer messages
+since Sally last spoke, and a separate five-minute cooldown. The same guards
+apply when the model merely guesses that an ordinary message implicitly addresses
+Sally; a model label cannot bypass the send gate. The prompt requires
+interjections to be rare, specific, and worthwhile and tells Sally to stay out
+of short acknowledgements, viewer-to-viewer greetings, arguments, and personal
+conversations. Third-person discussion of Sally and messages aimed at another
+known viewer close the active Sally turn. The feature, cooldown, and minimum
+chat activity are configurable in Settings.
 
 Reply drafts and ignore decisions appear under **AI > Reply Review**, where the
 streamer can send, edit, or dismiss them. Automatic sending is experimental and

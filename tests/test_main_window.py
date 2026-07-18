@@ -330,8 +330,9 @@ class MainWindowTests(unittest.TestCase):
         self.assertEqual(self.window.ai_response_max_age_spin.value(), 15)
         self.assertEqual(self.window.ai_response_interval_spin.value(), 8)
         self.assertEqual(self.window.ai_conversation_followup_spin.value(), 180)
-        self.assertTrue(self.window.ai_interjections_check.isChecked())
-        self.assertEqual(self.window.ai_interjection_interval_spin.value(), 180)
+        self.assertFalse(self.window.ai_interjections_check.isChecked())
+        self.assertEqual(self.window.ai_interjection_interval_spin.value(), 300)
+        self.assertEqual(self.window.ai_interjection_min_messages_spin.value(), 6)
         self.assertFalse(self.window.ai_training_capture_check.isChecked())
         self.assertIn("quick-witted", self.window.ai_personality_edit.toPlainText())
         self.assertFalse(
@@ -1077,6 +1078,40 @@ class MainWindowTests(unittest.TestCase):
             (False, "", False),
         )
 
+    def test_third_person_message_to_another_viewer_ends_sally_turn(self) -> None:
+        store = ChatterHistoryStore(Path("unused.json"))
+        store.observe_message("streamer-1", "itsjusty0gurt")
+        store.observe_message("viewer-2", "Tarumes")
+        self.window.chatter_history = store
+        self.window._save_chatter_history = Mock()
+        self.window.response_decision_thread_pool.start = Mock()
+        self.window.recent_ai_chat.append(
+            {
+                "speaker": "sally",
+                "viewer": "Sally",
+                "message": "What about you?",
+                "user_id": "streamer-1",
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            }
+        )
+
+        self.window.handle_twitch_message(
+            TwitchMessage(
+                username="itsjusty0gurt",
+                text="she's pretty quick still eh tarumes?",
+                received_at=datetime.now(timezone.utc),
+                message_id="third-person",
+                user_id="streamer-1",
+            )
+        )
+
+        worker = self.window.response_decision_thread_pool.start.call_args.args[0]
+        message = worker.messages[0]
+        self.assertTrue(message.third_person_reference)
+        self.assertTrue(message.addressed_to_other)
+        self.assertFalse(message.conversation_continuation)
+        self.assertFalse(message.response_expected)
+
     def test_reply_decision_is_added_to_review_without_auto_send(self) -> None:
         self.window.twitch_service.send_message = Mock(return_value=True)
         decision = ResponseDecision(
@@ -1115,6 +1150,7 @@ class MainWindowTests(unittest.TestCase):
             reply="I'm here!",
             reason="Directly addressed.",
             confidence=0.9,
+            solicited=True,
         )
 
         self.assertFalse(self.window._maybe_auto_send_reply(fresh))
@@ -1196,6 +1232,8 @@ class MainWindowTests(unittest.TestCase):
         self.window.settings.ai_auto_send_replies = True
         self.window.settings.ai_interjections_enabled = True
         self.window.settings.ai_interjection_min_interval_seconds = 180
+        self.window.settings.ai_interjection_min_messages = 6
+        self.window.viewer_messages_since_sally_reply = 6
         self.window.twitch_service.state = TwitchConnectionState.CONNECTED
         self.window.twitch_service.send_message = Mock(return_value=True)
         decision = ResponseDecision(
@@ -1216,6 +1254,29 @@ class MainWindowTests(unittest.TestCase):
             self.assertTrue(self.window._maybe_auto_send_reply(decision))
         with patch("ui.main_window.monotonic", return_value=201.0):
             self.assertFalse(self.window._maybe_auto_send_reply(decision))
+
+    def test_model_direct_label_cannot_bypass_unsolicited_guards(self) -> None:
+        self.window.settings.ai_auto_send_replies = True
+        self.window.settings.ai_interjections_enabled = False
+        self.window.twitch_service.state = TwitchConnectionState.CONNECTED
+        self.window.twitch_service.send_message = Mock(return_value=True)
+        decision = ResponseDecision(
+            request_id="model-guessed-direct",
+            message_id="message-guessed-direct",
+            user_id="viewer-1",
+            user_name="Viewer",
+            source_text="she still talks too much though",
+            received_at=datetime.now(timezone.utc).isoformat(),
+            decision="reply",
+            reply="I do not talk too much!",
+            reason="Model inferred direct address.",
+            confidence=0.99,
+            engagement_type="direct",
+            solicited=False,
+        )
+
+        self.assertFalse(self.window._maybe_auto_send_reply(decision))
+        self.window.twitch_service.send_message.assert_not_called()
 
     def test_failed_model_still_falls_back_for_hey_sally(self) -> None:
         self.window.settings.ai_auto_send_replies = True

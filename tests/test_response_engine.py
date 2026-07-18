@@ -279,6 +279,7 @@ class ResponseDecisionEngineTests(unittest.TestCase):
         self.assertEqual(len(provider.calls), 2)
         self.assertEqual(decision.engagement_type, "direct")
         self.assertEqual(decision.conversation_state, "start")
+        self.assertTrue(decision.solicited)
 
     def test_model_can_end_conversation_without_replying(self) -> None:
         provider = FakeProvider(

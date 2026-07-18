@@ -46,6 +46,7 @@ class SettingsStoreTests(unittest.TestCase):
             ai_conversation_followup_seconds=240,
             ai_interjections_enabled=False,
             ai_interjection_min_interval_seconds=300,
+            ai_interjection_min_messages=12,
             ai_training_capture_enabled=True,
             ai_personality="Dry, playful, and concise.",
             ai_allow_mild_profanity=True,
@@ -85,6 +86,7 @@ class SettingsStoreTests(unittest.TestCase):
                     "ai_conversation_followup_seconds": 5000,
                     "ai_interjections_enabled": "yes",
                     "ai_interjection_min_interval_seconds": 5000,
+                    "ai_interjection_min_messages": 500,
                     "ai_training_capture_enabled": "yes",
                     "ai_personality": "",
                     "ai_allow_mild_profanity": "yes",
@@ -118,9 +120,10 @@ class SettingsStoreTests(unittest.TestCase):
         self.assertEqual(settings.ai_response_max_age_seconds, 60)
         self.assertEqual(settings.ai_response_min_interval_seconds, 3)
         self.assertEqual(settings.ai_conversation_followup_seconds, 600)
-        self.assertTrue(settings.ai_interjections_enabled)
+        self.assertFalse(settings.ai_interjections_enabled)
         self.assertEqual(settings.ai_interjection_min_interval_seconds, 1800)
         self.assertFalse(settings.ai_training_capture_enabled)
+        self.assertEqual(settings.ai_interjection_min_messages, 50)
         self.assertIn("quick-witted", settings.ai_personality)
         self.assertFalse(settings.ai_allow_mild_profanity)
         self.assertFalse(settings.ai_allow_strong_profanity)

@@ -24,6 +24,8 @@ class ResponseMessage:
     response_expected: bool = False
     directed_at_sally: bool = False
     reply_to_sally: bool = False
+    third_person_reference: bool = False
+    addressed_to_other: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,6 +43,7 @@ class ResponseDecision:
     response_expected: bool = False
     engagement_type: str = "none"
     conversation_state: str = "unchanged"
+    solicited: bool = False
 
 
 class ResponseDecisionEngine:
@@ -183,6 +186,8 @@ class ResponseDecisionEngine:
                 "response_expected": message.response_expected,
                 "directed_at_sally": message.directed_at_sally,
                 "reply_to_sally": message.reply_to_sally,
+                "third_person_reference": message.third_person_reference,
+                "addressed_to_other": message.addressed_to_other,
             }
             for message in messages
         ]
@@ -308,6 +313,7 @@ Return exactly:
                 else "direct"
             ),
             conversation_state="continue",
+            solicited=True,
         )
 
     @staticmethod
@@ -330,6 +336,8 @@ Return exactly:
                 "response_expected": message.response_expected,
                 "directed_at_sally": message.directed_at_sally,
                 "reply_to_sally": message.reply_to_sally,
+                "third_person_reference": message.third_person_reference,
+                "addressed_to_other": message.addressed_to_other,
             }
             for message in messages
         ]
@@ -366,6 +374,12 @@ Both require a response unless unsafe. Also infer an implicit address from recen
 chat: a viewer may clearly be speaking to Sally through wording and turn order
 without using her name. Do not require a magic phrase.
 
+`third_person_reference` means the viewer is discussing Sally as `she`/`her`
+rather than speaking to her. `addressed_to_other` means Twitch metadata or clear
+wording points to another viewer. These normally end or suspend Sally's active
+turn. Do not reply merely because Sally is the subject of viewer-to-viewer chat;
+at most classify a genuinely valuable contribution as a rare interjection.
+
 Classify each decision with `engagement_type`: `direct` when the viewer is
 addressing Sally, `conversation` for an active Sally/viewer exchange,
 `interjection` only when Sally is voluntarily joining a discussion, or `none`
@@ -373,6 +387,11 @@ when ignored. Interjections must be rare, relevant, specific to the current
 discussion, and add genuine humor or useful context. Do not interject into every
 message, greetings between viewers, short acknowledgements, commands, arguments,
 or sensitive/personal conversations.
+
+Do not answer every line in an active conversation and do not end every reply
+with a question. Ask a follow-up only when it genuinely improves the exchange.
+Short commentary, third-person discussion of Sally, and messages aimed at another
+viewer usually need no response.
 
 Also return `conversation_state`: `start` when a new Sally conversation begins,
 `continue` while the viewer is still engaging Sally, `end` when they say goodbye,
@@ -496,6 +515,7 @@ Messages to decide:
             response_expected=source.response_expected,
             engagement_type=engagement_type,
             conversation_state=conversation_state,
+            solicited=self.message_requires_reply(source),
         )
 
     @staticmethod
@@ -514,4 +534,5 @@ Messages to decide:
             response_expected=message.response_expected,
             engagement_type="none",
             conversation_state="unchanged",
+            solicited=ResponseDecisionEngine.message_requires_reply(message),
         )

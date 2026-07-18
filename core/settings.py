@@ -49,8 +49,9 @@ class AppSettings:
     ai_response_max_age_seconds: int = 15
     ai_response_min_interval_seconds: int = 8
     ai_conversation_followup_seconds: int = 180
-    ai_interjections_enabled: bool = True
-    ai_interjection_min_interval_seconds: int = 180
+    ai_interjections_enabled: bool = False
+    ai_interjection_min_interval_seconds: int = 300
+    ai_interjection_min_messages: int = 6
     ai_training_capture_enabled: bool = False
     ai_personality: str = (
         "Warm, quick-witted, curious, and conversational. Match the streamer's "
@@ -225,6 +226,15 @@ class AppSettings:
         ):
             interjection_interval = defaults.ai_interjection_min_interval_seconds
         interjection_interval = min(max(interjection_interval, 60), 1800)
+        interjection_min_messages = values.get(
+            "ai_interjection_min_messages",
+            defaults.ai_interjection_min_messages,
+        )
+        if not isinstance(interjection_min_messages, int) or isinstance(
+            interjection_min_messages, bool
+        ):
+            interjection_min_messages = defaults.ai_interjection_min_messages
+        interjection_min_messages = min(max(interjection_min_messages, 2), 50)
         training_capture_enabled = values.get(
             "ai_training_capture_enabled",
             defaults.ai_training_capture_enabled,
@@ -275,6 +285,7 @@ class AppSettings:
             ai_conversation_followup_seconds=conversation_followup,
             ai_interjections_enabled=interjections_enabled,
             ai_interjection_min_interval_seconds=interjection_interval,
+            ai_interjection_min_messages=interjection_min_messages,
             ai_training_capture_enabled=training_capture_enabled,
             ai_personality=personality,
             ai_allow_mild_profanity=allow_mild_profanity,

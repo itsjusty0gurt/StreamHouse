@@ -23,6 +23,10 @@
 - Added off-by-default supervised intent-training capture with per-session viewer
   opt-in/delete commands, pseudonymous sanitized samples, 30-day pending expiry,
   one-time disclosure, and an AI Training review/label workspace.
+- Tightened co-host restraint after alpha testing: model-guessed addresses can no
+  longer bypass unsolicited-reply guards, interjections default off at 88%
+  confidence with five-minute/six-message gates, third-person discussion ends
+  Sally's turn, and prompts discourage automatic follow-up questions.
 
 - structured AI viewer memories with evidence, confidence, provenance, review
   states, duplicate confirmation, contradiction replacement, and per-viewer opt-out
