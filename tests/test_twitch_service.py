@@ -224,6 +224,82 @@ class TwitchServiceTests(unittest.TestCase):
             reason="spam",
         )
 
+    def test_pinned_message_uses_bot_sender_and_broadcaster_moderator(self) -> None:
+        broadcaster = TwitchToken(
+            "broadcaster-access",
+            "refresh",
+            999,
+            ["moderator:manage:chat_messages"],
+            user_id="channel-1",
+            login="streamer",
+        )
+        bot = TwitchToken(
+            "bot-access",
+            "refresh",
+            999,
+            ["user:write:chat"],
+            user_id="bot-1",
+            login="sallybot",
+        )
+        helix = Mock()
+        helix.send_chat_message.return_value = "message-1"
+        service = TwitchService(
+            auth=Mock(token=broadcaster),
+            bot_auth=Mock(token=bot),
+            helix=helix,
+        )
+        service.broadcaster_user_id = "channel-1"
+        service.state = TwitchConnectionState.CONNECTED
+
+        self.assertEqual(
+            service.send_pinned_message("Optional training notice"),
+            (True, True),
+        )
+        helix.send_chat_message.assert_called_once_with(
+            "channel-1",
+            "bot-1",
+            "Optional training notice",
+            bot,
+        )
+        helix.pin_chat_message.assert_called_once_with(
+            "channel-1",
+            "channel-1",
+            "message-1",
+            broadcaster,
+        )
+
+    def test_pin_failure_does_not_resend_successful_notice(self) -> None:
+        broadcaster = TwitchToken(
+            "broadcaster-access",
+            "refresh",
+            999,
+            ["moderator:manage:chat_messages"],
+            user_id="channel-1",
+        )
+        bot = TwitchToken(
+            "bot-access",
+            "refresh",
+            999,
+            ["user:write:chat"],
+            user_id="bot-1",
+        )
+        helix = Mock()
+        helix.send_chat_message.return_value = "message-1"
+        helix.pin_chat_message.side_effect = ValueError("open beta unavailable")
+        service = TwitchService(
+            auth=Mock(token=broadcaster),
+            bot_auth=Mock(token=bot),
+            helix=helix,
+        )
+        service.broadcaster_user_id = "channel-1"
+        service.state = TwitchConnectionState.CONNECTED
+
+        self.assertEqual(
+            service.send_pinned_message("Optional training notice"),
+            (True, False),
+        )
+        helix.send_chat_message.assert_called_once()
+
     def test_disconnect_returns_to_disconnected(self) -> None:
         self.service.connect("channel")
 

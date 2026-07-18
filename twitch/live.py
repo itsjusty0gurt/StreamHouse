@@ -30,6 +30,7 @@ class TwitchHelixClient:
     USERS_URL = "https://api.twitch.tv/helix/users"
     SUBSCRIPTIONS_URL = "https://api.twitch.tv/helix/eventsub/subscriptions"
     SEND_URL = "https://api.twitch.tv/helix/chat/messages"
+    PINS_URL = "https://api.twitch.tv/helix/chat/pins"
     GLOBAL_BADGES_URL = "https://api.twitch.tv/helix/chat/badges/global"
     CHANNEL_BADGES_URL = "https://api.twitch.tv/helix/chat/badges"
     STREAMS_URL = "https://api.twitch.tv/helix/streams"
@@ -174,7 +175,27 @@ class TwitchHelixClient:
                 "1",
                 {"broadcaster_user_id": broadcaster_user_id},
             ))
-        activity_specs.append(("channel.raid", "1", {"to_broadcaster_user_id": broadcaster_user_id}))
+        activity_specs.extend(
+            (
+                (
+                    "stream.online",
+                    "1",
+                    {"broadcaster_user_id": broadcaster_user_id},
+                ),
+                (
+                    "stream.offline",
+                    "1",
+                    {"broadcaster_user_id": broadcaster_user_id},
+                ),
+            )
+        )
+        activity_specs.append(
+            (
+                "channel.raid",
+                "1",
+                {"to_broadcaster_user_id": broadcaster_user_id},
+            )
+        )
         warnings = []
         for event_type, version, condition in activity_specs:
             try:
@@ -255,6 +276,27 @@ class TwitchHelixClient:
             )
             raise ValueError(detail)
         return str(result.get("message_id", ""))
+
+    def pin_chat_message(
+        self,
+        broadcaster_id: str,
+        moderator_id: str,
+        message_id: str,
+        token: TwitchToken,
+    ) -> None:
+        """Pin an existing message until the current stream ends."""
+
+        parameters = {
+            "broadcaster_id": broadcaster_id,
+            "moderator_id": moderator_id,
+            "message_id": message_id,
+        }
+        url = f"{self.PINS_URL}?{urlencode(parameters)}"
+        with urlopen(
+            Request(url, headers=self._headers(token), method="PUT"),
+            timeout=15,
+        ):
+            pass
 
     def ban_user(
         self,

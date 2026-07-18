@@ -281,6 +281,43 @@ class MainWindowTests(unittest.TestCase):
             self.window.activity_feed_list.item(0).text(),
         )
 
+    def test_stream_online_event_posts_training_notice_once(self) -> None:
+        self.window.settings.ai_training_capture_enabled = True
+        self.window.settings.ai_training_notice_enabled = True
+        self.window.twitch_service.state = TwitchConnectionState.CONNECTED
+        self.window.twitch_service.send_pinned_message = Mock(
+            return_value=(True, True)
+        )
+        self.window.settings_store.save = Mock()
+        self.window.refresh_stream_companion = Mock()
+        event = TwitchEvent(
+            subscription_type="stream.online",
+            version="1",
+            received_at=datetime.now(timezone.utc),
+            message_id="online-1",
+            broadcaster_user_id="42",
+            broadcaster_user_login="channel",
+            broadcaster_user_name="Channel",
+            transport=TwitchEventTransport.WEBSOCKET,
+            payload={
+                "event": {
+                    "id": "stream-42",
+                    "started_at": datetime.now(timezone.utc).isoformat(),
+                }
+            },
+        )
+
+        self.window.handle_twitch_activity(event)
+        self.window.handle_twitch_activity(event)
+
+        self.window.twitch_service.send_pinned_message.assert_called_once()
+        self.assertEqual(self.window.current_memory_stream_id, "stream-42")
+        self.assertEqual(
+            self.window.settings.ai_training_notice_stream_id,
+            "stream-42",
+        )
+        self.assertEqual(self.window.refresh_stream_companion.call_count, 2)
+
     def test_log_buttons_feed_the_ui(self) -> None:
         self.window.ui.testInfoButton.click()
         self.window.ui.testWarningButton.click()
@@ -334,6 +371,12 @@ class MainWindowTests(unittest.TestCase):
         self.assertEqual(self.window.ai_interjection_interval_spin.value(), 300)
         self.assertEqual(self.window.ai_interjection_min_messages_spin.value(), 6)
         self.assertFalse(self.window.ai_training_capture_check.isChecked())
+        self.assertTrue(self.window.ai_training_notice_check.isChecked())
+        self.assertFalse(self.window.ai_training_notice_check.isEnabled())
+        self.assertIn(
+            "Participation is optional",
+            self.window.ai_training_notice_edit.text(),
+        )
         self.assertIn("quick-witted", self.window.ai_personality_edit.toPlainText())
         self.assertFalse(
             self.window.ai_allow_mild_profanity_check.isChecked()
@@ -995,6 +1038,52 @@ class MainWindowTests(unittest.TestCase):
             (False, False),
         )
 
+        for text in (
+            "Say hello sally",
+            "Are you sassy Sally?",
+            "Ok thanks Sally, bye!",
+        ):
+            natural = TwitchMessage(
+                username="Viewer",
+                text=text,
+                received_at=datetime.now(timezone.utc),
+                user_id="viewer-1",
+            )
+            self.assertEqual(
+                self.window._sally_address_signals(natural, natural.text),
+                (True, False),
+                text,
+            )
+
+    def test_unknown_other_viewer_wording_ends_sally_turn(self) -> None:
+        self.window.response_decision_thread_pool.start = Mock()
+        self.window.recent_ai_chat.append(
+            {
+                "speaker": "sally",
+                "viewer": "Sally",
+                "message": "What about you?",
+                "user_id": "streamer-1",
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            }
+        )
+
+        self.window.handle_twitch_message(
+            TwitchMessage(
+                username="itsjusty0gurt",
+                text="Shes pretty quick eh, jimbob?",
+                received_at=datetime.now(timezone.utc),
+                message_id="unknown-other-viewer",
+                user_id="streamer-1",
+            )
+        )
+
+        worker = self.window.response_decision_thread_pool.start.call_args.args[0]
+        message = worker.messages[0]
+        self.assertTrue(message.third_person_reference)
+        self.assertTrue(message.addressed_to_other)
+        self.assertFalse(message.conversation_continuation)
+        self.assertFalse(message.response_expected)
+
     def test_broadcaster_can_continue_recent_sally_conversation(self) -> None:
         self.window.twitch_service.broadcaster_user_id = "streamer-1"
         self.window.response_decision_thread_pool.start = Mock()
@@ -1336,6 +1425,36 @@ class MainWindowTests(unittest.TestCase):
             ["queued-different"],
         )
 
+    def test_sent_natural_address_discards_queued_duplicate_retries(self) -> None:
+        self.window.response_decision_queue.append(
+            ResponseMessage(
+                request_id="queued-natural",
+                message_id="queued-message",
+                user_id="viewer-1",
+                user_name="Viewer",
+                text="say hello sally",
+                received_at=datetime.now(timezone.utc).isoformat(),
+                directed_at_sally=True,
+            )
+        )
+        sent = ResponseDecision(
+            request_id="sent-natural",
+            message_id="sent-message",
+            user_id="viewer-1",
+            user_name="Viewer",
+            source_text="say hello sally",
+            received_at=datetime.now(timezone.utc).isoformat(),
+            decision="reply",
+            reply="Hello!",
+            reason="Natural direct address.",
+            confidence=0.9,
+            solicited=True,
+        )
+
+        self.window._drop_duplicate_queued_invocations(sent)
+
+        self.assertEqual(list(self.window.response_decision_queue), [])
+
     def test_sally_memory_commands_opt_in_report_and_delete(self) -> None:
         self.window.settings.ai_viewer_memory_enabled = True
         store = ChatterHistoryStore(Path("unused.json"))
@@ -1472,18 +1591,51 @@ class MainWindowTests(unittest.TestCase):
 
     def test_training_disclosure_is_sent_only_once_per_stream(self) -> None:
         self.window.settings.ai_training_capture_enabled = True
+        self.window.settings.ai_training_notice_enabled = True
         self.window.twitch_service.state = TwitchConnectionState.CONNECTED
-        self.window.twitch_service.send_message = Mock(return_value=True)
+        self.window.twitch_service.send_pinned_message = Mock(
+            return_value=(True, True)
+        )
+        self.window.settings_store.save = Mock()
         self.window.current_memory_stream_id = "stream-1"
 
         self.window._maybe_announce_training_capture()
         self.window._maybe_announce_training_capture()
 
-        self.window.twitch_service.send_message.assert_called_once()
+        self.window.twitch_service.send_pinned_message.assert_called_once()
         self.assertIn(
-            "alpha training is optional",
-            self.window.twitch_service.send_message.call_args.args[0],
+            "Participation is optional",
+            self.window.twitch_service.send_pinned_message.call_args.args[0],
         )
+        self.assertEqual(
+            self.window.settings.ai_training_notice_stream_id,
+            "stream-1",
+        )
+        self.window.settings_store.save.assert_called_once_with(
+            self.window.settings
+        )
+
+    def test_training_disclosure_is_not_triggered_by_first_chat_message(self) -> None:
+        self.window.settings.ai_training_capture_enabled = True
+        self.window.settings.ai_training_notice_enabled = True
+        self.window.twitch_service.state = TwitchConnectionState.CONNECTED
+        self.window.twitch_service.send_pinned_message = Mock(
+            return_value=(True, True)
+        )
+        self.window.current_memory_stream_id = "stream-1"
+        self.window.response_decision_thread_pool.start = Mock()
+
+        self.window.handle_twitch_message(
+            TwitchMessage(
+                username="Viewer",
+                text="hello chat",
+                received_at=datetime.now(timezone.utc),
+                message_id="ordinary-chat",
+                user_id="viewer-1",
+            )
+        )
+
+        self.window.twitch_service.send_pinned_message.assert_not_called()
 
     def test_twitch_chat_turns_urls_into_links(self) -> None:
         self.window.ui.twitchChannelEdit.setText("channel")

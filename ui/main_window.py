@@ -140,7 +140,7 @@ class MainWindow(QMainWindow):
         self.release_controller = release_controller or ReleaseController()
         self.training_store = training_store or TrainingStore()
         self.training_opted_in_users: set[str] = set()
-        self.training_notice_context = ""
+        self.training_notice_attempt_context = ""
         try:
             self.training_store.load()
         except (OSError, ValueError, json.JSONDecodeError) as error:
@@ -1588,7 +1588,6 @@ class MainWindow(QMainWindow):
         if not memory_command and not training_command:
             if not is_bot:
                 self.viewer_messages_since_sally_reply += 1
-            self._maybe_announce_training_capture()
             self._buffer_message_for_memory_reasoning(chat_message, is_bot)
             self._queue_response_decision(chat_message, is_bot)
         received_time = chat_message.received_at.astimezone().strftime(
@@ -1828,19 +1827,40 @@ class MainWindow(QMainWindow):
     def _maybe_announce_training_capture(self) -> None:
         if not (
             self.settings.ai_training_capture_enabled
+            and self.settings.ai_training_notice_enabled
             and self.twitch_service.state is TwitchConnectionState.CONNECTED
+            and self.current_memory_stream_id
         ):
             return
-        context = self.current_memory_stream_id or "application-session"
-        if self.training_notice_context == context:
+        context = self.current_memory_stream_id
+        if (
+            self.settings.ai_training_notice_stream_id == context
+            or self.training_notice_attempt_context == context
+        ):
             return
-        notice = (
-            "Sally's alpha training is optional and separate from viewer memory. "
-            "Type !sallytrain on to contribute local pseudonymous examples; "
-            "use !sallytrain off or delete anytime."
+        self.training_notice_attempt_context = context
+        sent, pinned = self.twitch_service.send_pinned_message(
+            self.settings.ai_training_notice_message
         )
-        if self.twitch_service.send_message(notice):
-            self.training_notice_context = context
+        if not sent:
+            Logger.warning(
+                "The once-per-stream training notice could not be sent.",
+                source="TWITCH",
+            )
+            return
+        self.settings.ai_training_notice_stream_id = context
+        try:
+            self.settings_store.save(self.settings)
+        except OSError as error:
+            Logger.warning(
+                f"Could not remember the announced training stream: {error}",
+                source="SETTINGS",
+            )
+        Logger.info(
+            "Posted the once-per-stream training notice"
+            + (" and pinned it." if pinned else "; pinning was unavailable."),
+            source="TWITCH",
+        )
 
     def _clear_viewer_runtime_memory(self, user_id: str) -> None:
         self.memory_message_buffers.pop(user_id, None)
@@ -2081,7 +2101,11 @@ class MainWindow(QMainWindow):
         third_person_reference = bool(
             conversation_continuation
             and not directed_at_sally
-            and re.search(r"\b(?:she|her|hers)\b", text, flags=re.IGNORECASE)
+            and re.search(
+                r"\b(?:she(?:['’]?s)?|her|hers)\b",
+                text,
+                flags=re.IGNORECASE,
+            )
         )
         addressed_to_other = self._message_addresses_other(
             chat_message, text, user_id
@@ -2174,13 +2198,7 @@ class MainWindow(QMainWindow):
         if bot_login:
             aliases.add(bot_login)
         directed = any(
-            re.search(
-                rf"(?:^\s*@?{re.escape(alias)}(?:\b|[,:!?])"
-                rf"|(?:^|\s)(?:hey|hi|yo|ok|okay)\s+@?{re.escape(alias)}\b"
-                rf"|[,;]\s*@?{re.escape(alias)}[.!?]*\s*$)",
-                text,
-                flags=re.IGNORECASE,
-            )
+            self._text_directly_addresses_alias(text, alias)
             for alias in aliases
         )
         directed = directed or any(
@@ -2200,6 +2218,30 @@ class MainWindow(QMainWindow):
             )
         )
         return directed or reply_to_sally, reply_to_sally
+
+    @staticmethod
+    def _text_directly_addresses_alias(text: str, alias: str) -> bool:
+        """Recognize common vocative phrasing without treating mentions as speech."""
+
+        escaped = re.escape(alias)
+        patterns = (
+            # "Sally ...", "hey Sally", and "what do you think, Sally?"
+            rf"^\s*@?{escaped}(?:\b|[,:!?])",
+            rf"(?:^|\s)(?:hey|hi|hello|yo|ok|okay)\s+@?{escaped}\b",
+            rf"[,;]\s*@?{escaped}[.!?]*\s*$",
+            # Natural questions such as "are you sassy Sally?"
+            rf"\b(?:you|your|yours|yourself)\b.*\b@?{escaped}[.!?]*\s*$",
+            # Direct requests such as "say hello Sally".
+            rf"^\s*(?:please\s+)?(?:say|answer|explain|show|give|make|tell)\b"
+            rf".*\b@?{escaped}[.!?]*\s*$",
+            # Conversational endings such as "thanks Sally, bye".
+            rf"\b(?:thanks?|thank\s+you)\s*,?\s+@?{escaped}\b"
+            rf"(?:\s*[,;:]\s*(?:bye|goodbye|night|later))?",
+        )
+        return any(
+            re.search(pattern, text, flags=re.IGNORECASE)
+            for pattern in patterns
+        )
 
     def _message_addresses_other(
         self,
@@ -2228,6 +2270,14 @@ class MainWindow(QMainWindow):
                 mention.user_id not in {user_id, bot_user_id}
                 and mention.user_login.casefold() not in {"sally", bot_login}
             ):
+                return True
+        aliases = {"sally", bot_login, chat_message.username.casefold()}
+        for match in re.finditer(
+            r"\b(?:eh|hey|yo)\s*[,;:]?\s*@?([a-z0-9_]{2,25})\b",
+            text,
+            flags=re.IGNORECASE,
+        ):
+            if match.group(1).casefold() not in aliases:
                 return True
         for other_id, record in self.chatter_history.records.items():
             if other_id in {user_id, bot_user_id}:
@@ -2357,7 +2407,10 @@ class MainWindow(QMainWindow):
     def _drop_duplicate_queued_invocations(
         self, decision: ResponseDecision
     ) -> None:
-        if not ResponseDecisionEngine.requires_reply(decision.source_text):
+        if not (
+            ResponseDecisionEngine.requires_reply(decision.source_text)
+            or decision.solicited
+        ):
             return
         normalized = " ".join(decision.source_text.casefold().split())
         self.response_decision_queue = deque(
@@ -2739,6 +2792,33 @@ class MainWindow(QMainWindow):
 
     @Slot(object)
     def handle_twitch_activity(self, twitch_event: TwitchEvent) -> None:
+        if twitch_event.subscription_type in {
+            "stream.online",
+            "stream.offline",
+        }:
+            if self.session_tracker.observe_event(
+                twitch_event.subscription_type
+            ):
+                self._refresh_session_history()
+            event = twitch_event.payload.get("event", {})
+            if (
+                twitch_event.subscription_type == "stream.online"
+                and isinstance(event, dict)
+            ):
+                next_stream_id = str(
+                    event.get("id") or event.get("started_at") or ""
+                )
+                if next_stream_id != self.current_memory_stream_id:
+                    self.current_memory_stream_id = next_stream_id
+                    self.memory_promo_message_count = 0
+                    self.last_memory_promo_at = 0.0
+                    self.training_notice_attempt_context = ""
+                self._maybe_announce_training_capture()
+            else:
+                self.current_memory_stream_id = ""
+                self.training_notice_attempt_context = ""
+            self.refresh_stream_companion()
+            return
         entry = format_twitch_activity(twitch_event)
         if entry is None:
             return
@@ -3059,6 +3139,15 @@ class MainWindow(QMainWindow):
             "Viewers must separately type !sallytrain on each session. "
             "Captured samples stay local and are pseudonymous."
         )
+        self.ai_training_notice_check = QCheckBox(
+            "Post and pin once when the stream goes live"
+        )
+        self.ai_training_notice_check.setToolTip(
+            "Sally posts one opt-in disclosure per Twitch stream and the "
+            "broadcaster account pins it until the stream ends."
+        )
+        self.ai_training_notice_edit = QLineEdit()
+        self.ai_training_notice_edit.setMaxLength(500)
         layout.addRow("Enabled", self.local_ai_enabled_check)
         layout.addRow("Endpoint", self.local_ai_endpoint_edit)
         layout.addRow("Model", self.local_ai_model_edit)
@@ -3079,12 +3168,20 @@ class MainWindow(QMainWindow):
             "Chat before interjection", self.ai_interjection_min_messages_spin
         )
         layout.addRow("Training capture", self.ai_training_capture_check)
+        layout.addRow("Pinned training notice", self.ai_training_notice_check)
+        layout.addRow("Training notice text", self.ai_training_notice_edit)
         layout.addRow("", self.local_ai_test_button)
         layout.addRow("Status", self.local_ai_status_label)
         self.ui.settingsLayout.insertWidget(3, group)
         self.local_ai_test_button.clicked.connect(self._test_local_ai)
         self.ai_viewer_memory_check.toggled.connect(
             self._update_memory_setting_controls
+        )
+        self.ai_training_capture_check.toggled.connect(
+            self._update_training_setting_controls
+        )
+        self.ai_training_notice_check.toggled.connect(
+            self._update_training_setting_controls
         )
 
     @Slot(bool)
@@ -3097,6 +3194,13 @@ class MainWindow(QMainWindow):
             self.ai_memory_promo_interval_spin,
         ):
             control.setEnabled(enabled)
+
+    def _update_training_setting_controls(self, _enabled: bool = False) -> None:
+        capture_enabled = self.ai_training_capture_check.isChecked()
+        self.ai_training_notice_check.setEnabled(capture_enabled)
+        self.ai_training_notice_edit.setEnabled(
+            capture_enabled and self.ai_training_notice_check.isChecked()
+        )
 
     @Slot()
     def _test_local_ai(self) -> None:
@@ -3177,6 +3281,13 @@ class MainWindow(QMainWindow):
         self.ai_training_capture_check.setChecked(
             settings.ai_training_capture_enabled
         )
+        self.ai_training_notice_check.setChecked(
+            settings.ai_training_notice_enabled
+        )
+        self.ai_training_notice_edit.setText(
+            settings.ai_training_notice_message
+        )
+        self._update_training_setting_controls()
         self.ai_personality_edit.setPlainText(settings.ai_personality)
         self.ai_allow_mild_profanity_check.setChecked(
             settings.ai_allow_mild_profanity
@@ -3240,6 +3351,15 @@ class MainWindow(QMainWindow):
             ),
             ai_training_capture_enabled=(
                 self.ai_training_capture_check.isChecked()
+            ),
+            ai_training_notice_enabled=(
+                self.ai_training_notice_check.isChecked()
+            ),
+            ai_training_notice_message=(
+                self.ai_training_notice_edit.text()
+            ),
+            ai_training_notice_stream_id=(
+                self.settings.ai_training_notice_stream_id
             ),
             ai_personality=self.ai_personality_edit.toPlainText(),
             ai_allow_mild_profanity=(
@@ -3928,6 +4048,7 @@ class MainWindow(QMainWindow):
             self.current_memory_stream_id = next_stream_id
             self.memory_promo_message_count = 0
             self.last_memory_promo_at = 0.0
+            self.training_notice_attempt_context = ""
         self._expire_daily_memory()
         if self.session_tracker.observe_stream(snapshot.get("stream")):
             self._refresh_session_history()
@@ -3943,6 +4064,7 @@ class MainWindow(QMainWindow):
         if any("401" in warning for warning in current_warnings):
             self.twitch_auth.recover_unauthorized()
         if isinstance(stream, dict):
+            self._maybe_announce_training_capture()
             self.stream_live_label.setText("LIVE")
             self.stream_live_label.setStyleSheet(
                 "color:#ff4f64; font-weight:bold;"

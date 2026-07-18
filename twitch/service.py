@@ -292,6 +292,58 @@ class TwitchService:
             return False
         return True
 
+    def send_pinned_message(self, text: str) -> tuple[bool, bool]:
+        """Send as Sally, then pin with the broadcaster's authorization."""
+
+        clean_text = text.strip()
+        if self.state is not TwitchConnectionState.CONNECTED:
+            return False, False
+        chat_token = self._chat_token()
+        moderator_token = self.auth.token if self.auth is not None else None
+        if (
+            not clean_text
+            or chat_token is None
+            or not chat_token.user_id
+            or moderator_token is None
+            or not moderator_token.user_id
+            or not self.broadcaster_user_id
+        ):
+            return False, False
+        try:
+            message_id = self.helix.send_chat_message(
+                self.broadcaster_user_id,
+                chat_token.user_id,
+                clean_text,
+                chat_token,
+            )
+        except (HTTPError, URLError, OSError, ValueError) as error:
+            self._report_error(
+                f"Could not send pinned Twitch message: {error}",
+                change_state=False,
+            )
+            return False, False
+        if not message_id:
+            Logger.warning(
+                "Twitch sent the training notice without returning a message ID; "
+                "it could not be pinned.",
+                source="TWITCH",
+            )
+            return True, False
+        try:
+            self.helix.pin_chat_message(
+                self.broadcaster_user_id,
+                moderator_token.user_id,
+                message_id,
+                moderator_token,
+            )
+        except (HTTPError, URLError, OSError, ValueError) as error:
+            Logger.warning(
+                f"Training notice was sent but could not be pinned: {error}",
+                source="TWITCH",
+            )
+            return True, False
+        return True, True
+
     def _chat_token(self):
         if self.bot_auth is not None and self.bot_auth.token is not None:
             return self.bot_auth.token

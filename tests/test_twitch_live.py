@@ -1,6 +1,6 @@
 import json
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from PySide6.QtCore import QCoreApplication
 
@@ -48,6 +48,44 @@ class TwitchHelixClientTests(unittest.TestCase):
         self.assertEqual([item["user_id"] for item in records], ["1", "2"])
         second_url = open_url.call_args_list[1].args[0].full_url
         self.assertIn("after=next-page", second_url)
+
+    @patch("twitch.live.urlopen")
+    def test_pin_uses_broadcaster_moderator_and_no_duration(self, open_url) -> None:
+        open_url.return_value = _JsonResponse({})
+        token = TwitchToken("access", "refresh", 999, [])
+
+        TwitchHelixClient().pin_chat_message(
+            "channel-1",
+            "moderator-1",
+            "message-1",
+            token,
+        )
+
+        request = open_url.call_args.args[0]
+        self.assertEqual(request.method, "PUT")
+        self.assertIn("broadcaster_id=channel-1", request.full_url)
+        self.assertIn("moderator_id=moderator-1", request.full_url)
+        self.assertIn("message_id=message-1", request.full_url)
+        self.assertNotIn("duration_seconds", request.full_url)
+
+    def test_activity_subscriptions_include_stream_state(self) -> None:
+        client = TwitchHelixClient()
+        client._create_subscription = Mock()
+        token = TwitchToken("access", "refresh", 999, [])
+
+        client.create_activity_subscriptions(
+            "session-1",
+            "channel-1",
+            "moderator-1",
+            token,
+        )
+
+        event_types = {
+            call.args[0]
+            for call in client._create_subscription.call_args_list
+        }
+        self.assertIn("stream.online", event_types)
+        self.assertIn("stream.offline", event_types)
 
 
 class TwitchEventSubSocketTests(unittest.TestCase):

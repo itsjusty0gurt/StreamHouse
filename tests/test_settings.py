@@ -48,6 +48,9 @@ class SettingsStoreTests(unittest.TestCase):
             ai_interjection_min_interval_seconds=300,
             ai_interjection_min_messages=12,
             ai_training_capture_enabled=True,
+            ai_training_notice_enabled=False,
+            ai_training_notice_message="Custom opt-in notice",
+            ai_training_notice_stream_id="stream-42",
             ai_personality="Dry, playful, and concise.",
             ai_allow_mild_profanity=True,
             ai_allow_strong_profanity=True,
@@ -88,6 +91,9 @@ class SettingsStoreTests(unittest.TestCase):
                     "ai_interjection_min_interval_seconds": 5000,
                     "ai_interjection_min_messages": 500,
                     "ai_training_capture_enabled": "yes",
+                    "ai_training_notice_enabled": "yes",
+                    "ai_training_notice_message": "",
+                    "ai_training_notice_stream_id": 42,
                     "ai_personality": "",
                     "ai_allow_mild_profanity": "yes",
                     "ai_allow_strong_profanity": "yes",
@@ -123,6 +129,12 @@ class SettingsStoreTests(unittest.TestCase):
         self.assertFalse(settings.ai_interjections_enabled)
         self.assertEqual(settings.ai_interjection_min_interval_seconds, 1800)
         self.assertFalse(settings.ai_training_capture_enabled)
+        self.assertTrue(settings.ai_training_notice_enabled)
+        self.assertIn(
+            "Participation is optional",
+            settings.ai_training_notice_message,
+        )
+        self.assertEqual(settings.ai_training_notice_stream_id, "")
         self.assertEqual(settings.ai_interjection_min_messages, 50)
         self.assertIn("quick-witted", settings.ai_personality)
         self.assertFalse(settings.ai_allow_mild_profanity)

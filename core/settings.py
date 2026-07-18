@@ -53,6 +53,14 @@ class AppSettings:
     ai_interjection_min_interval_seconds: int = 300
     ai_interjection_min_messages: int = 6
     ai_training_capture_enabled: bool = False
+    ai_training_notice_enabled: bool = True
+    ai_training_notice_message: str = (
+        "Sally is currently in alpha testing. Participation is optional. "
+        "Type !sallytrain on to contribute pseudonymous local training "
+        "examples for this stream. Use !sallytrain off or !sallytrain delete "
+        "anytime."
+    )
+    ai_training_notice_stream_id: str = ""
     ai_personality: str = (
         "Warm, quick-witted, curious, and conversational. Match the streamer's "
         "energy, keep replies concise, and sound like a genuine cohost rather "
@@ -241,6 +249,29 @@ class AppSettings:
         )
         if not isinstance(training_capture_enabled, bool):
             training_capture_enabled = defaults.ai_training_capture_enabled
+        training_notice_enabled = values.get(
+            "ai_training_notice_enabled",
+            defaults.ai_training_notice_enabled,
+        )
+        if not isinstance(training_notice_enabled, bool):
+            training_notice_enabled = defaults.ai_training_notice_enabled
+        training_notice_message = values.get(
+            "ai_training_notice_message",
+            defaults.ai_training_notice_message,
+        )
+        if (
+            not isinstance(training_notice_message, str)
+            or not training_notice_message.strip()
+        ):
+            training_notice_message = defaults.ai_training_notice_message
+        training_notice_message = training_notice_message.strip()[:500]
+        training_notice_stream_id = values.get(
+            "ai_training_notice_stream_id",
+            defaults.ai_training_notice_stream_id,
+        )
+        if not isinstance(training_notice_stream_id, str):
+            training_notice_stream_id = defaults.ai_training_notice_stream_id
+        training_notice_stream_id = training_notice_stream_id.strip()[:200]
         personality = values.get("ai_personality", defaults.ai_personality)
         if not isinstance(personality, str) or not personality.strip():
             personality = defaults.ai_personality
@@ -287,6 +318,9 @@ class AppSettings:
             ai_interjection_min_interval_seconds=interjection_interval,
             ai_interjection_min_messages=interjection_min_messages,
             ai_training_capture_enabled=training_capture_enabled,
+            ai_training_notice_enabled=training_notice_enabled,
+            ai_training_notice_message=training_notice_message,
+            ai_training_notice_stream_id=training_notice_stream_id,
             ai_personality=personality,
             ai_allow_mild_profanity=allow_mild_profanity,
             ai_allow_strong_profanity=allow_strong_profanity,
