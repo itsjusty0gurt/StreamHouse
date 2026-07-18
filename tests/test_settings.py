@@ -122,7 +122,7 @@ class SettingsStoreTests(unittest.TestCase):
         self.assertTrue(settings.ai_memory_promo_enabled)
         self.assertEqual(settings.ai_memory_promo_interval_messages, 1000)
         self.assertTrue(settings.ai_response_decisions_enabled)
-        self.assertFalse(settings.ai_auto_send_replies)
+        self.assertTrue(settings.ai_auto_send_replies)
         self.assertEqual(settings.ai_response_max_age_seconds, 60)
         self.assertEqual(settings.ai_response_min_interval_seconds, 3)
         self.assertEqual(settings.ai_conversation_followup_seconds, 600)

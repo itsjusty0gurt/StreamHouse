@@ -49,6 +49,19 @@ class TwitchChatViewTests(unittest.TestCase):
         self.assertTrue(event.isAccepted())
         view.close()
 
+    def test_append_updates_loaded_page_without_full_render(self) -> None:
+        view = TwitchChatView()
+        view._loaded = True
+        view._render = Mock()
+        view._append_html = Mock()
+
+        view.append("<div>new message</div>")
+
+        view._append_html.assert_called_once_with("<div>new message</div>")
+        view._render.assert_not_called()
+        self.assertIn("new message", view.toHtml())
+        view.close()
+
 
 if __name__ == "__main__":
     unittest.main()

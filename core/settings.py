@@ -45,7 +45,7 @@ class AppSettings:
     ai_memory_promo_enabled: bool = True
     ai_memory_promo_interval_messages: int = 150
     ai_response_decisions_enabled: bool = True
-    ai_auto_send_replies: bool = False
+    ai_auto_send_replies: bool = True
     ai_response_max_age_seconds: int = 15
     ai_response_min_interval_seconds: int = 8
     ai_conversation_followup_seconds: int = 180
@@ -187,12 +187,9 @@ class AppSettings:
         )
         if not isinstance(response_decisions_enabled, bool):
             response_decisions_enabled = defaults.ai_response_decisions_enabled
-        auto_send_replies = values.get(
-            "ai_auto_send_replies",
-            defaults.ai_auto_send_replies,
-        )
-        if not isinstance(auto_send_replies, bool):
-            auto_send_replies = defaults.ai_auto_send_replies
+        # Reasoning-approved replies are always sent. Keep the serialized field
+        # for backward compatibility with existing settings files.
+        auto_send_replies = True
         response_max_age = values.get(
             "ai_response_max_age_seconds",
             defaults.ai_response_max_age_seconds,

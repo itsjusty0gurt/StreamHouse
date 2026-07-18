@@ -76,6 +76,18 @@ class MainWindowTests(unittest.TestCase):
         self.release_controller.automatic_backup.return_value = None
         self.training_store = Mock()
         self.training_store.examples = []
+        self.test_report_store = Mock()
+        self.test_report_store.events = []
+        self.test_report_store.summary.return_value = {
+            "total": 0,
+            "sent": 0,
+            "ignored": 0,
+            "missed": 0,
+            "blocked": 0,
+            "failed": 0,
+            "average_latency_ms": 0,
+        }
+        self.test_report_store.selected_events.return_value = []
         self.window = MainWindow(
             window_state_store=self.window_state_store,
             chatter_history_store=self.chatter_history_store,
@@ -83,6 +95,7 @@ class MainWindowTests(unittest.TestCase):
             session_store=self.session_store,
             release_controller=self.release_controller,
             training_store=self.training_store,
+            test_report_store=self.test_report_store,
             auto_upgrade_permissions=False,
         )
 
@@ -169,7 +182,13 @@ class MainWindowTests(unittest.TestCase):
         ]
         self.assertEqual(
             ai_tab_names,
-            ["Memories", "Reply Review", "Training", "Personality"],
+            [
+                "Memories",
+                "Reply Review",
+                "Test Report",
+                "Training",
+                "Personality",
+            ],
         )
         self.assertEqual(
             channel_tab_names,
@@ -193,7 +212,7 @@ class MainWindowTests(unittest.TestCase):
             self.window.ui.settingsPage,
         )
         self.assertTrue(all(page is not None for page in pages))
-        self.assertEqual(self.window.ai_tabs.count(), 4)
+        self.assertEqual(self.window.ai_tabs.count(), 5)
         self.assertEqual(self.window.channel_tabs.count(), 3)
         self.assertEqual(
             [
@@ -207,6 +226,80 @@ class MainWindowTests(unittest.TestCase):
             1,
         )
         self.assertTrue(self.window.create_backup_button.isEnabled())
+
+    def test_settings_groups_are_separated_into_top_tabs(self) -> None:
+        self.assertEqual(
+            [
+                self.window.settings_tabs.tabText(index)
+                for index in range(self.window.settings_tabs.count())
+            ],
+            ["Application", "Chat", "AI", "Developer"],
+        )
+        self.assertIsNotNone(self.window.ui.generalSettingsGroup.parentWidget())
+        self.assertIsNotNone(self.window.local_ai_settings_group.parentWidget())
+
+    def test_memory_buttons_follow_viewer_and_memory_selection(self) -> None:
+        buttons = (
+            self.window.add_memory_button,
+            self.window.edit_memory_button,
+            self.window.pin_memory_button,
+            self.window.archive_memory_button,
+            self.window.delete_memory_button,
+            self.window.export_memory_button,
+            self.window.erase_memories_button,
+            self.window.approve_memory_button,
+            self.window.reject_memory_button,
+        )
+        self.assertTrue(all(not button.isEnabled() for button in buttons))
+
+        memory = {
+            "id": "memory-1",
+            "text": "Likes puzzle games",
+            "category": "Preference",
+            "status": "pending",
+            "confidence": 0.8,
+            "pinned": False,
+            "archived": False,
+            "created_at": "2026-07-18T00:00:00+00:00",
+            "last_confirmed_at": "2026-07-18T00:00:00+00:00",
+            "evidence": [],
+        }
+        record = ChatterRecord(
+            user_id="viewer-1",
+            user_name="Viewer",
+            first_seen="2026-07-01T00:00:00+00:00",
+            last_seen="2026-07-18T00:00:00+00:00",
+            memory_consent="opted_in",
+            memory_enabled=True,
+            memory_stream_ids=["1", "2", "3", "4", "5"],
+            memories=[memory],
+        )
+        self.chatter_history_store.records = {"viewer-1": record}
+        self.chatter_history_store.has_memory_consent.return_value = True
+        self.chatter_history_store.can_create_keynotes.return_value = True
+        self.chatter_history_store.get_memory.return_value = memory
+        self.window.settings.ai_viewer_memory_enabled = True
+
+        self.window._refresh_memory_viewer_list()
+        self.window.memory_viewer_list.setCurrentRow(0)
+
+        self.assertTrue(self.window.add_memory_button.isEnabled())
+        self.assertTrue(self.window.export_memory_button.isEnabled())
+        self.assertFalse(self.window.edit_memory_button.isEnabled())
+        self.window.memory_ai_list.setCurrentRow(0)
+        self.assertTrue(self.window.edit_memory_button.isEnabled())
+        self.assertTrue(self.window.approve_memory_button.isEnabled())
+        self.assertTrue(self.window.reject_memory_button.isEnabled())
+
+    def test_rivescript_teaching_is_prepared_but_disabled(self) -> None:
+        self.assertEqual(
+            self.window.teach_rivescript_button.text(), "Teach RiveScript"
+        )
+        self.assertFalse(self.window.teach_rivescript_button.isEnabled())
+        self.assertIn(
+            "after the RiveScript response engine",
+            self.window.teach_rivescript_button.toolTip(),
+        )
 
     def test_window_geometry_is_restored_and_saved(self) -> None:
         self.window_state_store.restore.assert_called_once_with(self.window)
@@ -363,7 +456,7 @@ class MainWindowTests(unittest.TestCase):
         self.assertTrue(self.window.ai_memory_reasoning_check.isChecked())
         self.assertEqual(self.window.ai_memory_threshold_spin.value(), 10)
         self.assertTrue(self.window.ai_response_decisions_check.isChecked())
-        self.assertFalse(self.window.ai_auto_send_replies_check.isChecked())
+        self.assertFalse(hasattr(self.window, "ai_auto_send_replies_check"))
         self.assertEqual(self.window.ai_response_max_age_spin.value(), 15)
         self.assertEqual(self.window.ai_response_interval_spin.value(), 8)
         self.assertEqual(self.window.ai_conversation_followup_spin.value(), 180)
@@ -1201,7 +1294,8 @@ class MainWindowTests(unittest.TestCase):
         self.assertFalse(message.conversation_continuation)
         self.assertFalse(message.response_expected)
 
-    def test_reply_decision_is_added_to_review_without_auto_send(self) -> None:
+    def test_reasoning_approved_reply_is_sent_and_added_to_review(self) -> None:
+        self.window.twitch_service.state = TwitchConnectionState.CONNECTED
         self.window.twitch_service.send_message = Mock(return_value=True)
         decision = ResponseDecision(
             request_id="request-1",
@@ -1214,18 +1308,50 @@ class MainWindowTests(unittest.TestCase):
             reply="Hey Viewer!",
             reason="Sally was directly addressed.",
             confidence=0.9,
+            solicited=True,
         )
 
         self.window._apply_response_batch(ResponseBatchResult((decision,)))
 
-        self.window.twitch_service.send_message.assert_not_called()
+        self.window.twitch_service.send_message.assert_called_once_with(
+            "Hey Viewer!"
+        )
         self.assertEqual(self.window.reply_review_table.rowCount(), 1)
         self.assertEqual(
             self.window.reply_review_table.item(0, 4).text(),
             "Hey Viewer!",
         )
+        diagnostic = self.test_report_store.record.call_args.kwargs
+        self.assertEqual(diagnostic["outcome"], "sent")
+        self.assertEqual(diagnostic["reason"], "sent")
+        self.assertTrue(diagnostic["response_expected"])
+        self.assertNotIn("source_text", diagnostic)
+        self.assertNotIn("user_id", diagnostic)
 
-    def test_auto_send_requires_opt_in_and_rejects_stale_replies(self) -> None:
+    def test_required_model_ignore_is_reported_as_missed_anonymously(self) -> None:
+        decision = ResponseDecision(
+            request_id="request-missed",
+            message_id="message-missed",
+            user_id="viewer-secret",
+            user_name="SecretViewer",
+            source_text="Hey Sally, are you there?",
+            received_at=datetime.now(timezone.utc).isoformat(),
+            decision="ignore",
+            reply="",
+            reason="Model omitted this required response.",
+            confidence=0.1,
+            solicited=True,
+        )
+
+        self.window._add_reply_decision(decision)
+
+        diagnostic = self.test_report_store.record.call_args.kwargs
+        self.assertEqual(diagnostic["outcome"], "missed")
+        self.assertEqual(diagnostic["reason"], "model_omitted_message")
+        self.assertNotIn("source_text", diagnostic)
+        self.assertNotIn("user_name", diagnostic)
+
+    def test_approved_reply_sends_automatically_and_rejects_stale_reply(self) -> None:
         self.window.twitch_service.state = TwitchConnectionState.CONNECTED
         self.window.twitch_service.send_message = Mock(return_value=True)
         fresh = ResponseDecision(
@@ -1242,8 +1368,6 @@ class MainWindowTests(unittest.TestCase):
             solicited=True,
         )
 
-        self.assertFalse(self.window._maybe_auto_send_reply(fresh))
-        self.window.settings.ai_auto_send_replies = True
         self.assertTrue(self.window._maybe_auto_send_reply(fresh))
         self.assertEqual(self.window.recent_ai_chat[-1]["speaker"], "sally")
         self.assertEqual(self.window.recent_ai_chat[-1]["viewer"], "Sally")

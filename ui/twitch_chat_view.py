@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import json
 import re
 from html import unescape
 
 from PySide6.QtCore import QUrl, QUrlQuery, Signal
-from PySide6.QtGui import QDesktopServices, QFont
+from PySide6.QtGui import QColor, QDesktopServices, QFont
 from PySide6.QtWebEngineCore import QWebEnginePage
 from PySide6.QtWebEngineWidgets import QWebEngineView
 
@@ -27,17 +28,30 @@ class TwitchChatView(QWebEngineView):
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         page = _ChatPage(self)
+        page.setBackgroundColor(QColor("#18181b"))
         self.setPage(page)
         self._body = ""
+        self._rendered_body = ""
+        self._loaded = False
         self._font = QFont("Segoe UI", 10)
+        self.loadFinished.connect(self._page_loaded)
+        self._render()
 
     def append(self, html: str) -> None:
         self._body += html
-        self._render()
+        if self._loaded:
+            self._append_html(html)
 
     def clear(self) -> None:
         self._body = ""
-        self._render()
+        self._rendered_body = ""
+        if self._loaded:
+            self.page().runJavaScript(
+                "const root=document.getElementById('chat-root');"
+                "if(root){root.replaceChildren();}"
+            )
+        else:
+            self._render()
 
     def setHtml(self, html: str, base_url: QUrl = QUrl()) -> None:
         self._body = html
@@ -75,7 +89,7 @@ class TwitchChatView(QWebEngineView):
         return 0
 
     def setValue(self, value: int) -> None:
-        self.page().runJavaScript("window.scrollTo(0, document.body.scrollHeight)")
+        self._scroll_to_bottom()
 
     def contextMenuEvent(self, event) -> None:
         request = self.lastContextMenuRequest()
@@ -94,9 +108,13 @@ class TwitchChatView(QWebEngineView):
 
     def _render(self) -> None:
         size = max(self._font.pointSize(), 8)
+        self._loaded = False
+        self._rendered_body = self._body
         page = f"""<!doctype html><html><head><style>
+html {{ background:#18181b; }}
 body {{ background:#18181b; color:#efeff1; font-family:{self._font.family()};
-font-size:{size}pt; margin:8px; overflow-wrap:anywhere; }}
+font-size:{size}pt; margin:0; overflow-wrap:anywhere; }}
+#chat-root {{ padding:8px; }}
 a {{ color:#5cafff; }} img {{ vertical-align:middle; }}
 .chat-message {{ position:relative; padding:4px 5px; border-radius:3px;
 cursor:context-menu; }}
@@ -104,5 +122,41 @@ cursor:context-menu; }}
 .chat-context-target {{ position:absolute; inset:0; z-index:1; }}
 .chat-content {{ position:relative; z-index:2; pointer-events:none; }}
 .chat-content a {{ pointer-events:auto; }}
-</style></head><body>{self._body}</body></html>"""
+</style></head><body><div id='chat-root'>{self._body}</div></body></html>"""
         super().setHtml(page, QUrl("about:blank"))
+
+    def _page_loaded(self, success: bool) -> None:
+        if not success:
+            return
+        self._loaded = True
+        if self._body != self._rendered_body:
+            if self._body.startswith(self._rendered_body):
+                self._append_html(self._body[len(self._rendered_body) :])
+            else:
+                self._render()
+                return
+        self._scroll_to_bottom()
+
+    def _append_html(self, html: str) -> None:
+        script = f"""
+(() => {{
+  const root = document.getElementById('chat-root');
+  if (!root) return;
+  root.insertAdjacentHTML('beforeend', {json.dumps(html)});
+  const scroll = () => window.scrollTo(0, document.documentElement.scrollHeight);
+  root.querySelectorAll('img:not([data-sally-scroll])').forEach((image) => {{
+    image.dataset.sallyScroll = '1';
+    image.addEventListener('load', scroll, {{once: true}});
+  }});
+  requestAnimationFrame(scroll);
+  setTimeout(scroll, 50);
+}})();
+"""
+        self.page().runJavaScript(script)
+        self._rendered_body = self._body
+
+    def _scroll_to_bottom(self) -> None:
+        if self._loaded:
+            self.page().runJavaScript(
+                "window.scrollTo(0, document.documentElement.scrollHeight)"
+            )

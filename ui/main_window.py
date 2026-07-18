@@ -62,6 +62,7 @@ from ai.response_engine import (
     ResponseMessage,
 )
 from ai.training_store import TrainingStore
+from ai.test_report import AITestReportStore
 from core.window_state import WindowStateStore
 from config.twitch import (
     TWITCH_BOT_SCOPES,
@@ -114,6 +115,7 @@ class MainWindow(QMainWindow):
         session_store: StreamSessionStore | None = None,
         release_controller: ReleaseController | None = None,
         training_store: TrainingStore | None = None,
+        test_report_store: AITestReportStore | None = None,
         auto_upgrade_permissions: bool = True,
     ) -> None:
         super().__init__()
@@ -139,6 +141,7 @@ class MainWindow(QMainWindow):
         self.twitch_health = TwitchHealth()
         self.release_controller = release_controller or ReleaseController()
         self.training_store = training_store or TrainingStore()
+        self.test_report_store = test_report_store or AITestReportStore()
         self.training_opted_in_users: set[str] = set()
         self.training_notice_attempt_context = ""
         try:
@@ -146,6 +149,13 @@ class MainWindow(QMainWindow):
         except (OSError, ValueError, json.JSONDecodeError) as error:
             Logger.warning(
                 f"Could not load local training examples: {error}",
+                source="AI",
+            )
+        try:
+            self.test_report_store.load()
+        except (OSError, ValueError, json.JSONDecodeError) as error:
+            Logger.warning(
+                f"Could not load anonymous AI test diagnostics: {error}",
                 source="AI",
             )
         try:
@@ -191,6 +201,13 @@ class MainWindow(QMainWindow):
             maxlen=100
         )
         self.response_decision_in_flight = False
+        self.auto_send_diagnostic_reasons: dict[str, str] = {}
+        self.ai_test_report_flush_timer = QTimer(self)
+        self.ai_test_report_flush_timer.setSingleShot(True)
+        self.ai_test_report_flush_timer.setInterval(750)
+        self.ai_test_report_flush_timer.timeout.connect(
+            self._flush_ai_test_report
+        )
         self.recent_ai_chat: deque[dict[str, str]] = deque(maxlen=100)
         self.last_auto_reply_at = 0.0
         self.last_interjection_at = 0.0
@@ -226,6 +243,7 @@ class MainWindow(QMainWindow):
         self._build_ai_page()
         self._build_release_tools()
         self._build_ai_settings()
+        self._build_settings_tabs()
         self._make_layout_responsive()
         self.twitch_status_bar_label = QLabel("Twitch: Signed out")
         self.statusBar().addPermanentWidget(self.twitch_status_bar_label)
@@ -452,6 +470,7 @@ class MainWindow(QMainWindow):
 
     def _build_release_tools(self) -> None:
         group = QGroupBox("Data Safety & Diagnostics")
+        self.release_tools_group = group
         layout = QVBoxLayout(group)
         explanation = QLabel(
             "Create or restore local data backups, or export a sanitized "
@@ -480,6 +499,32 @@ class MainWindow(QMainWindow):
         self.export_diagnostics_button.clicked.connect(
             self._export_diagnostic_bundle
         )
+
+    def _build_settings_tabs(self) -> None:
+        self.settings_tabs = QTabWidget(self.ui.settingsPage)
+        self.settings_tabs.setObjectName("settingsTabs")
+        tab_groups = (
+            (
+                "Application",
+                (
+                    self.ui.generalSettingsGroup,
+                    self.ui.loggingSettingsGroup,
+                    self.release_tools_group,
+                ),
+            ),
+            ("Chat", (self.ui.twitchChatSettingsGroup,)),
+            ("AI", (self.local_ai_settings_group,)),
+            ("Developer", (self.ui.developerSettingsGroup,)),
+        )
+        for title, groups in tab_groups:
+            page = QWidget(self.settings_tabs)
+            page_layout = QVBoxLayout(page)
+            for group in groups:
+                self.ui.settingsLayout.removeWidget(group)
+                page_layout.addWidget(group)
+            page_layout.addStretch()
+            self.settings_tabs.addTab(page, title)
+        self.ui.settingsLayout.insertWidget(1, self.settings_tabs, 1)
 
     def _make_layout_responsive(self) -> None:
         """Keep hidden pages from imposing their full size on the main window."""
@@ -940,6 +985,7 @@ class MainWindow(QMainWindow):
         page_layout.addWidget(splitter)
         self.ai_tabs.addTab(self.memories_page, "Memories")
         self._build_reply_review_tab()
+        self._build_ai_test_report_tab()
         self._build_training_tab()
         self._build_personality_tab()
         sessions_page = QWidget()
@@ -1092,6 +1138,7 @@ class MainWindow(QMainWindow):
         self.export_timeline_csv_button.clicked.connect(
             self._export_viewer_timeline_csv
         )
+        self._update_memory_action_states()
         self._refresh_memory_viewer_list()
         self._refresh_session_history()
         self.analytics_range_combo.currentIndexChanged.connect(
@@ -1113,7 +1160,7 @@ class MainWindow(QMainWindow):
         page = QWidget(self.ai_tabs)
         layout = QVBoxLayout(page)
         self.reply_decision_status_label = QLabel(
-            "Waiting for live Twitch messages. Auto-send is off by default."
+            "Waiting for live Twitch messages. Approved replies send automatically."
         )
         self.reply_decision_status_label.setWordWrap(True)
         self.reply_review_table = QTableWidget(0, 6)
@@ -1140,10 +1187,17 @@ class MainWindow(QMainWindow):
         self.send_reply_draft_button = QPushButton("Send Selected")
         self.edit_send_reply_button = QPushButton("Edit & Send")
         self.dismiss_reply_button = QPushButton("Dismiss")
+        self.teach_rivescript_button = QPushButton("Teach RiveScript")
+        self.teach_rivescript_button.setEnabled(False)
+        self.teach_rivescript_button.setToolTip(
+            "This will become available after the RiveScript response engine "
+            "is installed."
+        )
         self.clear_reply_decisions_button = QPushButton("Clear History")
         actions.addWidget(self.send_reply_draft_button)
         actions.addWidget(self.edit_send_reply_button)
         actions.addWidget(self.dismiss_reply_button)
+        actions.addWidget(self.teach_rivescript_button)
         actions.addStretch()
         actions.addWidget(self.clear_reply_decisions_button)
         layout.addWidget(self.reply_decision_status_label)
@@ -1162,6 +1216,127 @@ class MainWindow(QMainWindow):
         self.clear_reply_decisions_button.clicked.connect(
             lambda: self.reply_review_table.setRowCount(0)
         )
+
+    def _build_ai_test_report_tab(self) -> None:
+        page = QWidget(self.ai_tabs)
+        layout = QVBoxLayout(page)
+        privacy = QLabel(
+            "Anonymous diagnostics only: no chat text, usernames, Twitch IDs, "
+            "or drafted replies are saved in this report."
+        )
+        privacy.setWordWrap(True)
+        layout.addWidget(privacy)
+
+        controls = QHBoxLayout()
+        self.ai_test_report_range = QComboBox()
+        self.ai_test_report_range.addItems(("Current app run", "All retained"))
+        self.ai_test_new_run_button = QPushButton("Start New Test")
+        self.ai_test_clear_button = QPushButton("Clear Report")
+        controls.addWidget(QLabel("Show"))
+        controls.addWidget(self.ai_test_report_range)
+        controls.addStretch()
+        controls.addWidget(self.ai_test_new_run_button)
+        controls.addWidget(self.ai_test_clear_button)
+        layout.addLayout(controls)
+
+        summary = QGroupBox("Results")
+        summary_layout = QGridLayout(summary)
+        self.ai_test_summary_labels: dict[str, QLabel] = {}
+        for column, (key, title) in enumerate(
+            (
+                ("total", "Evaluated"),
+                ("sent", "Sent"),
+                ("ignored", "Ignored"),
+                ("missed", "Missed"),
+                ("blocked", "Blocked"),
+                ("failed", "Failed"),
+                ("average_latency_ms", "Avg latency"),
+            )
+        ):
+            title_label = QLabel(title)
+            value_label = QLabel("0")
+            value_label.setStyleSheet("font-size: 18px; font-weight: 600;")
+            summary_layout.addWidget(title_label, 0, column)
+            summary_layout.addWidget(value_label, 1, column)
+            self.ai_test_summary_labels[key] = value_label
+        layout.addWidget(summary)
+
+        self.ai_test_report_table = QTableWidget(0, 6)
+        self.ai_test_report_table.setHorizontalHeaderLabels(
+            ("Time", "Outcome", "Expected", "Latency", "Confidence", "Reason")
+        )
+        self.ai_test_report_table.setEditTriggers(
+            QTableWidget.EditTrigger.NoEditTriggers
+        )
+        self.ai_test_report_table.setSelectionBehavior(
+            QTableWidget.SelectionBehavior.SelectRows
+        )
+        report_header = self.ai_test_report_table.horizontalHeader()
+        for column in range(5):
+            report_header.setSectionResizeMode(
+                column, QHeaderView.ResizeMode.ResizeToContents
+            )
+        report_header.setSectionResizeMode(5, QHeaderView.ResizeMode.Stretch)
+        layout.addWidget(self.ai_test_report_table, 1)
+        self.ai_tabs.addTab(page, "Test Report")
+
+        self.ai_test_report_range.currentIndexChanged.connect(
+            lambda _index: self._refresh_ai_test_report()
+        )
+        self.ai_test_new_run_button.clicked.connect(self._start_new_ai_test)
+        self.ai_test_clear_button.clicked.connect(self._clear_ai_test_report)
+        self._refresh_ai_test_report()
+
+    def _refresh_ai_test_report(self) -> None:
+        current_only = self.ai_test_report_range.currentIndex() == 0
+        summary = self.test_report_store.summary(current_only)
+        for key, label in self.ai_test_summary_labels.items():
+            value = summary.get(key, 0)
+            label.setText(
+                f"{int(value) / 1000:.1f}s"
+                if key == "average_latency_ms"
+                else str(value)
+            )
+        events = self.test_report_store.selected_events(current_only)
+        self.ai_test_report_table.setRowCount(0)
+        for event in reversed(events[-500:]):
+            row = self.ai_test_report_table.rowCount()
+            self.ai_test_report_table.insertRow(row)
+            recorded_at = str(event.get("recorded_at", ""))
+            try:
+                display_time = datetime.fromisoformat(
+                    recorded_at.replace("Z", "+00:00")
+                ).astimezone().strftime("%H:%M:%S")
+            except ValueError:
+                display_time = "--"
+            latency_ms = int(event.get("latency_ms", 0))
+            values = (
+                display_time,
+                str(event.get("outcome", "unknown")).replace("_", " ").title(),
+                "Yes" if bool(event.get("response_expected")) else "No",
+                f"{latency_ms / 1000:.1f}s",
+                f"{float(event.get('confidence', 0.0)):.0%}",
+                str(event.get("reason", "unknown")).replace("_", " "),
+            )
+            for column, value in enumerate(values):
+                self.ai_test_report_table.setItem(
+                    row, column, QTableWidgetItem(value)
+                )
+
+    def _start_new_ai_test(self) -> None:
+        self.test_report_store.start_new_session()
+        self.ai_test_report_range.setCurrentIndex(0)
+        self._refresh_ai_test_report()
+
+    def _clear_ai_test_report(self) -> None:
+        try:
+            self.test_report_store.clear()
+        except OSError as error:
+            Logger.warning(
+                f"Could not clear anonymous AI test diagnostics: {error}",
+                source="AI",
+            )
+        self._refresh_ai_test_report()
 
     def _build_training_tab(self) -> None:
         page = QWidget(self.ai_tabs)
@@ -2458,6 +2633,9 @@ class MainWindow(QMainWindow):
                     confidence=0.0,
                 )
             sent = self._maybe_auto_send_reply(decision)
+            self.auto_send_diagnostic_reasons[decision.request_id] = (
+                "local_ai_fallback_sent" if sent else "local_ai_fallback"
+            )
             self._add_reply_decision(decision, sent=sent)
         self.reply_decision_status_label.setText(
             "Local AI reply evaluation failed; continuing with newer chat."
@@ -2495,33 +2673,46 @@ class MainWindow(QMainWindow):
         minimum_gap = (
             0 if required else self.settings.ai_response_min_interval_seconds
         )
-        if not (
-            self.settings.ai_auto_send_replies
-            and decision.decision == "reply"
-            and decision.reply
-            and (required or decision.confidence >= 0.65)
-            and (
-                not interjection
-                or (
-                    self.settings.ai_interjections_enabled
-                    and decision.confidence >= 0.88
-                    and self.viewer_messages_since_sally_reply
-                    >= self.settings.ai_interjection_min_messages
-                    and monotonic() - self.last_interjection_at
-                    >= self.settings.ai_interjection_min_interval_seconds
-                    and monotonic() - self.last_auto_reply_at
-                    >= self.settings.ai_interjection_min_interval_seconds
-                )
-            )
-            and self._decision_age_seconds(decision)
-            <= maximum_age
-            and monotonic() - self.last_auto_reply_at
-            >= minimum_gap
-            and self.twitch_service.state is TwitchConnectionState.CONNECTED
+        reason = ""
+        if decision.decision != "reply" or not decision.reply:
+            reason = "model_ignored"
+        elif not required and decision.confidence < 0.65:
+            reason = "low_confidence"
+        elif interjection and not self.settings.ai_interjections_enabled:
+            reason = "interjections_disabled"
+        elif interjection and decision.confidence < 0.88:
+            reason = "interjection_low_confidence"
+        elif (
+            interjection
+            and self.viewer_messages_since_sally_reply
+            < self.settings.ai_interjection_min_messages
         ):
+            reason = "interjection_message_threshold"
+        elif (
+            interjection
+            and (
+                monotonic() - self.last_interjection_at
+                < self.settings.ai_interjection_min_interval_seconds
+                or monotonic() - self.last_auto_reply_at
+                < self.settings.ai_interjection_min_interval_seconds
+            )
+        ):
+            reason = "interjection_cooldown"
+        elif self._decision_age_seconds(decision) > maximum_age:
+            reason = "stale"
+        elif monotonic() - self.last_auto_reply_at < minimum_gap:
+            reason = "reply_cooldown"
+        elif self.twitch_service.state is not TwitchConnectionState.CONNECTED:
+            reason = "twitch_disconnected"
+        if reason:
+            self.auto_send_diagnostic_reasons[decision.request_id] = reason
             return False
         if not self.twitch_service.send_message(decision.reply):
+            self.auto_send_diagnostic_reasons[decision.request_id] = (
+                "twitch_send_failed"
+            )
             return False
+        self.auto_send_diagnostic_reasons[decision.request_id] = "sent"
         self.last_auto_reply_at = monotonic()
         if interjection:
             self.last_interjection_at = self.last_auto_reply_at
@@ -2604,6 +2795,90 @@ class MainWindow(QMainWindow):
             table.removeRow(table.rowCount() - 1)
         if decision.decision == "reply" and not sent:
             table.selectRow(0)
+        self._record_ai_test_result(decision, sent=sent, latency_seconds=age)
+
+    def _record_ai_test_result(
+        self,
+        decision: ResponseDecision,
+        *,
+        sent: bool,
+        latency_seconds: float,
+    ) -> None:
+        response_expected = bool(
+            ResponseDecisionEngine.requires_reply(decision.source_text)
+            or decision.response_expected
+            or decision.solicited
+        )
+        delivery_reason = self.auto_send_diagnostic_reasons.pop(
+            decision.request_id, ""
+        )
+        if sent:
+            outcome = "sent"
+            reason = delivery_reason or "sent"
+        elif decision.decision == "ignore":
+            reason = self._normalize_ai_decision_reason(decision.reason)
+            outcome = (
+                "failed"
+                if reason == "local_ai_unavailable"
+                else "missed"
+                if response_expected
+                else "ignored"
+            )
+        elif delivery_reason == "twitch_send_failed":
+            outcome = "failed"
+            reason = delivery_reason
+        else:
+            outcome = "blocked"
+            reason = delivery_reason or "draft_not_sent"
+        latency_ms = (
+            0
+            if latency_seconds == float("inf")
+            else round(max(latency_seconds, 0.0) * 1000)
+        )
+        try:
+            self.test_report_store.record(
+                outcome=outcome,
+                reason=reason,
+                latency_ms=latency_ms,
+                response_expected=response_expected,
+                confidence=decision.confidence,
+                save=False,
+            )
+        except OSError as error:
+            Logger.warning(
+                f"Could not save anonymous AI test diagnostics: {error}",
+                source="AI",
+            )
+            return
+        self.ai_test_report_flush_timer.start()
+
+    def _flush_ai_test_report(self) -> None:
+        try:
+            self.test_report_store.save()
+        except OSError as error:
+            Logger.warning(
+                f"Could not save anonymous AI test diagnostics: {error}",
+                source="AI",
+            )
+            return
+        self._refresh_ai_test_report()
+
+    @staticmethod
+    def _normalize_ai_decision_reason(reason: str) -> str:
+        normalized = reason.casefold()
+        categories = (
+            ("queue", "queue_full"),
+            ("omitted", "model_omitted_message"),
+            ("duplicate", "duplicate_reply"),
+            ("unavailable", "local_ai_unavailable"),
+            ("required", "model_ignored_required_message"),
+            ("address", "not_addressed_to_sally"),
+            ("conversation", "conversation_state"),
+        )
+        for keyword, category in categories:
+            if keyword in normalized:
+                return category
+        return "model_decision"
 
     def _selected_reply_decision(self) -> ResponseDecision | None:
         row = self.reply_review_table.currentRow()
@@ -3070,6 +3345,7 @@ class MainWindow(QMainWindow):
 
     def _build_ai_settings(self) -> None:
         group = QGroupBox("Local AI", self.ui.settingsPage)
+        self.local_ai_settings_group = group
         layout = QFormLayout(group)
         self.local_ai_enabled_check = QCheckBox("Use local AI when available")
         self.local_ai_endpoint_edit = QLineEdit()
@@ -3099,12 +3375,6 @@ class MainWindow(QMainWindow):
         self.ai_memory_promo_interval_spin.setSuffix(" messages")
         self.ai_response_decisions_check = QCheckBox(
             "Evaluate eligible live chat messages"
-        )
-        self.ai_auto_send_replies_check = QCheckBox(
-            "Automatically send fresh AI replies (experimental)"
-        )
-        self.ai_auto_send_replies_check.setToolTip(
-            "When enabled, Sally may post model-generated replies to Twitch."
         )
         self.ai_response_max_age_spin = QSpinBox()
         self.ai_response_max_age_spin.setRange(5, 60)
@@ -3158,7 +3428,6 @@ class MainWindow(QMainWindow):
         layout.addRow("Memory invitation", self.ai_memory_promo_check)
         layout.addRow("Invitation interval", self.ai_memory_promo_interval_spin)
         layout.addRow("Reply decisions", self.ai_response_decisions_check)
-        layout.addRow("Auto-send", self.ai_auto_send_replies_check)
         layout.addRow("Reply freshness", self.ai_response_max_age_spin)
         layout.addRow("Minimum reply gap", self.ai_response_interval_spin)
         layout.addRow("Conversation window", self.ai_conversation_followup_spin)
@@ -3259,9 +3528,6 @@ class MainWindow(QMainWindow):
         self.ai_response_decisions_check.setChecked(
             settings.ai_response_decisions_enabled
         )
-        self.ai_auto_send_replies_check.setChecked(
-            settings.ai_auto_send_replies
-        )
         self.ai_response_max_age_spin.setValue(
             settings.ai_response_max_age_seconds
         )
@@ -3330,9 +3596,7 @@ class MainWindow(QMainWindow):
             ai_response_decisions_enabled=(
                 self.ai_response_decisions_check.isChecked()
             ),
-            ai_auto_send_replies=(
-                self.ai_auto_send_replies_check.isChecked()
-            ),
+            ai_auto_send_replies=True,
             ai_response_max_age_seconds=(
                 self.ai_response_max_age_spin.value()
             ),
@@ -3414,6 +3678,7 @@ class MainWindow(QMainWindow):
             )
         if not settings.ai_training_capture_enabled:
             self.training_opted_in_users.clear()
+        self._update_memory_action_states()
 
     def _show_startup_page(self) -> None:
         page_actions = {
@@ -3476,10 +3741,14 @@ class MainWindow(QMainWindow):
     @Slot(object, object)
     def _show_memory_viewer(self, current: object, _previous: object) -> None:
         if not isinstance(current, QListWidgetItem):
+            self.memory_name_label.setText("Select a viewer")
+            self.memory_id_label.clear()
+            self._update_memory_action_states()
             return
         user_id = str(current.data(Qt.ItemDataRole.UserRole))
         record = self.chatter_history.records.get(user_id)
         if record is None:
+            self._update_memory_action_states()
             return
         self.memory_name_label.setText(record.user_name or "Unknown viewer")
         self.memory_id_label.setText(f"Twitch user ID: {record.user_id}")
@@ -3517,8 +3786,12 @@ class MainWindow(QMainWindow):
         self.memory_private_notes_edit.setPlainText(record.private_notes)
         self.memory_enabled_check.blockSignals(True)
         self.memory_enabled_check.setChecked(record.memory_enabled)
+        active_settings = getattr(self, "settings", AppSettings())
         self.memory_enabled_check.setEnabled(
-            bool(self.chatter_history.has_memory_consent(user_id))
+            bool(
+                active_settings.ai_viewer_memory_enabled
+                and self.chatter_history.has_memory_consent(user_id)
+            )
         )
         self.memory_enabled_check.setToolTip(
             "Viewer consent is required; this control can only pause or resume it."
@@ -3611,6 +3884,7 @@ class MainWindow(QMainWindow):
             self.memory_ai_list.addItem(
                 "No memories match this review filter."
             )
+        self._update_memory_action_states()
 
     @Slot()
     def _refresh_memory_timeline(self) -> None:
@@ -3754,15 +4028,68 @@ class MainWindow(QMainWindow):
             return None
         return user_id, memory_id
 
+    def _update_memory_action_states(self) -> None:
+        viewer_item = self.memory_viewer_list.currentItem()
+        user_id = (
+            str(viewer_item.data(Qt.ItemDataRole.UserRole) or "")
+            if viewer_item is not None
+            else ""
+        )
+        record = self.chatter_history.records.get(user_id) if user_id else None
+        memory = None
+        context = self._selected_memory_context()
+        if context is not None:
+            try:
+                memory = self.chatter_history.get_memory(*context)
+            except (KeyError, ValueError):
+                memory = None
+
+        has_viewer = record is not None
+        has_memory = memory is not None
+        settings = getattr(self, "settings", AppSettings())
+        can_create = bool(
+            has_viewer
+            and settings.ai_viewer_memory_enabled
+            and self.chatter_history.can_create_keynotes(user_id)
+        )
+        self.save_viewer_profile_button.setEnabled(has_viewer)
+        self.merge_viewer_button.setEnabled(
+            has_viewer and len(self.chatter_history.records) > 1
+        )
+        self.export_timeline_csv_button.setEnabled(
+            bool(has_viewer and (record.timeline or record.session_messages))
+        )
+        self.add_memory_button.setEnabled(can_create)
+        for button in (
+            self.edit_memory_button,
+            self.pin_memory_button,
+            self.delete_memory_button,
+        ):
+            button.setEnabled(has_memory)
+        archived = bool(memory and memory.get("archived", False))
+        self.archive_memory_button.setEnabled(has_memory and not archived)
+        self.archive_memory_button.setText("Archived" if archived else "Archive")
+        pinned = bool(memory and memory.get("pinned", False))
+        self.pin_memory_button.setText("Unpin" if pinned else "Pin")
+        pending = bool(memory and memory.get("status", "approved") == "pending")
+        self.approve_memory_button.setEnabled(pending)
+        self.reject_memory_button.setEnabled(pending)
+        self.export_memory_button.setEnabled(has_viewer)
+        self.erase_memories_button.setEnabled(
+            bool(has_viewer and (record.memories or record.daily_memory))
+        )
+
     @Slot(object, object)
     def _show_memory_details(self, current: object, _previous: object) -> None:
         if not isinstance(current, QListWidgetItem):
             self.memory_detail_label.setText(
                 "Select a memory to inspect its evidence."
             )
+            self._update_memory_action_states()
             return
         context = self._selected_memory_context()
         if context is None:
+            self._update_memory_action_states()
             return
         user_id, memory_id = context
         memory = self.chatter_history.get_memory(user_id, memory_id)
@@ -3789,6 +4116,7 @@ class MainWindow(QMainWindow):
             "Evidence: " + (" | ".join(evidence[:3]) if evidence else "Manual entry")
         )
         self.memory_detail_label.setText("\n".join(details))
+        self._update_memory_action_states()
 
     @Slot(bool)
     def _set_viewer_memory_enabled(self, enabled: bool) -> None:
@@ -4819,6 +5147,14 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event: QCloseEvent) -> None:
         self.window_state_store.save(self)
         self._save_chatter_history()
+        self.ai_test_report_flush_timer.stop()
+        try:
+            self.test_report_store.save()
+        except OSError as error:
+            Logger.warning(
+                f"Could not save anonymous AI test diagnostics: {error}",
+                source="AI",
+            )
         self.companion_refresh_request_id += 1
         self.companion_thread_pool.clear()
         self.companion_thread_pool.waitForDone(2_000)
