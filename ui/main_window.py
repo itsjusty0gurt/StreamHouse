@@ -61,6 +61,7 @@ from ai.response_engine import (
     ResponseDecisionEngine,
     ResponseMessage,
 )
+from ai.training_store import TrainingStore
 from core.window_state import WindowStateStore
 from config.twitch import (
     TWITCH_BOT_SCOPES,
@@ -112,6 +113,7 @@ class MainWindow(QMainWindow):
         activity_history_store: ActivityHistoryStore | None = None,
         session_store: StreamSessionStore | None = None,
         release_controller: ReleaseController | None = None,
+        training_store: TrainingStore | None = None,
         auto_upgrade_permissions: bool = True,
     ) -> None:
         super().__init__()
@@ -136,6 +138,16 @@ class MainWindow(QMainWindow):
         self.session_tracker = StreamSessionTracker(self.session_store)
         self.twitch_health = TwitchHealth()
         self.release_controller = release_controller or ReleaseController()
+        self.training_store = training_store or TrainingStore()
+        self.training_opted_in_users: set[str] = set()
+        self.training_notice_context = ""
+        try:
+            self.training_store.load()
+        except (OSError, ValueError, json.JSONDecodeError) as error:
+            Logger.warning(
+                f"Could not load local training examples: {error}",
+                source="AI",
+            )
         try:
             self.chatter_history.load()
         except (OSError, ValueError, json.JSONDecodeError) as error:
@@ -927,6 +939,7 @@ class MainWindow(QMainWindow):
         page_layout.addWidget(splitter)
         self.ai_tabs.addTab(self.memories_page, "Memories")
         self._build_reply_review_tab()
+        self._build_training_tab()
         self._build_personality_tab()
         sessions_page = QWidget()
         sessions_layout = QVBoxLayout(sessions_page)
@@ -1148,6 +1161,66 @@ class MainWindow(QMainWindow):
         self.clear_reply_decisions_button.clicked.connect(
             lambda: self.reply_review_table.setRowCount(0)
         )
+
+    def _build_training_tab(self) -> None:
+        page = QWidget(self.ai_tabs)
+        layout = QVBoxLayout(page)
+        notice = QLabel(
+            "Only messages from viewers who type !sallytrain on are captured. "
+            "Samples stay local, omit usernames and Twitch IDs, and remain "
+            "pending until you review their intent label."
+        )
+        notice.setWordWrap(True)
+        self.training_status_label = QLabel()
+        self.training_table = QTableWidget(0, 6)
+        self.training_table.setHorizontalHeaderLabels(
+            ("Message", "Model label", "Decision", "State", "Label", "Reviewed")
+        )
+        self.training_table.setSelectionBehavior(
+            QTableWidget.SelectionBehavior.SelectRows
+        )
+        self.training_table.setSelectionMode(
+            QTableWidget.SelectionMode.SingleSelection
+        )
+        self.training_table.setEditTriggers(
+            QTableWidget.EditTrigger.NoEditTriggers
+        )
+        header = self.training_table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        for column in range(1, 6):
+            header.setSectionResizeMode(
+                column, QHeaderView.ResizeMode.ResizeToContents
+            )
+        controls = QHBoxLayout()
+        self.training_label_combo = QComboBox()
+        self.training_label_combo.addItems(TrainingStore.LABELS)
+        self.save_training_label_button = QPushButton("Save Reviewed Label")
+        self.delete_training_example_button = QPushButton("Delete Selected")
+        self.clear_training_examples_button = QPushButton("Delete All")
+        controls.addWidget(QLabel("Correct intent"))
+        controls.addWidget(self.training_label_combo)
+        controls.addWidget(self.save_training_label_button)
+        controls.addWidget(self.delete_training_example_button)
+        controls.addStretch()
+        controls.addWidget(self.clear_training_examples_button)
+        layout.addWidget(notice)
+        layout.addWidget(self.training_status_label)
+        layout.addWidget(self.training_table, 1)
+        layout.addLayout(controls)
+        self.ai_tabs.addTab(page, "Training")
+        self.save_training_label_button.clicked.connect(
+            self._save_training_label
+        )
+        self.delete_training_example_button.clicked.connect(
+            self._delete_training_example
+        )
+        self.clear_training_examples_button.clicked.connect(
+            self._clear_training_examples
+        )
+        self.training_table.currentCellChanged.connect(
+            self._select_training_example
+        )
+        self._refresh_training_examples()
 
     def _build_personality_tab(self) -> None:
         page = QWidget(self.ai_tabs)
@@ -1486,12 +1559,16 @@ class MainWindow(QMainWindow):
                 self._refresh_memory_viewer_list()
         if is_bot and chat_message.user_id:
             self.known_bot_user_ids.add(chat_message.user_id)
+        training_command = self._handle_sally_training_command(
+            chat_message, is_bot
+        )
         memory_command = self._handle_sally_memory_command(chat_message, is_bot)
         if (
             self.settings.ai_viewer_memory_enabled
             and chat_message.user_id
             and not is_bot
             and not memory_command
+            and not training_command
         ):
             if self.chatter_history.has_memory_consent(chat_message.user_id):
                 self.chatter_history.record_memory_stream(
@@ -1507,7 +1584,8 @@ class MainWindow(QMainWindow):
                     stream_id=self.current_memory_stream_id,
                 )
             self._maybe_promote_sally_memory()
-        if not memory_command:
+        if not memory_command and not training_command:
+            self._maybe_announce_training_capture()
             self._buffer_message_for_memory_reasoning(chat_message, is_bot)
             self._queue_response_decision(chat_message, is_bot)
         received_time = chat_message.received_at.astimezone().strftime(
@@ -1680,6 +1758,86 @@ class MainWindow(QMainWindow):
             reply = f"{mention} try !sallymemory, on, off, status, or delete."
         self.twitch_service.send_message(reply)
         return True
+
+    def _handle_sally_training_command(
+        self,
+        chat_message: TwitchMessage,
+        is_bot: bool,
+    ) -> bool:
+        text = " ".join(chat_message.text.casefold().strip().split())
+        if is_bot or not text.startswith("!sallytrain"):
+            return False
+        user_id = chat_message.user_id
+        if not user_id:
+            return True
+        command = text.removeprefix("!sallytrain").strip()
+        mention = f"@{chat_message.username}"
+        if command == "on":
+            if not self.settings.ai_training_capture_enabled:
+                reply = (
+                    f"{mention} Sally's training capture is currently disabled."
+                )
+            else:
+                self.training_opted_in_users.add(user_id)
+                reply = (
+                    f"{mention} training capture is on for this session. Your "
+                    "messages and Sally's intent decisions may be saved locally "
+                    "without your username. Use !sallytrain off or delete anytime."
+                )
+        elif command == "off":
+            self.training_opted_in_users.discard(user_id)
+            reply = (
+                f"{mention} training capture is off. Existing samples remain; "
+                "use !sallytrain delete to erase them."
+            )
+        elif command == "delete":
+            self.training_opted_in_users.discard(user_id)
+            try:
+                removed = self.training_store.delete_participant(user_id)
+            except OSError as error:
+                Logger.warning(
+                    f"Could not delete local training samples: {error}",
+                    source="AI",
+                )
+                removed = 0
+            self._refresh_training_examples()
+            reply = (
+                f"{mention} training capture is off and {removed} saved "
+                "training sample(s) were deleted."
+            )
+        elif command == "status":
+            enabled = (
+                self.settings.ai_training_capture_enabled
+                and user_id in self.training_opted_in_users
+            )
+            reply = (
+                f"{mention} your training capture is "
+                f"{'on' if enabled else 'off'} for this session."
+            )
+        else:
+            reply = (
+                f"{mention} Sally training is optional and separate from memory. "
+                "Use !sallytrain on, off, status, or delete."
+            )
+        self.twitch_service.send_message(reply)
+        return True
+
+    def _maybe_announce_training_capture(self) -> None:
+        if not (
+            self.settings.ai_training_capture_enabled
+            and self.twitch_service.state is TwitchConnectionState.CONNECTED
+        ):
+            return
+        context = self.current_memory_stream_id or "application-session"
+        if self.training_notice_context == context:
+            return
+        notice = (
+            "Sally's alpha training is optional and separate from viewer memory. "
+            "Type !sallytrain on to contribute local pseudonymous examples; "
+            "use !sallytrain off or delete anytime."
+        )
+        if self.twitch_service.send_message(notice):
+            self.training_notice_context = context
 
     def _clear_viewer_runtime_memory(self, user_id: str) -> None:
         self.memory_message_buffers.pop(user_id, None)
@@ -2097,6 +2255,7 @@ class MainWindow(QMainWindow):
                 reply_count += 1
             sent = self._maybe_auto_send_reply(decision)
             self._update_conversation_state(decision)
+            self._capture_training_decision(decision)
             sent_count += int(sent)
             if sent:
                 self._drop_duplicate_queued_invocations(decision)
@@ -2106,6 +2265,22 @@ class MainWindow(QMainWindow):
             f"{reply_count} reply draft(s), {sent_count} auto-sent."
         )
         self._start_next_response_batch()
+
+    def _capture_training_decision(self, decision: ResponseDecision) -> None:
+        if not (
+            self.settings.ai_training_capture_enabled
+            and decision.user_id in self.training_opted_in_users
+        ):
+            return
+        try:
+            self.training_store.capture(decision.user_id, decision)
+        except OSError as error:
+            Logger.warning(
+                f"Could not save a local training example: {error}",
+                source="AI",
+            )
+            return
+        self._refresh_training_examples()
 
     def _update_conversation_state(self, decision: ResponseDecision) -> None:
         if not decision.user_id:
@@ -2358,6 +2533,118 @@ class MainWindow(QMainWindow):
         row = self.reply_review_table.currentRow()
         if row >= 0:
             self.reply_review_table.removeRow(row)
+
+    def _refresh_training_examples(self) -> None:
+        table = self.training_table
+        table.setRowCount(0)
+        for example in reversed(self.training_store.examples):
+            row = table.rowCount()
+            table.insertRow(row)
+            values = (
+                str(example.get("message", "")),
+                str(example.get("model_label", "")),
+                str(example.get("decision", "")),
+                str(example.get("conversation_state", "")),
+                str(example.get("label", "")) or "Pending",
+                "Yes" if bool(example.get("reviewed")) else "No",
+            )
+            for column, value in enumerate(values):
+                item = QTableWidgetItem(value)
+                if column == 0:
+                    item.setData(
+                        Qt.ItemDataRole.UserRole,
+                        str(example.get("id", "")),
+                    )
+                table.setItem(row, column, item)
+        reviewed = sum(
+            bool(example.get("reviewed"))
+            for example in self.training_store.examples
+        )
+        self.training_status_label.setText(
+            f"{len(self.training_store.examples)} local sample(s); "
+            f"{reviewed} reviewed. Pending samples expire after 30 days."
+        )
+
+    def _selected_training_example_id(self) -> str:
+        row = self.training_table.currentRow()
+        item = self.training_table.item(row, 0) if row >= 0 else None
+        return str(item.data(Qt.ItemDataRole.UserRole)) if item else ""
+
+    @Slot(int, int, int, int)
+    def _select_training_example(
+        self,
+        current_row: int,
+        _current_column: int,
+        _previous_row: int,
+        _previous_column: int,
+    ) -> None:
+        item = self.training_table.item(current_row, 0)
+        example_id = (
+            str(item.data(Qt.ItemDataRole.UserRole)) if item is not None else ""
+        )
+        example = next(
+            (
+                value
+                for value in self.training_store.examples
+                if value.get("id") == example_id
+            ),
+            None,
+        )
+        if example is None:
+            return
+        label = str(example.get("label") or example.get("model_label") or "")
+        if label in TrainingStore.LABELS:
+            self.training_label_combo.setCurrentText(label)
+
+    @Slot()
+    def _save_training_label(self) -> None:
+        example_id = self._selected_training_example_id()
+        if not example_id:
+            return
+        try:
+            updated = self.training_store.label(
+                example_id, self.training_label_combo.currentText()
+            )
+        except (OSError, ValueError) as error:
+            self.training_status_label.setText(
+                f"Could not save training label: {error}"
+            )
+            return
+        if updated:
+            self._refresh_training_examples()
+
+    @Slot()
+    def _delete_training_example(self) -> None:
+        example_id = self._selected_training_example_id()
+        if not example_id:
+            return
+        try:
+            self.training_store.delete(example_id)
+        except OSError as error:
+            self.training_status_label.setText(
+                f"Could not delete training sample: {error}"
+            )
+            return
+        self._refresh_training_examples()
+
+    @Slot()
+    def _clear_training_examples(self) -> None:
+        if not self.training_store.examples:
+            return
+        if QMessageBox.question(
+            self,
+            "Delete Training Samples",
+            "Permanently delete every local Sally training sample?",
+        ) is not QMessageBox.StandardButton.Yes:
+            return
+        try:
+            self.training_store.clear()
+        except OSError as error:
+            self.training_status_label.setText(
+                f"Could not delete training samples: {error}"
+            )
+            return
+        self._refresh_training_examples()
 
     @staticmethod
     def _linkify(text: str) -> str:
@@ -2695,6 +2982,13 @@ class MainWindow(QMainWindow):
         self.ai_interjection_interval_spin = QSpinBox()
         self.ai_interjection_interval_spin.setRange(60, 1800)
         self.ai_interjection_interval_spin.setSuffix(" seconds")
+        self.ai_training_capture_check = QCheckBox(
+            "Allow opt-in classifier training capture"
+        )
+        self.ai_training_capture_check.setToolTip(
+            "Viewers must separately type !sallytrain on each session. "
+            "Captured samples stay local and are pseudonymous."
+        )
         layout.addRow("Enabled", self.local_ai_enabled_check)
         layout.addRow("Endpoint", self.local_ai_endpoint_edit)
         layout.addRow("Model", self.local_ai_model_edit)
@@ -2711,6 +3005,7 @@ class MainWindow(QMainWindow):
         layout.addRow("Conversation window", self.ai_conversation_followup_spin)
         layout.addRow("Co-host interjections", self.ai_interjections_check)
         layout.addRow("Interjection cooldown", self.ai_interjection_interval_spin)
+        layout.addRow("Training capture", self.ai_training_capture_check)
         layout.addRow("", self.local_ai_test_button)
         layout.addRow("Status", self.local_ai_status_label)
         self.ui.settingsLayout.insertWidget(3, group)
@@ -2803,6 +3098,9 @@ class MainWindow(QMainWindow):
         self.ai_interjection_interval_spin.setValue(
             settings.ai_interjection_min_interval_seconds
         )
+        self.ai_training_capture_check.setChecked(
+            settings.ai_training_capture_enabled
+        )
         self.ai_personality_edit.setPlainText(settings.ai_personality)
         self.ai_allow_mild_profanity_check.setChecked(
             settings.ai_allow_mild_profanity
@@ -2861,6 +3159,9 @@ class MainWindow(QMainWindow):
             ai_interjection_min_interval_seconds=(
                 self.ai_interjection_interval_spin.value()
             ),
+            ai_training_capture_enabled=(
+                self.ai_training_capture_check.isChecked()
+            ),
             ai_personality=self.ai_personality_edit.toPlainText(),
             ai_allow_mild_profanity=(
                 self.ai_allow_mild_profanity_check.isChecked()
@@ -2912,6 +3213,8 @@ class MainWindow(QMainWindow):
             self.reply_decision_status_label.setText(
                 "Local AI reply decisions are disabled."
             )
+        if not settings.ai_training_capture_enabled:
+            self.training_opted_in_users.clear()
 
     def _show_startup_page(self) -> None:
         page_actions = {

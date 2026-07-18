@@ -90,3 +90,23 @@ endpoint is available and whether the selected model is installed through the
 
 Local model files are managed by Ollama and are not included in Sally backups,
 diagnostics, Git commits, or Windows release archives.
+
+## Supervised classifier training capture
+
+The optional **Training capture** setting is separate from Sally Memory and is
+off by default. When enabled, Sally posts one disclosure per stream/session.
+Each tester must type `!sallytrain on`; consent lasts only until Sally closes or
+the setting is disabled. `!sallytrain off`, `!sallytrain status`, and
+`!sallytrain delete` stop capture, report status, or delete that participant's
+saved samples.
+
+For opted-in testers, completed reply decisions are stored locally as pending
+classifier examples. The dataset stores a salted participant hash, sanitized
+message text, model intent/decision/state, confidence, and review status. It does
+not store the Twitch user ID, username, badges, roles, memories, or Sally's reply.
+URLs and `@mentions` are replaced. Pending samples expire after 30 days.
+
+**AI > Training** lets the streamer review intent labels, delete individual
+samples, or delete the entire dataset. Reviewed labels are future input for a
+small intent classifier; this feature captures and labels data but does not yet
+automatically retrain or replace Sally's local language model.

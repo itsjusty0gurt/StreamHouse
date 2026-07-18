@@ -51,6 +51,7 @@ class AppSettings:
     ai_conversation_followup_seconds: int = 180
     ai_interjections_enabled: bool = True
     ai_interjection_min_interval_seconds: int = 180
+    ai_training_capture_enabled: bool = False
     ai_personality: str = (
         "Warm, quick-witted, curious, and conversational. Match the streamer's "
         "energy, keep replies concise, and sound like a genuine cohost rather "
@@ -224,6 +225,12 @@ class AppSettings:
         ):
             interjection_interval = defaults.ai_interjection_min_interval_seconds
         interjection_interval = min(max(interjection_interval, 60), 1800)
+        training_capture_enabled = values.get(
+            "ai_training_capture_enabled",
+            defaults.ai_training_capture_enabled,
+        )
+        if not isinstance(training_capture_enabled, bool):
+            training_capture_enabled = defaults.ai_training_capture_enabled
         personality = values.get("ai_personality", defaults.ai_personality)
         if not isinstance(personality, str) or not personality.strip():
             personality = defaults.ai_personality
@@ -268,6 +275,7 @@ class AppSettings:
             ai_conversation_followup_seconds=conversation_followup,
             ai_interjections_enabled=interjections_enabled,
             ai_interjection_min_interval_seconds=interjection_interval,
+            ai_training_capture_enabled=training_capture_enabled,
             ai_personality=personality,
             ai_allow_mild_profanity=allow_mild_profanity,
             ai_allow_strong_profanity=allow_strong_profanity,

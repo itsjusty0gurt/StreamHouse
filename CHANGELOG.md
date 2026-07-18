@@ -20,6 +20,9 @@
 - Added an off-by-default master viewer-memory switch that disables collection,
   restoration, invitations, extraction, and memory-backed reply context without
   disabling Sally's ephemeral co-host conversation window.
+- Added off-by-default supervised intent-training capture with per-session viewer
+  opt-in/delete commands, pseudonymous sanitized samples, 30-day pending expiry,
+  one-time disclosure, and an AI Training review/label workspace.
 
 - structured AI viewer memories with evidence, confidence, provenance, review
   states, duplicate confirmation, contradiction replacement, and per-viewer opt-out

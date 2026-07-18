@@ -16,6 +16,7 @@ from core.logger import Logger
 from core.settings import AppSettings
 from ai.memory_extractor import ExtractedMemory
 from ai.response_engine import ResponseDecision, ResponseMessage
+from ai.training_store import TrainingStore
 from twitch.auth import TwitchAuthState
 from twitch.chatter_history import ChatterHistoryStore, ChatterRecord
 from twitch.service import TwitchConnectionState
@@ -73,12 +74,15 @@ class MainWindowTests(unittest.TestCase):
         self.session_store.retention_days = 365
         self.release_controller = Mock()
         self.release_controller.automatic_backup.return_value = None
+        self.training_store = Mock()
+        self.training_store.examples = []
         self.window = MainWindow(
             window_state_store=self.window_state_store,
             chatter_history_store=self.chatter_history_store,
             activity_history_store=self.activity_history_store,
             session_store=self.session_store,
             release_controller=self.release_controller,
+            training_store=self.training_store,
             auto_upgrade_permissions=False,
         )
 
@@ -165,7 +169,7 @@ class MainWindowTests(unittest.TestCase):
         ]
         self.assertEqual(
             ai_tab_names,
-            ["Memories", "Reply Review", "Personality"],
+            ["Memories", "Reply Review", "Training", "Personality"],
         )
         self.assertEqual(
             channel_tab_names,
@@ -189,7 +193,7 @@ class MainWindowTests(unittest.TestCase):
             self.window.ui.settingsPage,
         )
         self.assertTrue(all(page is not None for page in pages))
-        self.assertEqual(self.window.ai_tabs.count(), 3)
+        self.assertEqual(self.window.ai_tabs.count(), 4)
         self.assertEqual(self.window.channel_tabs.count(), 3)
         self.assertEqual(
             [
@@ -328,6 +332,7 @@ class MainWindowTests(unittest.TestCase):
         self.assertEqual(self.window.ai_conversation_followup_spin.value(), 180)
         self.assertTrue(self.window.ai_interjections_check.isChecked())
         self.assertEqual(self.window.ai_interjection_interval_spin.value(), 180)
+        self.assertFalse(self.window.ai_training_capture_check.isChecked())
         self.assertIn("quick-witted", self.window.ai_personality_edit.toPlainText())
         self.assertFalse(
             self.window.ai_allow_mild_profanity_check.isChecked()
@@ -1342,6 +1347,82 @@ class MainWindowTests(unittest.TestCase):
         self.window.response_decision_thread_pool.start.assert_called_once()
         self.assertNotIn("viewer-1", self.window.memory_message_buffers)
         self.assertEqual(store.records["viewer-1"].daily_memory, [])
+
+    def test_training_capture_requires_runtime_viewer_opt_in(self) -> None:
+        self.window.settings.ai_training_capture_enabled = True
+        self.window.twitch_service.send_message = Mock(return_value=True)
+        self.window.training_store.capture = Mock(return_value="example-1")
+
+        self.window.handle_twitch_message(
+            TwitchMessage(
+                username="Viewer",
+                text="!sallytrain on",
+                received_at=datetime.now(timezone.utc),
+                message_id="training-on",
+                user_id="viewer-1",
+            )
+        )
+        self.assertIn("viewer-1", self.window.training_opted_in_users)
+        decision = ResponseDecision(
+            request_id="training",
+            message_id="message-1",
+            user_id="viewer-1",
+            user_name="Viewer",
+            source_text="What do you think, Sally?",
+            received_at=datetime.now(timezone.utc).isoformat(),
+            decision="reply",
+            reply="I think it is a good idea.",
+            reason="Direct question.",
+            confidence=0.9,
+            engagement_type="direct",
+            conversation_state="start",
+        )
+
+        self.window._capture_training_decision(decision)
+
+        self.window.training_store.capture.assert_called_once_with(
+            "viewer-1", decision
+        )
+
+    def test_training_delete_command_removes_participant_samples(self) -> None:
+        self.window.settings.ai_training_capture_enabled = True
+        self.window.training_opted_in_users.add("viewer-1")
+        self.window.training_store.delete_participant.return_value = 3
+        self.window.twitch_service.send_message = Mock(return_value=True)
+
+        self.window.handle_twitch_message(
+            TwitchMessage(
+                username="Viewer",
+                text="!sallytrain delete",
+                received_at=datetime.now(timezone.utc),
+                message_id="training-delete",
+                user_id="viewer-1",
+            )
+        )
+
+        self.window.training_store.delete_participant.assert_called_once_with(
+            "viewer-1"
+        )
+        self.assertNotIn("viewer-1", self.window.training_opted_in_users)
+        self.assertIn(
+            "3 saved training sample(s) were deleted",
+            self.window.twitch_service.send_message.call_args.args[0],
+        )
+
+    def test_training_disclosure_is_sent_only_once_per_stream(self) -> None:
+        self.window.settings.ai_training_capture_enabled = True
+        self.window.twitch_service.state = TwitchConnectionState.CONNECTED
+        self.window.twitch_service.send_message = Mock(return_value=True)
+        self.window.current_memory_stream_id = "stream-1"
+
+        self.window._maybe_announce_training_capture()
+        self.window._maybe_announce_training_capture()
+
+        self.window.twitch_service.send_message.assert_called_once()
+        self.assertIn(
+            "alpha training is optional",
+            self.window.twitch_service.send_message.call_args.args[0],
+        )
 
     def test_twitch_chat_turns_urls_into_links(self) -> None:
         self.window.ui.twitchChannelEdit.setText("channel")
