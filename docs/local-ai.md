@@ -23,6 +23,15 @@ Only the evidence excerpts attached to a pending proposal are persisted so the
 streamer can verify it. The prompt rejects inference and highly sensitive facts.
 Failures retain the RAM buffer for a delayed retry and never block the UI.
 
+The master **Viewer memory system** setting is off by default. While off, Sally
+does not invite opt-ins, collect or restore daily viewer conversations, run
+memory extraction, or supply saved viewer memories to reply reasoning. Existing
+saved data remains dormant so temporarily disabling the feature is not
+destructive. Viewers can still use the off/delete/status commands, while attempts
+to opt in report that the streamer has disabled memory. Sally's bounded RAM-only
+recent-chat window remains available for immediate co-host conversation and is
+discarded when the application closes.
+
 When **Evaluate eligible live chat messages** is enabled, every non-bot viewer
 message is queued for a background reply decision. Sally sends up to eight
 waiting messages in one local-model request, while preserving one decision per
@@ -37,6 +46,28 @@ recall available while bounding prompt size and response latency.
 `hey sally` is a public invocation available to every non-bot chatter. It does
 not require follower, subscriber, VIP, moderator, or Regular status. Sally is
 instructed to answer unless the invocation is unsafe or abusive spam.
+
+An invocation also opens a short conversation window for that viewer (three
+minutes by default and configurable in Settings). During that window, Sally is
+given her latest reply to the same viewer so natural follow-ups do not need to
+repeat `hey sally`. An answer to a question Sally asked, or a new question from
+that viewer, is treated as requiring a response. The window expires rather than
+leaving Sally permanently attached to one conversation.
+
+Sally also recognizes her name anywhere in a message and Twitch's native reply
+metadata, so `hey sally` is not a required trigger. The local model receives
+recent turn order and can recognize when wording is implicitly directed at her.
+Each decision reports whether a Sally/viewer exchange starts, continues, ends,
+or remains unchanged. Clear goodbyes, closing thanks, and topic changes therefore
+close the conversation immediately instead of waiting only for the timer.
+
+Optional **Co-host interjections** let Sally occasionally add a relevant joke or
+useful observation even when nobody directly addresses her. These use a stricter
+confidence threshold and a separate three-minute cooldown by default. The prompt
+requires interjections to be rare, specific, and worthwhile and tells Sally to
+stay out of short acknowledgements, viewer-to-viewer greetings, arguments, and
+personal conversations. Both the feature and its cooldown are configurable in
+Settings.
 
 Reply drafts and ignore decisions appear under **AI > Reply Review**, where the
 streamer can send, edit, or dismiss them. Automatic sending is experimental and

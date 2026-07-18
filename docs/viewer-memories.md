@@ -16,6 +16,32 @@ store and shows observed participation statistics and Twitch roles.
 
 ## AI-memory boundary
 
+Viewer memory is opt-in. A viewer uses `!sallymemory on` in chat; legacy
+profiles without an explicit consent record are not eligible. Unconsented
+viewer records remain session-only and are omitted when chatter history is
+saved. Available commands are:
+
+- `!sallymemory` - explain the feature and controls.
+- `!sallymemory on` - consent to daily context and regular qualification.
+- `!sallymemory status` - show consent, stream progress, and keynote count.
+- `!sallymemory off` - stop memory and erase content while retaining a minimal
+  opt-out preference.
+- `!sallymemory delete` followed by `!sallymemory confirmdelete` - erase the
+  complete viewer profile, consent metadata, runtime context, and associated
+  activity-feed entries. Existing Sally backup archives are scrubbed as part of
+  confirmed deletion so a later restore cannot silently recreate the profile.
+
+Daily context is capped at 100 messages per opted-in viewer. On startup and
+once per minute, Sally compares its last update with the configured local reset
+time. Expired context is removed unless it belongs to the Twitch stream that is
+still live; a stream crossing the boundary is cleared when it ends.
+
+Persistent keynotes remain locked until the viewer has participated in five
+distinct streams after opting in. Extracted keynotes are review-first and
+limited to harmless preferences, greetings, recurring channel jokes, and
+community context. Sensitive facts and inferred personality or emotional
+profiles are rejected.
+
 Each viewer record contains structured memory objects with review status,
 confidence, evidence, provenance, creation time, confirmation time, and a stable
 fact key. Proposed AI memories remain pending until approved. Same-key changes

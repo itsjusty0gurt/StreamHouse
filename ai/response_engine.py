@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+from difflib import SequenceMatcher
 from dataclasses import dataclass
 from typing import Any, Iterable
 
@@ -18,6 +19,11 @@ class ResponseMessage:
     received_at: str
     memory_summary: str = ""
     memories: tuple[str, ...] = ()
+    conversation_continuation: bool = False
+    previous_sally_reply: str = ""
+    response_expected: bool = False
+    directed_at_sally: bool = False
+    reply_to_sally: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -32,6 +38,9 @@ class ResponseDecision:
     reply: str
     reason: str
     confidence: float
+    response_expected: bool = False
+    engagement_type: str = "none"
+    conversation_state: str = "unchanged"
 
 
 class ResponseDecisionEngine:
@@ -92,12 +101,213 @@ class ResponseDecisionEngine:
             decision = self._validate(value, by_id)
             if decision is not None:
                 decisions[decision.request_id] = decision
-        return tuple(
+        ordered = tuple(
             decisions.get(
                 message.request_id,
                 self._ignored(message, "Model omitted this message."),
             )
             for message in batch
+        )
+        recent_replies = [
+            str(item.get("message", ""))
+            for item in recent_chat
+            if str(item.get("speaker", "")).casefold() == "sally"
+        ][-10:]
+        accepted_replies: list[str] = []
+        retry_messages: list[ResponseMessage] = []
+        retry_reasons: dict[str, str] = {}
+        for message, decision in zip(batch, ordered):
+            if decision.decision == "reply" and self._is_duplicate_reply(
+                decision.reply, recent_replies + accepted_replies
+            ):
+                retry_messages.append(message)
+                retry_reasons[message.request_id] = "Draft repeated a recent reply."
+            elif self.message_requires_reply(message) and decision.decision != "reply":
+                retry_messages.append(message)
+                retry_reasons[message.request_id] = "Required response was ignored."
+            elif decision.decision == "reply":
+                accepted_replies.append(decision.reply)
+
+        replacements: dict[str, ResponseDecision] = {}
+        if retry_messages:
+            try:
+                replacements = self._retry_replies(
+                    provider,
+                    tuple(retry_messages),
+                    recent_replies + accepted_replies,
+                    personality,
+                    allow_mild_profanity,
+                    allow_strong_profanity,
+                )
+            except Exception:
+                # A focused retry is best-effort; direct invocations still get
+                # the deterministic fallback below.
+                replacements = {}
+
+        final: list[ResponseDecision] = []
+        used_replies = list(recent_replies)
+        for message, decision in zip(batch, ordered):
+            if message.request_id in retry_reasons:
+                candidate = replacements.get(message.request_id)
+                if (
+                    candidate is not None
+                    and candidate.decision == "reply"
+                    and not self._is_duplicate_reply(candidate.reply, used_replies)
+                ):
+                    decision = candidate
+                elif self.message_requires_reply(message):
+                    decision = self._fallback_reply(message, used_replies)
+                else:
+                    decision = self._ignored(message, retry_reasons[message.request_id])
+            if decision.decision == "reply":
+                used_replies.append(decision.reply)
+            final.append(decision)
+        return tuple(final)
+
+    def _retry_replies(
+        self,
+        provider: OllamaProvider,
+        messages: tuple[ResponseMessage, ...],
+        blocked_replies: list[str],
+        personality: str,
+        allow_mild_profanity: bool,
+        allow_strong_profanity: bool,
+    ) -> dict[str, ResponseDecision]:
+        inputs = [
+            {
+                "id": message.request_id,
+                "viewer": message.user_name,
+                "message": message.text,
+                "conversation_continuation": message.conversation_continuation,
+                "previous_sally_reply": message.previous_sally_reply,
+                "response_expected": message.response_expected,
+                "directed_at_sally": message.directed_at_sally,
+                "reply_to_sally": message.reply_to_sally,
+            }
+            for message in messages
+        ]
+        language = (
+            "Strong profanity is allowed, but never slurs or hateful language."
+            if allow_strong_profanity
+            else "Mild profanity is allowed, but no strong profanity."
+            if allow_mild_profanity
+            else "Do not use profanity."
+        )
+        payload = provider.chat(
+            [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are Sally, a concise Twitch cohost. Produce fresh "
+                        "replies for messages whose first draft was missing or repetitive. "
+                        "Return JSON only."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": f"""
+Reply to every supplied message. Do not ignore any input. Write a new, specific
+response that naturally continues that viewer's message. Do not reuse or closely
+paraphrase a blocked reply. Keep each reply under 300 characters and normally one
+sentence.
+
+Personality: {personality}
+Language: {language}
+Blocked recent replies: {json.dumps(blocked_replies[-10:], ensure_ascii=False)}
+Messages: {json.dumps(inputs, ensure_ascii=False)}
+
+Return exactly:
+{{"decisions":[{{"id":"input-id","decision":"reply",\
+"reply":"fresh response","reason":"required retry","confidence":0.9,\
+"engagement_type":"direct","conversation_state":"continue"}}]}}
+""".strip(),
+                },
+            ],
+            think=False,
+        )
+        response = payload.get("message", {})
+        content = str(response.get("content", "")) if isinstance(response, dict) else ""
+        parsed = self._parse_json(content)
+        values = parsed.get("decisions", [])
+        if not isinstance(values, list):
+            return {}
+        by_id = {message.request_id: message for message in messages}
+        return {
+            decision.request_id: decision
+            for value in values
+            if (decision := self._validate(value, by_id)) is not None
+        }
+
+    @staticmethod
+    def requires_reply(text: str) -> bool:
+        return " ".join(text.casefold().strip().split()).startswith("hey sally")
+
+    @classmethod
+    def message_requires_reply(cls, message: ResponseMessage) -> bool:
+        return (
+            cls.requires_reply(message.text)
+            or message.response_expected
+            or message.directed_at_sally
+            or message.reply_to_sally
+        )
+
+    @staticmethod
+    def _normalized_reply(text: str) -> str:
+        return " ".join(re.findall(r"[a-z0-9']+", text.casefold()))
+
+    @classmethod
+    def _is_duplicate_reply(cls, reply: str, prior_replies: Iterable[str]) -> bool:
+        normalized = cls._normalized_reply(reply)
+        if not normalized:
+            return False
+        for prior in prior_replies:
+            other = cls._normalized_reply(prior)
+            if not other:
+                continue
+            if normalized == other:
+                return True
+            if min(len(normalized), len(other)) >= 20 and SequenceMatcher(
+                None, normalized, other
+            ).ratio() >= 0.86:
+                return True
+        return False
+
+    @classmethod
+    def _fallback_reply(
+        cls,
+        message: ResponseMessage,
+        prior_replies: Iterable[str],
+    ) -> ResponseDecision:
+        options = (
+            f"@{message.user_name}, I'm here—tell me a little more.",
+            f"@{message.user_name}, I caught that. What do you want to dig into?",
+            f"@{message.user_name}, you've got me—what's on your mind?",
+        )
+        reply = next(
+            (
+                option for option in options
+                if not cls._is_duplicate_reply(option, prior_replies)
+            ),
+            options[0],
+        )
+        return ResponseDecision(
+            request_id=message.request_id,
+            message_id=message.message_id,
+            user_id=message.user_id,
+            user_name=message.user_name,
+            source_text=message.text,
+            received_at=message.received_at,
+            decision="reply",
+            reply=reply,
+            reason="Required response needed a fallback reply.",
+            confidence=1.0,
+            response_expected=message.response_expected,
+            engagement_type=(
+                "conversation"
+                if message.conversation_continuation
+                else "direct"
+            ),
+            conversation_state="continue",
         )
 
     @staticmethod
@@ -115,6 +325,11 @@ class ResponseDecisionEngine:
                 "message": message.text,
                 "approved_memory_summary": message.memory_summary,
                 "approved_memories": list(message.memories),
+                "conversation_continuation": message.conversation_continuation,
+                "previous_sally_reply": message.previous_sally_reply,
+                "response_expected": message.response_expected,
+                "directed_at_sally": message.directed_at_sally,
+                "reply_to_sally": message.reply_to_sally,
             }
             for message in messages
         ]
@@ -136,7 +351,34 @@ For every input message, choose `reply` or `ignore`.
 
 Any non-bot viewer message beginning with `hey sally` is an explicit public
 invocation. Reply to it unless it is unsafe, abusive spam, or asks for something
-Sally must not do. This command is available regardless of viewer role.
+Sally must not do. This command is available regardless of viewer role. If a
+viewer repeats an invocation because no Sally reply followed the earlier copy,
+answer the newest invocation instead of treating it as spam.
+
+`conversation_continuation` means Sally recently replied to this same viewer.
+Use `previous_sally_reply` to understand their next turn. If `response_expected`
+is true, the viewer is answering Sally's question or asking a follow-up question;
+reply unless doing so would be unsafe. They do not need to say `hey sally` again.
+
+`directed_at_sally` means the message names or mentions Sally.
+`reply_to_sally` means Twitch identifies it as a direct reply to Sally's message.
+Both require a response unless unsafe. Also infer an implicit address from recent
+chat: a viewer may clearly be speaking to Sally through wording and turn order
+without using her name. Do not require a magic phrase.
+
+Classify each decision with `engagement_type`: `direct` when the viewer is
+addressing Sally, `conversation` for an active Sally/viewer exchange,
+`interjection` only when Sally is voluntarily joining a discussion, or `none`
+when ignored. Interjections must be rare, relevant, specific to the current
+discussion, and add genuine humor or useful context. Do not interject into every
+message, greetings between viewers, short acknowledgements, commands, arguments,
+or sensitive/personal conversations.
+
+Also return `conversation_state`: `start` when a new Sally conversation begins,
+`continue` while the viewer is still engaging Sally, `end` when they say goodbye,
+thank Sally and close the exchange, change clearly to another person/topic, or
+otherwise finish the interaction, and `unchanged` when no state change is clear.
+An ending may be marked even when the correct decision is `ignore`.
 
 Sally's personality:
 {personality}
@@ -158,7 +400,9 @@ include private or sensitive information.
 
 Return exactly:
 {{"decisions":[{{"id":"input-id","decision":"reply",\
-"reply":"short response","reason":"brief reason","confidence":0.85}}]}}
+"reply":"short response","reason":"brief reason","confidence":0.85,\
+"engagement_type":"direct|conversation|interjection|none",\
+"conversation_state":"start|continue|end|unchanged"}}]}}
 
 Include one decision for every input ID. For `ignore`, reply must be empty.
 
@@ -214,6 +458,30 @@ Messages to decide:
             confidence = float(value.get("confidence", 0.0))
         except (TypeError, ValueError):
             confidence = 0.0
+        engagement_type = str(
+            value.get("engagement_type", "")
+        ).casefold()
+        if engagement_type not in {
+            "direct", "conversation", "interjection", "none"
+        }:
+            engagement_type = (
+                "direct"
+                if source.directed_at_sally or source.reply_to_sally
+                else "conversation"
+                if source.conversation_continuation
+                else "interjection"
+                if decision == "reply"
+                else "none"
+            )
+        if decision == "ignore":
+            engagement_type = "none"
+        conversation_state = str(
+            value.get("conversation_state", "unchanged")
+        ).casefold()
+        if conversation_state not in {
+            "start", "continue", "end", "unchanged"
+        }:
+            conversation_state = "unchanged"
         return ResponseDecision(
             request_id=request_id,
             message_id=source.message_id,
@@ -225,6 +493,9 @@ Messages to decide:
             reply=reply[: self.MAX_REPLY_LENGTH],
             reason=str(value.get("reason", "")).strip()[:300],
             confidence=min(max(confidence, 0.0), 1.0),
+            response_expected=source.response_expected,
+            engagement_type=engagement_type,
+            conversation_state=conversation_state,
         )
 
     @staticmethod
@@ -240,4 +511,7 @@ Messages to decide:
             reply="",
             reason=reason,
             confidence=0.0,
+            response_expected=message.response_expected,
+            engagement_type="none",
+            conversation_state="unchanged",
         )

@@ -37,12 +37,20 @@ class AppSettings:
     local_ai_enabled: bool = True
     local_ai_endpoint: str = "http://127.0.0.1:11434"
     local_ai_model: str = "qwen3:14b"
+    ai_viewer_memory_enabled: bool = False
     ai_memory_reasoning_enabled: bool = True
     ai_memory_message_threshold: int = 10
+    ai_memory_reset_hour: int = 4
+    ai_memory_reset_minute: int = 0
+    ai_memory_promo_enabled: bool = True
+    ai_memory_promo_interval_messages: int = 150
     ai_response_decisions_enabled: bool = True
     ai_auto_send_replies: bool = False
     ai_response_max_age_seconds: int = 15
     ai_response_min_interval_seconds: int = 8
+    ai_conversation_followup_seconds: int = 180
+    ai_interjections_enabled: bool = True
+    ai_interjection_min_interval_seconds: int = 180
     ai_personality: str = (
         "Warm, quick-witted, curious, and conversational. Match the streamer's "
         "energy, keep replies concise, and sound like a genuine cohost rather "
@@ -117,6 +125,11 @@ class AppSettings:
         if not isinstance(local_ai_model, str) or not local_ai_model.strip():
             local_ai_model = defaults.local_ai_model
         local_ai_model = local_ai_model.strip()[:200]
+        viewer_memory_enabled = values.get(
+            "ai_viewer_memory_enabled", defaults.ai_viewer_memory_enabled
+        )
+        if not isinstance(viewer_memory_enabled, bool):
+            viewer_memory_enabled = defaults.ai_viewer_memory_enabled
         memory_reasoning_enabled = values.get(
             "ai_memory_reasoning_enabled",
             defaults.ai_memory_reasoning_enabled,
@@ -132,6 +145,32 @@ class AppSettings:
         ):
             memory_message_threshold = defaults.ai_memory_message_threshold
         memory_message_threshold = min(max(memory_message_threshold, 5), 50)
+        memory_reset_hour = values.get(
+            "ai_memory_reset_hour", defaults.ai_memory_reset_hour
+        )
+        if not isinstance(memory_reset_hour, int) or isinstance(memory_reset_hour, bool):
+            memory_reset_hour = defaults.ai_memory_reset_hour
+        memory_reset_hour = min(max(memory_reset_hour, 0), 23)
+        memory_reset_minute = values.get(
+            "ai_memory_reset_minute", defaults.ai_memory_reset_minute
+        )
+        if not isinstance(memory_reset_minute, int) or isinstance(memory_reset_minute, bool):
+            memory_reset_minute = defaults.ai_memory_reset_minute
+        memory_reset_minute = min(max(memory_reset_minute, 0), 59)
+        memory_promo_enabled = values.get(
+            "ai_memory_promo_enabled", defaults.ai_memory_promo_enabled
+        )
+        if not isinstance(memory_promo_enabled, bool):
+            memory_promo_enabled = defaults.ai_memory_promo_enabled
+        memory_promo_interval = values.get(
+            "ai_memory_promo_interval_messages",
+            defaults.ai_memory_promo_interval_messages,
+        )
+        if not isinstance(memory_promo_interval, int) or isinstance(
+            memory_promo_interval, bool
+        ):
+            memory_promo_interval = defaults.ai_memory_promo_interval_messages
+        memory_promo_interval = min(max(memory_promo_interval, 25), 1000)
         response_decisions_enabled = values.get(
             "ai_response_decisions_enabled",
             defaults.ai_response_decisions_enabled,
@@ -162,6 +201,29 @@ class AppSettings:
         ):
             response_min_interval = defaults.ai_response_min_interval_seconds
         response_min_interval = min(max(response_min_interval, 3), 60)
+        conversation_followup = values.get(
+            "ai_conversation_followup_seconds",
+            defaults.ai_conversation_followup_seconds,
+        )
+        if not isinstance(conversation_followup, int) or isinstance(
+            conversation_followup, bool
+        ):
+            conversation_followup = defaults.ai_conversation_followup_seconds
+        conversation_followup = min(max(conversation_followup, 30), 600)
+        interjections_enabled = values.get(
+            "ai_interjections_enabled", defaults.ai_interjections_enabled
+        )
+        if not isinstance(interjections_enabled, bool):
+            interjections_enabled = defaults.ai_interjections_enabled
+        interjection_interval = values.get(
+            "ai_interjection_min_interval_seconds",
+            defaults.ai_interjection_min_interval_seconds,
+        )
+        if not isinstance(interjection_interval, int) or isinstance(
+            interjection_interval, bool
+        ):
+            interjection_interval = defaults.ai_interjection_min_interval_seconds
+        interjection_interval = min(max(interjection_interval, 60), 1800)
         personality = values.get("ai_personality", defaults.ai_personality)
         if not isinstance(personality, str) or not personality.strip():
             personality = defaults.ai_personality
@@ -192,12 +254,20 @@ class AppSettings:
             local_ai_enabled=local_ai_enabled,
             local_ai_endpoint=local_ai_endpoint,
             local_ai_model=local_ai_model,
+            ai_viewer_memory_enabled=viewer_memory_enabled,
             ai_memory_reasoning_enabled=memory_reasoning_enabled,
             ai_memory_message_threshold=memory_message_threshold,
+            ai_memory_reset_hour=memory_reset_hour,
+            ai_memory_reset_minute=memory_reset_minute,
+            ai_memory_promo_enabled=memory_promo_enabled,
+            ai_memory_promo_interval_messages=memory_promo_interval,
             ai_response_decisions_enabled=response_decisions_enabled,
             ai_auto_send_replies=auto_send_replies,
             ai_response_max_age_seconds=response_max_age,
             ai_response_min_interval_seconds=response_min_interval,
+            ai_conversation_followup_seconds=conversation_followup,
+            ai_interjections_enabled=interjections_enabled,
+            ai_interjection_min_interval_seconds=interjection_interval,
             ai_personality=personality,
             ai_allow_mild_profanity=allow_mild_profanity,
             ai_allow_strong_profanity=allow_strong_profanity,

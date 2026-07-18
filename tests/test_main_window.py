@@ -1,7 +1,7 @@
 import logging
 import os
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -15,7 +15,7 @@ from PySide6.QtTest import QTest
 from core.logger import Logger
 from core.settings import AppSettings
 from ai.memory_extractor import ExtractedMemory
-from ai.response_engine import ResponseDecision
+from ai.response_engine import ResponseDecision, ResponseMessage
 from twitch.auth import TwitchAuthState
 from twitch.chatter_history import ChatterHistoryStore, ChatterRecord
 from twitch.service import TwitchConnectionState
@@ -27,6 +27,7 @@ from twitch.models import (
     TwitchFragmentType,
     TwitchMessage,
     TwitchMessageFragment,
+    TwitchReply,
 )
 from ui.main_window import MainWindow
 from ui.memory_worker import MemoryExtractionResult
@@ -53,6 +54,8 @@ class MainWindowTests(unittest.TestCase):
         self.chatter_history_store.records = {}
         self.chatter_history_store.is_regular.return_value = False
         self.chatter_history_store.is_bot.return_value = False
+        self.chatter_history_store.has_memory_consent.return_value = False
+        self.chatter_history_store.can_create_keynotes.return_value = False
         self.chatter_history_store.REGULAR_ACTIVE_DAYS = 5
         self.chatter_history_store.REGULAR_MESSAGES = 25
         self.chatter_history_store.REGULAR_SNAPSHOT_DAYS = 10
@@ -91,7 +94,7 @@ class MainWindowTests(unittest.TestCase):
             (self.window.ui.twitchButton, self.window.ui.twitchPage),
             (self.window.ai_button, self.window.ai_page),
             (self.window.ui.logsButton, self.window.ui.logsPage),
-            (self.window.ui.settingsButton, self.window.ui.settingsPage),
+            (self.window.ui.settingsButton, self.window.settings_container),
         )
         buttons = [button for button, _ in cases]
 
@@ -235,10 +238,18 @@ class MainWindowTests(unittest.TestCase):
             self.window.chatter_list.parentWidget().maximumWidth(),
             210,
         )
-        self.assertGreaterEqual(
+        self.assertLessEqual(
             self.window.activity_feed_list.parentWidget().minimumWidth(),
-            300,
+            140,
         )
+
+    def test_window_can_shrink_to_small_screen_size(self) -> None:
+        self.assertLessEqual(self.window.minimumWidth(), 520)
+        self.assertLessEqual(self.window.minimumHeight(), 360)
+        self.assertEqual(self.window.ui.mainStack.minimumSizeHint().width(), 0)
+        self.window.resize(600, 400)
+        self.assertEqual((self.window.width(), self.window.height()), (600, 400))
+        self.assertTrue(self.window.settings_container.widgetResizable())
 
     def test_twitch_activity_feed_formats_bus_events(self) -> None:
         event = TwitchEvent(
@@ -306,12 +317,17 @@ class MainWindowTests(unittest.TestCase):
             "http://localhost:11434",
         )
         self.assertEqual(self.window.local_ai_model_edit.text(), "qwen3:14b")
+        self.assertFalse(self.window.ai_viewer_memory_check.isChecked())
+        self.assertFalse(self.window.ai_memory_reasoning_check.isEnabled())
         self.assertTrue(self.window.ai_memory_reasoning_check.isChecked())
         self.assertEqual(self.window.ai_memory_threshold_spin.value(), 10)
         self.assertTrue(self.window.ai_response_decisions_check.isChecked())
         self.assertFalse(self.window.ai_auto_send_replies_check.isChecked())
         self.assertEqual(self.window.ai_response_max_age_spin.value(), 15)
         self.assertEqual(self.window.ai_response_interval_spin.value(), 8)
+        self.assertEqual(self.window.ai_conversation_followup_spin.value(), 180)
+        self.assertTrue(self.window.ai_interjections_check.isChecked())
+        self.assertEqual(self.window.ai_interjection_interval_spin.value(), 180)
         self.assertIn("quick-witted", self.window.ai_personality_edit.toPlainText())
         self.assertFalse(
             self.window.ai_allow_mild_profanity_check.isChecked()
@@ -779,6 +795,7 @@ class MainWindowTests(unittest.TestCase):
         self.assertIn("data-message-id='message-1'", rendered_html)
 
     def test_live_chat_starts_local_memory_reasoning_at_threshold(self) -> None:
+        self.window.settings.ai_viewer_memory_enabled = True
         self.window.settings.ai_memory_message_threshold = 5
         self.window.settings.ai_response_decisions_enabled = False
         self.chatter_history_store.records["viewer-1"] = ChatterRecord(
@@ -788,6 +805,8 @@ class MainWindowTests(unittest.TestCase):
             last_seen="2026-07-13T00:00:00+00:00",
         )
         self.window.memory_reasoning_thread_pool.start = Mock()
+        self.chatter_history_store.has_memory_consent.return_value = True
+        self.chatter_history_store.can_create_keynotes.return_value = True
 
         for index in range(5):
             self.window.handle_twitch_message(
@@ -808,6 +827,7 @@ class MainWindowTests(unittest.TestCase):
         )
 
     def test_memory_reasoning_skips_broadcaster_and_bots(self) -> None:
+        self.window.settings.ai_viewer_memory_enabled = True
         self.window.twitch_service.broadcaster_user_id = "streamer-1"
         for user_id in ("streamer-1", "bot-1"):
             self.chatter_history_store.records[user_id] = ChatterRecord(
@@ -834,8 +854,12 @@ class MainWindowTests(unittest.TestCase):
         self.assertNotIn("bot-1", self.window.memory_message_buffers)
 
     def test_memory_reasoning_creates_pending_review_proposal(self) -> None:
+        self.window.settings.ai_viewer_memory_enabled = True
         store = ChatterHistoryStore(Path("unused.json"))
         store.observe_message("viewer-1", "Viewer")
+        store.opt_in_memory("viewer-1", "Viewer")
+        for index in range(store.MEMORY_REGULAR_STREAMS):
+            store.record_memory_stream("viewer-1", f"stream-{index}")
         self.window.chatter_history = store
         self.window._save_chatter_history = Mock()
         result = MemoryExtractionResult(
@@ -888,7 +912,7 @@ class MainWindowTests(unittest.TestCase):
         self.assertEqual(len(self.window.recent_ai_chat), 1)
         self.assertEqual(self.window.recent_ai_chat.maxlen, 100)
 
-    def test_broadcaster_can_trigger_sally_without_enabling_reply_loops(self) -> None:
+    def test_broadcaster_messages_are_evaluated_for_cohost_reasoning(self) -> None:
         store = ChatterHistoryStore(Path("unused.json"))
         store.observe_message("streamer-1", "Streamer")
         self.window.chatter_history = store
@@ -912,7 +936,141 @@ class MainWindowTests(unittest.TestCase):
 
         self.window.response_decision_thread_pool.start.assert_called_once()
         worker = self.window.response_decision_thread_pool.start.call_args.args[0]
-        self.assertEqual(worker.messages[0].message_id, "trigger")
+        self.assertEqual(worker.messages[0].message_id, "ordinary")
+        self.assertEqual(
+            [message.message_id for message in self.window.response_decision_queue],
+            ["trigger"],
+        )
+
+    def test_sally_name_and_twitch_reply_are_direct_address_signals(self) -> None:
+        self.window.twitch_bot_auth.token = Mock(
+            user_id="bot-1", login="sally_b0t"
+        )
+        named = TwitchMessage(
+            username="Viewer",
+            text="what do you think, Sally?",
+            received_at=datetime.now(timezone.utc),
+            user_id="viewer-1",
+        )
+        replied = TwitchMessage(
+            username="Viewer",
+            text="that makes sense",
+            received_at=datetime.now(timezone.utc),
+            user_id="viewer-1",
+            reply=TwitchReply(
+                parent_message_id="one",
+                parent_message_body="Sally said something",
+                parent_user_id="bot-1",
+                parent_user_name="Sally",
+                parent_user_login="sally_b0t",
+                thread_message_id="one",
+                thread_user_id="bot-1",
+                thread_user_name="Sally",
+                thread_user_login="sally_b0t",
+            ),
+        )
+
+        self.assertEqual(
+            self.window._sally_address_signals(named, named.text),
+            (True, False),
+        )
+        self.assertEqual(
+            self.window._sally_address_signals(replied, replied.text),
+            (True, True),
+        )
+        third_person = TwitchMessage(
+            username="Viewer",
+            text="I think Sally has been funny tonight",
+            received_at=datetime.now(timezone.utc),
+            user_id="viewer-1",
+        )
+        self.assertEqual(
+            self.window._sally_address_signals(third_person, third_person.text),
+            (False, False),
+        )
+
+    def test_broadcaster_can_continue_recent_sally_conversation(self) -> None:
+        self.window.twitch_service.broadcaster_user_id = "streamer-1"
+        self.window.response_decision_thread_pool.start = Mock()
+        self.window.recent_ai_chat.append(
+            {
+                "speaker": "sally",
+                "viewer": "Sally",
+                "message": "I'm doing great. How about you?",
+                "user_id": "streamer-1",
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            }
+        )
+
+        self.window.handle_twitch_message(
+            TwitchMessage(
+                username="Streamer",
+                text="i am good",
+                received_at=datetime.now(timezone.utc),
+                message_id="followup",
+                user_id="streamer-1",
+            )
+        )
+
+        self.window.response_decision_thread_pool.start.assert_called_once()
+        worker = self.window.response_decision_thread_pool.start.call_args.args[0]
+        message = worker.messages[0]
+        self.assertTrue(message.conversation_continuation)
+        self.assertTrue(message.response_expected)
+        self.assertIn("How about you?", message.previous_sally_reply)
+
+    def test_conversation_context_expires_after_configured_window(self) -> None:
+        now = datetime.now(timezone.utc)
+        self.window.settings.ai_conversation_followup_seconds = 60
+        self.window.recent_ai_chat.append(
+            {
+                "speaker": "sally",
+                "viewer": "Sally",
+                "message": "How about you?",
+                "user_id": "viewer-1",
+                "timestamp": (now - timedelta(seconds=61)).isoformat(),
+            }
+        )
+
+        context = self.window._conversation_context(
+            "viewer-1", "i am good", now
+        )
+
+        self.assertEqual(context, (False, "", False))
+
+    def test_model_ending_closes_recent_conversation(self) -> None:
+        now = datetime.now(timezone.utc)
+        self.window.recent_ai_chat.append(
+            {
+                "speaker": "sally",
+                "viewer": "Sally",
+                "message": "Anything else?",
+                "user_id": "viewer-1",
+                "timestamp": now.isoformat(),
+            }
+        )
+        decision = ResponseDecision(
+            request_id="end",
+            message_id="end-message",
+            user_id="viewer-1",
+            user_name="Viewer",
+            source_text="no thanks, bye",
+            received_at=now.isoformat(),
+            decision="ignore",
+            reply="",
+            reason="Conversation ended.",
+            confidence=0.95,
+            conversation_state="end",
+        )
+
+        self.window._update_conversation_state(decision)
+
+        self.assertEqual(
+            self.window._conversation_context(
+                "viewer-1", "talking to someone else", datetime.now(timezone.utc)
+            ),
+            (False, "", False),
+        )
 
     def test_reply_decision_is_added_to_review_without_auto_send(self) -> None:
         self.window.twitch_service.send_message = Mock(return_value=True)
@@ -957,14 +1115,11 @@ class MainWindowTests(unittest.TestCase):
         self.assertFalse(self.window._maybe_auto_send_reply(fresh))
         self.window.settings.ai_auto_send_replies = True
         self.assertTrue(self.window._maybe_auto_send_reply(fresh))
-        self.assertEqual(
-            self.window.recent_ai_chat[-1],
-            {
-                "speaker": "sally",
-                "viewer": "Sally",
-                "message": "I'm here!",
-            },
-        )
+        self.assertEqual(self.window.recent_ai_chat[-1]["speaker"], "sally")
+        self.assertEqual(self.window.recent_ai_chat[-1]["viewer"], "Sally")
+        self.assertEqual(self.window.recent_ai_chat[-1]["message"], "I'm here!")
+        self.assertEqual(self.window.recent_ai_chat[-1]["user_id"], "viewer-1")
+        self.assertIn("timestamp", self.window.recent_ai_chat[-1])
 
         stale = ResponseDecision(
             request_id="request-2",
@@ -984,6 +1139,209 @@ class MainWindowTests(unittest.TestCase):
             self.window.twitch_service.send_message.call_args_list,
             [unittest.mock.call("I'm here!")],
         )
+
+    def test_hey_sally_bypasses_confidence_and_normal_reply_gap(self) -> None:
+        self.window.settings.ai_auto_send_replies = True
+        self.window.twitch_service.state = TwitchConnectionState.CONNECTED
+        self.window.twitch_service.send_message = Mock(return_value=True)
+        self.window.last_auto_reply_at = 100.0
+        decision = ResponseDecision(
+            request_id="request-direct",
+            message_id="message-direct",
+            user_id="viewer-1",
+            user_name="Viewer",
+            source_text="hey sally, are you there?",
+            received_at=(
+                datetime.now(timezone.utc) - timedelta(seconds=30)
+            ).isoformat(),
+            decision="reply",
+            reply="I'm here!",
+            reason="Direct invocation.",
+            confidence=0.1,
+        )
+
+        with patch("ui.main_window.monotonic", return_value=100.0):
+            self.assertTrue(self.window._maybe_auto_send_reply(decision))
+
+    def test_expected_followup_bypasses_confidence_and_normal_reply_gap(self) -> None:
+        self.window.settings.ai_auto_send_replies = True
+        self.window.twitch_service.state = TwitchConnectionState.CONNECTED
+        self.window.twitch_service.send_message = Mock(return_value=True)
+        self.window.last_auto_reply_at = 100.0
+        decision = ResponseDecision(
+            request_id="request-followup",
+            message_id="message-followup",
+            user_id="viewer-1",
+            user_name="Viewer",
+            source_text="i am good",
+            received_at=(
+                datetime.now(timezone.utc) - timedelta(seconds=30)
+            ).isoformat(),
+            decision="reply",
+            reply="Glad to hear it!",
+            reason="Expected conversation follow-up.",
+            confidence=0.1,
+            response_expected=True,
+        )
+
+        with patch("ui.main_window.monotonic", return_value=100.0):
+            self.assertTrue(self.window._maybe_auto_send_reply(decision))
+
+    def test_interjection_requires_high_confidence_and_separate_cooldown(self) -> None:
+        self.window.settings.ai_auto_send_replies = True
+        self.window.settings.ai_interjections_enabled = True
+        self.window.settings.ai_interjection_min_interval_seconds = 180
+        self.window.twitch_service.state = TwitchConnectionState.CONNECTED
+        self.window.twitch_service.send_message = Mock(return_value=True)
+        decision = ResponseDecision(
+            request_id="interjection",
+            message_id="message-interjection",
+            user_id="viewer-1",
+            user_name="Viewer",
+            source_text="This boss has way too much health.",
+            received_at=datetime.now(timezone.utc).isoformat(),
+            decision="reply",
+            reply="That health bar has its own health bar.",
+            reason="Relevant co-host joke.",
+            confidence=0.9,
+            engagement_type="interjection",
+        )
+
+        with patch("ui.main_window.monotonic", return_value=200.0):
+            self.assertTrue(self.window._maybe_auto_send_reply(decision))
+        with patch("ui.main_window.monotonic", return_value=201.0):
+            self.assertFalse(self.window._maybe_auto_send_reply(decision))
+
+    def test_failed_model_still_falls_back_for_hey_sally(self) -> None:
+        self.window.settings.ai_auto_send_replies = True
+        self.window.twitch_service.state = TwitchConnectionState.CONNECTED
+        self.window.twitch_service.send_message = Mock(return_value=True)
+        message = ResponseMessage(
+            request_id="request-failed",
+            message_id="message-failed",
+            user_id="viewer-1",
+            user_name="Viewer",
+            text="hey sally, can you hear me?",
+            received_at=datetime.now(timezone.utc).isoformat(),
+        )
+
+        self.window._response_batch_failed((message,), "model offline")
+
+        self.window.twitch_service.send_message.assert_called_once()
+        self.assertEqual(
+            self.window.reply_review_table.item(0, 3).text(), "SENT"
+        )
+
+    def test_sent_invocation_discards_queued_duplicate_retries(self) -> None:
+        duplicate = ResponseMessage(
+            request_id="queued-duplicate",
+            message_id="queued-message",
+            user_id="viewer-1",
+            user_name="Viewer",
+            text="hey sally, not much and you?",
+            received_at=datetime.now(timezone.utc).isoformat(),
+        )
+        different = ResponseMessage(
+            request_id="queued-different",
+            message_id="other-message",
+            user_id="viewer-1",
+            user_name="Viewer",
+            text="hey sally, what game is next?",
+            received_at=datetime.now(timezone.utc).isoformat(),
+        )
+        self.window.response_decision_queue.extend((duplicate, different))
+        sent = ResponseDecision(
+            request_id="sent",
+            message_id="sent-message",
+            user_id="viewer-1",
+            user_name="Viewer",
+            source_text="hey sally, not much and you?",
+            received_at=datetime.now(timezone.utc).isoformat(),
+            decision="reply",
+            reply="Doing great!",
+            reason="Direct invocation.",
+            confidence=0.9,
+        )
+
+        self.window._drop_duplicate_queued_invocations(sent)
+
+        self.assertEqual(
+            [item.request_id for item in self.window.response_decision_queue],
+            ["queued-different"],
+        )
+
+    def test_sally_memory_commands_opt_in_report_and_delete(self) -> None:
+        self.window.settings.ai_viewer_memory_enabled = True
+        store = ChatterHistoryStore(Path("unused.json"))
+        self.window.chatter_history = store
+        self.window._save_chatter_history = Mock()
+        self.window.twitch_service.send_message = Mock(return_value=True)
+        self.window.current_memory_stream_id = "stream-1"
+
+        def command(text: str) -> None:
+            self.window.handle_twitch_message(
+                TwitchMessage(
+                    username="Viewer",
+                    text=text,
+                    received_at=datetime.now(timezone.utc),
+                    message_id=text,
+                    user_id="viewer-1",
+                )
+            )
+
+        command("!sallymemory on")
+        record = store.records["viewer-1"]
+        self.assertEqual(record.memory_consent, "opted_in")
+        self.assertEqual(record.memory_stream_ids, ["stream-1"])
+
+        command("!sallymemory status")
+        self.assertIn("1/5", self.window.twitch_service.send_message.call_args.args[0])
+
+        command("!sallymemory delete")
+        self.assertIn("viewer-1", self.window.pending_memory_deletions)
+        command("!sallymemory confirmdelete")
+        self.assertNotIn("viewer-1", store.records)
+        self.assertIn(
+            "all of your locally stored Sally data was deleted",
+            self.window.twitch_service.send_message.call_args.args[0],
+        )
+
+    def test_master_memory_switch_blocks_collection_but_not_cohost_chat(self) -> None:
+        store = ChatterHistoryStore(Path("unused.json"))
+        self.window.chatter_history = store
+        self.window._save_chatter_history = Mock()
+        self.window.twitch_service.send_message = Mock(return_value=True)
+        self.window.response_decision_thread_pool.start = Mock()
+        self.window.settings.ai_viewer_memory_enabled = False
+
+        self.window.handle_twitch_message(
+            TwitchMessage(
+                username="Viewer",
+                text="!sallymemory on",
+                received_at=datetime.now(timezone.utc),
+                message_id="memory-command",
+                user_id="viewer-1",
+            )
+        )
+        self.assertFalse(store.has_memory_consent("viewer-1"))
+        self.assertIn(
+            "disabled by the streamer",
+            self.window.twitch_service.send_message.call_args.args[0],
+        )
+
+        self.window.handle_twitch_message(
+            TwitchMessage(
+                username="Viewer",
+                text="Sally, are you ready for tomorrow?",
+                received_at=datetime.now(timezone.utc),
+                message_id="cohost-message",
+                user_id="viewer-1",
+            )
+        )
+
+        self.window.response_decision_thread_pool.start.assert_called_once()
+        self.assertNotIn("viewer-1", self.window.memory_message_buffers)
+        self.assertEqual(store.records["viewer-1"].daily_memory, [])
 
     def test_twitch_chat_turns_urls_into_links(self) -> None:
         self.window.ui.twitchChannelEdit.setText("channel")

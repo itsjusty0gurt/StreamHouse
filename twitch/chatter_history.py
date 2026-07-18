@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, time, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
 from uuid import uuid4
@@ -47,8 +47,15 @@ class ChatterRecord:
     session_messages: dict[str, int] = field(default_factory=dict)
     timeline: list[dict[str, Any]] = field(default_factory=list)
     role_history: list[dict[str, Any]] = field(default_factory=list)
-    memory_enabled: bool = True
+    memory_enabled: bool = False
     manual_group: str = ""
+    memory_consent: str = "unknown"
+    memory_consented_at: str = ""
+    memory_consent_version: str = ""
+    memory_stream_ids: list[str] = field(default_factory=list)
+    daily_memory: list[dict[str, str]] = field(default_factory=list)
+    daily_memory_updated_at: str = ""
+    daily_memory_stream_id: str = ""
 
     @classmethod
     def from_dict(cls, values: dict[str, Any]) -> ChatterRecord:
@@ -91,8 +98,33 @@ class ChatterRecord:
                 for item in values.get("role_history", [])[-100:]
                 if isinstance(item, dict)
             ],
-            memory_enabled=bool(values.get("memory_enabled", True)),
+            memory_enabled=(
+                bool(values.get("memory_enabled", False))
+                and values.get("memory_consent") == "opted_in"
+            ),
             manual_group=str(values.get("manual_group", "")),
+            memory_consent=str(values.get("memory_consent", "unknown")),
+            memory_consented_at=str(values.get("memory_consented_at", "")),
+            memory_consent_version=str(values.get("memory_consent_version", "")),
+            memory_stream_ids=list(
+                dict.fromkeys(
+                    str(value)
+                    for value in values.get("memory_stream_ids", [])
+                    if str(value)
+                )
+            )[-100:],
+            daily_memory=[
+                {
+                    "speaker": str(item.get("speaker", "viewer"))[:20],
+                    "viewer": str(item.get("viewer", ""))[:100],
+                    "message": str(item.get("message", ""))[:500],
+                    "timestamp": str(item.get("timestamp", ""))[:50],
+                }
+                for item in values.get("daily_memory", [])[-100:]
+                if isinstance(item, dict) and str(item.get("message", "")).strip()
+            ],
+            daily_memory_updated_at=str(values.get("daily_memory_updated_at", "")),
+            daily_memory_stream_id=str(values.get("daily_memory_stream_id", "")),
         )
 
 
@@ -102,6 +134,8 @@ class ChatterHistoryStore:
     REGULAR_ACTIVE_DAYS = 5
     REGULAR_MESSAGES = 25
     REGULAR_SNAPSHOT_DAYS = 10
+    MEMORY_REGULAR_STREAMS = 5
+    MEMORY_CONSENT_VERSION = "1"
 
     def __init__(self, path: Path | None = None) -> None:
         self.path = path or user_data_root() / "memory" / "twitch_chatters.json"
@@ -123,7 +157,12 @@ class ChatterHistoryStore:
             for user_id, record in records.items()
             if isinstance(record, dict) and str(user_id)
         }
-        self.dirty = False
+        # Rewriting once removes legacy viewer profiles that lack explicit
+        # consent; bots and explicit opt-in/opt-out preferences remain.
+        self.dirty = any(
+            record.memory_consent == "unknown" and not record.is_bot
+            for record in self.records.values()
+        )
 
     def observe_message(
         self,
@@ -214,6 +253,10 @@ class ChatterHistoryStore:
         text: str,
         category: str = "General",
     ) -> dict[str, Any]:
+        if not self.can_create_keynotes(user_id):
+            raise PermissionError(
+                "Persistent keynotes require consent and five opted-in streams."
+            )
         record = self.records[user_id]
         now = datetime.now(timezone.utc).isoformat()
         memory = {
@@ -252,8 +295,10 @@ class ChatterHistoryStore:
     ) -> dict[str, Any]:
         """Queue an extracted memory, merging exact duplicates when possible."""
         record = self.records[user_id]
-        if not record.memory_enabled:
-            raise PermissionError("AI memory is disabled for this viewer.")
+        if not self.can_create_keynotes(user_id):
+            raise PermissionError(
+                "Persistent keynotes require consent and five opted-in streams."
+            )
         clean_text = text.strip()[:1000]
         if not clean_text:
             raise ValueError("Memory text is required.")
@@ -341,13 +386,182 @@ class ChatterHistoryStore:
 
     def set_memory_enabled(self, user_id: str, enabled: bool) -> None:
         record = self.records[user_id]
-        record.memory_enabled = bool(enabled)
+        # Broadcasters may pause consented memory, but cannot grant consent for
+        # a viewer from the local UI.
+        record.memory_enabled = bool(enabled) and self.has_memory_consent(user_id)
         if not enabled:
             for memory in record.memories:
                 if memory.get("status") == "pending":
                     memory["status"] = "rejected"
                     memory["rejection_reason"] = "Viewer memory disabled"
         self.dirty = True
+
+    def has_memory_consent(self, user_id: str) -> bool:
+        record = self.records.get(user_id)
+        return bool(record and record.memory_consent == "opted_in")
+
+    def opt_in_memory(
+        self,
+        user_id: str,
+        user_name: str,
+        *,
+        consented_at: datetime | None = None,
+    ) -> ChatterRecord:
+        """Record explicit consent without retaining pre-consent observations."""
+        when = consented_at or datetime.now(timezone.utc)
+        record = self.records.get(user_id)
+        if record is None:
+            record = self._observe(user_id, user_name, when)
+        assert record is not None
+        if record.memory_consent != "opted_in":
+            timestamp = when.astimezone(timezone.utc).isoformat()
+            day = when.astimezone(timezone.utc).date().isoformat()
+            record.first_seen = timestamp
+            record.last_seen = timestamp
+            record.active_days = [day]
+            record.message_count = 0
+            record.snapshot_days = 0
+            record.last_snapshot_day = ""
+            record.followed_at = ""
+            record.memories.clear()
+            record.tags.clear()
+            record.private_notes = ""
+            record.session_messages.clear()
+            record.timeline.clear()
+            record.role_history.clear()
+            record.memory_stream_ids.clear()
+            record.daily_memory.clear()
+            record.daily_memory_updated_at = ""
+            record.daily_memory_stream_id = ""
+        record.user_name = user_name or record.user_name
+        record.memory_consent = "opted_in"
+        record.memory_consented_at = when.astimezone(timezone.utc).isoformat()
+        record.memory_consent_version = self.MEMORY_CONSENT_VERSION
+        record.memory_enabled = True
+        self.dirty = True
+        return record
+
+    def opt_out_memory(self, user_id: str) -> None:
+        """Stop memory and erase content, retaining only the opt-out preference."""
+        record = self.records[user_id]
+        record.memory_consent = "opted_out"
+        record.memory_enabled = False
+        record.memory_consented_at = ""
+        record.memory_consent_version = ""
+        record.memory_stream_ids.clear()
+        record.memories.clear()
+        record.daily_memory.clear()
+        record.daily_memory_updated_at = ""
+        record.daily_memory_stream_id = ""
+        record.tags.clear()
+        record.private_notes = ""
+        record.active_days.clear()
+        record.message_count = 0
+        record.snapshot_days = 0
+        record.last_snapshot_day = ""
+        record.followed_at = ""
+        record.session_messages.clear()
+        record.timeline.clear()
+        record.role_history.clear()
+        record.roles.clear()
+        record.manual_group = ""
+        record.first_seen = ""
+        record.last_seen = ""
+        self.dirty = True
+
+    def delete_viewer_data(self, user_id: str) -> bool:
+        """Erase the complete local record, including consent metadata."""
+        removed = self.records.pop(user_id, None) is not None
+        self.dirty = self.dirty or removed
+        return removed
+
+    def record_memory_stream(self, user_id: str, stream_id: str) -> int:
+        record = self.records[user_id]
+        if not self.has_memory_consent(user_id) or not stream_id:
+            return len(record.memory_stream_ids)
+        if stream_id not in record.memory_stream_ids:
+            record.memory_stream_ids.append(stream_id[:200])
+            record.memory_stream_ids = record.memory_stream_ids[-100:]
+            self.dirty = True
+        return len(record.memory_stream_ids)
+
+    def can_create_keynotes(self, user_id: str) -> bool:
+        record = self.records.get(user_id)
+        return bool(
+            record
+            and record.memory_enabled
+            and self.has_memory_consent(user_id)
+            and len(record.memory_stream_ids) >= self.MEMORY_REGULAR_STREAMS
+        )
+
+    def record_daily_memory(
+        self,
+        user_id: str,
+        *,
+        speaker: str,
+        viewer: str,
+        message: str,
+        timestamp: datetime | None = None,
+        stream_id: str = "",
+    ) -> None:
+        if not self.has_memory_consent(user_id):
+            return
+        clean = " ".join(message.strip().split())[:500]
+        if not clean:
+            return
+        when = timestamp or datetime.now(timezone.utc)
+        record = self.records[user_id]
+        record.daily_memory.append(
+            {
+                "speaker": speaker[:20],
+                "viewer": viewer[:100],
+                "message": clean,
+                "timestamp": when.astimezone(timezone.utc).isoformat(),
+            }
+        )
+        record.daily_memory = record.daily_memory[-100:]
+        record.daily_memory_updated_at = when.astimezone(timezone.utc).isoformat()
+        record.daily_memory_stream_id = stream_id[:200]
+        self.dirty = True
+
+    def expire_daily_memories(
+        self,
+        *,
+        now: datetime | None = None,
+        reset_at: time = time(4, 0),
+        active_stream_id: str = "",
+    ) -> int:
+        """Clear old context unless it belongs to the stream still live."""
+        current = (now or datetime.now().astimezone()).astimezone()
+        boundary = current.replace(
+            hour=reset_at.hour,
+            minute=reset_at.minute,
+            second=0,
+            microsecond=0,
+        )
+        if current < boundary:
+            boundary -= timedelta(days=1)
+        removed = 0
+        for record in self.records.values():
+            if not record.daily_memory or not record.daily_memory_updated_at:
+                continue
+            try:
+                updated = datetime.fromisoformat(
+                    record.daily_memory_updated_at.replace("Z", "+00:00")
+                ).astimezone()
+            except ValueError:
+                updated = datetime.min.replace(tzinfo=current.tzinfo)
+            same_live_stream = bool(
+                active_stream_id
+                and record.daily_memory_stream_id == active_stream_id
+            )
+            if updated < boundary and not same_live_stream:
+                removed += len(record.daily_memory)
+                record.daily_memory.clear()
+                record.daily_memory_updated_at = ""
+                record.daily_memory_stream_id = ""
+                self.dirty = True
+        return removed
 
     def approved_memories(self, user_id: str) -> list[dict[str, Any]]:
         record = self.records[user_id]
@@ -571,10 +785,12 @@ class ChatterHistoryStore:
         if not self.dirty:
             return
         payload = {
-            "version": 5,
+            "version": 6,
             "chatters": {
                 user_id: asdict(record)
                 for user_id, record in self.records.items()
+                if record.memory_consent in {"opted_in", "opted_out"}
+                or record.is_bot
             },
         }
         atomic_write_json(self.path, payload)
@@ -600,6 +816,8 @@ class ChatterHistoryStore:
                 last_seen=timestamp,
             )
             self.records[user_id] = record
+        elif record.memory_consent == "opted_out":
+            return None
         record.user_name = user_name or record.user_name
         record.last_seen = timestamp
         if day not in record.active_days:

@@ -60,11 +60,12 @@ class ReleaseToolsTests(unittest.TestCase):
             {"version": 1, "chatters": {"1": {"user_name": "Viewer"}}},
         )
         record = migrated["chatters"]["1"]
-        self.assertEqual(migrated["version"], 5)
+        self.assertEqual(migrated["version"], 6)
         self.assertEqual(record["manual_group"], "")
         self.assertEqual(record["timeline"], [])
         self.assertEqual(record["private_notes"], "")
-        self.assertTrue(record["memory_enabled"])
+        self.assertFalse(record["memory_enabled"])
+        self.assertEqual(record["memory_consent"], "unknown")
 
     def test_release_controller_creates_daily_backup(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -73,6 +74,48 @@ class ReleaseToolsTests(unittest.TestCase):
             second = controller.automatic_backup()
             self.assertIsNotNone(first)
             self.assertIsNone(second)
+
+    def test_backup_scrub_removes_deleted_viewer_data(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            memory = root / "memory"
+            memory.mkdir()
+            (memory / "twitch_chatters.json").write_text(
+                json.dumps(
+                    {
+                        "version": 6,
+                        "chatters": {"1": {"user_name": "Viewer"}, "2": {}},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (memory / "twitch_activity.json").write_text(
+                json.dumps(
+                    {
+                        "version": 2,
+                        "events": [
+                            {"user_id": "1", "text": "Viewer followed"},
+                            {"user_id": "2", "text": "Other followed"},
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            controller = ReleaseController(root)
+            archive = controller.create_backup()
+
+            self.assertEqual(controller.scrub_viewer_data("1", "Viewer"), 1)
+            with ZipFile(archive) as source:
+                chatters = json.loads(
+                    source.read("memory/twitch_chatters.json")
+                )
+                activity = json.loads(
+                    source.read("memory/twitch_activity.json")
+                )
+            self.assertEqual(set(chatters["chatters"]), {"2"})
+            self.assertEqual(
+                [event["user_id"] for event in activity["events"]], ["2"]
+            )
 
     def test_windows_release_assets_exist(self) -> None:
         root = Path(__file__).resolve().parent.parent

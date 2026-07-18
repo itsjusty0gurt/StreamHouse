@@ -455,10 +455,9 @@ class TwitchService:
         return status in (200, 202, 204)
 
     def _receive_chat_message(self, chat_message: TwitchMessage) -> None:
-        Logger.info(
-            f"{chat_message.username}: {chat_message.text}",
-            source="TWITCH",
-        )
+        # Chat content is intentionally not written to application logs. The
+        # live UI and opted-in daily memory are the only content consumers.
+        Logger.debug("Twitch chat message received.", source="TWITCH")
         Events.emit(
             "twitch_message_received",
             chat_message=chat_message,

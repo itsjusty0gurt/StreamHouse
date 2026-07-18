@@ -3,6 +3,7 @@ import tempfile
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
+from unittest.mock import Mock
 
 from twitch.activity_history import ActivityHistoryStore, PersistedActivity
 
@@ -102,6 +103,20 @@ class ActivityHistoryStoreTests(unittest.TestCase):
 
         store.entries = []
         self.assertIsNone(store.refresh_interval_ms(now))
+
+    def test_delete_user_removes_identified_and_legacy_activity(self) -> None:
+        store = ActivityHistoryStore(Path("unused.json"))
+        occurred = datetime.now(timezone.utc).isoformat()
+        store.entries = [
+            PersistedActivity("Follows", "Viewer followed", "#fff", occurred, "1"),
+            PersistedActivity("Cheers", "Viewer cheered", "#fff", occurred),
+            PersistedActivity("Raids", "Other raided", "#fff", occurred, "2"),
+        ]
+        store.save = Mock()
+
+        self.assertEqual(store.delete_user("1", "Viewer"), 2)
+        self.assertEqual([entry.user_id for entry in store.entries], ["2"])
+        store.save.assert_called_once()
 
 
 if __name__ == "__main__":

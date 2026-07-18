@@ -7,11 +7,11 @@ from time import monotonic
 from urllib.parse import urlencode
 from uuid import uuid4
 from dataclasses import asdict
-from datetime import datetime, timezone
+from datetime import datetime, time, timezone
 from html import escape
 from pathlib import Path
 
-from PySide6.QtCore import QThreadPool, QTimer, Qt, Slot
+from PySide6.QtCore import QThreadPool, QTime, QTimer, Qt, Slot
 from PySide6.QtGui import QCloseEvent, QColor, QCursor, QFont
 from PySide6.QtWidgets import (
     QApplication,
@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
     QDockWidget,
     QFormLayout,
     QFileDialog,
+    QFrame,
     QGroupBox,
     QGridLayout,
     QHeaderView,
@@ -35,12 +36,14 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QSizePolicy,
+    QScrollArea,
     QSplitter,
     QSpinBox,
     QTabWidget,
     QTableWidget,
     QTableWidgetItem,
     QTextEdit,
+    QTimeEdit,
     QTreeWidget,
     QTreeWidgetItem,
     QVBoxLayout,
@@ -53,7 +56,11 @@ from core.settings import AppSettings, SettingsStore
 from ai.providers import OllamaProvider
 from ai.memory_extractor import BufferedChatMessage
 from ai.memory import build_viewer_context
-from ai.response_engine import ResponseDecision, ResponseMessage
+from ai.response_engine import (
+    ResponseDecision,
+    ResponseDecisionEngine,
+    ResponseMessage,
+)
 from core.window_state import WindowStateStore
 from config.twitch import (
     TWITCH_BOT_SCOPES,
@@ -174,6 +181,13 @@ class MainWindow(QMainWindow):
         self.response_decision_in_flight = False
         self.recent_ai_chat: deque[dict[str, str]] = deque(maxlen=100)
         self.last_auto_reply_at = 0.0
+        self.last_interjection_at = 0.0
+        self.closed_ai_conversations: dict[str, datetime] = {}
+        self.current_memory_stream_id = ""
+        self.memory_promo_message_count = 0
+        self.last_memory_promo_at = 0.0
+        self.pending_memory_deletions: dict[str, float] = {}
+        self.daily_memory_expiry_pending = True
         self.followers_backfilled = False
         self.ui = Ui_MainWindow()
         self.ui.setupUi(self)
@@ -199,6 +213,7 @@ class MainWindow(QMainWindow):
         self._build_ai_page()
         self._build_release_tools()
         self._build_ai_settings()
+        self._make_layout_responsive()
         self.twitch_status_bar_label = QLabel("Twitch: Signed out")
         self.statusBar().addPermanentWidget(self.twitch_status_bar_label)
 
@@ -412,6 +427,10 @@ class MainWindow(QMainWindow):
             self._save_chatter_history
         )
         self.chatter_history_save_timer.start()
+        self.daily_memory_timer = QTimer(self)
+        self.daily_memory_timer.setInterval(60_000)
+        self.daily_memory_timer.timeout.connect(self._expire_daily_memory)
+        self.daily_memory_timer.start()
         self.activity_age_timer = QTimer(self)
         self.activity_age_timer.timeout.connect(self._rebuild_activity_feed)
         self._schedule_activity_age_refresh()
@@ -448,6 +467,27 @@ class MainWindow(QMainWindow):
         self.export_diagnostics_button.clicked.connect(
             self._export_diagnostic_bundle
         )
+
+    def _make_layout_responsive(self) -> None:
+        """Keep hidden pages from imposing their full size on the main window."""
+        self.setMinimumSize(520, 360)
+        ignored = QSizePolicy(
+            QSizePolicy.Policy.Ignored,
+            QSizePolicy.Policy.Ignored,
+        )
+        self.ui.mainStack.setSizePolicy(ignored)
+        for index in range(self.ui.mainStack.count()):
+            self.ui.mainStack.widget(index).setSizePolicy(ignored)
+
+        settings_index = self.ui.mainStack.indexOf(self.ui.settingsPage)
+        self.settings_container = QScrollArea()
+        self.settings_container.setObjectName("settingsScrollArea")
+        self.settings_container.setWidgetResizable(True)
+        self.settings_container.setFrameShape(QFrame.Shape.NoFrame)
+        self.settings_container.setSizePolicy(ignored)
+        self.ui.mainStack.removeWidget(self.ui.settingsPage)
+        self.settings_container.setWidget(self.ui.settingsPage)
+        self.ui.mainStack.insertWidget(settings_index, self.settings_container)
 
     def _build_developer_dock(self) -> None:
         self.developer_dock = QDockWidget("Developer Tools", self)
@@ -640,8 +680,8 @@ class MainWindow(QMainWindow):
         self.chatter_title_label.setStyleSheet("font-weight:bold;")
         self.chatter_list = QTreeWidget()
         self.chatter_list.setHeaderHidden(True)
-        chatter_panel.setMinimumWidth(120)
-        chatter_panel.setMaximumWidth(210)
+        chatter_panel.setMinimumWidth(80)
+        chatter_panel.setMaximumWidth(180)
         chatter_layout.addWidget(self.chatter_title_label)
         chatter_layout.addWidget(self.chatter_list)
         self.twitch_channel_splitter.insertWidget(1, chatter_panel)
@@ -672,9 +712,9 @@ class MainWindow(QMainWindow):
         self.twitch_channel_splitter.setStretchFactor(1, 0)
         self.twitch_channel_splitter.setStretchFactor(2, 2)
         self.twitch_channel_splitter.setCollapsible(0, False)
-        self.twitch_channel_splitter.setCollapsible(1, False)
-        self.twitch_channel_splitter.setCollapsible(2, False)
-        activity_panel.setMinimumWidth(300)
+        self.twitch_channel_splitter.setCollapsible(1, True)
+        self.twitch_channel_splitter.setCollapsible(2, True)
+        activity_panel.setMinimumWidth(140)
 
         self.channel_tabs = QTabWidget(self.ui.twitchPage)
         self.channel_tabs.setObjectName("channelTabs")
@@ -711,7 +751,7 @@ class MainWindow(QMainWindow):
         self.memory_search_edit = QLineEdit()
         self.memory_search_edit.setPlaceholderText("Search viewers")
         self.memory_viewer_list = QListWidget()
-        self.memory_viewer_list.setMinimumWidth(220)
+        self.memory_viewer_list.setMinimumWidth(140)
         browser_layout.addWidget(self.memory_search_edit)
         browser_layout.addWidget(self.memory_viewer_list)
 
@@ -819,7 +859,7 @@ class MainWindow(QMainWindow):
         self.memory_detail_label = QLabel("Select a memory to inspect its evidence.")
         self.memory_detail_label.setWordWrap(True)
         ai_layout.addWidget(self.memory_detail_label)
-        memory_actions = QHBoxLayout()
+        memory_actions = QGridLayout()
         self.add_memory_button = QPushButton("Add")
         self.edit_memory_button = QPushButton("Edit")
         self.pin_memory_button = QPushButton("Pin")
@@ -830,7 +870,7 @@ class MainWindow(QMainWindow):
         self.approve_memory_button = QPushButton("Approve")
         self.reject_memory_button = QPushButton("Reject")
         self.show_archived_memories_check = QCheckBox("Show archived")
-        for button in (
+        for index, button in enumerate((
             self.add_memory_button,
             self.edit_memory_button,
             self.pin_memory_button,
@@ -840,9 +880,8 @@ class MainWindow(QMainWindow):
             self.erase_memories_button,
             self.approve_memory_button,
             self.reject_memory_button,
-        ):
-            memory_actions.addWidget(button)
-        memory_actions.addStretch()
+        )):
+            memory_actions.addWidget(button, index // 3, index % 3)
         ai_layout.addLayout(memory_actions)
         ai_layout.addWidget(self.show_archived_memories_check)
 
@@ -1447,8 +1486,30 @@ class MainWindow(QMainWindow):
                 self._refresh_memory_viewer_list()
         if is_bot and chat_message.user_id:
             self.known_bot_user_ids.add(chat_message.user_id)
-        self._buffer_message_for_memory_reasoning(chat_message, is_bot)
-        self._queue_response_decision(chat_message, is_bot)
+        memory_command = self._handle_sally_memory_command(chat_message, is_bot)
+        if (
+            self.settings.ai_viewer_memory_enabled
+            and chat_message.user_id
+            and not is_bot
+            and not memory_command
+        ):
+            if self.chatter_history.has_memory_consent(chat_message.user_id):
+                self.chatter_history.record_memory_stream(
+                    chat_message.user_id,
+                    self.current_memory_stream_id,
+                )
+                self.chatter_history.record_daily_memory(
+                    chat_message.user_id,
+                    speaker="viewer",
+                    viewer=chat_message.username,
+                    message=chat_message.text,
+                    timestamp=chat_message.received_at,
+                    stream_id=self.current_memory_stream_id,
+                )
+            self._maybe_promote_sally_memory()
+        if not memory_command:
+            self._buffer_message_for_memory_reasoning(chat_message, is_bot)
+            self._queue_response_decision(chat_message, is_bot)
         received_time = chat_message.received_at.astimezone().strftime(
             "%H:%M:%S"
         )
@@ -1521,6 +1582,142 @@ class MainWindow(QMainWindow):
         scroll_bar = self.ui.twitchChatOutput.verticalScrollBar()
         scroll_bar.setValue(scroll_bar.maximum())
 
+    def _handle_sally_memory_command(
+        self,
+        chat_message: TwitchMessage,
+        is_bot: bool,
+    ) -> bool:
+        text = " ".join(chat_message.text.casefold().strip().split())
+        if is_bot or not text.startswith("!sallymemory"):
+            return False
+        user_id = chat_message.user_id
+        if not user_id:
+            return True
+        command = text.removeprefix("!sallymemory").strip()
+        mention = f"@{chat_message.username}"
+        if (
+            not self.settings.ai_viewer_memory_enabled
+            and command not in {"off", "delete", "confirmdelete", "status"}
+        ):
+            reply = (
+                f"{mention} Sally Memory is currently disabled by the streamer. "
+                "No viewer memories are being collected."
+            )
+        elif command in {"", "help", "info"}:
+            reply = (
+                f"{mention} Sally Memory is optional. I can keep today's chat "
+                "context until the daily reset/end of a stream. After 5 opted-in "
+                "streams I may propose non-sensitive keynotes for review. Use "
+                "!sallymemory on, !sallymemory off, or !sallymemory delete."
+            )
+        elif command == "on":
+            already_enabled = self.chatter_history.has_memory_consent(user_id)
+            self.chatter_history.opt_in_memory(
+                user_id,
+                chat_message.username,
+                consented_at=chat_message.received_at,
+            )
+            count = self.chatter_history.record_memory_stream(
+                user_id, self.current_memory_stream_id
+            )
+            self._save_chatter_history()
+            reply = (
+                f"{mention} Sally Memory is already on ({count}/5 opted-in streams)."
+                if already_enabled
+                else f"{mention} Sally Memory is on. Today's context will expire at "
+                f"the configured reset, unless this stream is still live. Regular "
+                f"keynotes unlock after 5 opted-in streams ({count}/5)."
+            )
+            self._refresh_memory_viewer_list()
+        elif command == "off":
+            if user_id in self.chatter_history.records:
+                self.chatter_history.opt_out_memory(user_id)
+            self._clear_viewer_runtime_memory(user_id)
+            self._save_chatter_history()
+            reply = (
+                f"{mention} Sally Memory is off and your saved conversation and "
+                "keynotes were erased. A minimal opt-out preference remains."
+            )
+        elif command == "delete":
+            self.pending_memory_deletions[user_id] = monotonic() + 120
+            reply = (
+                f"{mention} this erases all Sally data about you, including consent. "
+                "Type !sallymemory confirmdelete within 2 minutes to confirm."
+            )
+        elif command == "confirmdelete":
+            if monotonic() > self.pending_memory_deletions.get(user_id, 0.0):
+                reply = f"{mention} no active deletion request. Use !sallymemory delete first."
+            else:
+                self.pending_memory_deletions.pop(user_id, None)
+                try:
+                    self.activity_history.delete_user(
+                        user_id, chat_message.username
+                    )
+                    self.release_controller.scrub_viewer_data(
+                        user_id, chat_message.username
+                    )
+                except OSError as error:
+                    Logger.warning(
+                        f"Could not erase viewer activity history: {error}",
+                        source="DATA",
+                    )
+                self.chatter_history.delete_viewer_data(user_id)
+                self._clear_viewer_runtime_memory(user_id)
+                self._save_chatter_history()
+                self._refresh_memory_viewer_list()
+                reply = f"{mention} all of your locally stored Sally data was deleted."
+        elif command == "status":
+            record = self.chatter_history.records.get(user_id)
+            enabled = self.chatter_history.has_memory_consent(user_id)
+            streams = len(record.memory_stream_ids) if record is not None else 0
+            notes = len(record.memories) if enabled and record is not None else 0
+            reply = (
+                f"{mention} Sally Memory is "
+                f"{'disabled globally' if not self.settings.ai_viewer_memory_enabled else 'on' if enabled else 'off'}; "
+                f"{streams}/5 opted-in streams and {notes} saved keynote(s)."
+            )
+        else:
+            reply = f"{mention} try !sallymemory, on, off, status, or delete."
+        self.twitch_service.send_message(reply)
+        return True
+
+    def _clear_viewer_runtime_memory(self, user_id: str) -> None:
+        self.memory_message_buffers.pop(user_id, None)
+        self.memory_extraction_retry_after.pop(user_id, None)
+        self.response_decision_queue = deque(
+            (item for item in self.response_decision_queue if item.user_id != user_id),
+            maxlen=100,
+        )
+        self.recent_ai_chat = deque(
+            (
+                item for item in self.recent_ai_chat
+                if str(item.get("user_id", "")) != user_id
+            ),
+            maxlen=100,
+        )
+
+    def _maybe_promote_sally_memory(self) -> None:
+        if not (
+            self.settings.ai_viewer_memory_enabled
+            and self.settings.ai_memory_promo_enabled
+            and self.current_memory_stream_id
+            and self.twitch_service.state is TwitchConnectionState.CONNECTED
+        ):
+            return
+        self.memory_promo_message_count += 1
+        if (
+            self.memory_promo_message_count
+            < self.settings.ai_memory_promo_interval_messages
+            or monotonic() - self.last_memory_promo_at < 3600
+        ):
+            return
+        if self.twitch_service.send_message(
+            "Sally can remember today's conversations for viewers who choose to opt in. "
+            "Type !sallymemory to learn more or manage your data."
+        ):
+            self.memory_promo_message_count = 0
+            self.last_memory_promo_at = monotonic()
+
     def _buffer_message_for_memory_reasoning(
         self,
         chat_message: TwitchMessage,
@@ -1528,6 +1725,7 @@ class MainWindow(QMainWindow):
     ) -> None:
         if not (
             self.settings.local_ai_enabled
+            and self.settings.ai_viewer_memory_enabled
             and self.settings.ai_memory_reasoning_enabled
         ):
             return
@@ -1542,7 +1740,7 @@ class MainWindow(QMainWindow):
         record = self.chatter_history.records.get(user_id)
         if (
             record is None
-            or not record.memory_enabled
+            or not self.chatter_history.can_create_keynotes(user_id)
             or record.is_bot
             or record.manual_group == "Bots"
         ):
@@ -1583,7 +1781,7 @@ class MainWindow(QMainWindow):
         ):
             return
         record = self.chatter_history.records.get(user_id)
-        if record is None or not record.memory_enabled:
+        if record is None or not self.chatter_history.can_create_keynotes(user_id):
             self.memory_message_buffers.pop(user_id, None)
             return
         messages = tuple(buffer)
@@ -1623,8 +1821,9 @@ class MainWindow(QMainWindow):
         record = self.chatter_history.records.get(result.user_id)
         if (
             record is None
-            or not record.memory_enabled
+            or not self.chatter_history.can_create_keynotes(result.user_id)
             or not self.settings.local_ai_enabled
+            or not self.settings.ai_viewer_memory_enabled
             or not self.settings.ai_memory_reasoning_enabled
         ):
             return
@@ -1709,27 +1908,32 @@ class MainWindow(QMainWindow):
             return
         user_id = chat_message.user_id
         text = " ".join(chat_message.text.strip().split())[:500]
-        broadcaster_trigger = (
-            user_id == self.twitch_service.broadcaster_user_id
-            and text.casefold().startswith("hey sally")
+        received_at = chat_message.received_at.astimezone(timezone.utc)
+        (
+            conversation_continuation,
+            previous_sally_reply,
+            response_expected,
+        ) = self._conversation_context(user_id, text, received_at)
+        directed_at_sally, reply_to_sally = self._sally_address_signals(
+            chat_message, text
         )
         if (
             not user_id
-            or (
-                user_id == self.twitch_service.broadcaster_user_id
-                and not broadcaster_trigger
-            )
             or is_bot
             or user_id in self.known_bot_user_ids
         ):
             return
         if not text:
             return
-        viewer_context = build_viewer_context(
-            self.chatter_history,
-            user_id,
-            text,
-            limit=5,
+        viewer_context = (
+            build_viewer_context(
+                self.chatter_history,
+                user_id,
+                text,
+                limit=5,
+            )
+            if self.settings.ai_viewer_memory_enabled
+            else {}
         )
         request = ResponseMessage(
             request_id=uuid4().hex,
@@ -1737,15 +1941,18 @@ class MainWindow(QMainWindow):
             user_id=user_id,
             user_name=chat_message.username,
             text=text,
-            received_at=chat_message.received_at.astimezone(
-                timezone.utc
-            ).isoformat(),
+            received_at=received_at.isoformat(),
             memory_summary=str(viewer_context.get("summary", "")),
             memories=tuple(
                 str(memory.get("text", ""))
                 for memory in viewer_context.get("memories", [])
                 if isinstance(memory, dict)
             ),
+            conversation_continuation=conversation_continuation,
+            previous_sally_reply=previous_sally_reply,
+            response_expected=response_expected,
+            directed_at_sally=directed_at_sally,
+            reply_to_sally=reply_to_sally,
         )
         if len(self.response_decision_queue) == self.response_decision_queue.maxlen:
             dropped = self.response_decision_queue.popleft()
@@ -1769,9 +1976,87 @@ class MainWindow(QMainWindow):
                 "speaker": "viewer",
                 "viewer": chat_message.username,
                 "message": text,
+                "user_id": user_id,
+                "timestamp": received_at.isoformat(),
             }
         )
         self._start_next_response_batch()
+
+    def _sally_address_signals(
+        self,
+        chat_message: TwitchMessage,
+        text: str,
+    ) -> tuple[bool, bool]:
+        """Detect explicit names, mentions, and Twitch replies to Sally."""
+
+        bot_token = self.twitch_bot_auth.token
+        bot_user_id = str(getattr(bot_token, "user_id", "") or "")
+        bot_login = str(getattr(bot_token, "login", "") or "").casefold()
+        aliases = {"sally"}
+        if bot_login:
+            aliases.add(bot_login)
+        directed = any(
+            re.search(
+                rf"(?:^\s*@?{re.escape(alias)}(?:\b|[,:!?])"
+                rf"|(?:^|\s)(?:hey|hi|yo|ok|okay)\s+@?{re.escape(alias)}\b"
+                rf"|[,;]\s*@?{re.escape(alias)}[.!?]*\s*$)",
+                text,
+                flags=re.IGNORECASE,
+            )
+            for alias in aliases
+        )
+        directed = directed or any(
+            fragment.mention is not None
+            and (
+                (bot_user_id and fragment.mention.user_id == bot_user_id)
+                or fragment.mention.user_login.casefold() in aliases
+            )
+            for fragment in chat_message.fragments
+        )
+        reply = chat_message.reply
+        reply_to_sally = bool(
+            reply is not None
+            and (
+                (bot_user_id and reply.parent_user_id == bot_user_id)
+                or reply.parent_user_login.casefold() in aliases
+            )
+        )
+        return directed or reply_to_sally, reply_to_sally
+
+    def _conversation_context(
+        self,
+        user_id: str,
+        text: str,
+        received_at: datetime,
+    ) -> tuple[bool, str, bool]:
+        """Return recent same-viewer Sally context for a natural follow-up."""
+
+        if not user_id:
+            return False, "", False
+        for item in reversed(self.recent_ai_chat):
+            if (
+                str(item.get("speaker", "")).casefold() != "sally"
+                or str(item.get("user_id", "")) != user_id
+            ):
+                continue
+            previous_reply = str(item.get("message", "")).strip()
+            try:
+                replied_at = datetime.fromisoformat(
+                    str(item.get("timestamp", "")).replace("Z", "+00:00")
+                )
+                if replied_at.tzinfo is None:
+                    replied_at = replied_at.replace(tzinfo=timezone.utc)
+            except ValueError:
+                return False, "", False
+            age = (received_at - replied_at.astimezone(timezone.utc)).total_seconds()
+            if age < 0 or age > self.settings.ai_conversation_followup_seconds:
+                return False, "", False
+            closed_at = self.closed_ai_conversations.get(user_id)
+            if closed_at is not None and replied_at <= closed_at:
+                return False, "", False
+            response_expected = "?" in previous_reply or "?" in text
+            return True, previous_reply, response_expected
+        return False, "", False
 
     def _start_next_response_batch(self) -> None:
         if (
@@ -1811,13 +2096,44 @@ class MainWindow(QMainWindow):
             if decision.decision == "reply":
                 reply_count += 1
             sent = self._maybe_auto_send_reply(decision)
+            self._update_conversation_state(decision)
             sent_count += int(sent)
+            if sent:
+                self._drop_duplicate_queued_invocations(decision)
             self._add_reply_decision(decision, sent=sent)
         self.reply_decision_status_label.setText(
             f"Evaluated {len(result.decisions)} message(s): "
             f"{reply_count} reply draft(s), {sent_count} auto-sent."
         )
         self._start_next_response_batch()
+
+    def _update_conversation_state(self, decision: ResponseDecision) -> None:
+        if not decision.user_id:
+            return
+        if decision.conversation_state == "end":
+            self.closed_ai_conversations[decision.user_id] = datetime.now(
+                timezone.utc
+            )
+        elif decision.conversation_state in {"start", "continue"}:
+            self.closed_ai_conversations.pop(decision.user_id, None)
+
+    def _drop_duplicate_queued_invocations(
+        self, decision: ResponseDecision
+    ) -> None:
+        if not ResponseDecisionEngine.requires_reply(decision.source_text):
+            return
+        normalized = " ".join(decision.source_text.casefold().split())
+        self.response_decision_queue = deque(
+            (
+                message
+                for message in self.response_decision_queue
+                if not (
+                    message.user_id == decision.user_id
+                    and " ".join(message.text.casefold().split()) == normalized
+                )
+            ),
+            maxlen=100,
+        )
 
     @Slot(object, str)
     def _response_batch_failed(
@@ -1829,8 +2145,17 @@ class MainWindow(QMainWindow):
         for message in messages if isinstance(messages, tuple) else ():
             if not isinstance(message, ResponseMessage):
                 continue
-            self._add_reply_decision(
-                ResponseDecision(
+            if ResponseDecisionEngine.message_requires_reply(message):
+                recent_replies = [
+                    str(item.get("message", ""))
+                    for item in self.recent_ai_chat
+                    if str(item.get("speaker", "")).casefold() == "sally"
+                ]
+                decision = ResponseDecisionEngine._fallback_reply(
+                    message, recent_replies
+                )
+            else:
+                decision = ResponseDecision(
                     request_id=message.request_id,
                     message_id=message.message_id,
                     user_id=message.user_id,
@@ -1842,7 +2167,8 @@ class MainWindow(QMainWindow):
                     reason=f"Local AI unavailable: {error}"[:300],
                     confidence=0.0,
                 )
-            )
+            sent = self._maybe_auto_send_reply(decision)
+            self._add_reply_decision(decision, sent=sent)
         self.reply_decision_status_label.setText(
             "Local AI reply evaluation failed; continuing with newer chat."
         )
@@ -1865,25 +2191,60 @@ class MainWindow(QMainWindow):
         )
 
     def _maybe_auto_send_reply(self, decision: ResponseDecision) -> bool:
+        required = (
+            ResponseDecisionEngine.requires_reply(decision.source_text)
+            or decision.response_expected
+            or decision.engagement_type == "direct"
+        )
+        interjection = decision.engagement_type == "interjection"
+        maximum_age = (
+            max(self.settings.ai_response_max_age_seconds, 120)
+            if required
+            else self.settings.ai_response_max_age_seconds
+        )
+        minimum_gap = (
+            0 if required else self.settings.ai_response_min_interval_seconds
+        )
         if not (
             self.settings.ai_auto_send_replies
             and decision.decision == "reply"
             and decision.reply
-            and decision.confidence >= 0.65
+            and (required or decision.confidence >= 0.65)
+            and (
+                not interjection
+                or (
+                    self.settings.ai_interjections_enabled
+                    and decision.confidence >= 0.82
+                    and monotonic() - self.last_interjection_at
+                    >= self.settings.ai_interjection_min_interval_seconds
+                )
+            )
             and self._decision_age_seconds(decision)
-            <= self.settings.ai_response_max_age_seconds
+            <= maximum_age
             and monotonic() - self.last_auto_reply_at
-            >= self.settings.ai_response_min_interval_seconds
+            >= minimum_gap
             and self.twitch_service.state is TwitchConnectionState.CONNECTED
         ):
             return False
         if not self.twitch_service.send_message(decision.reply):
             return False
         self.last_auto_reply_at = monotonic()
-        self._remember_sally_reply(decision.reply)
+        if interjection:
+            self.last_interjection_at = self.last_auto_reply_at
+        self._remember_sally_reply(
+            decision.reply,
+            user_id=decision.user_id,
+            user_name=decision.user_name,
+        )
         return True
 
-    def _remember_sally_reply(self, reply: str) -> None:
+    def _remember_sally_reply(
+        self,
+        reply: str,
+        *,
+        user_id: str = "",
+        user_name: str = "",
+    ) -> None:
         clean = " ".join(reply.strip().split())[:500]
         if not clean:
             return
@@ -1897,8 +2258,22 @@ class MainWindow(QMainWindow):
                 "speaker": "sally",
                 "viewer": bot_name or "Sally",
                 "message": clean,
+                "user_id": user_id,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
             }
         )
+        if (
+            self.settings.ai_viewer_memory_enabled
+            and user_id
+            and self.chatter_history.has_memory_consent(user_id)
+        ):
+            self.chatter_history.record_daily_memory(
+                user_id,
+                speaker="sally",
+                viewer=bot_name or "Sally",
+                message=clean,
+                stream_id=self.current_memory_stream_id,
+            )
 
     def _add_reply_decision(
         self,
@@ -1949,7 +2324,11 @@ class MainWindow(QMainWindow):
         if decision is None or not decision.reply:
             return
         if self.twitch_service.send_message(decision.reply):
-            self._remember_sally_reply(decision.reply)
+            self._remember_sally_reply(
+                decision.reply,
+                user_id=decision.user_id,
+                user_name=decision.user_name,
+            )
             row = self.reply_review_table.currentRow()
             self.reply_review_table.item(row, 3).setText("SENT")
             self.reply_decision_status_label.setText(
@@ -2052,6 +2431,7 @@ class MainWindow(QMainWindow):
             text=entry.text,
             color=entry.color,
             occurred_at=twitch_event.received_at.isoformat(),
+            user_id=viewer_id if isinstance(event_payload, dict) else "",
         )
         try:
             self.activity_history.add(persisted)
@@ -2262,12 +2642,27 @@ class MainWindow(QMainWindow):
         self.local_ai_model_edit = QLineEdit()
         self.local_ai_test_button = QPushButton("Test Local AI")
         self.local_ai_status_label = QLabel("Not tested")
+        self.ai_viewer_memory_check = QCheckBox(
+            "Enable opt-in viewer memories"
+        )
+        self.ai_viewer_memory_check.setToolTip(
+            "Master switch for memory invitations, collection, restoration, "
+            "reasoning, and viewer memory context."
+        )
         self.ai_memory_reasoning_check = QCheckBox(
             "Propose viewer memories from live chat"
         )
         self.ai_memory_threshold_spin = QSpinBox()
         self.ai_memory_threshold_spin.setRange(5, 50)
         self.ai_memory_threshold_spin.setSuffix(" messages")
+        self.ai_memory_reset_time_edit = QTimeEdit()
+        self.ai_memory_reset_time_edit.setDisplayFormat("HH:mm")
+        self.ai_memory_promo_check = QCheckBox(
+            "Occasionally mention !sallymemory in chat"
+        )
+        self.ai_memory_promo_interval_spin = QSpinBox()
+        self.ai_memory_promo_interval_spin.setRange(25, 1000)
+        self.ai_memory_promo_interval_spin.setSuffix(" messages")
         self.ai_response_decisions_check = QCheckBox(
             "Evaluate eligible live chat messages"
         )
@@ -2283,19 +2678,57 @@ class MainWindow(QMainWindow):
         self.ai_response_interval_spin = QSpinBox()
         self.ai_response_interval_spin.setRange(3, 60)
         self.ai_response_interval_spin.setSuffix(" seconds")
+        self.ai_conversation_followup_spin = QSpinBox()
+        self.ai_conversation_followup_spin.setRange(30, 600)
+        self.ai_conversation_followup_spin.setSuffix(" seconds")
+        self.ai_conversation_followup_spin.setToolTip(
+            "How long a viewer can continue talking with Sally without "
+            "repeating 'hey Sally'."
+        )
+        self.ai_interjections_check = QCheckBox(
+            "Let Sally occasionally join relevant chat"
+        )
+        self.ai_interjections_check.setToolTip(
+            "Sally may act as a restrained co-host when she has something "
+            "specific and worthwhile to add."
+        )
+        self.ai_interjection_interval_spin = QSpinBox()
+        self.ai_interjection_interval_spin.setRange(60, 1800)
+        self.ai_interjection_interval_spin.setSuffix(" seconds")
         layout.addRow("Enabled", self.local_ai_enabled_check)
         layout.addRow("Endpoint", self.local_ai_endpoint_edit)
         layout.addRow("Model", self.local_ai_model_edit)
+        layout.addRow("Viewer memory system", self.ai_viewer_memory_check)
         layout.addRow("Memory reasoning", self.ai_memory_reasoning_check)
         layout.addRow("Analyze after", self.ai_memory_threshold_spin)
+        layout.addRow("Daily reset", self.ai_memory_reset_time_edit)
+        layout.addRow("Memory invitation", self.ai_memory_promo_check)
+        layout.addRow("Invitation interval", self.ai_memory_promo_interval_spin)
         layout.addRow("Reply decisions", self.ai_response_decisions_check)
         layout.addRow("Auto-send", self.ai_auto_send_replies_check)
         layout.addRow("Reply freshness", self.ai_response_max_age_spin)
         layout.addRow("Minimum reply gap", self.ai_response_interval_spin)
+        layout.addRow("Conversation window", self.ai_conversation_followup_spin)
+        layout.addRow("Co-host interjections", self.ai_interjections_check)
+        layout.addRow("Interjection cooldown", self.ai_interjection_interval_spin)
         layout.addRow("", self.local_ai_test_button)
         layout.addRow("Status", self.local_ai_status_label)
         self.ui.settingsLayout.insertWidget(3, group)
         self.local_ai_test_button.clicked.connect(self._test_local_ai)
+        self.ai_viewer_memory_check.toggled.connect(
+            self._update_memory_setting_controls
+        )
+
+    @Slot(bool)
+    def _update_memory_setting_controls(self, enabled: bool) -> None:
+        for control in (
+            self.ai_memory_reasoning_check,
+            self.ai_memory_threshold_spin,
+            self.ai_memory_reset_time_edit,
+            self.ai_memory_promo_check,
+            self.ai_memory_promo_interval_spin,
+        ):
+            control.setEnabled(enabled)
 
     @Slot()
     def _test_local_ai(self) -> None:
@@ -2336,11 +2769,20 @@ class MainWindow(QMainWindow):
         self.local_ai_enabled_check.setChecked(settings.local_ai_enabled)
         self.local_ai_endpoint_edit.setText(settings.local_ai_endpoint)
         self.local_ai_model_edit.setText(settings.local_ai_model)
+        self.ai_viewer_memory_check.setChecked(settings.ai_viewer_memory_enabled)
+        self._update_memory_setting_controls(settings.ai_viewer_memory_enabled)
         self.ai_memory_reasoning_check.setChecked(
             settings.ai_memory_reasoning_enabled
         )
         self.ai_memory_threshold_spin.setValue(
             settings.ai_memory_message_threshold
+        )
+        self.ai_memory_reset_time_edit.setTime(
+            QTime(settings.ai_memory_reset_hour, settings.ai_memory_reset_minute)
+        )
+        self.ai_memory_promo_check.setChecked(settings.ai_memory_promo_enabled)
+        self.ai_memory_promo_interval_spin.setValue(
+            settings.ai_memory_promo_interval_messages
         )
         self.ai_response_decisions_check.setChecked(
             settings.ai_response_decisions_enabled
@@ -2353,6 +2795,13 @@ class MainWindow(QMainWindow):
         )
         self.ai_response_interval_spin.setValue(
             settings.ai_response_min_interval_seconds
+        )
+        self.ai_conversation_followup_spin.setValue(
+            settings.ai_conversation_followup_seconds
+        )
+        self.ai_interjections_check.setChecked(settings.ai_interjections_enabled)
+        self.ai_interjection_interval_spin.setValue(
+            settings.ai_interjection_min_interval_seconds
         )
         self.ai_personality_edit.setPlainText(settings.ai_personality)
         self.ai_allow_mild_profanity_check.setChecked(
@@ -2380,11 +2829,18 @@ class MainWindow(QMainWindow):
             local_ai_enabled=self.local_ai_enabled_check.isChecked(),
             local_ai_endpoint=self.local_ai_endpoint_edit.text(),
             local_ai_model=self.local_ai_model_edit.text(),
+            ai_viewer_memory_enabled=self.ai_viewer_memory_check.isChecked(),
             ai_memory_reasoning_enabled=(
                 self.ai_memory_reasoning_check.isChecked()
             ),
             ai_memory_message_threshold=(
                 self.ai_memory_threshold_spin.value()
+            ),
+            ai_memory_reset_hour=self.ai_memory_reset_time_edit.time().hour(),
+            ai_memory_reset_minute=self.ai_memory_reset_time_edit.time().minute(),
+            ai_memory_promo_enabled=self.ai_memory_promo_check.isChecked(),
+            ai_memory_promo_interval_messages=(
+                self.ai_memory_promo_interval_spin.value()
             ),
             ai_response_decisions_enabled=(
                 self.ai_response_decisions_check.isChecked()
@@ -2397,6 +2853,13 @@ class MainWindow(QMainWindow):
             ),
             ai_response_min_interval_seconds=(
                 self.ai_response_interval_spin.value()
+            ),
+            ai_conversation_followup_seconds=(
+                self.ai_conversation_followup_spin.value()
+            ),
+            ai_interjections_enabled=self.ai_interjections_check.isChecked(),
+            ai_interjection_min_interval_seconds=(
+                self.ai_interjection_interval_spin.value()
             ),
             ai_personality=self.ai_personality_edit.toPlainText(),
             ai_allow_mild_profanity=(
@@ -2423,11 +2886,19 @@ class MainWindow(QMainWindow):
         self.ui.twitchChatOutput.document().setDefaultFont(chat_font)
         if not (
             settings.local_ai_enabled
+            and settings.ai_viewer_memory_enabled
             and settings.ai_memory_reasoning_enabled
         ):
             self.memory_message_buffers.clear()
+            self.recent_ai_chat = deque(
+                (
+                    item for item in self.recent_ai_chat
+                    if item.get("memory_source") != "daily"
+                ),
+                maxlen=100,
+            )
             self.memory_reasoning_status_label.setText(
-                "Local memory reasoning is disabled."
+                "Viewer memory is disabled."
             )
         elif self.memory_reasoning_status_label.text().endswith("disabled."):
             self.memory_reasoning_status_label.setText(
@@ -2544,12 +3015,25 @@ class MainWindow(QMainWindow):
         self.memory_private_notes_edit.setPlainText(record.private_notes)
         self.memory_enabled_check.blockSignals(True)
         self.memory_enabled_check.setChecked(record.memory_enabled)
-        self.memory_enabled_check.blockSignals(False)
-        self.memory_summary_label.setText(
-            str(self.chatter_history.viewer_summary(user_id))
-            if record.memory_enabled
-            else "AI memory is disabled for this viewer. No memories are supplied to Sally."
+        self.memory_enabled_check.setEnabled(
+            bool(self.chatter_history.has_memory_consent(user_id))
         )
+        self.memory_enabled_check.setToolTip(
+            "Viewer consent is required; this control can only pause or resume it."
+        )
+        self.memory_enabled_check.blockSignals(False)
+        if not self.chatter_history.has_memory_consent(user_id):
+            memory_status = "Viewer has not opted in to Sally Memory."
+        elif not self.chatter_history.can_create_keynotes(user_id):
+            memory_status = (
+                "Daily memory is enabled. Persistent keynotes unlock after "
+                f"5 opted-in streams ({len(record.memory_stream_ids)}/5)."
+            )
+        elif record.memory_enabled:
+            memory_status = str(self.chatter_history.viewer_summary(user_id))
+        else:
+            memory_status = "AI memory is paused for this viewer."
+        self.memory_summary_label.setText(memory_status)
         session_rows = sorted(
             record.session_messages.items(),
             reverse=True,
@@ -2859,7 +3343,7 @@ class MainWindow(QMainWindow):
         )
         if not accepted or not text.strip():
             return
-        categories = ("General", "Preference", "Game", "Relationship", "Personal")
+        categories = ("General", "Preference", "Community")
         category, accepted = QInputDialog.getItem(
             self,
             "Memory Category",
@@ -2871,7 +3355,11 @@ class MainWindow(QMainWindow):
         if not accepted:
             return
         user_id = str(viewer_item.data(Qt.ItemDataRole.UserRole))
-        self.chatter_history.add_memory(user_id, text, category)
+        try:
+            self.chatter_history.add_memory(user_id, text, category)
+        except PermissionError as error:
+            self.statusBar().showMessage(str(error), 8000)
+            return
         self._save_chatter_history()
         self._show_memory_viewer(viewer_item, None)
 
@@ -3048,6 +3536,17 @@ class MainWindow(QMainWindow):
         self.last_companion_result = result
         self.companion_refresh_in_flight = False
         snapshot = result.snapshot
+        stream = snapshot.get("stream")
+        next_stream_id = ""
+        if isinstance(stream, dict):
+            next_stream_id = str(
+                stream.get("id") or stream.get("started_at") or ""
+            )
+        if next_stream_id != self.current_memory_stream_id:
+            self.current_memory_stream_id = next_stream_id
+            self.memory_promo_message_count = 0
+            self.last_memory_promo_at = 0.0
+        self._expire_daily_memory()
         if self.session_tracker.observe_stream(snapshot.get("stream")):
             self._refresh_session_history()
         current_warnings = set(result.warnings)
@@ -3061,7 +3560,6 @@ class MainWindow(QMainWindow):
         self._refresh_twitch_health()
         if any("401" in warning for warning in current_warnings):
             self.twitch_auth.recover_unauthorized()
-        stream = snapshot.get("stream")
         if isinstance(stream, dict):
             self.stream_live_label.setText("LIVE")
             self.stream_live_label.setStyleSheet(
@@ -3113,6 +3611,46 @@ class MainWindow(QMainWindow):
                 )
             self.followers_backfilled = True
             self._refresh_memory_viewer_list()
+
+    @Slot()
+    def _expire_daily_memory(self) -> None:
+        removed = self.chatter_history.expire_daily_memories(
+            reset_at=time(
+                self.settings.ai_memory_reset_hour,
+                self.settings.ai_memory_reset_minute,
+            ),
+            active_stream_id=self.current_memory_stream_id,
+        )
+        if removed:
+            self.recent_ai_chat = deque(
+                (
+                    item for item in self.recent_ai_chat
+                    if item.get("memory_source") != "daily"
+                ),
+                maxlen=100,
+            )
+            Logger.info(
+                f"Expired {removed} daily Sally memory message(s).",
+                source="AI",
+            )
+            self._save_chatter_history()
+        if self.daily_memory_expiry_pending:
+            self.daily_memory_expiry_pending = False
+            self._restore_daily_memory_context()
+
+    def _restore_daily_memory_context(self) -> None:
+        if not self.settings.ai_viewer_memory_enabled:
+            return
+        restored: list[dict[str, str]] = []
+        for user_id, record in self.chatter_history.records.items():
+            if not self.chatter_history.has_memory_consent(user_id):
+                continue
+            for item in record.daily_memory:
+                restored.append(
+                    {**item, "user_id": user_id, "memory_source": "daily"}
+                )
+        restored.sort(key=lambda item: str(item.get("timestamp", "")))
+        self.recent_ai_chat.extend(restored[-100:])
 
     def _apply_chatter_groups(
         self,
@@ -3650,7 +4188,7 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def show_settings(self) -> None:
-        self.ui.mainStack.setCurrentWidget(self.ui.settingsPage)
+        self.ui.mainStack.setCurrentWidget(self.settings_container)
         self.ui.settingsButton.setChecked(True)
 
     @Slot()

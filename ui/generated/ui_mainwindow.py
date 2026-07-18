@@ -50,8 +50,8 @@ class Ui_MainWindow(object):
 "    color: palette(highlighted-text);\n"
 "    font-weight: bold;\n"
 "}")
-        self.navigationFrame.setMinimumSize(QSize(170, 0))
-        self.navigationFrame.setMaximumSize(QSize(220, 16777215))
+        self.navigationFrame.setMinimumSize(QSize(120, 0))
+        self.navigationFrame.setMaximumSize(QSize(180, 16777215))
         self.navigationFrame.setFrameShape(QFrame.Shape.StyledPanel)
         self.navigationFrame.setFrameShadow(QFrame.Shadow.Raised)
         self.verticalLayout = QVBoxLayout(self.navigationFrame)

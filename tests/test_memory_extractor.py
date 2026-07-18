@@ -12,7 +12,7 @@ class MemoryExtractorTests(unittest.TestCase):
                 message_id="twitch-one",
                 user_id="1",
                 user_name="Viewer",
-                text="I have been building a puzzle game this year.",
+                text="My favorite puzzle game is Switchboard.",
                 timestamp="2026-07-13T00:00:00+00:00",
             ),
             BufferedChatMessage(
@@ -20,7 +20,7 @@ class MemoryExtractorTests(unittest.TestCase):
                 message_id="twitch-two",
                 user_id="1",
                 user_name="Viewer",
-                text="My puzzle game is called Switchboard.",
+                text="I always enjoy playing Switchboard on stream.",
                 timestamp="2026-07-13T00:01:00+00:00",
             ),
         )
@@ -30,7 +30,7 @@ class MemoryExtractorTests(unittest.TestCase):
         provider.chat.return_value = {
             "message": {
                 "content": """
-                {"memories":[{"text":"Viewer is building a puzzle game called Switchboard","category":"Project","key":"current-project","confidence":0.9,"evidence_ids":["one","two"]}]}
+                {"memories":[{"text":"Viewer's favorite puzzle game is Switchboard","category":"Preference","key":"favorite-puzzle-game","confidence":0.9,"evidence_ids":["one","two"]}]}
                 """
             }
         }
@@ -42,8 +42,8 @@ class MemoryExtractorTests(unittest.TestCase):
         )
 
         self.assertEqual(len(proposals), 1)
-        self.assertEqual(proposals[0].category, "Project")
-        self.assertEqual(proposals[0].key, "current-project")
+        self.assertEqual(proposals[0].category, "Preference")
+        self.assertEqual(proposals[0].key, "favorite-puzzle-game")
         self.assertEqual(
             [item["message_id"] for item in proposals[0].evidence],
             ["twitch-one", "twitch-two"],

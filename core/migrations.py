@@ -5,8 +5,8 @@ from typing import Any
 
 
 CURRENT_VERSIONS = {
-    "activity": 1,
-    "chatters": 5,
+    "activity": 2,
+    "chatters": 6,
     "sessions": 1,
 }
 
@@ -34,7 +34,17 @@ def migrate_payload(kind: str, payload: dict[str, Any]) -> dict[str, Any]:
                 record.setdefault("session_messages", {})
                 record.setdefault("timeline", [])
                 record.setdefault("role_history", [])
-                record.setdefault("memory_enabled", True)
+                record.setdefault("memory_consent", "unknown")
+                record.setdefault("memory_consented_at", "")
+                record.setdefault("memory_consent_version", "")
+                record.setdefault("memory_stream_ids", [])
+                record.setdefault("daily_memory", [])
+                record.setdefault("daily_memory_updated_at", "")
+                record.setdefault("daily_memory_stream_id", "")
+                if record.get("memory_consent") != "opted_in":
+                    record["memory_enabled"] = False
+                else:
+                    record.setdefault("memory_enabled", True)
                 record.setdefault("manual_group", "")
     migrated["version"] = target
     return migrated

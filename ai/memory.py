@@ -13,7 +13,7 @@ def build_viewer_context(
 ) -> dict[str, Any]:
     """Build the reviewed-only viewer context supplied to a future AI turn."""
     record = store.records.get(user_id)
-    if record is None or not record.memory_enabled:
+    if record is None or not store.can_create_keynotes(user_id):
         return {"enabled": False, "summary": "", "memories": []}
     memories = store.relevant_memories(user_id, prompt, limit)
     return {

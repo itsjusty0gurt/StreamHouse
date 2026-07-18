@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+- Made Sally viewer memory explicitly opt-in through `!sallymemory` chat
+  controls, with confirmed complete deletion and no persistent unconsented
+  chatter profiles.
+- Added stream-aware daily conversation expiry with a configurable reset time,
+  startup restoration, and preservation for streams crossing the boundary.
+- Required five distinct opted-in streams before persistent, review-first,
+  non-sensitive regular keynotes can be created.
+- Added optional, rate-limited in-channel memory invitations and removed chat
+  message contents from application logs.
+- Made `hey sally` invocations reliable with focused retry/fallback handling,
+  duplicate-reply detection, and queued duplicate-invocation coalescing.
+- Added configurable per-viewer conversation continuation, including natural
+  follow-ups and required responses when a viewer answers Sally's question.
+- Added co-host reasoning for implicit addresses, Twitch replies, explicit
+  conversation endings, and conservative confidence/cooldown-gated interjections.
+- Added an off-by-default master viewer-memory switch that disables collection,
+  restoration, invitations, extraction, and memory-backed reply context without
+  disabling Sally's ephemeral co-host conversation window.
+
 - structured AI viewer memories with evidence, confidence, provenance, review
   states, duplicate confirmation, contradiction replacement, and per-viewer opt-out
 - reviewed-only viewer summaries and relevant-memory retrieval for future AI turns

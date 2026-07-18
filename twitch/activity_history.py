@@ -16,6 +16,7 @@ class PersistedActivity:
     text: str
     color: str
     occurred_at: str
+    user_id: str = ""
 
     @classmethod
     def from_dict(cls, values: dict[str, Any]) -> PersistedActivity:
@@ -26,6 +27,7 @@ class PersistedActivity:
             text=str(values.get("text", ""))[:500],
             color=str(values.get("color", "#adadb8"))[:20],
             occurred_at=occurred_at,
+            user_id=str(values.get("user_id", ""))[:100],
         )
 
     def display_text(self, now: datetime | None = None) -> str:
@@ -91,6 +93,28 @@ class ActivityHistoryStore:
         self.entries.insert(0, entry)
         del self.entries[self.LIMIT :]
         self.save()
+
+    def delete_user(self, user_id: str, user_name: str = "") -> int:
+        """Remove activity associated with a viewer, including legacy name-only rows."""
+        clean_id = user_id.strip()
+        clean_name = user_name.strip().casefold()
+        retained = [
+            entry
+            for entry in self.entries
+            if not (
+                (clean_id and entry.user_id == clean_id)
+                or (
+                    clean_name
+                    and not entry.user_id
+                    and entry.text.casefold().startswith(clean_name + " ")
+                )
+            )
+        ]
+        removed = len(self.entries) - len(retained)
+        if removed:
+            self.entries[:] = retained
+            self.save()
+        return removed
 
     def refresh_interval_ms(self, now: datetime | None = None) -> int | None:
         if not self.entries:

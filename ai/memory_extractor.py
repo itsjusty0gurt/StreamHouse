@@ -33,11 +33,7 @@ class MemoryExtractor:
     CATEGORIES = frozenset(
         {
             "Preference",
-            "Personal",
-            "Project",
-            "Relationship",
             "Community",
-            "Goal",
             "General",
         }
     )
@@ -46,8 +42,11 @@ class MemoryExtractor:
     SENSITIVE_PATTERN = re.compile(
         r"\b(?:password|passcode|home address|street address|phone number|"
         r"e-?mail address|bank account|credit card|social security|income|debt|"
-        r"diagnos(?:is|ed)|medical condition|medication|religion|religious|"
-        r"political party|sexuality|sexual orientation)\b",
+        r"diagnos(?:is|ed)|medical condition|medication|disability|therapy|"
+        r"pregnan(?:t|cy)|religion|religious|politic(?:s|al)|election|vote|"
+        r"sexuality|sexual orientation|gender identity|transgender|gay|lesbian|"
+        r"ethnicity|race|immigration status|citizenship|workplace|employer|"
+        r"legal issue|criminal record|family problem|relationship status)\b",
         re.I,
     )
 
@@ -112,22 +111,24 @@ class MemoryExtractor:
 Viewer: {user_name}
 
 Identify only durable facts the viewer explicitly stated about themselves.
-Good memories include stable preferences, ongoing projects, relationships,
-community context, or goals likely to help in a future conversation.
+Good memories are limited to entertainment preferences, preferred nickname or
+greeting, recurring channel jokes, and harmless community context likely to
+help in a future conversation.
 
 Do not infer anything. Ignore greetings, jokes, commands, temporary moods,
 one-off stream reactions, usernames, and facts about other people. Do not save
-passwords, addresses, financial details, medical details, political or religious
-beliefs, sexual information, or other highly sensitive data. Avoid duplicates of
-the existing memories. It is correct to return an empty list.
+passwords, addresses, financial details, medical details, politics, religion,
+sexuality, gender identity, ethnicity, location, workplace, family details,
+relationships, legal matters, or other sensitive data. Never create personality
+or emotional profiles. Avoid duplicates. It is correct to return an empty list.
 
 Return exactly one JSON object in this shape:
 {{"memories":[{{"text":"Viewer explicitly likes puzzle games",\
 "category":"Preference","key":"favorite-game-genre",\
 "confidence":0.85,"evidence_ids":["message-id"]}}]}}
 
-Allowed categories: Preference, Personal, Project, Relationship, Community,
-Goal, General. Use a stable lowercase key for facts that could later change.
+Allowed categories: Preference, Community, General. Use a stable lowercase key
+for facts that could later change.
 Every proposal must cite one or more IDs from the supplied chat messages.
 Maximum {MemoryExtractor.MAX_PROPOSALS} proposals.
 

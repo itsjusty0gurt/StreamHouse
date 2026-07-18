@@ -1,18 +1,25 @@
 import json
 import tempfile
 import unittest
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, time, timedelta, timezone
 from pathlib import Path
 
 from twitch.chatter_history import ChatterHistoryStore
 
 
 class ChatterHistoryStoreTests(unittest.TestCase):
+    @staticmethod
+    def qualify(store: ChatterHistoryStore, user_id: str = "1") -> None:
+        store.opt_in_memory(user_id, "Viewer")
+        for index in range(store.MEMORY_REGULAR_STREAMS):
+            store.record_memory_stream(user_id, f"stream-{index}")
+
     def test_records_messages_snapshots_and_round_trips(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "chatters.json"
             store = ChatterHistoryStore(path)
             observed_at = datetime(2026, 7, 1, tzinfo=timezone.utc)
+            store.opt_in_memory("1", "Viewer", consented_at=observed_at)
             store.observe_message("1", "Viewer", observed_at)
             store.observe_snapshot(
                 [{"user_id": "1", "user_name": "Viewer"}],
@@ -69,6 +76,7 @@ class ChatterHistoryStoreTests(unittest.TestCase):
             path = Path(directory) / "chatters.json"
             store = ChatterHistoryStore(path)
             store.observe_message("1", "Viewer")
+            store.opt_in_memory("1", "Viewer")
             store.set_manual_group("1", "Regulars")
             store.save()
 
@@ -107,6 +115,7 @@ class ChatterHistoryStoreTests(unittest.TestCase):
     def test_manual_memory_lifecycle(self) -> None:
         store = ChatterHistoryStore(Path("unused.json"))
         store.observe_message("1", "Viewer")
+        self.qualify(store)
         memory = store.add_memory("1", "Likes puzzle games", "Preference")
         self.assertEqual(memory["source"], "manual")
 
@@ -125,6 +134,7 @@ class ChatterHistoryStoreTests(unittest.TestCase):
     def test_generated_memory_review_duplicate_and_conflict(self) -> None:
         store = ChatterHistoryStore(Path("unused.json"))
         store.observe_message("1", "Viewer")
+        self.qualify(store)
         first = store.propose_memory(
             "1",
             "Favorite game is Portal 2",
@@ -163,6 +173,7 @@ class ChatterHistoryStoreTests(unittest.TestCase):
     def test_memory_privacy_summary_and_relevance(self) -> None:
         store = ChatterHistoryStore(Path("unused.json"))
         store.observe_message("1", "Viewer")
+        self.qualify(store)
         puzzle = store.add_memory("1", "Enjoys difficult puzzle games", "Preference")
         store.add_memory("1", "Drinks green tea", "Preference")
         store.update_memory("1", str(puzzle["id"]), pinned=True)
@@ -230,6 +241,83 @@ class ChatterHistoryStoreTests(unittest.TestCase):
             ),
             3,
         )
+
+    def test_unconsented_viewer_is_not_persisted(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "chatters.json"
+            store = ChatterHistoryStore(path)
+            store.observe_message("viewer", "Viewer")
+            store.save()
+
+            restored = ChatterHistoryStore(path)
+            restored.load()
+            self.assertNotIn("viewer", restored.records)
+
+    def test_consent_and_five_distinct_streams_unlock_keynotes(self) -> None:
+        store = ChatterHistoryStore(Path("unused.json"))
+        store.observe_message("1", "Viewer")
+        self.assertFalse(store.can_create_keynotes("1"))
+
+        store.opt_in_memory("1", "Viewer")
+        for index in range(store.MEMORY_REGULAR_STREAMS - 1):
+            store.record_memory_stream("1", f"stream-{index}")
+            store.record_memory_stream("1", f"stream-{index}")
+        self.assertFalse(store.can_create_keynotes("1"))
+
+        store.record_memory_stream("1", "stream-final")
+        self.assertTrue(store.can_create_keynotes("1"))
+
+    def test_daily_memory_expires_after_reset_but_survives_same_live_stream(self) -> None:
+        store = ChatterHistoryStore(Path("unused.json"))
+        store.opt_in_memory("1", "Viewer")
+        message_time = datetime(2026, 7, 14, 2, 0, tzinfo=timezone.utc)
+        store.record_daily_memory(
+            "1",
+            speaker="viewer",
+            viewer="Viewer",
+            message="Remember this for today.",
+            timestamp=message_time,
+            stream_id="stream-1",
+        )
+        now = datetime(2026, 7, 15, 12, 0, tzinfo=timezone.utc)
+
+        self.assertEqual(
+            store.expire_daily_memories(
+                now=now,
+                reset_at=time(4, 0),
+                active_stream_id="stream-1",
+            ),
+            0,
+        )
+        self.assertEqual(len(store.records["1"].daily_memory), 1)
+
+        self.assertEqual(
+            store.expire_daily_memories(
+                now=now,
+                reset_at=time(4, 0),
+                active_stream_id="",
+            ),
+            1,
+        )
+        self.assertEqual(store.records["1"].daily_memory, [])
+
+    def test_opt_out_and_complete_delete_remove_memory_data(self) -> None:
+        store = ChatterHistoryStore(Path("unused.json"))
+        self.qualify(store)
+        store.add_memory("1", "Likes puzzle games", "Preference")
+        store.record_daily_memory(
+            "1", speaker="viewer", viewer="Viewer", message="Hello"
+        )
+
+        store.opt_out_memory("1")
+        record = store.records["1"]
+        self.assertEqual(record.memory_consent, "opted_out")
+        self.assertEqual(record.memories, [])
+        self.assertEqual(record.daily_memory, [])
+        self.assertEqual(record.active_days, [])
+
+        self.assertTrue(store.delete_viewer_data("1"))
+        self.assertNotIn("1", store.records)
 
 
 if __name__ == "__main__":

@@ -32,12 +32,20 @@ class SettingsStoreTests(unittest.TestCase):
             local_ai_enabled=True,
             local_ai_endpoint="http://localhost:11434",
             local_ai_model="qwen3:14b",
+            ai_viewer_memory_enabled=True,
             ai_memory_reasoning_enabled=False,
             ai_memory_message_threshold=15,
+            ai_memory_reset_hour=3,
+            ai_memory_reset_minute=30,
+            ai_memory_promo_enabled=False,
+            ai_memory_promo_interval_messages=250,
             ai_response_decisions_enabled=False,
             ai_auto_send_replies=True,
             ai_response_max_age_seconds=25,
             ai_response_min_interval_seconds=12,
+            ai_conversation_followup_seconds=240,
+            ai_interjections_enabled=False,
+            ai_interjection_min_interval_seconds=300,
             ai_personality="Dry, playful, and concise.",
             ai_allow_mild_profanity=True,
             ai_allow_strong_profanity=True,
@@ -62,12 +70,20 @@ class SettingsStoreTests(unittest.TestCase):
                     "local_ai_enabled": "yes",
                     "local_ai_endpoint": "not-a-url",
                     "local_ai_model": "",
+                    "ai_viewer_memory_enabled": "yes",
                     "ai_memory_reasoning_enabled": "yes",
                     "ai_memory_message_threshold": 500,
+                    "ai_memory_reset_hour": 99,
+                    "ai_memory_reset_minute": -10,
+                    "ai_memory_promo_enabled": "yes",
+                    "ai_memory_promo_interval_messages": 5000,
                     "ai_response_decisions_enabled": "yes",
                     "ai_auto_send_replies": "yes",
                     "ai_response_max_age_seconds": 500,
                     "ai_response_min_interval_seconds": 0,
+                    "ai_conversation_followup_seconds": 5000,
+                    "ai_interjections_enabled": "yes",
+                    "ai_interjection_min_interval_seconds": 5000,
                     "ai_personality": "",
                     "ai_allow_mild_profanity": "yes",
                     "ai_allow_strong_profanity": "yes",
@@ -88,12 +104,20 @@ class SettingsStoreTests(unittest.TestCase):
         self.assertTrue(settings.local_ai_enabled)
         self.assertEqual(settings.local_ai_endpoint, "http://127.0.0.1:11434")
         self.assertEqual(settings.local_ai_model, "qwen3:14b")
+        self.assertFalse(settings.ai_viewer_memory_enabled)
         self.assertTrue(settings.ai_memory_reasoning_enabled)
         self.assertEqual(settings.ai_memory_message_threshold, 50)
+        self.assertEqual(settings.ai_memory_reset_hour, 23)
+        self.assertEqual(settings.ai_memory_reset_minute, 0)
+        self.assertTrue(settings.ai_memory_promo_enabled)
+        self.assertEqual(settings.ai_memory_promo_interval_messages, 1000)
         self.assertTrue(settings.ai_response_decisions_enabled)
         self.assertFalse(settings.ai_auto_send_replies)
         self.assertEqual(settings.ai_response_max_age_seconds, 60)
         self.assertEqual(settings.ai_response_min_interval_seconds, 3)
+        self.assertEqual(settings.ai_conversation_followup_seconds, 600)
+        self.assertTrue(settings.ai_interjections_enabled)
+        self.assertEqual(settings.ai_interjection_min_interval_seconds, 1800)
         self.assertIn("quick-witted", settings.ai_personality)
         self.assertFalse(settings.ai_allow_mild_profanity)
         self.assertFalse(settings.ai_allow_strong_profanity)

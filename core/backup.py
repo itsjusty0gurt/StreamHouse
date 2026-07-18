@@ -4,6 +4,7 @@ import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from os import replace
 from zipfile import ZIP_DEFLATED, ZipFile
 
 from config.version import VERSION
@@ -89,3 +90,80 @@ class BackupManager:
             if modified == today:
                 return None
         return self.create("automatic")
+
+    def scrub_viewer(self, user_id: str, user_name: str = "") -> int:
+        """Remove a viewer's profile and activity rows from existing backups."""
+        clean_id = user_id.strip()
+        clean_name = user_name.strip().casefold()
+        changed_archives = 0
+        for archive in self.backup_directory.glob("sally-*.zip"):
+            changed = False
+            temporary = archive.with_suffix(archive.suffix + ".tmp")
+            with ZipFile(archive, "r") as source, ZipFile(
+                temporary, "w", ZIP_DEFLATED
+            ) as destination:
+                for member in source.infolist():
+                    data = source.read(member)
+                    if member.filename == "memory/twitch_chatters.json":
+                        data, item_changed = self._scrub_chatter_payload(
+                            data, clean_id
+                        )
+                        changed = changed or item_changed
+                    elif member.filename == "memory/twitch_activity.json":
+                        data, item_changed = self._scrub_activity_payload(
+                            data, clean_id, clean_name
+                        )
+                        changed = changed or item_changed
+                    destination.writestr(member, data)
+            if changed:
+                replace(temporary, archive)
+                changed_archives += 1
+            else:
+                temporary.unlink(missing_ok=True)
+        return changed_archives
+
+    @staticmethod
+    def _scrub_chatter_payload(data: bytes, user_id: str) -> tuple[bytes, bool]:
+        try:
+            payload = json.loads(data.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return data, False
+        records = payload.get("chatters", {}) if isinstance(payload, dict) else {}
+        if not isinstance(records, dict) or records.pop(user_id, None) is None:
+            return data, False
+        return json.dumps(payload, indent=2).encode("utf-8"), True
+
+    @staticmethod
+    def _scrub_activity_payload(
+        data: bytes,
+        user_id: str,
+        user_name: str,
+    ) -> tuple[bytes, bool]:
+        try:
+            payload = json.loads(data.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return data, False
+        events = payload.get("events", []) if isinstance(payload, dict) else []
+        if not isinstance(events, list):
+            return data, False
+        retained = [
+            event
+            for event in events
+            if not (
+                isinstance(event, dict)
+                and (
+                    str(event.get("user_id", "")) == user_id
+                    or (
+                        user_name
+                        and not event.get("user_id")
+                        and str(event.get("text", "")).casefold().startswith(
+                            user_name + " "
+                        )
+                    )
+                )
+            )
+        ]
+        if len(retained) == len(events):
+            return data, False
+        payload["events"] = retained
+        return json.dumps(payload, indent=2).encode("utf-8"), True

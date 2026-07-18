@@ -4,13 +4,14 @@ from ai.response_engine import ResponseDecisionEngine, ResponseMessage
 
 
 class FakeProvider:
-    def __init__(self, content: str) -> None:
-        self.content = content
+    def __init__(self, content: str | list[str]) -> None:
+        self.contents = [content] if isinstance(content, str) else list(content)
         self.calls = []
 
     def chat(self, messages, *, think=False):
         self.calls.append((messages, think))
-        return {"message": {"content": self.content}}
+        index = min(len(self.calls) - 1, len(self.contents) - 1)
+        return {"message": {"content": self.contents[index]}}
 
 
 def response_message(request_id: str, text: str) -> ResponseMessage:
@@ -158,6 +159,151 @@ class ResponseDecisionEngineTests(unittest.TestCase):
         single_line = " ".join(prompt.split())
         self.assertIn("explicit public invocation", single_line)
         self.assertIn("regardless of viewer role", single_line)
+
+    def test_direct_invocation_is_retried_when_model_ignores_it(self) -> None:
+        provider = FakeProvider(
+            [
+                '{"decisions":[{"id":"one","decision":"ignore",'
+                '"reply":"","reason":"mistake","confidence":0.8}]}',
+                '{"decisions":[{"id":"one","decision":"reply",'
+                '"reply":"Not much—just keeping chat company.",'
+                '"reason":"required retry","confidence":0.9}]}',
+            ]
+        )
+
+        decision = ResponseDecisionEngine().decide(
+            provider,
+            (response_message("one", "hey sally, not much and you?"),),
+        )[0]
+
+        self.assertEqual(len(provider.calls), 2)
+        self.assertEqual(decision.decision, "reply")
+        self.assertIn("keeping chat company", decision.reply)
+
+    def test_repeated_reply_is_replaced_with_fresh_retry(self) -> None:
+        repeated = "Watch it, buttercup. I'm just very sassy."
+        provider = FakeProvider(
+            [
+                '{"decisions":[{"id":"one","decision":"reply",'
+                f'"reply":"{repeated}","reason":"answer","confidence":0.9}}]}}',
+                '{"decisions":[{"id":"one","decision":"reply",'
+                '"reply":"The brain is online; the sass module is just loud.",'
+                '"reason":"fresh retry","confidence":0.9}]}',
+            ]
+        )
+
+        decision = ResponseDecisionEngine().decide(
+            provider,
+            (response_message("one", "hey sally get a brain"),),
+            ({"speaker": "sally", "viewer": "Sally", "message": repeated},),
+        )[0]
+
+        self.assertEqual(len(provider.calls), 2)
+        self.assertNotEqual(decision.reply, repeated)
+        self.assertIn("brain is online", decision.reply)
+
+    def test_direct_invocation_gets_fallback_if_retry_is_invalid(self) -> None:
+        provider = FakeProvider(
+            [
+                '{"decisions":[]}',
+                'not json',
+            ]
+        )
+
+        decision = ResponseDecisionEngine().decide(
+            provider,
+            (response_message("one", "hey sally, are you there?"),),
+        )[0]
+
+        self.assertEqual(decision.decision, "reply")
+        self.assertEqual(decision.confidence, 1.0)
+        self.assertIn("@Viewerone", decision.reply)
+
+    def test_expected_conversation_followup_is_retried_when_ignored(self) -> None:
+        provider = FakeProvider(
+            [
+                '{"decisions":[{"id":"one","decision":"ignore",'
+                '"reply":"","reason":"mistake","confidence":0.8}]}',
+                '{"decisions":[{"id":"one","decision":"reply",'
+                '"reply":"Glad to hear it! I am keeping chat company.",'
+                '"reason":"conversation retry","confidence":0.9}]}',
+            ]
+        )
+        message = response_message("one", "i am good")
+        message = ResponseMessage(
+            request_id=message.request_id,
+            message_id=message.message_id,
+            user_id=message.user_id,
+            user_name=message.user_name,
+            text=message.text,
+            received_at=message.received_at,
+            conversation_continuation=True,
+            previous_sally_reply="I'm doing great. How about you?",
+            response_expected=True,
+        )
+
+        decision = ResponseDecisionEngine().decide(provider, (message,))[0]
+
+        self.assertEqual(len(provider.calls), 2)
+        self.assertEqual(decision.decision, "reply")
+        self.assertTrue(decision.response_expected)
+        retry_prompt = provider.calls[1][0][1]["content"]
+        self.assertIn("How about you?", retry_prompt)
+        self.assertIn('"response_expected": true', retry_prompt)
+
+    def test_direct_name_without_hey_is_a_required_response(self) -> None:
+        provider = FakeProvider(
+            [
+                '{"decisions":[{"id":"one","decision":"ignore",'
+                '"reply":"","reason":"mistake","confidence":0.8, '
+                '"conversation_state":"start"}]}',
+                '{"decisions":[{"id":"one","decision":"reply",'
+                '"reply":"I heard you.","reason":"direct retry",'
+                '"confidence":0.9,"engagement_type":"direct",'
+                '"conversation_state":"start"}]}',
+            ]
+        )
+        base = response_message("one", "Sally, what do you think?")
+        message = ResponseMessage(
+            request_id=base.request_id,
+            message_id=base.message_id,
+            user_id=base.user_id,
+            user_name=base.user_name,
+            text=base.text,
+            received_at=base.received_at,
+            directed_at_sally=True,
+        )
+
+        decision = ResponseDecisionEngine().decide(provider, (message,))[0]
+
+        self.assertEqual(len(provider.calls), 2)
+        self.assertEqual(decision.engagement_type, "direct")
+        self.assertEqual(decision.conversation_state, "start")
+
+    def test_model_can_end_conversation_without_replying(self) -> None:
+        provider = FakeProvider(
+            '{"decisions":[{"id":"one","decision":"ignore",'
+            '"reply":"","reason":"viewer said goodbye","confidence":0.95,'
+            '"engagement_type":"none","conversation_state":"end"}]}'
+        )
+
+        decision = ResponseDecisionEngine().decide(
+            provider, (response_message("one", "thanks, bye"),)
+        )[0]
+
+        self.assertEqual(decision.decision, "ignore")
+        self.assertEqual(decision.conversation_state, "end")
+
+    def test_prompt_requires_rare_relevant_interjections(self) -> None:
+        provider = FakeProvider('{"decisions":[]}')
+
+        ResponseDecisionEngine().decide(
+            provider, (response_message("one", "This boss is impossible"),)
+        )
+
+        prompt = provider.calls[0][0][1]["content"]
+        self.assertIn("Interjections must be rare, relevant", prompt)
+        self.assertIn("implicit address", prompt)
 
 
 if __name__ == "__main__":
