@@ -48,6 +48,7 @@ class AITestReportStore:
         latency_ms: int,
         response_expected: bool,
         confidence: float,
+        response_source: str = "llm",
         save: bool = True,
     ) -> None:
         self.events.append(
@@ -59,6 +60,7 @@ class AITestReportStore:
                 "latency_ms": max(int(latency_ms), 0),
                 "response_expected": bool(response_expected),
                 "confidence": round(max(0.0, min(float(confidence), 1.0)), 4),
+                "response_source": self._safe_label(response_source),
             }
         )
         self.events = self.events[-self.MAX_EVENTS :]
@@ -87,6 +89,9 @@ class AITestReportStore:
         events = self.selected_events(current_session_only)
         outcomes = Counter(str(event.get("outcome", "unknown")) for event in events)
         latencies = [int(event.get("latency_ms", 0)) for event in events]
+        sources = Counter(
+            str(event.get("response_source", "llm")) for event in events
+        )
         return {
             "total": len(events),
             "sent": outcomes["sent"],
@@ -94,6 +99,8 @@ class AITestReportStore:
             "missed": outcomes["missed"],
             "blocked": outcomes["blocked"],
             "failed": outcomes["failed"],
+            "llm": sources["llm"],
+            "rivescript": sources["rivescript"],
             "average_latency_ms": (
                 round(sum(latencies) / len(latencies)) if latencies else 0
             ),

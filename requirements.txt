@@ -1,1 +1,2 @@
 PySide6==6.11.1
+rivescript==1.15.0

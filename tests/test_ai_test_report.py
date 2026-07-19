@@ -21,11 +21,13 @@ class AITestReportStoreTests(unittest.TestCase):
             latency_ms=1250,
             response_expected=True,
             confidence=0.91,
+            response_source="rivescript",
         )
 
         event = self.store.events[0]
         self.assertEqual(event["outcome"], "sent")
         self.assertEqual(event["reason"], "twitch_sent")
+        self.assertEqual(event["response_source"], "rivescript")
         self.assertNotIn("message", event)
         self.assertNotIn("viewer", event)
         self.assertNotIn("user_id", event)
@@ -58,6 +60,8 @@ class AITestReportStoreTests(unittest.TestCase):
         self.assertEqual(current["sent"], 1)
         self.assertEqual(all_events["total"], 2)
         self.assertEqual(all_events["missed"], 1)
+        self.assertEqual(all_events["llm"], 2)
+        self.assertEqual(all_events["rivescript"], 0)
         self.assertEqual(all_events["average_latency_ms"], 750)
 
     def test_clear_removes_saved_events(self) -> None:

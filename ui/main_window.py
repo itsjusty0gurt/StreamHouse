@@ -63,6 +63,7 @@ from ai.response_engine import (
 )
 from ai.training_store import TrainingStore
 from ai.test_report import AITestReportStore
+from ai.rivescript_engine import RiveScriptRuleStore, SallyRiveScriptEngine
 from core.window_state import WindowStateStore
 from config.twitch import (
     TWITCH_BOT_SCOPES,
@@ -116,6 +117,7 @@ class MainWindow(QMainWindow):
         release_controller: ReleaseController | None = None,
         training_store: TrainingStore | None = None,
         test_report_store: AITestReportStore | None = None,
+        rivescript_store: RiveScriptRuleStore | None = None,
         auto_upgrade_permissions: bool = True,
     ) -> None:
         super().__init__()
@@ -142,6 +144,7 @@ class MainWindow(QMainWindow):
         self.release_controller = release_controller or ReleaseController()
         self.training_store = training_store or TrainingStore()
         self.test_report_store = test_report_store or AITestReportStore()
+        self.rivescript_store = rivescript_store or RiveScriptRuleStore()
         self.training_opted_in_users: set[str] = set()
         self.training_notice_attempt_context = ""
         try:
@@ -158,6 +161,15 @@ class MainWindow(QMainWindow):
                 f"Could not load anonymous AI test diagnostics: {error}",
                 source="AI",
             )
+        try:
+            self.rivescript_store.load()
+        except (OSError, ValueError, json.JSONDecodeError) as error:
+            self.rivescript_store.rules = []
+            Logger.warning(
+                f"Could not load local RiveScript rules: {error}",
+                source="AI",
+            )
+        self.rivescript_engine = SallyRiveScriptEngine(self.rivescript_store)
         try:
             self.chatter_history.load()
         except (OSError, ValueError, json.JSONDecodeError) as error:
@@ -985,6 +997,7 @@ class MainWindow(QMainWindow):
         page_layout.addWidget(splitter)
         self.ai_tabs.addTab(self.memories_page, "Memories")
         self._build_reply_review_tab()
+        self._build_rivescript_tab()
         self._build_ai_test_report_tab()
         self._build_training_tab()
         self._build_personality_tab()
@@ -1190,8 +1203,7 @@ class MainWindow(QMainWindow):
         self.teach_rivescript_button = QPushButton("Teach RiveScript")
         self.teach_rivescript_button.setEnabled(False)
         self.teach_rivescript_button.setToolTip(
-            "This will become available after the RiveScript response engine "
-            "is installed."
+            "Create a reviewed local RiveScript rule from the selected reply."
         )
         self.clear_reply_decisions_button = QPushButton("Clear History")
         actions.addWidget(self.send_reply_draft_button)
@@ -1213,8 +1225,267 @@ class MainWindow(QMainWindow):
         self.dismiss_reply_button.clicked.connect(
             self._dismiss_reply_decision
         )
+        self.teach_rivescript_button.clicked.connect(
+            self._teach_selected_rivescript_reply
+        )
+        self.reply_review_table.itemSelectionChanged.connect(
+            self._update_reply_review_actions
+        )
         self.clear_reply_decisions_button.clicked.connect(
             lambda: self.reply_review_table.setRowCount(0)
+        )
+        self._update_reply_review_actions()
+
+    def _build_rivescript_tab(self) -> None:
+        page = QWidget(self.ai_tabs)
+        self.rivescript_rules_page = page
+        layout = QVBoxLayout(page)
+        explanation = QLabel(
+            "Reasoning still decides whether Sally should speak. When it "
+            "approves a reply and an enabled rule matches, the streamer-written "
+            "RiveScript response is used instead of an LLM draft."
+        )
+        explanation.setWordWrap(True)
+        layout.addWidget(explanation)
+        self.rivescript_rules_table = QTableWidget(0, 5)
+        self.rivescript_rules_table.setHorizontalHeaderLabels(
+            ("Enabled", "Name", "Trigger", "Reply", "Updated")
+        )
+        self.rivescript_rules_table.setSelectionBehavior(
+            QTableWidget.SelectionBehavior.SelectRows
+        )
+        self.rivescript_rules_table.setSelectionMode(
+            QTableWidget.SelectionMode.SingleSelection
+        )
+        self.rivescript_rules_table.setEditTriggers(
+            QTableWidget.EditTrigger.NoEditTriggers
+        )
+        rule_header = self.rivescript_rules_table.horizontalHeader()
+        rule_header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        rule_header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        rule_header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        rule_header.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
+        rule_header.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
+        layout.addWidget(self.rivescript_rules_table, 1)
+
+        actions = QHBoxLayout()
+        self.add_rivescript_rule_button = QPushButton("Add Rule")
+        self.edit_rivescript_rule_button = QPushButton("Edit Selected")
+        self.toggle_rivescript_rule_button = QPushButton("Disable Selected")
+        self.delete_rivescript_rule_button = QPushButton("Delete Selected")
+        actions.addWidget(self.add_rivescript_rule_button)
+        actions.addWidget(self.edit_rivescript_rule_button)
+        actions.addWidget(self.toggle_rivescript_rule_button)
+        actions.addWidget(self.delete_rivescript_rule_button)
+        actions.addStretch()
+        layout.addLayout(actions)
+
+        test_row = QHBoxLayout()
+        self.rivescript_test_edit = QLineEdit()
+        self.rivescript_test_edit.setPlaceholderText(
+            "Test rule matching without sending to Twitch"
+        )
+        self.rivescript_test_button = QPushButton("Test Match")
+        test_row.addWidget(self.rivescript_test_edit, 1)
+        test_row.addWidget(self.rivescript_test_button)
+        layout.addLayout(test_row)
+        self.rivescript_status_label = QLabel()
+        self.rivescript_status_label.setWordWrap(True)
+        layout.addWidget(self.rivescript_status_label)
+        self.ai_tabs.addTab(page, "RiveScript Rules")
+
+        self.add_rivescript_rule_button.clicked.connect(
+            self._add_rivescript_rule
+        )
+        self.edit_rivescript_rule_button.clicked.connect(
+            self._edit_rivescript_rule
+        )
+        self.toggle_rivescript_rule_button.clicked.connect(
+            self._toggle_rivescript_rule
+        )
+        self.delete_rivescript_rule_button.clicked.connect(
+            self._delete_rivescript_rule
+        )
+        self.rivescript_test_button.clicked.connect(self._test_rivescript_rule)
+        self.rivescript_test_edit.returnPressed.connect(
+            self._test_rivescript_rule
+        )
+        self.rivescript_rules_table.itemSelectionChanged.connect(
+            self._update_rivescript_rule_actions
+        )
+        self._refresh_rivescript_rules()
+
+    def _refresh_rivescript_rules(self, selected_rule_id: str = "") -> None:
+        table = self.rivescript_rules_table
+        if not selected_rule_id:
+            selected = self._selected_rivescript_rule()
+            selected_rule_id = str(selected.get("id", "")) if selected else ""
+        table.setRowCount(0)
+        selected_row = -1
+        for rule in self.rivescript_store.rules:
+            row = table.rowCount()
+            table.insertRow(row)
+            updated = str(rule.get("updated_at") or rule.get("created_at") or "")
+            try:
+                updated = datetime.fromisoformat(
+                    updated.replace("Z", "+00:00")
+                ).astimezone().strftime("%Y-%m-%d %H:%M")
+            except ValueError:
+                updated = "--"
+            values = (
+                "Yes" if bool(rule.get("enabled", True)) else "No",
+                str(rule.get("name", "")),
+                str(rule.get("trigger", "")),
+                str(rule.get("reply", "")),
+                updated,
+            )
+            for column, value in enumerate(values):
+                item = QTableWidgetItem(value)
+                if column == 0:
+                    item.setData(Qt.ItemDataRole.UserRole, str(rule.get("id", "")))
+                table.setItem(row, column, item)
+            if rule.get("id") == selected_rule_id:
+                selected_row = row
+        if selected_row >= 0:
+            table.selectRow(selected_row)
+        self.rivescript_status_label.setText(
+            f"{len(self.rivescript_store.rules)} local rule(s)."
+        )
+        self._update_rivescript_rule_actions()
+
+    def _selected_rivescript_rule(self) -> dict[str, object] | None:
+        row = self.rivescript_rules_table.currentRow()
+        item = self.rivescript_rules_table.item(row, 0) if row >= 0 else None
+        rule_id = str(item.data(Qt.ItemDataRole.UserRole) or "") if item else ""
+        return self.rivescript_store.get(rule_id) if rule_id else None
+
+    def _update_rivescript_rule_actions(self) -> None:
+        rule = self._selected_rivescript_rule()
+        enabled = rule is not None
+        self.edit_rivescript_rule_button.setEnabled(enabled)
+        self.toggle_rivescript_rule_button.setEnabled(enabled)
+        self.delete_rivescript_rule_button.setEnabled(enabled)
+        self.toggle_rivescript_rule_button.setText(
+            "Disable Selected"
+            if rule is None or bool(rule.get("enabled", True))
+            else "Enable Selected"
+        )
+
+    def _prompt_rivescript_rule(
+        self,
+        *,
+        trigger: str = "",
+        reply: str = "",
+        name: str = "",
+    ) -> tuple[str, str, str] | None:
+        trigger, accepted = QInputDialog.getText(
+            self,
+            "RiveScript Trigger",
+            "Trigger (RiveScript patterns such as 'hello *' are supported)",
+            QLineEdit.EchoMode.Normal,
+            trigger,
+        )
+        if not accepted or not trigger.strip():
+            return None
+        reply, accepted = QInputDialog.getMultiLineText(
+            self, "RiveScript Reply", "Reply", reply
+        )
+        if not accepted or not reply.strip():
+            return None
+        name, accepted = QInputDialog.getText(
+            self,
+            "Rule Name",
+            "Name",
+            QLineEdit.EchoMode.Normal,
+            name,
+        )
+        if not accepted:
+            return None
+        return trigger, reply, name
+
+    def _add_rivescript_rule(self) -> None:
+        values = self._prompt_rivescript_rule()
+        if values is None:
+            return
+        self._save_new_rivescript_rule(*values)
+
+    def _save_new_rivescript_rule(
+        self, trigger: str, reply: str, name: str
+    ) -> bool:
+        try:
+            rule_id = self.rivescript_store.add(trigger, reply, name=name)
+            self.rivescript_engine.rebuild()
+        except (OSError, ValueError) as error:
+            self.rivescript_status_label.setText(f"Could not save rule: {error}")
+            return False
+        self._refresh_rivescript_rules(rule_id)
+        self.rivescript_status_label.setText("RiveScript rule saved and enabled.")
+        return True
+
+    def _edit_rivescript_rule(self) -> None:
+        rule = self._selected_rivescript_rule()
+        if rule is None:
+            return
+        values = self._prompt_rivescript_rule(
+            trigger=str(rule.get("trigger", "")),
+            reply=str(rule.get("reply", "")),
+            name=str(rule.get("name", "")),
+        )
+        if values is None:
+            return
+        try:
+            self.rivescript_store.update(
+                str(rule.get("id", "")),
+                trigger=values[0],
+                reply=values[1],
+                name=values[2],
+            )
+            self.rivescript_engine.rebuild()
+        except (OSError, ValueError) as error:
+            self.rivescript_status_label.setText(f"Could not update rule: {error}")
+            return
+        self._refresh_rivescript_rules(str(rule.get("id", "")))
+
+    def _toggle_rivescript_rule(self) -> None:
+        rule = self._selected_rivescript_rule()
+        if rule is None:
+            return
+        rule_id = str(rule.get("id", ""))
+        try:
+            self.rivescript_store.set_enabled(
+                rule_id, not bool(rule.get("enabled", True))
+            )
+            self.rivescript_engine.rebuild()
+        except OSError as error:
+            self.rivescript_status_label.setText(f"Could not update rule: {error}")
+            return
+        self._refresh_rivescript_rules(rule_id)
+
+    def _delete_rivescript_rule(self) -> None:
+        rule = self._selected_rivescript_rule()
+        if rule is None:
+            return
+        if QMessageBox.question(
+            self,
+            "Delete RiveScript Rule",
+            f"Delete the rule '{rule.get('name', 'Rule')}'?",
+        ) is not QMessageBox.StandardButton.Yes:
+            return
+        try:
+            self.rivescript_store.delete(str(rule.get("id", "")))
+            self.rivescript_engine.rebuild()
+        except OSError as error:
+            self.rivescript_status_label.setText(f"Could not delete rule: {error}")
+            return
+        self._refresh_rivescript_rules()
+
+    def _test_rivescript_rule(self) -> None:
+        text = self.rivescript_test_edit.text().strip()
+        if not text:
+            return
+        match = self.rivescript_engine.match("rivescript-test", text)
+        self.rivescript_status_label.setText(
+            f"Matched: {match[1]}" if match else "No enabled rule matched."
         )
 
     def _build_ai_test_report_tab(self) -> None:
@@ -1250,6 +1521,8 @@ class MainWindow(QMainWindow):
                 ("missed", "Missed"),
                 ("blocked", "Blocked"),
                 ("failed", "Failed"),
+                ("llm", "LLM"),
+                ("rivescript", "RiveScript"),
                 ("average_latency_ms", "Avg latency"),
             )
         ):
@@ -1261,9 +1534,17 @@ class MainWindow(QMainWindow):
             self.ai_test_summary_labels[key] = value_label
         layout.addWidget(summary)
 
-        self.ai_test_report_table = QTableWidget(0, 6)
+        self.ai_test_report_table = QTableWidget(0, 7)
         self.ai_test_report_table.setHorizontalHeaderLabels(
-            ("Time", "Outcome", "Expected", "Latency", "Confidence", "Reason")
+            (
+                "Time",
+                "Outcome",
+                "Source",
+                "Expected",
+                "Latency",
+                "Confidence",
+                "Reason",
+            )
         )
         self.ai_test_report_table.setEditTriggers(
             QTableWidget.EditTrigger.NoEditTriggers
@@ -1272,11 +1553,11 @@ class MainWindow(QMainWindow):
             QTableWidget.SelectionBehavior.SelectRows
         )
         report_header = self.ai_test_report_table.horizontalHeader()
-        for column in range(5):
+        for column in range(6):
             report_header.setSectionResizeMode(
                 column, QHeaderView.ResizeMode.ResizeToContents
             )
-        report_header.setSectionResizeMode(5, QHeaderView.ResizeMode.Stretch)
+        report_header.setSectionResizeMode(6, QHeaderView.ResizeMode.Stretch)
         layout.addWidget(self.ai_test_report_table, 1)
         self.ai_tabs.addTab(page, "Test Report")
 
@@ -1313,6 +1594,7 @@ class MainWindow(QMainWindow):
             values = (
                 display_time,
                 str(event.get("outcome", "unknown")).replace("_", " ").title(),
+                str(event.get("response_source", "llm")).title(),
                 "Yes" if bool(event.get("response_expected")) else "No",
                 f"{latency_ms / 1000:.1f}s",
                 f"{float(event.get('confidence', 0.0)):.0%}",
@@ -2310,6 +2592,7 @@ class MainWindow(QMainWindow):
             if self.settings.ai_viewer_memory_enabled
             else {}
         )
+        scripted_match = self.rivescript_engine.match(user_id, text)
         request = ResponseMessage(
             request_id=uuid4().hex,
             message_id=chat_message.message_id,
@@ -2330,6 +2613,8 @@ class MainWindow(QMainWindow):
             reply_to_sally=reply_to_sally,
             third_person_reference=third_person_reference,
             addressed_to_other=addressed_to_other,
+            scripted_reply=scripted_match[1] if scripted_match else "",
+            scripted_rule_id=scripted_match[0] if scripted_match else "",
         )
         if len(self.response_decision_queue) == self.response_decision_queue.maxlen:
             dropped = self.response_decision_queue.popleft()
@@ -2842,6 +3127,7 @@ class MainWindow(QMainWindow):
                 latency_ms=latency_ms,
                 response_expected=response_expected,
                 confidence=decision.confidence,
+                response_source=decision.response_source,
                 save=False,
             )
         except OSError as error:
@@ -2887,6 +3173,47 @@ class MainWindow(QMainWindow):
             item.data(Qt.ItemDataRole.UserRole) if item is not None else None
         )
         return decision if isinstance(decision, ResponseDecision) else None
+
+    def _update_reply_review_actions(self) -> None:
+        decision = self._selected_reply_decision()
+        has_reply = bool(decision and decision.reply)
+        self.send_reply_draft_button.setEnabled(has_reply)
+        self.edit_send_reply_button.setEnabled(has_reply)
+        self.dismiss_reply_button.setEnabled(decision is not None)
+        self.teach_rivescript_button.setEnabled(has_reply)
+
+    def _teach_selected_rivescript_reply(self) -> None:
+        decision = self._selected_reply_decision()
+        if decision is None or not decision.reply:
+            return
+        broadcaster_id = (
+            self.twitch_auth.token.user_id
+            if self.twitch_auth.token is not None
+            else ""
+        )
+        may_prefill_viewer_text = bool(
+            decision.user_id == broadcaster_id
+            or decision.user_id in self.training_opted_in_users
+        )
+        trigger = (
+            self.rivescript_store.suggest_trigger(decision.source_text)
+            if may_prefill_viewer_text
+            else ""
+        )
+        if not may_prefill_viewer_text:
+            self.reply_decision_status_label.setText(
+                "That viewer has not opted into training, so their message "
+                "was not copied. Enter a generalized trigger manually."
+            )
+        values = self._prompt_rivescript_rule(
+            trigger=trigger,
+            reply=decision.reply,
+            name="Taught from Reply Review",
+        )
+        if values is None:
+            return
+        if self._save_new_rivescript_rule(*values):
+            self.ai_tabs.setCurrentWidget(self.rivescript_rules_page)
 
     @Slot()
     def _send_selected_reply_draft(self) -> None:

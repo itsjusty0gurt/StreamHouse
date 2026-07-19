@@ -53,6 +53,53 @@ class ResponseDecisionEngineTests(unittest.TestCase):
         )
         self.assertEqual(decisions[0].reply, "Hey!")
 
+    def test_reasoning_approved_reply_uses_matching_rivescript_candidate(self) -> None:
+        provider = FakeProvider(
+            '{"decisions":[{"id":"one","decision":"reply",'
+            '"reply":"LLM draft","reason":"Greeting","confidence":0.9}]}'
+        )
+        base = response_message("one", "hello bob")
+        message = ResponseMessage(
+            request_id=base.request_id,
+            message_id=base.message_id,
+            user_id=base.user_id,
+            user_name=base.user_name,
+            text=base.text,
+            received_at=base.received_at,
+            scripted_reply="Hello from the rule!",
+            scripted_rule_id="rule-1",
+        )
+
+        decision = ResponseDecisionEngine().decide(provider, (message,))[0]
+
+        self.assertEqual(decision.reply, "Hello from the rule!")
+        self.assertEqual(decision.response_source, "rivescript")
+        self.assertEqual(decision.scripted_rule_id, "rule-1")
+        self.assertIn("RiveScript", decision.reason)
+
+    def test_rivescript_candidate_does_not_force_an_ignored_message(self) -> None:
+        provider = FakeProvider(
+            '{"decisions":[{"id":"one","decision":"ignore",'
+            '"reply":"","reason":"Not Sallys turn","confidence":0.9}]}'
+        )
+        base = response_message("one", "viewers talking")
+        message = ResponseMessage(
+            request_id=base.request_id,
+            message_id=base.message_id,
+            user_id=base.user_id,
+            user_name=base.user_name,
+            text=base.text,
+            received_at=base.received_at,
+            scripted_reply="Should not send",
+            scripted_rule_id="rule-1",
+        )
+
+        decision = ResponseDecisionEngine().decide(provider, (message,))[0]
+
+        self.assertEqual(decision.decision, "ignore")
+        self.assertEqual(decision.reply, "")
+        self.assertEqual(decision.response_source, "llm")
+
     def test_missing_decision_becomes_explicit_ignore(self) -> None:
         provider = FakeProvider('{"decisions":[]}')
 

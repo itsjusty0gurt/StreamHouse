@@ -88,6 +88,9 @@ class MainWindowTests(unittest.TestCase):
             "average_latency_ms": 0,
         }
         self.test_report_store.selected_events.return_value = []
+        self.rivescript_store = Mock()
+        self.rivescript_store.rules = []
+        self.rivescript_store.get.return_value = None
         self.window = MainWindow(
             window_state_store=self.window_state_store,
             chatter_history_store=self.chatter_history_store,
@@ -96,6 +99,7 @@ class MainWindowTests(unittest.TestCase):
             release_controller=self.release_controller,
             training_store=self.training_store,
             test_report_store=self.test_report_store,
+            rivescript_store=self.rivescript_store,
             auto_upgrade_permissions=False,
         )
 
@@ -185,6 +189,7 @@ class MainWindowTests(unittest.TestCase):
             [
                 "Memories",
                 "Reply Review",
+                "RiveScript Rules",
                 "Test Report",
                 "Training",
                 "Personality",
@@ -212,7 +217,7 @@ class MainWindowTests(unittest.TestCase):
             self.window.ui.settingsPage,
         )
         self.assertTrue(all(page is not None for page in pages))
-        self.assertEqual(self.window.ai_tabs.count(), 5)
+        self.assertEqual(self.window.ai_tabs.count(), 6)
         self.assertEqual(self.window.channel_tabs.count(), 3)
         self.assertEqual(
             [
@@ -291,14 +296,44 @@ class MainWindowTests(unittest.TestCase):
         self.assertTrue(self.window.approve_memory_button.isEnabled())
         self.assertTrue(self.window.reject_memory_button.isEnabled())
 
-    def test_rivescript_teaching_is_prepared_but_disabled(self) -> None:
+    def test_rivescript_teaching_requires_a_selected_reply(self) -> None:
         self.assertEqual(
             self.window.teach_rivescript_button.text(), "Teach RiveScript"
         )
         self.assertFalse(self.window.teach_rivescript_button.isEnabled())
         self.assertIn(
-            "after the RiveScript response engine",
+            "selected reply",
             self.window.teach_rivescript_button.toolTip(),
+        )
+
+    def test_teach_rivescript_does_not_copy_non_opted_viewer_message(self) -> None:
+        decision = ResponseDecision(
+            request_id="teach-1",
+            message_id="message-1",
+            user_id="viewer-not-opted-in",
+            user_name="Viewer",
+            source_text="My private original wording",
+            received_at=datetime.now(timezone.utc).isoformat(),
+            decision="reply",
+            reply="A reusable reply",
+            reason="Direct question",
+            confidence=0.9,
+            solicited=True,
+        )
+        self.window._add_reply_decision(decision)
+        self.window.reply_review_table.selectRow(0)
+        self.window._prompt_rivescript_rule = Mock(return_value=None)
+
+        self.window._teach_selected_rivescript_reply()
+
+        self.window._prompt_rivescript_rule.assert_called_once_with(
+            trigger="",
+            reply="A reusable reply",
+            name="Taught from Reply Review",
+        )
+        self.assertIn(
+            "has not opted into training",
+            self.window.reply_decision_status_label.text(),
         )
 
     def test_window_geometry_is_restored_and_saved(self) -> None:
@@ -1038,6 +1073,9 @@ class MainWindowTests(unittest.TestCase):
         self.window.chatter_history = store
         self.window._save_chatter_history = Mock()
         self.window.response_decision_thread_pool.start = Mock()
+        self.window.rivescript_engine.match = Mock(
+            return_value=("rule-1", "Try a puzzle game!")
+        )
 
         self.window.handle_twitch_message(
             TwitchMessage(
@@ -1053,6 +1091,9 @@ class MainWindowTests(unittest.TestCase):
         self.assertTrue(self.window.response_decision_in_flight)
         self.assertEqual(len(self.window.recent_ai_chat), 1)
         self.assertEqual(self.window.recent_ai_chat.maxlen, 100)
+        worker = self.window.response_decision_thread_pool.start.call_args.args[0]
+        self.assertEqual(worker.messages[0].scripted_rule_id, "rule-1")
+        self.assertEqual(worker.messages[0].scripted_reply, "Try a puzzle game!")
 
     def test_broadcaster_messages_are_evaluated_for_cohost_reasoning(self) -> None:
         store = ChatterHistoryStore(Path("unused.json"))
