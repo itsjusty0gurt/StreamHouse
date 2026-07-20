@@ -268,6 +268,33 @@ class TwitchServiceTests(unittest.TestCase):
             broadcaster,
         )
 
+    def test_custom_rewards_mark_only_sally_owned_rewards_manageable(self) -> None:
+        token = TwitchToken(
+            "access",
+            "refresh",
+            999,
+            ["channel:manage:redemptions"],
+            user_id="channel-1",
+        )
+        helix = Mock()
+        helix.get_custom_rewards.side_effect = (
+            [
+                {"id": "sally-1", "title": "Hydrate", "cost": 500},
+                {"id": "other-1", "title": "Stretch", "cost": 750},
+            ],
+            [{"id": "sally-1", "title": "Hydrate", "cost": 500}],
+        )
+        service = TwitchService(auth=Mock(token=token), helix=helix)
+
+        rewards = service.get_custom_rewards()
+
+        self.assertEqual([reward.manageable for reward in rewards], [True, False])
+        self.assertEqual(rewards[0].title, "Hydrate")
+        helix.get_custom_rewards.assert_any_call("channel-1", token)
+        helix.get_custom_rewards.assert_any_call(
+            "channel-1", token, only_manageable=True
+        )
+
     def test_pin_failure_does_not_resend_successful_notice(self) -> None:
         broadcaster = TwitchToken(
             "broadcaster-access",

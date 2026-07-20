@@ -1,0 +1,101 @@
+from __future__ import annotations
+
+import unittest
+
+from automation.models import TaskDefinition, TriggerEvent
+from automation.tasks import TaskRegistry
+from twitch.tasks import TWITCH_TASK_LABELS, register_twitch_tasks
+
+
+class FakeTwitchService:
+    def __init__(self) -> None:
+        self.calls: list[tuple] = []
+
+    def send_message(self, message, *, as_bot=True):
+        self.calls.append(("message", message, as_bot))
+        return True
+
+    def send_pinned_message(self, message):
+        self.calls.append(("pinned", message))
+        return True, True
+
+    def run_commercial(self, length):
+        self.calls.append(("commercial", length))
+        return {"message": "Ad started"}
+
+    def snooze_next_ad(self):
+        self.calls.append(("snooze",))
+        return {}
+
+    def resolve_user_id(self, reference):
+        self.calls.append(("resolve", reference))
+        return "42"
+
+    def moderate_user(self, action, user_id, **values):
+        self.calls.append(("moderate", action, user_id, values))
+        return True
+
+    def update_redemption_status(self, reward_id, redemption_id, status):
+        self.calls.append(("redemption", reward_id, redemption_id, status))
+        return {}
+
+
+class TwitchTaskTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.service = FakeTwitchService()
+        self.registry = TaskRegistry()
+        register_twitch_tasks(self.registry, self.service)
+        self.trigger = TriggerEvent(
+            "event",
+            "twitch",
+            "eventsub",
+            {
+                "user": "Viewer",
+                "user_id": "42",
+                "message_id": "message-1",
+                "reward_id": "reward-1",
+                "redemption_id": "redeem-1",
+            },
+        )
+
+    def execute(self, task_type: str, config: dict) -> bool:
+        task = TaskDefinition("task", task_type, task_type, config)
+        return self.registry.execute(task, self.trigger).succeeded
+
+    def test_all_twitch_tasks_are_registered(self) -> None:
+        self.assertEqual(set(TWITCH_TASK_LABELS), set(self.registry.registered_types()))
+
+    def test_moderation_uses_trigger_user_and_message_ids(self) -> None:
+        self.assertTrue(
+            self.execute(
+                "twitch.moderate_user",
+                {
+                    "action": "delete_message",
+                    "user": "{user_id}",
+                    "message_id": "{message_id}",
+                    "duration_seconds": 600,
+                    "reason": "",
+                },
+            )
+        )
+        self.assertIn(("resolve", "42"), self.service.calls)
+        moderation = next(call for call in self.service.calls if call[0] == "moderate")
+        self.assertEqual(moderation[3]["message_id"], "message-1")
+
+    def test_commercial_and_redemption_tasks(self) -> None:
+        self.assertTrue(self.execute("twitch.run_commercial", {"length": 90}))
+        self.assertTrue(
+            self.execute(
+                "twitch.update_redemption",
+                {
+                    "reward_id": "{reward_id}",
+                    "redemption_id": "{redemption_id}",
+                    "action": "refund",
+                },
+            )
+        )
+        self.assertIn(("commercial", 90), self.service.calls)
+        self.assertIn(("redemption", "reward-1", "redeem-1", "CANCELED"), self.service.calls)
+
+if __name__ == "__main__":
+    unittest.main()

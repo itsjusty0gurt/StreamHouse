@@ -1,0 +1,179 @@
+from __future__ import annotations
+
+import re
+from typing import Mapping
+from urllib.error import HTTPError, URLError
+
+from automation.models import TaskDefinition, TaskExecutionResult, TriggerEvent
+from twitch.service import TwitchService
+
+
+class SendTwitchChatMessageTask:
+    task_type = "twitch.send_chat_message"
+    TEMPLATE_PATTERN = re.compile(r"\{([a-z_]+)\}")
+    TEMPLATE_VARIABLES = frozenset(
+        {
+            "args",
+            "channel",
+            "command",
+            "followers",
+            "game",
+            "target",
+            "title",
+            "uptime",
+            "user",
+            "uses",
+            "event",
+            "event_type",
+            "message",
+            "input",
+            "amount",
+            "bits",
+            "viewers",
+            "tier",
+            "reward",
+            "reward_id",
+            "reward_cost",
+            "user_id",
+            "target_user_id",
+            "message_id",
+            "redemption_id",
+            "scene",
+            "source",
+            "output_state",
+            "enabled",
+            "muted",
+            "volume_db",
+            "media",
+        }
+    )
+
+    def __init__(self, twitch_service: TwitchService) -> None:
+        self.twitch_service = twitch_service
+
+    def execute(
+        self,
+        task: TaskDefinition,
+        trigger: TriggerEvent,
+    ) -> TaskExecutionResult:
+        template = str(task.config.get("message", "")).strip()
+        try:
+            self.validate_template(template)
+        except ValueError as error:
+            return TaskExecutionResult(
+                task_id=task.task_id,
+                task_type=task.task_type,
+                succeeded=False,
+                detail=str(error),
+            )
+        message = self.render(template, trigger.context)[:500]
+        succeeded = self.twitch_service.send_message(
+            message,
+            as_bot=bool(task.config.get("as_bot", True)),
+        )
+        return TaskExecutionResult(
+            task_id=task.task_id,
+            task_type=task.task_type,
+            succeeded=succeeded,
+            detail="Sent Twitch chat message." if succeeded else "Twitch send failed.",
+        )
+
+    @classmethod
+    def validate_template(cls, template: str) -> None:
+        if not template or len(template) > 500:
+            raise ValueError("Twitch messages must contain 1-500 characters.")
+        unknown = sorted(
+            set(cls.TEMPLATE_PATTERN.findall(template)) - cls.TEMPLATE_VARIABLES
+        )
+        if unknown:
+            raise ValueError(f"Unknown command variable: {{{unknown[0]}}}")
+
+    @classmethod
+    def render(cls, template: str, values: Mapping[str, str]) -> str:
+        return cls.TEMPLATE_PATTERN.sub(
+            lambda match: values.get(match.group(1), "--"),
+            template,
+        )
+
+
+TWITCH_TASK_LABELS = {
+    SendTwitchChatMessageTask.task_type: "Twitch — Send chat message",
+    "twitch.send_pinned_message": "Twitch — Send and pin chat message",
+    "twitch.run_commercial": "Twitch — Run commercial",
+    "twitch.snooze_ad": "Twitch — Snooze next ad",
+    "twitch.moderate_user": "Twitch — Moderate user",
+    "twitch.update_redemption": "Twitch — Fulfill or refund redemption",
+}
+
+
+class TwitchAutomationTask:
+    def __init__(self, service: TwitchService, task_type: str) -> None:
+        self.service = service
+        self.task_type = task_type
+
+    def execute(
+        self, task: TaskDefinition, trigger: TriggerEvent
+    ) -> TaskExecutionResult:
+        try:
+            detail = self._execute(task, trigger)
+            succeeded = True
+        except (HTTPError, URLError, OSError, TypeError, ValueError) as error:
+            succeeded = False
+            detail = str(error)
+        return TaskExecutionResult(
+            task.task_id, task.task_type, succeeded, detail
+        )
+
+    def _execute(self, task: TaskDefinition, trigger: TriggerEvent) -> str:
+        config = task.config
+        render = lambda key, default="": SendTwitchChatMessageTask.render(
+            str(config.get(key, default)), trigger.context
+        ).strip()
+        if self.task_type == "twitch.send_pinned_message":
+            message = render("message")[:500]
+            SendTwitchChatMessageTask.validate_template(
+                str(config.get("message", ""))
+            )
+            sent, pinned = self.service.send_pinned_message(message)
+            if not sent or not pinned:
+                raise ValueError(
+                    "Twitch could not send and pin the message."
+                )
+            return "Sent and pinned Twitch chat message."
+        if self.task_type == "twitch.run_commercial":
+            result = self.service.run_commercial(int(config.get("length", 30)))
+            return str(result.get("message", "Commercial started.")) or "Commercial started."
+        if self.task_type == "twitch.snooze_ad":
+            self.service.snooze_next_ad()
+            return "Snoozed the next ad by five minutes."
+        if self.task_type == "twitch.moderate_user":
+            action = str(config.get("action", "timeout"))
+            user_id = self.service.resolve_user_id(render("user", "{user_id}"))
+            duration = int(config.get("duration_seconds", 600)) if action == "timeout" else None
+            message_id = render("message_id", "{message_id}")
+            succeeded = self.service.moderate_user(
+                action,
+                user_id,
+                duration=duration,
+                reason=render("reason"),
+                message_id="" if message_id == "--" else message_id,
+            )
+            if not succeeded:
+                raise ValueError("Twitch moderation action failed.")
+            return f"Completed Twitch moderation action: {action}."
+        if self.task_type == "twitch.update_redemption":
+            status = "FULFILLED" if config.get("action", "fulfill") == "fulfill" else "CANCELED"
+            self.service.update_redemption_status(
+                render("reward_id", "{reward_id}"),
+                render("redemption_id", "{redemption_id}"),
+                status,
+            )
+            return "Fulfilled Twitch redemption." if status == "FULFILLED" else "Refunded Twitch redemption."
+        raise ValueError(f"Unsupported Twitch task type: {self.task_type}")
+
+
+def register_twitch_tasks(registry, service: TwitchService) -> None:
+    registry.register(SendTwitchChatMessageTask(service))
+    for task_type in TWITCH_TASK_LABELS:
+        if task_type != SendTwitchChatMessageTask.task_type:
+            registry.register(TwitchAutomationTask(service, task_type))

@@ -29,6 +29,37 @@ class ReleaseToolsTests(unittest.TestCase):
                 1,
             )
 
+    def test_backup_includes_custom_twitch_commands(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            commands = root / "twitch" / "commands.json"
+            commands.parent.mkdir(parents=True)
+            commands.write_text(
+                '{"version":2,"triggers":[]}', encoding="utf-8"
+            )
+            event_triggers = root / "twitch" / "event_triggers.json"
+            event_triggers.write_text(
+                '{"version":1,"triggers":[]}', encoding="utf-8"
+            )
+            routines = root / "automation" / "routines.json"
+            routines.parent.mkdir(parents=True)
+            routines.write_text(
+                '{"version":1,"routines":[]}', encoding="utf-8"
+            )
+            core_triggers = root / "automation" / "core_triggers.json"
+            core_triggers.write_text(
+                '{"version":1,"triggers":[]}', encoding="utf-8"
+            )
+            archive = BackupManager(root, root / "backups").create("test")
+
+            with ZipFile(archive) as source:
+                self.assertIn("twitch/commands.json", source.namelist())
+                self.assertIn("twitch/event_triggers.json", source.namelist())
+                self.assertIn("automation/routines.json", source.namelist())
+                self.assertIn(
+                    "automation/core_triggers.json", source.namelist()
+                )
+
     def test_diagnostics_include_only_warning_and_error_logs(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

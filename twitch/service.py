@@ -11,6 +11,7 @@ from twitch.auth import TwitchAuthService
 from twitch.live import TwitchEventSubSocket, TwitchHelixClient
 from twitch.models import (
     TwitchChatNotice,
+    TwitchCustomReward,
     TwitchEvent,
     TwitchEventDiagnostic,
     TwitchMessage,
@@ -351,6 +352,91 @@ class TwitchService:
 
     def badge_url(self, set_id: str, badge_id: str) -> str:
         return self.badge_urls.get((set_id, badge_id), "")
+
+    def _broadcaster_credentials(self):
+        token = self.auth.token if self.auth is not None else None
+        broadcaster_id = self.broadcaster_user_id or (
+            token.user_id if token is not None else ""
+        )
+        if token is None or not broadcaster_id:
+            raise ValueError("Sign in with your channel account first.")
+        return broadcaster_id, token
+
+    def get_custom_rewards(self) -> list[TwitchCustomReward]:
+        broadcaster_id, token = self._broadcaster_credentials()
+        all_rewards = self.helix.get_custom_rewards(broadcaster_id, token)
+        manageable_ids = {
+            str(item.get("id", ""))
+            for item in self.helix.get_custom_rewards(
+                broadcaster_id, token, only_manageable=True
+            )
+        }
+        return [
+            TwitchCustomReward.from_dict(
+                item,
+                manageable=str(item.get("id", "")) in manageable_ids,
+            )
+            for item in all_rewards
+        ]
+
+    def create_custom_reward(
+        self, values: dict[str, object]
+    ) -> TwitchCustomReward:
+        broadcaster_id, token = self._broadcaster_credentials()
+        result = self.helix.create_custom_reward(
+            broadcaster_id, values, token
+        )
+        return TwitchCustomReward.from_dict(result, manageable=True)
+
+    def update_custom_reward(
+        self,
+        reward_id: str,
+        values: dict[str, object],
+    ) -> TwitchCustomReward:
+        broadcaster_id, token = self._broadcaster_credentials()
+        result = self.helix.update_custom_reward(
+            broadcaster_id, reward_id, values, token
+        )
+        return TwitchCustomReward.from_dict(result, manageable=True)
+
+    def delete_custom_reward(self, reward_id: str) -> None:
+        broadcaster_id, token = self._broadcaster_credentials()
+        self.helix.delete_custom_reward(broadcaster_id, reward_id, token)
+
+    def update_redemption_status(
+        self, reward_id: str, redemption_id: str, status: str
+    ) -> dict:
+        broadcaster_id, token = self._broadcaster_credentials()
+        return self.helix.update_redemption_status(
+            broadcaster_id,
+            reward_id,
+            redemption_id,
+            status,
+            token,
+        )
+
+    def run_commercial(self, length: int) -> dict:
+        broadcaster_id, token = self._broadcaster_credentials()
+        return self.helix.start_commercial(
+            broadcaster_id, min(max(int(length), 30), 180), token
+        )
+
+    def snooze_next_ad(self) -> dict:
+        broadcaster_id, token = self._broadcaster_credentials()
+        return self.helix.snooze_ad(broadcaster_id, token)
+
+    def resolve_user_id(self, reference: str) -> str:
+        clean = reference.strip().lstrip("@")
+        if not clean or clean == "--":
+            raise ValueError("A Twitch user is required.")
+        if clean.isdigit():
+            return clean
+        _broadcaster_id, token = self._broadcaster_credentials()
+        user = self.helix.get_user(clean, token)
+        user_id = str(user.get("id", ""))
+        if not user_id:
+            raise ValueError(f'Twitch user "{clean}" was not found.')
+        return user_id
 
     def moderate_user(
         self,

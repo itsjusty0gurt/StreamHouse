@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
     QButtonGroup,
     QComboBox,
     QCheckBox,
+    QDialog,
     QDockWidget,
     QFormLayout,
     QFileDialog,
@@ -53,6 +54,16 @@ from PySide6.QtWidgets import (
 from core.events import Events
 from core.logger import Logger
 from core.settings import AppSettings, SettingsStore
+from automation.service import AutomationService
+from automation.core_triggers import CoreTriggerStore
+from automation.core_tasks import (
+    CloseApplicationTask,
+    DelayTask,
+    LaunchApplicationTask,
+    OpenTargetTask,
+    WaitForServiceTask,
+)
+from automation.tasks import TaskRegistry
 from ai.providers import OllamaProvider
 from ai.memory_extractor import BufferedChatMessage
 from ai.memory import build_viewer_context
@@ -63,7 +74,6 @@ from ai.response_engine import (
 )
 from ai.training_store import TrainingStore
 from ai.test_report import AITestReportStore
-from ai.rivescript_engine import RiveScriptRuleStore, SallyRiveScriptEngine
 from core.window_state import WindowStateStore
 from config.twitch import (
     TWITCH_BOT_SCOPES,
@@ -78,6 +88,19 @@ from twitch.activity_history import (
     PersistedActivity,
 )
 from twitch.chatter_history import ChatterHistoryStore
+from twitch.commands import (
+    TwitchCommandTrigger,
+    TwitchCommandTriggerDispatcher,
+    TwitchCommandTriggerOutcome,
+    TwitchCommandTriggerStore,
+)
+from twitch.tasks import SendTwitchChatMessageTask, register_twitch_tasks
+from obs_service.config import ObsConfigStore, ObsConnectionConfig
+from obs_service.models import ObsConnectionState, ObsEvent
+from obs_service.service import ObsWebSocketService
+from obs_service.tasks import register_obs_tasks
+from obs_service.triggers import ObsTriggerStore
+from twitch.automation_triggers import TwitchEventTriggerStore
 from twitch.models import (
     TwitchChatNotice,
     TwitchEvent,
@@ -95,6 +118,7 @@ from ui.log_handler import QtLogHandler
 from ui.twitch_bridge import TwitchEventBridge
 from ui.twitch_assets import twitch_emote_url
 from ui.twitch_chat_view import TwitchChatView
+from ui.twitch_command_dialog import TwitchCommandDialog
 from ui.companion_worker import (
     CompanionRefreshResult,
     CompanionRefreshWorker,
@@ -102,6 +126,8 @@ from ui.companion_worker import (
 from ui.controllers.release_controller import ReleaseController
 from ui.memory_worker import MemoryExtractionResult, MemoryExtractionWorker
 from ui.response_worker import ResponseBatchResult, ResponseDecisionWorker
+from ui.automation_page import AutomationPage
+from ui.channel_points_page import ChannelPointsPage
 
 
 class MainWindow(QMainWindow):
@@ -117,7 +143,12 @@ class MainWindow(QMainWindow):
         release_controller: ReleaseController | None = None,
         training_store: TrainingStore | None = None,
         test_report_store: AITestReportStore | None = None,
-        rivescript_store: RiveScriptRuleStore | None = None,
+        twitch_command_trigger_store: TwitchCommandTriggerStore | None = None,
+        twitch_event_trigger_store: TwitchEventTriggerStore | None = None,
+        core_trigger_store: CoreTriggerStore | None = None,
+        obs_service: ObsWebSocketService | None = None,
+        obs_config_store: ObsConfigStore | None = None,
+        obs_trigger_store: ObsTriggerStore | None = None,
         auto_upgrade_permissions: bool = True,
     ) -> None:
         super().__init__()
@@ -144,7 +175,52 @@ class MainWindow(QMainWindow):
         self.release_controller = release_controller or ReleaseController()
         self.training_store = training_store or TrainingStore()
         self.test_report_store = test_report_store or AITestReportStore()
-        self.rivescript_store = rivescript_store or RiveScriptRuleStore()
+        self.twitch_command_trigger_store = (
+            twitch_command_trigger_store or TwitchCommandTriggerStore()
+        )
+        self.twitch_command_trigger_dispatcher = TwitchCommandTriggerDispatcher(
+            self.twitch_command_trigger_store
+        )
+        self.twitch_event_trigger_store = (
+            twitch_event_trigger_store
+            or TwitchEventTriggerStore(
+                routine_store=self.twitch_command_trigger_store.routine_store
+            )
+        )
+        routine_store = self.twitch_command_trigger_store.routine_store
+        self.core_trigger_store = core_trigger_store or CoreTriggerStore(
+            path=routine_store.path.with_name("core_triggers.json"),
+            routine_store=routine_store,
+        )
+        data_root = routine_store.path.parent.parent
+        self.obs_service = obs_service or ObsWebSocketService(self)
+        self.obs_config_store = obs_config_store or ObsConfigStore(
+            data_root / "obs" / "connection.json"
+        )
+        self.obs_trigger_store = obs_trigger_store or ObsTriggerStore(
+            data_root / "obs" / "triggers.json",
+            routine_store,
+        )
+        self.task_registry = TaskRegistry()
+        register_twitch_tasks(self.task_registry, self.twitch_service)
+        self.task_registry.register(LaunchApplicationTask())
+        self.task_registry.register(CloseApplicationTask())
+        self.task_registry.register(DelayTask())
+        self.task_registry.register(OpenTargetTask())
+        self.task_registry.register(
+            WaitForServiceTask(
+                lambda service: (
+                    self.obs_service.connected
+                    if service == "obs"
+                    else self.twitch_service.state is TwitchConnectionState.CONNECTED
+                )
+            )
+        )
+        register_obs_tasks(self.task_registry, self.obs_service)
+        self.automation_service = AutomationService(
+            self.twitch_command_trigger_store.routine_store,
+            self.task_registry,
+        )
         self.training_opted_in_users: set[str] = set()
         self.training_notice_attempt_context = ""
         try:
@@ -162,14 +238,37 @@ class MainWindow(QMainWindow):
                 source="AI",
             )
         try:
-            self.rivescript_store.load()
+            self.twitch_command_trigger_store.load()
         except (OSError, ValueError, json.JSONDecodeError) as error:
-            self.rivescript_store.rules = []
+            self.twitch_command_trigger_store.triggers = []
             Logger.warning(
-                f"Could not load local RiveScript rules: {error}",
-                source="AI",
+                f"Could not load custom Twitch commands: {error}",
+                source="TWITCH",
             )
-        self.rivescript_engine = SallyRiveScriptEngine(self.rivescript_store)
+        try:
+            self.twitch_event_trigger_store.load()
+        except (OSError, ValueError, json.JSONDecodeError) as error:
+            self.twitch_event_trigger_store.triggers = []
+            Logger.warning(
+                f"Could not load Twitch automation triggers: {error}",
+                source="TWITCH",
+            )
+        try:
+            self.core_trigger_store.load()
+        except (OSError, ValueError, json.JSONDecodeError) as error:
+            self.core_trigger_store.triggers = []
+            Logger.warning(
+                f"Could not load Core automation triggers: {error}",
+                source="AUTOMATION",
+            )
+        try:
+            self.obs_trigger_store.load()
+        except (OSError, ValueError, json.JSONDecodeError) as error:
+            self.obs_trigger_store.triggers = []
+            Logger.warning(
+                f"Could not load OBS automation triggers: {error}",
+                source="OBS",
+            )
         try:
             self.chatter_history.load()
         except (OSError, ValueError, json.JSONDecodeError) as error:
@@ -230,6 +329,8 @@ class MainWindow(QMainWindow):
         self.last_memory_promo_at = 0.0
         self.pending_memory_deletions: dict[str, float] = {}
         self.daily_memory_expiry_pending = True
+        self._core_started_fired = False
+        self._core_closing_fired = False
         self.followers_backfilled = False
         self.ui = Ui_MainWindow()
         self.ui.setupUi(self)
@@ -253,6 +354,7 @@ class MainWindow(QMainWindow):
         self._build_developer_dock()
         self._build_stream_companion()
         self._build_ai_page()
+        self._build_automation_page()
         self._build_release_tools()
         self._build_ai_settings()
         self._build_settings_tabs()
@@ -266,6 +368,7 @@ class MainWindow(QMainWindow):
             self.ui.dashboardButton,
             self.ui.twitchButton,
             self.ai_button,
+            self.automation_button,
             self.connections_button,
             self.ui.logsButton,
             self.ui.settingsButton,
@@ -338,10 +441,12 @@ class MainWindow(QMainWindow):
             "twitch_event",
             self.twitch_bridge.handle_activity_received,
         )
+        Events.subscribe("obs_event", self._handle_obs_automation_event)
 
         self.ui.dashboardButton.clicked.connect(self.show_dashboard)
         self.ui.twitchButton.clicked.connect(self.show_twitch)
         self.ai_button.clicked.connect(self.show_ai)
+        self.automation_button.clicked.connect(self.show_automation)
         self.connections_button.clicked.connect(self.show_connections)
         self.ui.logsButton.clicked.connect(self.show_logs)
         self.ui.settingsButton.clicked.connect(self.show_settings)
@@ -648,7 +753,58 @@ class MainWindow(QMainWindow):
         self.connections_page = QWidget()
         connections_layout = QVBoxLayout(self.connections_page)
         connections_layout.addWidget(self.ui.twitchConnectionGroup)
+        obs_group = QGroupBox("OBS Studio")
+        self.obs_connection_group = obs_group
+        obs_form = QFormLayout(obs_group)
+        self.obs_host_edit = QLineEdit("127.0.0.1")
+        self.obs_port_spin = QSpinBox()
+        self.obs_port_spin.setRange(1, 65535)
+        self.obs_port_spin.setValue(4455)
+        self.obs_password_edit = QLineEdit()
+        self.obs_password_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        self.obs_auto_connect_check = QCheckBox("Connect automatically when Sally opens")
+        self.obs_auto_connect_check.setChecked(False)
+        self.obs_status_label = QLabel("Disconnected")
+        self.obs_connect_button = QPushButton("Connect")
+        self.obs_disconnect_button = QPushButton("Disconnect")
+        obs_actions = QHBoxLayout()
+        obs_actions.addWidget(self.obs_connect_button)
+        obs_actions.addWidget(self.obs_disconnect_button)
+        obs_form.addRow("Host", self.obs_host_edit)
+        obs_form.addRow("Port", self.obs_port_spin)
+        obs_form.addRow("WebSocket password", self.obs_password_edit)
+        obs_form.addRow("", self.obs_auto_connect_check)
+        obs_form.addRow("Status", self.obs_status_label)
+        obs_form.addRow("", obs_actions)
+        try:
+            obs_config, obs_password = self.obs_config_store.load()
+        except (OSError, ValueError, json.JSONDecodeError) as error:
+            obs_config, obs_password = ObsConnectionConfig(), ""
+            Logger.warning(f"Could not load OBS connection settings: {error}", source="OBS")
+        self.obs_host_edit.setText(obs_config.host)
+        self.obs_port_spin.setValue(obs_config.port)
+        self.obs_password_edit.setText(obs_password)
+        self.obs_auto_connect_check.setChecked(obs_config.auto_connect)
+        self.obs_service.configure(
+            obs_config.host,
+            obs_config.port,
+            obs_password,
+            auto_reconnect=True,
+        )
+        self.obs_service.state_changed.connect(self._handle_obs_status_changed)
+        self.obs_connect_button.clicked.connect(self._connect_obs)
+        self.obs_disconnect_button.clicked.connect(self.obs_service.disconnect)
+        self.obs_connection_save_timer = QTimer(self)
+        self.obs_connection_save_timer.setSingleShot(True)
+        self.obs_connection_save_timer.setInterval(500)
+        self.obs_connection_save_timer.timeout.connect(self._save_obs_connection)
+        self.obs_host_edit.textChanged.connect(self._schedule_obs_connection_save)
+        self.obs_port_spin.valueChanged.connect(self._schedule_obs_connection_save)
+        self.obs_password_edit.textChanged.connect(self._schedule_obs_connection_save)
+        self.obs_auto_connect_check.toggled.connect(self._schedule_obs_connection_save)
+        self._handle_obs_status_changed(self.obs_service.state, "Disconnected")
         bot_account_group = QGroupBox("Sally Chat Account")
+        self.twitch_bot_account_group = bot_account_group
         bot_account_layout = QFormLayout(bot_account_group)
         self.twitch_bot_account_status_label = QLabel("Not signed in")
         self.twitch_bot_account_status_label.setWordWrap(True)
@@ -671,6 +827,7 @@ class MainWindow(QMainWindow):
         bot_account_layout.addRow("", bot_actions)
         bot_account_layout.addRow("", bot_account_help)
         connections_layout.addWidget(bot_account_group)
+        connections_layout.addWidget(obs_group)
         connections_layout.addWidget(self.ui.twitchErrorLabel)
         health_group = QGroupBox("Connection Health")
         health_layout = QFormLayout(health_group)
@@ -997,7 +1154,6 @@ class MainWindow(QMainWindow):
         page_layout.addWidget(splitter)
         self.ai_tabs.addTab(self.memories_page, "Memories")
         self._build_reply_review_tab()
-        self._build_rivescript_tab()
         self._build_ai_test_report_tab()
         self._build_training_tab()
         self._build_personality_tab()
@@ -1108,6 +1264,8 @@ class MainWindow(QMainWindow):
         retention_layout.addStretch()
         analytics_layout.addLayout(retention_layout)
         self.channel_tabs.addTab(analytics_page, "Analytics")
+        self._build_twitch_commands_tab()
+        self._build_channel_points_tab()
         self.ui.mainStack.addWidget(self.ai_page)
         self.memory_search_edit.textChanged.connect(
             self._refresh_memory_viewer_list
@@ -1169,6 +1327,451 @@ class MainWindow(QMainWindow):
         self._refresh_analytics()
         self.twitch_channel_splitter.setSizes([1000, 170, 420])
 
+    def _build_twitch_commands_tab(self) -> None:
+        page = QWidget(self.channel_tabs)
+        layout = QVBoxLayout(page)
+        introduction = QLabel(
+            "Custom chat commands are handled locally and sent through the "
+            "configured bot account. They do not invoke Sally's AI reasoning."
+        )
+        introduction.setWordWrap(True)
+        layout.addWidget(introduction)
+        self.twitch_commands_table = QTableWidget(0, 7)
+        self.twitch_commands_table.setObjectName("twitchCommandsTable")
+        self.twitch_commands_table.setHorizontalHeaderLabels(
+            (
+                "State",
+                "Command",
+                "Alternate commands",
+                "Permission",
+                "Global cooldown",
+                "Viewer cooldown",
+                "Uses",
+            )
+        )
+        self.twitch_commands_table.setSelectionBehavior(
+            QTableWidget.SelectionBehavior.SelectRows
+        )
+        self.twitch_commands_table.setSelectionMode(
+            QTableWidget.SelectionMode.SingleSelection
+        )
+        self.twitch_commands_table.setEditTriggers(
+            QTableWidget.EditTrigger.NoEditTriggers
+        )
+        header = self.twitch_commands_table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(5, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(6, QHeaderView.ResizeMode.ResizeToContents)
+        layout.addWidget(self.twitch_commands_table, 1)
+        actions = QHBoxLayout()
+        self.add_twitch_command_button = QPushButton("Add Command")
+        self.edit_twitch_command_button = QPushButton("Edit Selected")
+        self.toggle_twitch_command_button = QPushButton("Disable Selected")
+        self.delete_twitch_command_button = QPushButton("Delete Selected")
+        self.open_twitch_command_routine_button = QPushButton("Open Routine")
+        actions.addWidget(self.add_twitch_command_button)
+        actions.addWidget(self.edit_twitch_command_button)
+        actions.addWidget(self.toggle_twitch_command_button)
+        actions.addWidget(self.delete_twitch_command_button)
+        actions.addWidget(self.open_twitch_command_routine_button)
+        actions.addStretch()
+        layout.addLayout(actions)
+        preview = QHBoxLayout()
+        self.twitch_command_preview_edit = QLineEdit()
+        self.twitch_command_preview_edit.setPlaceholderText(
+            "Preview a command, for example !discord"
+        )
+        self.twitch_command_preview_button = QPushButton("Preview")
+        preview.addWidget(self.twitch_command_preview_edit, 1)
+        preview.addWidget(self.twitch_command_preview_button)
+        layout.addLayout(preview)
+        self.twitch_command_status_label = QLabel()
+        self.twitch_command_status_label.setWordWrap(True)
+        layout.addWidget(self.twitch_command_status_label)
+        self.channel_tabs.addTab(page, "Commands")
+        self.add_twitch_command_button.clicked.connect(
+            self._add_twitch_command
+        )
+        self.edit_twitch_command_button.clicked.connect(
+            self._edit_twitch_command
+        )
+        self.toggle_twitch_command_button.clicked.connect(
+            self._toggle_twitch_command
+        )
+        self.delete_twitch_command_button.clicked.connect(
+            self._delete_twitch_command
+        )
+        self.open_twitch_command_routine_button.clicked.connect(
+            self._open_twitch_command_routine
+        )
+        self.twitch_command_preview_button.clicked.connect(
+            self._preview_twitch_command
+        )
+        self.twitch_command_preview_edit.returnPressed.connect(
+            self._preview_twitch_command
+        )
+        self.twitch_commands_table.itemSelectionChanged.connect(
+            self._update_twitch_command_actions
+        )
+        self._refresh_twitch_commands()
+
+    def _build_channel_points_tab(self) -> None:
+        self.channel_points_page = ChannelPointsPage(
+            self.twitch_service,
+            self.twitch_auth,
+            self.channel_tabs,
+        )
+        self.channel_tabs.addTab(self.channel_points_page, "Channel Points")
+        self.channel_tabs.currentChanged.connect(
+            self._channel_workspace_tab_changed
+        )
+
+    @Slot(int)
+    def _channel_workspace_tab_changed(self, index: int) -> None:
+        if self.channel_tabs.widget(index) is self.channel_points_page:
+            self.channel_points_page.activate()
+
+    def _refresh_twitch_commands(self, selected_trigger_id: str = "") -> None:
+        if not selected_trigger_id:
+            selected = self._selected_twitch_command()
+            selected_trigger_id = selected.trigger_id if selected else ""
+        table = self.twitch_commands_table
+        table.setRowCount(len(self.twitch_command_trigger_store.triggers))
+        selected_row = -1
+        for row, command in enumerate(self.twitch_command_trigger_store.triggers):
+            values = (
+                "Enabled" if command.enabled else "Disabled",
+                f"!{command.name}",
+                ", ".join(f"!{alias}" for alias in command.aliases),
+                command.permission.title(),
+                f"{command.global_cooldown_seconds}s",
+                f"{command.user_cooldown_seconds}s",
+                str(command.uses),
+            )
+            for column, value in enumerate(values):
+                item = QTableWidgetItem(value)
+                if column == 0:
+                    item.setData(
+                        Qt.ItemDataRole.UserRole,
+                        command.trigger_id,
+                    )
+                table.setItem(row, column, item)
+            if command.trigger_id == selected_trigger_id:
+                selected_row = row
+        if selected_row >= 0:
+            table.selectRow(selected_row)
+        self.twitch_command_status_label.setText(
+            f"{len(self.twitch_command_trigger_store.triggers)} custom command(s)."
+        )
+        self._update_twitch_command_actions()
+
+    def _selected_twitch_command(self) -> TwitchCommandTrigger | None:
+        row = self.twitch_commands_table.currentRow()
+        item = self.twitch_commands_table.item(row, 0) if row >= 0 else None
+        trigger_id = str(item.data(Qt.ItemDataRole.UserRole)) if item else ""
+        return (
+            self.twitch_command_trigger_store.get(trigger_id)
+            if trigger_id
+            else None
+        )
+
+    def _update_twitch_command_actions(self) -> None:
+        command = self._selected_twitch_command()
+        selected = command is not None
+        self.edit_twitch_command_button.setEnabled(selected)
+        self.toggle_twitch_command_button.setEnabled(selected)
+        self.delete_twitch_command_button.setEnabled(selected)
+        self.open_twitch_command_routine_button.setEnabled(selected)
+        self.toggle_twitch_command_button.setText(
+            "Disable Selected"
+            if command is None or command.enabled
+            else "Enable Selected"
+        )
+
+    def _open_twitch_command_routine(self) -> None:
+        command = self._selected_twitch_command()
+        if command is None:
+            return
+        self.show_automation()
+        self.automation_page.select_routine(command.routine_id)
+
+    def _build_automation_page(self) -> None:
+        self.automation_button = QPushButton("Automation")
+        self.automation_button.setCheckable(True)
+        self.ui.verticalLayout.insertWidget(3, self.automation_button)
+        self.automation_page = AutomationPage(
+            self.twitch_command_trigger_store.routine_store,
+            self.twitch_command_trigger_store,
+            self.twitch_event_trigger_store,
+            self.core_trigger_store,
+            self.obs_trigger_store,
+            self.task_registry,
+            self.automation_service,
+            obs_service=self.obs_service,
+            commands_changed=self._refresh_twitch_commands,
+        )
+        self.ui.mainStack.addWidget(self.automation_page)
+
+    def auto_connect_obs(self) -> None:
+        """Connect to OBS after the real application event loop has started."""
+        if self.obs_auto_connect_check.isChecked():
+            self._connect_obs()
+
+    def _save_obs_connection(self) -> bool:
+        self.obs_connection_save_timer.stop()
+        config = ObsConnectionConfig(
+            host=self.obs_host_edit.text().strip() or "127.0.0.1",
+            port=self.obs_port_spin.value(),
+            auto_connect=self.obs_auto_connect_check.isChecked(),
+        )
+        password = self.obs_password_edit.text()
+        try:
+            self.obs_config_store.save(config, password)
+        except OSError as error:
+            self.obs_status_label.setText(f"Could not save: {error}")
+            return False
+        self.obs_service.configure(
+            config.host,
+            config.port,
+            password,
+            auto_reconnect=True,
+        )
+        return True
+
+    def _schedule_obs_connection_save(self, *_args) -> None:
+        self.obs_connection_save_timer.start()
+
+    def _connect_obs(self) -> None:
+        if not self._save_obs_connection():
+            return
+        self.obs_service.connect()
+
+    @Slot(object, str)
+    def _handle_obs_status_changed(
+        self, state: ObsConnectionState, detail: str
+    ) -> None:
+        clean_detail = detail.strip()
+        self.obs_status_label.setText(
+            state.value
+            if not clean_detail or clean_detail.casefold() == state.value.casefold()
+            else f"{state.value}: {clean_detail}"
+        )
+        self.obs_connect_button.setEnabled(
+            state is not ObsConnectionState.CONNECTED
+        )
+        self.obs_connect_button.setText(
+            "Reconnect"
+            if state in {ObsConnectionState.CONNECTING, ObsConnectionState.ERROR}
+            else "Connect"
+        )
+        self.obs_disconnect_button.setEnabled(
+            state in {ObsConnectionState.CONNECTING, ObsConnectionState.CONNECTED, ObsConnectionState.ERROR}
+        )
+
+    def _handle_obs_automation_event(self, obs_event: ObsEvent) -> None:
+        for trigger in self.obs_trigger_store.evaluate(obs_event):
+            execution = self.automation_service.publish_trigger(trigger)
+            self.automation_page.record_execution(
+                execution,
+                f"OBS {obs_event.event_type}",
+            )
+            if execution.succeeded:
+                Logger.info(
+                    f'Executed OBS automation for "{obs_event.event_type}".',
+                    source="AUTOMATION",
+                )
+            elif execution.handled:
+                Logger.warning(
+                    f'OBS automation failed for "{obs_event.event_type}".',
+                    source="AUTOMATION",
+                )
+
+    @Slot()
+    def fire_application_started_trigger(self) -> None:
+        if self._core_started_fired:
+            return
+        self._core_started_fired = True
+        self._fire_core_automation_event("application.started")
+
+    def _fire_core_automation_event(self, event_type: str) -> None:
+        context = {
+            "channel": self.twitch_service.channel or "--",
+            "user": (
+                self.twitch_auth.token.login
+                if self.twitch_auth.token is not None
+                else "--"
+            ),
+            "message": "--",
+            "input": "--",
+            "amount": "--",
+            "bits": "--",
+            "viewers": "--",
+            "tier": "--",
+            "reward": "--",
+            "reward_id": "--",
+            "reward_cost": "--",
+            "title": "--",
+            "game": "--",
+            "uptime": "--",
+            "followers": "--",
+            "command": "--",
+            "args": "--",
+            "target": "--",
+            "uses": "--",
+        }
+        for trigger in self.core_trigger_store.evaluate(event_type, context):
+            execution = self.automation_service.publish_trigger(trigger)
+            label = event_type.replace(".", " ").title()
+            self.automation_page.record_execution(execution, label)
+            if execution.succeeded:
+                Logger.info(
+                    f'Executed Core automation for "{event_type}".',
+                    source="AUTOMATION",
+                )
+            elif execution.handled:
+                Logger.warning(
+                    f'Core automation failed for "{event_type}".',
+                    source="AUTOMATION",
+                )
+
+    def _add_twitch_command(self) -> None:
+        dialog = TwitchCommandDialog(self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        try:
+            command = self.twitch_command_trigger_store.add(**dialog.values())
+        except (OSError, TypeError, ValueError) as error:
+            self.twitch_command_status_label.setText(
+                f"Could not add command: {error}"
+            )
+            return
+        self._refresh_twitch_commands(command.trigger_id)
+        self.twitch_command_status_label.setText(
+            f"!{command.name} saved and enabled."
+        )
+
+    def _edit_twitch_command(self) -> None:
+        command = self._selected_twitch_command()
+        if command is None:
+            return
+        dialog = TwitchCommandDialog(
+            self,
+            command,
+            self.twitch_command_trigger_store.response_for(command),
+        )
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        try:
+            updated = self.twitch_command_trigger_store.update(
+                command.trigger_id,
+                **dialog.values(),
+            )
+        except (OSError, TypeError, ValueError) as error:
+            self.twitch_command_status_label.setText(
+                f"Could not update command: {error}"
+            )
+            return
+        self._refresh_twitch_commands(updated.trigger_id)
+        self.twitch_command_status_label.setText(f"!{updated.name} updated.")
+
+    def _toggle_twitch_command(self) -> None:
+        command = self._selected_twitch_command()
+        if command is None:
+            return
+        try:
+            self.twitch_command_trigger_store.set_enabled(
+                command.trigger_id, not command.enabled
+            )
+        except OSError as error:
+            self.twitch_command_status_label.setText(
+                f"Could not update command: {error}"
+            )
+            return
+        self._refresh_twitch_commands(command.trigger_id)
+
+    def _delete_twitch_command(self) -> None:
+        command = self._selected_twitch_command()
+        if command is None:
+            return
+        answer = QMessageBox.question(
+            self,
+            "Delete Twitch Command",
+            f"Delete !{command.name}?",
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            has_other_triggers = bool(
+                self.twitch_event_trigger_store.for_routine(command.routine_id)
+            )
+            self.twitch_command_trigger_store.delete(
+                command.trigger_id,
+                delete_routine=not has_other_triggers,
+            )
+        except (OSError, ValueError) as error:
+            self.twitch_command_status_label.setText(
+                f"Could not delete command: {error}"
+            )
+            return
+        self._refresh_twitch_commands()
+        self.automation_page.refresh()
+
+    def _preview_twitch_command(self) -> None:
+        text = self.twitch_command_preview_edit.text().strip()
+        if not text:
+            return
+        user_id = self.twitch_service.broadcaster_user_id or "preview-user"
+        result = self.twitch_command_trigger_dispatcher.evaluate(
+            TwitchMessage(
+                username="PreviewUser",
+                text=text,
+                received_at=datetime.now(timezone.utc),
+                user_id=user_id,
+                user_login="previewuser",
+                broadcaster_user_id=user_id,
+            ),
+            self._twitch_command_context(),
+        )
+        if result.outcome is TwitchCommandTriggerOutcome.READY:
+            trigger = self.twitch_command_trigger_store.get(result.trigger_id)
+            template = (
+                self.twitch_command_trigger_store.response_for(trigger)
+                if trigger is not None
+                else ""
+            )
+            status = (
+                "Preview: "
+                + SendTwitchChatMessageTask.render(template, result.context)
+            )
+        elif result.outcome is TwitchCommandTriggerOutcome.NOT_FOUND:
+            status = "No custom command matched."
+        elif result.outcome is TwitchCommandTriggerOutcome.DISABLED:
+            status = "That command is disabled."
+        else:
+            status = result.outcome.value.replace("_", " ").title()
+        self.twitch_command_status_label.setText(status)
+
+    def _twitch_command_context(self) -> dict[str, str]:
+        snapshot = (
+            self.last_companion_result.snapshot
+            if self.last_companion_result is not None
+            else {}
+        )
+        stream = snapshot.get("stream")
+        stream = stream if isinstance(stream, dict) else {}
+        followers = snapshot.get("followers")
+        return {
+            "channel": self.twitch_service.channel or "--",
+            "uptime": self.stream_time_label.text(),
+            "followers": "--" if followers is None else f"{int(followers):,}",
+            "game": str(stream.get("game_name") or "--"),
+            "title": str(stream.get("title") or "--"),
+        }
+
     def _build_reply_review_tab(self) -> None:
         page = QWidget(self.ai_tabs)
         layout = QVBoxLayout(page)
@@ -1200,16 +1803,10 @@ class MainWindow(QMainWindow):
         self.send_reply_draft_button = QPushButton("Send Selected")
         self.edit_send_reply_button = QPushButton("Edit & Send")
         self.dismiss_reply_button = QPushButton("Dismiss")
-        self.teach_rivescript_button = QPushButton("Teach RiveScript")
-        self.teach_rivescript_button.setEnabled(False)
-        self.teach_rivescript_button.setToolTip(
-            "Create a reviewed local RiveScript rule from the selected reply."
-        )
         self.clear_reply_decisions_button = QPushButton("Clear History")
         actions.addWidget(self.send_reply_draft_button)
         actions.addWidget(self.edit_send_reply_button)
         actions.addWidget(self.dismiss_reply_button)
-        actions.addWidget(self.teach_rivescript_button)
         actions.addStretch()
         actions.addWidget(self.clear_reply_decisions_button)
         layout.addWidget(self.reply_decision_status_label)
@@ -1225,267 +1822,8 @@ class MainWindow(QMainWindow):
         self.dismiss_reply_button.clicked.connect(
             self._dismiss_reply_decision
         )
-        self.teach_rivescript_button.clicked.connect(
-            self._teach_selected_rivescript_reply
-        )
-        self.reply_review_table.itemSelectionChanged.connect(
-            self._update_reply_review_actions
-        )
         self.clear_reply_decisions_button.clicked.connect(
             lambda: self.reply_review_table.setRowCount(0)
-        )
-        self._update_reply_review_actions()
-
-    def _build_rivescript_tab(self) -> None:
-        page = QWidget(self.ai_tabs)
-        self.rivescript_rules_page = page
-        layout = QVBoxLayout(page)
-        explanation = QLabel(
-            "Reasoning still decides whether Sally should speak. When it "
-            "approves a reply and an enabled rule matches, the streamer-written "
-            "RiveScript response is used instead of an LLM draft."
-        )
-        explanation.setWordWrap(True)
-        layout.addWidget(explanation)
-        self.rivescript_rules_table = QTableWidget(0, 5)
-        self.rivescript_rules_table.setHorizontalHeaderLabels(
-            ("Enabled", "Name", "Trigger", "Reply", "Updated")
-        )
-        self.rivescript_rules_table.setSelectionBehavior(
-            QTableWidget.SelectionBehavior.SelectRows
-        )
-        self.rivescript_rules_table.setSelectionMode(
-            QTableWidget.SelectionMode.SingleSelection
-        )
-        self.rivescript_rules_table.setEditTriggers(
-            QTableWidget.EditTrigger.NoEditTriggers
-        )
-        rule_header = self.rivescript_rules_table.horizontalHeader()
-        rule_header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
-        rule_header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
-        rule_header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
-        rule_header.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
-        rule_header.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
-        layout.addWidget(self.rivescript_rules_table, 1)
-
-        actions = QHBoxLayout()
-        self.add_rivescript_rule_button = QPushButton("Add Rule")
-        self.edit_rivescript_rule_button = QPushButton("Edit Selected")
-        self.toggle_rivescript_rule_button = QPushButton("Disable Selected")
-        self.delete_rivescript_rule_button = QPushButton("Delete Selected")
-        actions.addWidget(self.add_rivescript_rule_button)
-        actions.addWidget(self.edit_rivescript_rule_button)
-        actions.addWidget(self.toggle_rivescript_rule_button)
-        actions.addWidget(self.delete_rivescript_rule_button)
-        actions.addStretch()
-        layout.addLayout(actions)
-
-        test_row = QHBoxLayout()
-        self.rivescript_test_edit = QLineEdit()
-        self.rivescript_test_edit.setPlaceholderText(
-            "Test rule matching without sending to Twitch"
-        )
-        self.rivescript_test_button = QPushButton("Test Match")
-        test_row.addWidget(self.rivescript_test_edit, 1)
-        test_row.addWidget(self.rivescript_test_button)
-        layout.addLayout(test_row)
-        self.rivescript_status_label = QLabel()
-        self.rivescript_status_label.setWordWrap(True)
-        layout.addWidget(self.rivescript_status_label)
-        self.ai_tabs.addTab(page, "RiveScript Rules")
-
-        self.add_rivescript_rule_button.clicked.connect(
-            self._add_rivescript_rule
-        )
-        self.edit_rivescript_rule_button.clicked.connect(
-            self._edit_rivescript_rule
-        )
-        self.toggle_rivescript_rule_button.clicked.connect(
-            self._toggle_rivescript_rule
-        )
-        self.delete_rivescript_rule_button.clicked.connect(
-            self._delete_rivescript_rule
-        )
-        self.rivescript_test_button.clicked.connect(self._test_rivescript_rule)
-        self.rivescript_test_edit.returnPressed.connect(
-            self._test_rivescript_rule
-        )
-        self.rivescript_rules_table.itemSelectionChanged.connect(
-            self._update_rivescript_rule_actions
-        )
-        self._refresh_rivescript_rules()
-
-    def _refresh_rivescript_rules(self, selected_rule_id: str = "") -> None:
-        table = self.rivescript_rules_table
-        if not selected_rule_id:
-            selected = self._selected_rivescript_rule()
-            selected_rule_id = str(selected.get("id", "")) if selected else ""
-        table.setRowCount(0)
-        selected_row = -1
-        for rule in self.rivescript_store.rules:
-            row = table.rowCount()
-            table.insertRow(row)
-            updated = str(rule.get("updated_at") or rule.get("created_at") or "")
-            try:
-                updated = datetime.fromisoformat(
-                    updated.replace("Z", "+00:00")
-                ).astimezone().strftime("%Y-%m-%d %H:%M")
-            except ValueError:
-                updated = "--"
-            values = (
-                "Yes" if bool(rule.get("enabled", True)) else "No",
-                str(rule.get("name", "")),
-                str(rule.get("trigger", "")),
-                str(rule.get("reply", "")),
-                updated,
-            )
-            for column, value in enumerate(values):
-                item = QTableWidgetItem(value)
-                if column == 0:
-                    item.setData(Qt.ItemDataRole.UserRole, str(rule.get("id", "")))
-                table.setItem(row, column, item)
-            if rule.get("id") == selected_rule_id:
-                selected_row = row
-        if selected_row >= 0:
-            table.selectRow(selected_row)
-        self.rivescript_status_label.setText(
-            f"{len(self.rivescript_store.rules)} local rule(s)."
-        )
-        self._update_rivescript_rule_actions()
-
-    def _selected_rivescript_rule(self) -> dict[str, object] | None:
-        row = self.rivescript_rules_table.currentRow()
-        item = self.rivescript_rules_table.item(row, 0) if row >= 0 else None
-        rule_id = str(item.data(Qt.ItemDataRole.UserRole) or "") if item else ""
-        return self.rivescript_store.get(rule_id) if rule_id else None
-
-    def _update_rivescript_rule_actions(self) -> None:
-        rule = self._selected_rivescript_rule()
-        enabled = rule is not None
-        self.edit_rivescript_rule_button.setEnabled(enabled)
-        self.toggle_rivescript_rule_button.setEnabled(enabled)
-        self.delete_rivescript_rule_button.setEnabled(enabled)
-        self.toggle_rivescript_rule_button.setText(
-            "Disable Selected"
-            if rule is None or bool(rule.get("enabled", True))
-            else "Enable Selected"
-        )
-
-    def _prompt_rivescript_rule(
-        self,
-        *,
-        trigger: str = "",
-        reply: str = "",
-        name: str = "",
-    ) -> tuple[str, str, str] | None:
-        trigger, accepted = QInputDialog.getText(
-            self,
-            "RiveScript Trigger",
-            "Trigger (RiveScript patterns such as 'hello *' are supported)",
-            QLineEdit.EchoMode.Normal,
-            trigger,
-        )
-        if not accepted or not trigger.strip():
-            return None
-        reply, accepted = QInputDialog.getMultiLineText(
-            self, "RiveScript Reply", "Reply", reply
-        )
-        if not accepted or not reply.strip():
-            return None
-        name, accepted = QInputDialog.getText(
-            self,
-            "Rule Name",
-            "Name",
-            QLineEdit.EchoMode.Normal,
-            name,
-        )
-        if not accepted:
-            return None
-        return trigger, reply, name
-
-    def _add_rivescript_rule(self) -> None:
-        values = self._prompt_rivescript_rule()
-        if values is None:
-            return
-        self._save_new_rivescript_rule(*values)
-
-    def _save_new_rivescript_rule(
-        self, trigger: str, reply: str, name: str
-    ) -> bool:
-        try:
-            rule_id = self.rivescript_store.add(trigger, reply, name=name)
-            self.rivescript_engine.rebuild()
-        except (OSError, ValueError) as error:
-            self.rivescript_status_label.setText(f"Could not save rule: {error}")
-            return False
-        self._refresh_rivescript_rules(rule_id)
-        self.rivescript_status_label.setText("RiveScript rule saved and enabled.")
-        return True
-
-    def _edit_rivescript_rule(self) -> None:
-        rule = self._selected_rivescript_rule()
-        if rule is None:
-            return
-        values = self._prompt_rivescript_rule(
-            trigger=str(rule.get("trigger", "")),
-            reply=str(rule.get("reply", "")),
-            name=str(rule.get("name", "")),
-        )
-        if values is None:
-            return
-        try:
-            self.rivescript_store.update(
-                str(rule.get("id", "")),
-                trigger=values[0],
-                reply=values[1],
-                name=values[2],
-            )
-            self.rivescript_engine.rebuild()
-        except (OSError, ValueError) as error:
-            self.rivescript_status_label.setText(f"Could not update rule: {error}")
-            return
-        self._refresh_rivescript_rules(str(rule.get("id", "")))
-
-    def _toggle_rivescript_rule(self) -> None:
-        rule = self._selected_rivescript_rule()
-        if rule is None:
-            return
-        rule_id = str(rule.get("id", ""))
-        try:
-            self.rivescript_store.set_enabled(
-                rule_id, not bool(rule.get("enabled", True))
-            )
-            self.rivescript_engine.rebuild()
-        except OSError as error:
-            self.rivescript_status_label.setText(f"Could not update rule: {error}")
-            return
-        self._refresh_rivescript_rules(rule_id)
-
-    def _delete_rivescript_rule(self) -> None:
-        rule = self._selected_rivescript_rule()
-        if rule is None:
-            return
-        if QMessageBox.question(
-            self,
-            "Delete RiveScript Rule",
-            f"Delete the rule '{rule.get('name', 'Rule')}'?",
-        ) is not QMessageBox.StandardButton.Yes:
-            return
-        try:
-            self.rivescript_store.delete(str(rule.get("id", "")))
-            self.rivescript_engine.rebuild()
-        except OSError as error:
-            self.rivescript_status_label.setText(f"Could not delete rule: {error}")
-            return
-        self._refresh_rivescript_rules()
-
-    def _test_rivescript_rule(self) -> None:
-        text = self.rivescript_test_edit.text().strip()
-        if not text:
-            return
-        match = self.rivescript_engine.match("rivescript-test", text)
-        self.rivescript_status_label.setText(
-            f"Matched: {match[1]}" if match else "No enabled rule matched."
         )
 
     def _build_ai_test_report_tab(self) -> None:
@@ -1521,8 +1859,6 @@ class MainWindow(QMainWindow):
                 ("missed", "Missed"),
                 ("blocked", "Blocked"),
                 ("failed", "Failed"),
-                ("llm", "LLM"),
-                ("rivescript", "RiveScript"),
                 ("average_latency_ms", "Avg latency"),
             )
         ):
@@ -1534,17 +1870,9 @@ class MainWindow(QMainWindow):
             self.ai_test_summary_labels[key] = value_label
         layout.addWidget(summary)
 
-        self.ai_test_report_table = QTableWidget(0, 7)
+        self.ai_test_report_table = QTableWidget(0, 6)
         self.ai_test_report_table.setHorizontalHeaderLabels(
-            (
-                "Time",
-                "Outcome",
-                "Source",
-                "Expected",
-                "Latency",
-                "Confidence",
-                "Reason",
-            )
+            ("Time", "Outcome", "Expected", "Latency", "Confidence", "Reason")
         )
         self.ai_test_report_table.setEditTriggers(
             QTableWidget.EditTrigger.NoEditTriggers
@@ -1553,11 +1881,11 @@ class MainWindow(QMainWindow):
             QTableWidget.SelectionBehavior.SelectRows
         )
         report_header = self.ai_test_report_table.horizontalHeader()
-        for column in range(6):
+        for column in range(5):
             report_header.setSectionResizeMode(
                 column, QHeaderView.ResizeMode.ResizeToContents
             )
-        report_header.setSectionResizeMode(6, QHeaderView.ResizeMode.Stretch)
+        report_header.setSectionResizeMode(5, QHeaderView.ResizeMode.Stretch)
         layout.addWidget(self.ai_test_report_table, 1)
         self.ai_tabs.addTab(page, "Test Report")
 
@@ -1594,7 +1922,6 @@ class MainWindow(QMainWindow):
             values = (
                 display_time,
                 str(event.get("outcome", "unknown")).replace("_", " ").title(),
-                str(event.get("response_source", "llm")).title(),
                 "Yes" if bool(event.get("response_expected")) else "No",
                 f"{latency_ms / 1000:.1f}s",
                 f"{float(event.get('confidence', 0.0)):.0%}",
@@ -1779,6 +2106,7 @@ class MainWindow(QMainWindow):
             else set()
         )
         self.twitch_health.auth_state = state.value
+        self.channel_points_page.auth_changed()
         self.twitch_health.missing_scopes = set(missing_scopes)
         self._refresh_twitch_health()
         self.update_companion_permissions_button.setVisible(
@@ -2021,12 +2349,18 @@ class MainWindow(QMainWindow):
             chat_message, is_bot
         )
         memory_command = self._handle_sally_memory_command(chat_message, is_bot)
+        custom_command = (
+            self._handle_twitch_custom_command(chat_message, is_bot)
+            if not memory_command and not training_command
+            else False
+        )
         if (
             self.settings.ai_viewer_memory_enabled
             and chat_message.user_id
             and not is_bot
             and not memory_command
             and not training_command
+            and not custom_command
         ):
             if self.chatter_history.has_memory_consent(chat_message.user_id):
                 self.chatter_history.record_memory_stream(
@@ -2042,7 +2376,7 @@ class MainWindow(QMainWindow):
                     stream_id=self.current_memory_stream_id,
                 )
             self._maybe_promote_sally_memory()
-        if not memory_command and not training_command:
+        if not memory_command and not training_command and not custom_command:
             if not is_bot:
                 self.viewer_messages_since_sally_reply += 1
             self._buffer_message_for_memory_reasoning(chat_message, is_bot)
@@ -2118,6 +2452,63 @@ class MainWindow(QMainWindow):
 
         scroll_bar = self.ui.twitchChatOutput.verticalScrollBar()
         scroll_bar.setValue(scroll_bar.maximum())
+
+    def _handle_twitch_custom_command(
+        self,
+        chat_message: TwitchMessage,
+        is_bot: bool,
+    ) -> bool:
+        if is_bot:
+            return False
+        result = self.twitch_command_trigger_dispatcher.evaluate(
+            chat_message,
+            self._twitch_command_context(),
+        )
+        if not result.handled:
+            return False
+        if result.outcome is not TwitchCommandTriggerOutcome.READY:
+            Events.emit(
+                "twitch_command_trigger_rejected",
+                trigger_id=result.trigger_id,
+                invocation=result.invocation,
+                outcome=result.outcome.value,
+                remaining_seconds=result.remaining_seconds,
+            )
+            return True
+        execution = self.automation_service.publish_trigger(result.to_event())
+        self.automation_page.record_execution(
+            execution,
+            f"Twitch command !{result.invocation}",
+        )
+        if execution.succeeded:
+            try:
+                self.twitch_command_trigger_dispatcher.record_executed(
+                    result, chat_message
+                )
+            except OSError as error:
+                Logger.warning(
+                    f"Command was sent but its statistics could not be saved: {error}",
+                    source="TWITCH",
+                )
+            self._refresh_twitch_commands(result.trigger_id)
+            Events.emit(
+                "twitch_command_trigger_executed",
+                trigger_id=result.trigger_id,
+                invocation=result.invocation,
+            )
+            Logger.info(
+                f"Executed custom Twitch command !{result.invocation}.",
+                source="TWITCH",
+            )
+        else:
+            Events.emit(
+                "twitch_command_trigger_rejected",
+                trigger_id=result.trigger_id,
+                invocation=result.invocation,
+                outcome=TwitchCommandTriggerOutcome.TASK_FAILED.value,
+                remaining_seconds=0,
+            )
+        return True
 
     def _handle_sally_memory_command(
         self,
@@ -2592,7 +2983,6 @@ class MainWindow(QMainWindow):
             if self.settings.ai_viewer_memory_enabled
             else {}
         )
-        scripted_match = self.rivescript_engine.match(user_id, text)
         request = ResponseMessage(
             request_id=uuid4().hex,
             message_id=chat_message.message_id,
@@ -2613,8 +3003,6 @@ class MainWindow(QMainWindow):
             reply_to_sally=reply_to_sally,
             third_person_reference=third_person_reference,
             addressed_to_other=addressed_to_other,
-            scripted_reply=scripted_match[1] if scripted_match else "",
-            scripted_rule_id=scripted_match[0] if scripted_match else "",
         )
         if len(self.response_decision_queue) == self.response_decision_queue.maxlen:
             dropped = self.response_decision_queue.popleft()
@@ -3127,7 +3515,6 @@ class MainWindow(QMainWindow):
                 latency_ms=latency_ms,
                 response_expected=response_expected,
                 confidence=decision.confidence,
-                response_source=decision.response_source,
                 save=False,
             )
         except OSError as error:
@@ -3173,47 +3560,6 @@ class MainWindow(QMainWindow):
             item.data(Qt.ItemDataRole.UserRole) if item is not None else None
         )
         return decision if isinstance(decision, ResponseDecision) else None
-
-    def _update_reply_review_actions(self) -> None:
-        decision = self._selected_reply_decision()
-        has_reply = bool(decision and decision.reply)
-        self.send_reply_draft_button.setEnabled(has_reply)
-        self.edit_send_reply_button.setEnabled(has_reply)
-        self.dismiss_reply_button.setEnabled(decision is not None)
-        self.teach_rivescript_button.setEnabled(has_reply)
-
-    def _teach_selected_rivescript_reply(self) -> None:
-        decision = self._selected_reply_decision()
-        if decision is None or not decision.reply:
-            return
-        broadcaster_id = (
-            self.twitch_auth.token.user_id
-            if self.twitch_auth.token is not None
-            else ""
-        )
-        may_prefill_viewer_text = bool(
-            decision.user_id == broadcaster_id
-            or decision.user_id in self.training_opted_in_users
-        )
-        trigger = (
-            self.rivescript_store.suggest_trigger(decision.source_text)
-            if may_prefill_viewer_text
-            else ""
-        )
-        if not may_prefill_viewer_text:
-            self.reply_decision_status_label.setText(
-                "That viewer has not opted into training, so their message "
-                "was not copied. Enter a generalized trigger manually."
-            )
-        values = self._prompt_rivescript_rule(
-            trigger=trigger,
-            reply=decision.reply,
-            name="Taught from Reply Review",
-        )
-        if values is None:
-            return
-        if self._save_new_rivescript_rule(*values):
-            self.ai_tabs.setCurrentWidget(self.rivescript_rules_page)
 
     @Slot()
     def _send_selected_reply_draft(self) -> None:
@@ -3394,6 +3740,7 @@ class MainWindow(QMainWindow):
 
     @Slot(object)
     def handle_twitch_activity(self, twitch_event: TwitchEvent) -> None:
+        self._handle_twitch_automation_event(twitch_event)
         if twitch_event.subscription_type in {
             "stream.online",
             "stream.offline",
@@ -3490,6 +3837,24 @@ class MainWindow(QMainWindow):
                 item.setForeground(QColor(entry.color))
                 self.activity_feed_list.addItem(item)
         self._schedule_activity_age_refresh()
+
+    def _handle_twitch_automation_event(self, twitch_event: TwitchEvent) -> None:
+        for trigger in self.twitch_event_trigger_store.evaluate(twitch_event):
+            execution = self.automation_service.publish_trigger(trigger)
+            self.automation_page.record_execution(
+                execution,
+                f"Twitch event {twitch_event.subscription_type}",
+            )
+            if execution.succeeded:
+                Logger.info(
+                    f'Executed Twitch automation for "{twitch_event.subscription_type}".',
+                    source="AUTOMATION",
+                )
+            elif execution.handled:
+                Logger.warning(
+                    f'Twitch automation failed for "{twitch_event.subscription_type}".',
+                    source="AUTOMATION",
+                )
 
     def _schedule_activity_age_refresh(self) -> None:
         timer = getattr(self, "activity_age_timer", None)
@@ -4012,6 +4377,7 @@ class MainWindow(QMainWindow):
             "Dashboard": self.show_dashboard,
             "Twitch": self.show_twitch,
             "AI": self.show_ai,
+            "Automation": self.show_automation,
             "Logs": self.show_logs,
             "Settings": self.show_settings,
         }
@@ -4032,6 +4398,12 @@ class MainWindow(QMainWindow):
         self._refresh_memory_viewer_list()
         self.ui.mainStack.setCurrentWidget(self.ai_page)
         self.ai_button.setChecked(True)
+
+    @Slot()
+    def show_automation(self) -> None:
+        self.automation_page.refresh()
+        self.ui.mainStack.setCurrentWidget(self.automation_page)
+        self.automation_button.setChecked(True)
 
     def show_memories(self) -> None:
         self.show_ai()
@@ -5472,6 +5844,9 @@ class MainWindow(QMainWindow):
             )
 
     def closeEvent(self, event: QCloseEvent) -> None:
+        if not self._core_closing_fired:
+            self._core_closing_fired = True
+            self._fire_core_automation_event("application.closing")
         self.window_state_store.save(self)
         self._save_chatter_history()
         self.ai_test_report_flush_timer.stop()
@@ -5485,6 +5860,7 @@ class MainWindow(QMainWindow):
         self.companion_refresh_request_id += 1
         self.companion_thread_pool.clear()
         self.companion_thread_pool.waitForDone(2_000)
+        self.channel_points_page.shutdown()
         self.memory_reasoning_thread_pool.clear()
         self.memory_reasoning_thread_pool.waitForDone(2_000)
         self.memory_message_buffers.clear()
@@ -5492,7 +5868,9 @@ class MainWindow(QMainWindow):
         self.response_decision_thread_pool.waitForDone(2_000)
         self.response_decision_queue.clear()
         self.recent_ai_chat.clear()
+        self.obs_service.disconnect()
         self.twitch_service.disconnect()
+        Events.unsubscribe("obs_event", self._handle_obs_automation_event)
         Events.unsubscribe(
             "twitch_status_changed",
             self.twitch_bridge.handle_status_changed,

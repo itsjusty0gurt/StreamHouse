@@ -7,8 +7,12 @@ from unittest.mock import patch
 from core.paths import migrate_legacy_user_data, user_data_root
 from core.resources import resource_path
 from core.settings import SettingsStore
+from automation.routines import RoutineStore
+from automation.core_triggers import CoreTriggerStore
 from twitch.activity_history import ActivityHistoryStore
 from twitch.chatter_history import ChatterHistoryStore
+from twitch.commands import TwitchCommandTriggerStore
+from twitch.automation_triggers import TwitchEventTriggerStore
 from twitch.session_history import StreamSessionStore
 from twitch.token_store import TwitchTokenStore
 
@@ -24,6 +28,10 @@ class UserDataPathTests(unittest.TestCase):
                     ActivityHistoryStore().path,
                     ChatterHistoryStore().path,
                     StreamSessionStore().path,
+                    TwitchCommandTriggerStore().path,
+                    TwitchEventTriggerStore().path,
+                    RoutineStore().path,
+                    CoreTriggerStore().path,
                     TwitchTokenStore().path,
                 )
                 self.assertTrue(all(root in path.parents for path in paths))

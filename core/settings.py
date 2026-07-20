@@ -16,6 +16,7 @@ class AppSettings:
         "Dashboard",
         "Twitch",
         "AI",
+        "Automation",
         "Logs",
         "Settings",
     )

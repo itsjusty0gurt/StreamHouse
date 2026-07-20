@@ -40,6 +40,12 @@ def migrate_legacy_user_data() -> tuple[str, ...]:
         "memory/twitch_chatters.json",
         "memory/twitch_activity.json",
         "memory/stream_sessions.json",
+        "twitch/commands.json",
+        "twitch/event_triggers.json",
+        "automation/routines.json",
+        "automation/core_triggers.json",
+        "obs/connection.json",
+        "obs/triggers.json",
     )
     for relative in relative_files:
         source = source_root / relative

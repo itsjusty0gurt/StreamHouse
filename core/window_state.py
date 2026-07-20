@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import QByteArray, QSettings
 from PySide6.QtGui import QGuiApplication
-from PySide6.QtWidgets import QComboBox, QMainWindow, QSplitter
+from PySide6.QtWidgets import QComboBox, QMainWindow, QSplitter, QTabWidget, QWidget
 
 
 class WindowStateStore:
@@ -39,6 +39,30 @@ class WindowStateStore:
         saved_filter = self.settings.value("window/activity_filter", "")
         if activity_filter is not None and saved_filter:
             activity_filter.setCurrentText(str(saved_filter))
+        automation_page = window.findChild(QWidget, "automationPage")
+        routine_id = str(
+            self.settings.value("window/automation_selected_routine", "") or ""
+        )
+        if automation_page is not None and routine_id and hasattr(
+            automation_page, "select_routine"
+        ):
+            automation_page.select_routine(routine_id)
+        automation_splitter = window.findChild(QSplitter, "automationSplitter")
+        automation_splitter_state = self.settings.value(
+            "window/automation_splitter"
+        )
+        if automation_splitter is not None and isinstance(
+            automation_splitter_state, QByteArray
+        ):
+            automation_splitter.restoreState(automation_splitter_state)
+        for object_name, key in (
+            ("automationTabs", "window/automation_tab"),
+            ("automationEditorTabs", "window/automation_editor_tab"),
+        ):
+            tabs = window.findChild(QTabWidget, object_name)
+            if tabs is not None:
+                index = int(self.settings.value(key, tabs.currentIndex()))
+                tabs.setCurrentIndex(max(0, min(index, tabs.count() - 1)))
         return restored
 
     def save(self, window: QMainWindow) -> None:
@@ -62,6 +86,25 @@ class WindowStateStore:
                 "window/activity_filter",
                 activity_filter.currentText(),
             )
+        automation_page = window.findChild(QWidget, "automationPage")
+        if automation_page is not None:
+            self.settings.setValue(
+                "window/automation_selected_routine",
+                str(automation_page.property("selectedRoutineId") or ""),
+            )
+        automation_splitter = window.findChild(QSplitter, "automationSplitter")
+        if automation_splitter is not None:
+            self.settings.setValue(
+                "window/automation_splitter",
+                automation_splitter.saveState(),
+            )
+        for object_name, key in (
+            ("automationTabs", "window/automation_tab"),
+            ("automationEditorTabs", "window/automation_editor_tab"),
+        ):
+            tabs = window.findChild(QTabWidget, object_name)
+            if tabs is not None:
+                self.settings.setValue(key, tabs.currentIndex())
         self.settings.sync()
 
     @staticmethod

@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
     QComboBox,
     QMainWindow,
     QSplitter,
+    QTabWidget,
     QWidget,
 )
 
@@ -83,6 +84,48 @@ class WindowStateStoreTests(unittest.TestCase):
 
             self.assertEqual(restored_filter.currentText(), "Raids")
             self.assertGreater(restored_splitter.sizes()[0], 0)
+
+    def test_automation_workspace_tabs_round_trip(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            settings = QSettings(
+                str(Path(directory) / "window.ini"),
+                QSettings.Format.IniFormat,
+            )
+            store = WindowStateStore(settings)
+            original = QMainWindow()
+            page = QWidget(original)
+            page.setObjectName("automationPage")
+            page.setProperty("selectedRoutineId", "routine-1")
+            tabs = QTabWidget(page)
+            tabs.setObjectName("automationTabs")
+            tabs.addTab(QWidget(), "Routines")
+            tabs.addTab(QWidget(), "History")
+            tabs.setCurrentIndex(1)
+            editor_tabs = QTabWidget(page)
+            editor_tabs.setObjectName("automationEditorTabs")
+            editor_tabs.addTab(QWidget(), "Triggers")
+            editor_tabs.addTab(QWidget(), "Tasks")
+            editor_tabs.setCurrentIndex(1)
+            original.setCentralWidget(page)
+            store.save(original)
+
+            restored = QMainWindow()
+            restored_page = QWidget(restored)
+            restored_page.setObjectName("automationPage")
+            restored_tabs = QTabWidget(restored_page)
+            restored_tabs.setObjectName("automationTabs")
+            restored_tabs.addTab(QWidget(), "Routines")
+            restored_tabs.addTab(QWidget(), "History")
+            restored_editor_tabs = QTabWidget(restored_page)
+            restored_editor_tabs.setObjectName("automationEditorTabs")
+            restored_editor_tabs.addTab(QWidget(), "Triggers")
+            restored_editor_tabs.addTab(QWidget(), "Tasks")
+            restored.setCentralWidget(restored_page)
+
+            store.restore(restored)
+
+            self.assertEqual(restored_tabs.currentIndex(), 1)
+            self.assertEqual(restored_editor_tabs.currentIndex(), 1)
 
 
 if __name__ == "__main__":

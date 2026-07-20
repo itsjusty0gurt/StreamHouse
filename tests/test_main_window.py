@@ -1,5 +1,6 @@
 import logging
 import os
+import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -9,8 +10,8 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QPoint, Qt
 from PySide6.QtGui import QContextMenuEvent
-from PySide6.QtWidgets import QApplication
-from PySide6.QtTest import QTest
+from PySide6.QtWidgets import QApplication, QMenu
+from PySide6.QtTest import QSignalSpy, QTest
 
 from core.logger import Logger
 from core.settings import AppSettings
@@ -19,6 +20,15 @@ from ai.response_engine import ResponseDecision, ResponseMessage
 from ai.training_store import TrainingStore
 from twitch.auth import TwitchAuthState
 from twitch.chatter_history import ChatterHistoryStore, ChatterRecord
+from automation.routines import RoutineStore
+from automation.models import (
+    AutomationExecutionResult,
+    RoutineExecutionResult,
+    TaskExecutionResult,
+)
+from obs_service.triggers import OBS_TRIGGER_TYPES
+from twitch.commands import TwitchCommandTriggerStore
+from twitch.automation_triggers import TwitchEventTriggerStore
 from twitch.service import TwitchConnectionState
 from twitch.models import (
     TwitchChatNotice,
@@ -33,6 +43,7 @@ from twitch.models import (
 from ui.main_window import MainWindow
 from ui.memory_worker import MemoryExtractionResult
 from ui.response_worker import ResponseBatchResult
+from ui.twitch_command_dialog import TwitchCommandManagerDialog
 
 
 class MainWindowTests(unittest.TestCase):
@@ -88,9 +99,16 @@ class MainWindowTests(unittest.TestCase):
             "average_latency_ms": 0,
         }
         self.test_report_store.selected_events.return_value = []
-        self.rivescript_store = Mock()
-        self.rivescript_store.rules = []
-        self.rivescript_store.get.return_value = None
+        self.twitch_command_directory = tempfile.TemporaryDirectory()
+        command_root = Path(self.twitch_command_directory.name)
+        self.twitch_command_trigger_store = TwitchCommandTriggerStore(
+            command_root / "commands.json",
+            RoutineStore(command_root / "routines.json"),
+        )
+        self.twitch_event_trigger_store = TwitchEventTriggerStore(
+            command_root / "event_triggers.json",
+            self.twitch_command_trigger_store.routine_store,
+        )
         self.window = MainWindow(
             window_state_store=self.window_state_store,
             chatter_history_store=self.chatter_history_store,
@@ -99,13 +117,15 @@ class MainWindowTests(unittest.TestCase):
             release_controller=self.release_controller,
             training_store=self.training_store,
             test_report_store=self.test_report_store,
-            rivescript_store=self.rivescript_store,
+            twitch_command_trigger_store=self.twitch_command_trigger_store,
+            twitch_event_trigger_store=self.twitch_event_trigger_store,
             auto_upgrade_permissions=False,
         )
 
     def tearDown(self) -> None:
         self.window.close()
         self.application.processEvents()
+        self.twitch_command_directory.cleanup()
         self.settings_patch.stop()
         Logger._logger = self.original_logger
 
@@ -114,6 +134,7 @@ class MainWindowTests(unittest.TestCase):
             (self.window.ui.dashboardButton, self.window.ui.dashboardPage),
             (self.window.ui.twitchButton, self.window.ui.twitchPage),
             (self.window.ai_button, self.window.ai_page),
+            (self.window.automation_button, self.window.automation_page),
             (self.window.ui.logsButton, self.window.ui.logsPage),
             (self.window.ui.settingsButton, self.window.settings_container),
         )
@@ -129,6 +150,442 @@ class MainWindowTests(unittest.TestCase):
                 1,
             )
             self.assertEqual(self.window.statusBar().currentMessage(), "")
+
+    def test_automation_page_edits_grouped_routine_and_shows_tasks(self) -> None:
+        store = self.twitch_command_trigger_store.routine_store
+        group = store.add_group("Chat Commands")
+        routine = store.add(
+            "Welcome",
+            group_id=group.group_id,
+            description="Original description",
+        )
+        store.add_task(
+            routine.routine_id,
+            task_type="twitch.send_chat_message",
+            name="Say hello",
+            config={"message": "Hello {user}", "as_bot": True},
+        )
+
+        page = self.window.automation_page
+        rows_inserted = QSignalSpy(page.task_list.model().rowsInserted)
+        self.window.show_automation()
+        page.select_routine(routine.routine_id)
+
+        self.assertIs(self.window.ui.mainStack.currentWidget(), page)
+        self.assertEqual(page.routine_title_label.text(), "Welcome")
+        self.assertEqual(page.task_list.count(), 1)
+        self.assertGreater(rows_inserted.count(), 0)
+        self.assertIn("Say hello", page.task_list.item(0).text())
+        self.assertEqual(page.editor_tabs.currentWidget(), page.task_list.parentWidget())
+        self.assertIn("Chat Commands", page.routine_summary_label.text())
+        page.settings_name_edit.setText("Welcome Everyone")
+        page.settings_description_edit.setText("Updated description")
+        page.save_settings_button.click()
+        saved = store.get(routine.routine_id)
+        self.assertEqual(saved.name, "Welcome Everyone")
+        self.assertEqual(saved.description, "Updated description")
+
+    def test_task_add_menu_is_grouped_by_service(self) -> None:
+        menu = QMenu()
+        add_menu = self.window.automation_page._add_task_submenu(menu)
+        self.assertEqual([action.text() for action in add_menu.actions()], ["Core", "OBS", "Twitch"])
+        core_menu = add_menu.actions()[0].menu()
+        obs_menu = add_menu.actions()[1].menu()
+        twitch_menu = add_menu.actions()[2].menu()
+        self.assertIn("Launch application", [action.text() for action in core_menu.actions()])
+        self.assertIn("Change scene", [action.text() for action in obs_menu.actions()])
+        twitch_tasks = [action.text() for action in twitch_menu.actions()]
+        self.assertIn("Send chat message", twitch_tasks)
+        self.assertIn("Run commercial", twitch_tasks)
+        commercial_menu = next(
+            action.menu()
+            for action in twitch_menu.actions()
+            if action.text() == "Run commercial"
+        )
+        self.assertEqual(
+            [
+                action.text()
+                for action in commercial_menu.actions()
+                if not action.isSeparator()
+            ],
+            [
+                "30 seconds",
+                "60 seconds",
+                "90 seconds",
+                "180 seconds",
+                "Customize…",
+            ],
+        )
+        self.assertIn("Moderate user", twitch_tasks)
+        self.assertIn("Fulfill or refund redemption", twitch_tasks)
+
+    def test_commercial_duration_menu_adds_configured_task_directly(self) -> None:
+        routine = self.twitch_command_trigger_store.routine_store.add(
+            "Commercial break"
+        )
+        page = self.window.automation_page
+        page.select_routine(routine.routine_id)
+        menu = QMenu()
+        add_menu = page._add_task_submenu(menu)
+        twitch_menu = add_menu.actions()[2].menu()
+        commercial_menu = next(
+            action.menu()
+            for action in twitch_menu.actions()
+            if action.text() == "Run commercial"
+        )
+
+        commercial_menu.actions()[2].trigger()
+
+        saved = self.twitch_command_trigger_store.routine_store.get(
+            routine.routine_id
+        )
+        self.assertEqual(len(saved.tasks), 1)
+        self.assertEqual(saved.tasks[0].task_type, "twitch.run_commercial")
+        self.assertEqual(saved.tasks[0].config, {"length": 90})
+
+    def test_trigger_add_menu_is_grouped_by_service(self) -> None:
+        routine = self.twitch_command_trigger_store.routine_store.add("Trigger menu")
+        page = self.window.automation_page
+        page.select_routine(routine.routine_id)
+        menu = QMenu()
+        add_menu = page._add_trigger_submenu(menu)
+        self.assertEqual(
+            [action.text() for action in add_menu.actions()],
+            ["Core", "OBS", "Twitch"],
+        )
+        self.assertEqual(
+            [action.text() for action in add_menu.actions()[0].menu().actions()],
+            ["Program Event"],
+        )
+        program_event_menu = add_menu.actions()[0].menu().actions()[0].menu()
+        self.assertEqual(
+            [action.text() for action in program_event_menu.actions()],
+            ["Application Started", "Application Closing"],
+        )
+        self.assertEqual(
+            [action.text() for action in add_menu.actions()[1].menu().actions()],
+            list(OBS_TRIGGER_TYPES.values()),
+        )
+        self.assertEqual(
+            [action.text() for action in add_menu.actions()[2].menu().actions()],
+            [
+                "Chat Command…",
+                "Follow",
+                "Subscribe",
+                "Subscription › Gift",
+                "Subscription › Message",
+                "Cheer",
+                "Raid",
+                "Channel Points Custom Reward Redemption › Add",
+                "Stream › Online",
+                "Stream › Offline",
+            ],
+        )
+
+    def test_core_program_event_menu_adds_selected_trigger_directly(self) -> None:
+        routine = self.twitch_command_trigger_store.routine_store.add(
+            "Direct Core trigger"
+        )
+        page = self.window.automation_page
+        page.select_routine(routine.routine_id)
+        menu = QMenu()
+        add_menu = page._add_trigger_submenu(menu)
+        program_event_menu = add_menu.actions()[0].menu().actions()[0].menu()
+
+        program_event_menu.actions()[0].trigger()
+
+        triggers = page.core_trigger_store.for_routine(routine.routine_id)
+        self.assertEqual(len(triggers), 1)
+        self.assertEqual(triggers[0].event_type, "application.started")
+        self.assertTrue(triggers[0].enabled)
+
+    def test_twitch_eventsub_menu_adds_selected_trigger_directly(self) -> None:
+        routine = self.twitch_command_trigger_store.routine_store.add(
+            "Direct Twitch trigger"
+        )
+        page = self.window.automation_page
+        page.select_routine(routine.routine_id)
+        menu = QMenu()
+        add_menu = page._add_trigger_submenu(menu)
+        twitch_menu = add_menu.actions()[2].menu()
+
+        twitch_menu.actions()[1].trigger()
+
+        triggers = page.event_trigger_store.for_routine(routine.routine_id)
+        self.assertEqual(len(triggers), 1)
+        self.assertEqual(triggers[0].event_type, "channel.follow")
+        self.assertEqual(triggers[0].filters, {})
+        self.assertTrue(triggers[0].enabled)
+
+    def test_obs_menu_adds_selected_trigger_directly(self) -> None:
+        routine = self.twitch_command_trigger_store.routine_store.add(
+            "Direct OBS trigger"
+        )
+        page = self.window.automation_page
+        page.select_routine(routine.routine_id)
+        menu = QMenu()
+        add_menu = page._add_trigger_submenu(menu)
+        obs_menu = add_menu.actions()[1].menu()
+
+        obs_menu.actions()[2].trigger()
+
+        triggers = page.obs_trigger_store.for_routine(routine.routine_id)
+        self.assertEqual(len(triggers), 1)
+        self.assertEqual(triggers[0].event_type, "CurrentProgramSceneChanged")
+        self.assertEqual(triggers[0].filters, {})
+        self.assertTrue(triggers[0].enabled)
+
+    def test_variable_help_uses_selected_routine_trigger_context(self) -> None:
+        routine = self.twitch_command_trigger_store.routine_store.add(
+            "OBS variables"
+        )
+        self.window.obs_trigger_store.add(
+            routine.routine_id,
+            "CurrentProgramSceneChanged",
+        )
+        context = self.window.automation_page._sample_context_for_routine(routine)
+
+        self.assertEqual(context["scene"], "Gameplay")
+        self.assertEqual(context["source"], "Camera")
+        self.assertNotIn("reward_id", context)
+
+    def test_twitch_command_manager_lists_existing_and_respects_routine_limit(self) -> None:
+        existing = self.twitch_command_trigger_store.add("hello", "Hello!")
+        empty_routine = self.twitch_command_trigger_store.routine_store.add(
+            "Empty routine"
+        )
+        manager = TwitchCommandManagerDialog(
+            self.twitch_command_trigger_store,
+            empty_routine.routine_id,
+        )
+        self.assertEqual(manager.command_list.count(), 1)
+        self.assertIn("!hello", manager.command_list.item(0).text())
+        self.assertTrue(manager.create_button.isEnabled())
+        self.assertFalse(manager.edit_button.isEnabled())
+        manager.command_list.setCurrentRow(0)
+        self.assertTrue(manager.edit_button.isEnabled())
+        manager.close()
+
+        attached_manager = TwitchCommandManagerDialog(
+            self.twitch_command_trigger_store,
+            existing.routine_id,
+        )
+        self.assertFalse(attached_manager.create_button.isEnabled())
+        attached_manager.close()
+
+    def test_task_drag_reorder_persists_to_routine(self) -> None:
+        store = self.twitch_command_trigger_store.routine_store
+        routine = store.add("Reorder me")
+        first = store.add_task(
+            routine.routine_id,
+            task_type="core.delay",
+            name="First",
+            config={"seconds": 1},
+        )
+        second = store.add_task(
+            routine.routine_id,
+            task_type="core.delay",
+            name="Second",
+            config={"seconds": 2},
+        )
+        page = self.window.automation_page
+        page.select_routine(routine.routine_id)
+        moved = page.task_list.model().moveRow(
+            page.task_list.rootIndex(),
+            0,
+            page.task_list.rootIndex(),
+            2,
+        )
+        self.assertTrue(moved)
+        self.application.processEvents()
+        self.assertEqual(
+            [task.task_id for task in store.get(routine.routine_id).tasks],
+            [second.task_id, first.task_id],
+        )
+
+    def test_task_copy_and_paste_preserves_config_with_new_id(self) -> None:
+        store = self.twitch_command_trigger_store.routine_store
+        source = store.add("Source")
+        original = store.add_task(
+            source.routine_id,
+            task_type="core.delay",
+            name="Wait briefly",
+            config={"seconds": 2.5},
+        )
+        destination = store.add("Destination")
+        page = self.window.automation_page
+        page.select_routine(source.routine_id)
+        page.task_list.setCurrentRow(0)
+        page._copy_task()
+        page.select_routine(destination.routine_id)
+
+        page._paste_task()
+
+        pasted = store.get(destination.routine_id).tasks[0]
+        self.assertEqual(pasted.task_type, original.task_type)
+        self.assertEqual(pasted.name, original.name)
+        self.assertEqual(pasted.config, original.config)
+        self.assertNotEqual(pasted.task_id, original.task_id)
+
+    def test_routine_drag_handler_persists_group_and_order(self) -> None:
+        store = self.twitch_command_trigger_store.routine_store
+        group = store.add_group("Moved here")
+        first = store.add("First", group_id=group.group_id)
+        second = store.add("Second")
+        page = self.window.automation_page
+
+        page._routine_dropped(second.routine_id, group.group_id, 0)
+
+        self.assertEqual(
+            [routine.routine_id for routine in store.grouped(group.group_id)],
+            [second.routine_id, first.routine_id],
+        )
+        self.assertEqual(page._selected_routine_id, second.routine_id)
+
+    def test_ungrouped_routines_stay_above_custom_groups(self) -> None:
+        store = self.twitch_command_trigger_store.routine_store
+        group = store.add_group("Custom Group")
+        store.add("Grouped", group_id=group.group_id)
+        store.add("Loose Routine")
+
+        page = self.window.automation_page
+        page.refresh()
+
+        self.assertTrue(page.routine_tree.topLevelItem(0).text(0).startswith("Ungrouped"))
+        self.assertTrue(page.routine_tree.topLevelItem(1).text(0).startswith("Custom Group"))
+
+    def test_routine_rows_show_validation_and_counts(self) -> None:
+        store = self.twitch_command_trigger_store.routine_store
+        routine = store.add("Needs tasks")
+        page = self.window.automation_page
+        page.select_routine(routine.routine_id)
+        item = page.routine_tree.topLevelItem(0).child(0)
+
+        self.assertIn("[!]", item.text(0))
+        self.assertIn("Manual", item.text(0))
+        self.assertIn("0 tasks", item.text(0))
+        self.assertIn("no tasks", item.toolTip(0).lower())
+
+    def test_run_history_exposes_task_details_and_duration(self) -> None:
+        store = self.twitch_command_trigger_store.routine_store
+        routine = store.add("History details")
+        task = store.add_task(
+            routine.routine_id,
+            task_type="core.delay",
+            name="Short wait",
+            config={"seconds": 0},
+        )
+        page = self.window.automation_page
+        page.record_execution(
+            AutomationExecutionResult(
+                event_id="event",
+                trigger_id="manual",
+                routine_results=(
+                    RoutineExecutionResult(
+                        routine_id=routine.routine_id,
+                        succeeded=True,
+                        task_results=(
+                            TaskExecutionResult(
+                                task.task_id,
+                                task.task_type,
+                                True,
+                                "Waited.",
+                                12,
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+            "Manual test",
+        )
+
+        self.assertIn("Short wait", page.history_details.toPlainText())
+        self.assertIn("12 ms", page.history_details.toPlainText())
+        self.assertIn("Waited.", page.history_details.toPlainText())
+
+    def test_automation_page_lists_command_event_and_core_triggers_together(self) -> None:
+        command = self.twitch_command_trigger_store.add("hello", "Hello")
+        event_trigger = self.twitch_event_trigger_store.add(
+            command.routine_id,
+            "channel.raid",
+            filters={"from_broadcaster_user_login": "friend"},
+        )
+        core_trigger = self.window.core_trigger_store.add(
+            command.routine_id, "application.started"
+        )
+
+        self.window.automation_page.select_routine(command.routine_id)
+
+        page = self.window.automation_page
+        self.assertEqual(page.trigger_list.count(), 3)
+        self.assertEqual(page.editor_tabs.tabText(0), "Triggers (3)")
+        page._select_trigger("event", event_trigger.trigger_id)
+        self.assertIn("channel.raid", page.trigger_detail_label.text())
+        self.assertIn(
+            "from_broadcaster_user_login=friend",
+            page.trigger_detail_label.text(),
+        )
+        page._select_trigger("core", core_trigger.trigger_id)
+        self.assertIn("Application Started", page.trigger_detail_label.text())
+
+    def test_core_started_and_closing_triggers_execute_once(self) -> None:
+        store = self.twitch_command_trigger_store.routine_store
+        started = store.add("On startup")
+        store.add_task(
+            started.routine_id,
+            task_type="twitch.send_chat_message",
+            name="Started",
+            config={"message": "Sally started", "as_bot": True},
+        )
+        closing = store.add("On closing")
+        store.add_task(
+            closing.routine_id,
+            task_type="twitch.send_chat_message",
+            name="Closing",
+            config={"message": "Sally closing", "as_bot": True},
+        )
+        self.window.core_trigger_store.add(
+            started.routine_id, "application.started"
+        )
+        self.window.core_trigger_store.add(
+            closing.routine_id, "application.closing"
+        )
+        self.window.twitch_service.send_message = Mock(return_value=True)
+
+        self.window.fire_application_started_trigger()
+        self.window.fire_application_started_trigger()
+        self.window.close()
+        self.window.close()
+
+        self.assertEqual(
+            self.window.twitch_service.send_message.call_args_list,
+            [
+                unittest.mock.call("Sally started", as_bot=True),
+                unittest.mock.call("Sally closing", as_bot=True),
+            ],
+        )
+        self.assertEqual(len(self.window.automation_page.history), 2)
+
+    def test_twitch_command_can_open_its_connected_automation_routine(self) -> None:
+        command = self.twitch_command_trigger_store.add(
+            "socials", "Links for {user}"
+        )
+        self.window._refresh_twitch_commands(command.trigger_id)
+
+        self.window.open_twitch_command_routine_button.click()
+
+        self.assertIs(
+            self.window.ui.mainStack.currentWidget(),
+            self.window.automation_page,
+        )
+        self.assertEqual(
+            self.window.automation_page._selected_routine_id,
+            command.routine_id,
+        )
+        self.assertEqual(
+            self.window.automation_page.routine_title_label.text(),
+            "Command !socials",
+        )
 
     def test_memories_page_searches_and_shows_viewer_profile(self) -> None:
         self.chatter_history_store.records = {
@@ -189,7 +646,6 @@ class MainWindowTests(unittest.TestCase):
             [
                 "Memories",
                 "Reply Review",
-                "RiveScript Rules",
                 "Test Report",
                 "Training",
                 "Personality",
@@ -197,7 +653,13 @@ class MainWindowTests(unittest.TestCase):
         )
         self.assertEqual(
             channel_tab_names,
-            ["Chat", "Stream Sessions", "Analytics"],
+            [
+                "Chat",
+                "Stream Sessions",
+                "Analytics",
+                "Commands",
+                "Channel Points",
+            ],
         )
         self.assertEqual(
             self.window.analytics_labels["sessions"].text(),
@@ -217,8 +679,9 @@ class MainWindowTests(unittest.TestCase):
             self.window.ui.settingsPage,
         )
         self.assertTrue(all(page is not None for page in pages))
-        self.assertEqual(self.window.ai_tabs.count(), 6)
-        self.assertEqual(self.window.channel_tabs.count(), 3)
+        self.assertEqual(self.window.ai_tabs.count(), 5)
+        self.assertEqual(self.window.channel_tabs.count(), 5)
+        self.assertFalse(self.window.channel_points_page.create_button.isEnabled())
         self.assertEqual(
             [
                 self.window.logs_tabs.tabText(index)
@@ -231,6 +694,44 @@ class MainWindowTests(unittest.TestCase):
             1,
         )
         self.assertTrue(self.window.create_backup_button.isEnabled())
+
+    def test_custom_twitch_command_sends_as_bot_and_skips_ai_reasoning(self) -> None:
+        command = self.twitch_command_trigger_store.add(
+            "hello",
+            "Hello {user}! Welcome to {channel}.",
+            aliases=["hi"],
+            global_cooldown_seconds=0,
+            user_cooldown_seconds=0,
+        )
+        self.window.twitch_service.channel = "sallychannel"
+        self.window.twitch_service.send_message = Mock(return_value=True)
+        self.window._queue_response_decision = Mock()
+
+        self.window.handle_twitch_message(
+            TwitchMessage(
+                username="Viewer",
+                text="!hi",
+                received_at=datetime.now(timezone.utc),
+                user_id="viewer-1",
+                user_login="viewer",
+                broadcaster_user_id="broadcaster-1",
+            )
+        )
+
+        self.window.twitch_service.send_message.assert_called_once_with(
+            "Hello Viewer! Welcome to sallychannel.",
+            as_bot=True,
+        )
+        self.assertEqual(command.uses, 1)
+        self.window._queue_response_decision.assert_not_called()
+
+    def test_twitch_command_actions_require_a_selected_command(self) -> None:
+        self.window._refresh_twitch_commands()
+
+        self.assertTrue(self.window.add_twitch_command_button.isEnabled())
+        self.assertFalse(self.window.edit_twitch_command_button.isEnabled())
+        self.assertFalse(self.window.toggle_twitch_command_button.isEnabled())
+        self.assertFalse(self.window.delete_twitch_command_button.isEnabled())
 
     def test_settings_groups_are_separated_into_top_tabs(self) -> None:
         self.assertEqual(
@@ -295,46 +796,6 @@ class MainWindowTests(unittest.TestCase):
         self.assertTrue(self.window.edit_memory_button.isEnabled())
         self.assertTrue(self.window.approve_memory_button.isEnabled())
         self.assertTrue(self.window.reject_memory_button.isEnabled())
-
-    def test_rivescript_teaching_requires_a_selected_reply(self) -> None:
-        self.assertEqual(
-            self.window.teach_rivescript_button.text(), "Teach RiveScript"
-        )
-        self.assertFalse(self.window.teach_rivescript_button.isEnabled())
-        self.assertIn(
-            "selected reply",
-            self.window.teach_rivescript_button.toolTip(),
-        )
-
-    def test_teach_rivescript_does_not_copy_non_opted_viewer_message(self) -> None:
-        decision = ResponseDecision(
-            request_id="teach-1",
-            message_id="message-1",
-            user_id="viewer-not-opted-in",
-            user_name="Viewer",
-            source_text="My private original wording",
-            received_at=datetime.now(timezone.utc).isoformat(),
-            decision="reply",
-            reply="A reusable reply",
-            reason="Direct question",
-            confidence=0.9,
-            solicited=True,
-        )
-        self.window._add_reply_decision(decision)
-        self.window.reply_review_table.selectRow(0)
-        self.window._prompt_rivescript_rule = Mock(return_value=None)
-
-        self.window._teach_selected_rivescript_reply()
-
-        self.window._prompt_rivescript_rule.assert_called_once_with(
-            trigger="",
-            reply="A reusable reply",
-            name="Taught from Reply Review",
-        )
-        self.assertIn(
-            "has not opted into training",
-            self.window.reply_decision_status_label.text(),
-        )
 
     def test_window_geometry_is_restored_and_saved(self) -> None:
         self.window_state_store.restore.assert_called_once_with(self.window)
@@ -408,6 +869,45 @@ class MainWindowTests(unittest.TestCase):
             "Raider raided with 25 viewers",
             self.window.activity_feed_list.item(0).text(),
         )
+
+    def test_twitch_event_trigger_executes_connected_routine(self) -> None:
+        routine_store = self.twitch_command_trigger_store.routine_store
+        routine = routine_store.add("Thank follower")
+        routine_store.add_task(
+            routine.routine_id,
+            task_type="twitch.send_chat_message",
+            name="Thank them",
+            config={"message": "Thanks for following, {user}!", "as_bot": True},
+        )
+        self.twitch_event_trigger_store.add(
+            routine.routine_id, "channel.follow"
+        )
+        self.window.twitch_service.send_message = Mock(return_value=True)
+        event = TwitchEvent(
+            subscription_type="channel.follow",
+            version="2",
+            received_at=datetime.now(timezone.utc),
+            message_id="follow-automation",
+            broadcaster_user_id="42",
+            broadcaster_user_login="channel",
+            broadcaster_user_name="Channel",
+            transport=TwitchEventTransport.SIMULATOR,
+            payload={
+                "event": {
+                    "user_id": "viewer-1",
+                    "user_login": "viewer",
+                    "user_name": "TestViewer",
+                    "broadcaster_user_name": "Channel",
+                }
+            },
+        )
+
+        self.window.handle_twitch_activity(event)
+
+        self.window.twitch_service.send_message.assert_called_once_with(
+            "Thanks for following, TestViewer!", as_bot=True
+        )
+        self.assertEqual(self.window.automation_page.history[0]["result"], "Completed")
 
     def test_stream_online_event_posts_training_notice_once(self) -> None:
         self.window.settings.ai_training_capture_enabled = True
@@ -750,6 +1250,21 @@ class MainWindowTests(unittest.TestCase):
             self.window.chatter_list.parentWidget(),
         )
 
+    def test_obs_connection_is_below_bot_and_saves_automatically(self) -> None:
+        layout = self.window.connections_page.layout()
+        self.assertLess(
+            layout.indexOf(self.window.twitch_bot_account_group),
+            layout.indexOf(self.window.obs_connection_group),
+        )
+        self.assertFalse(hasattr(self.window, "obs_save_button"))
+        self.window.obs_config_store.save = Mock()
+        self.window.obs_connection_save_timer.setInterval(0)
+        self.window.obs_host_edit.setText("192.168.1.50")
+        self.application.processEvents()
+        self.window.obs_config_store.save.assert_called_once()
+        config, _password = self.window.obs_config_store.save.call_args.args
+        self.assertEqual(config.host, "192.168.1.50")
+
     def test_companion_refresh_updates_stream_stats_and_chatters(self) -> None:
         token = Mock(
             user_id="42",
@@ -1073,9 +1588,6 @@ class MainWindowTests(unittest.TestCase):
         self.window.chatter_history = store
         self.window._save_chatter_history = Mock()
         self.window.response_decision_thread_pool.start = Mock()
-        self.window.rivescript_engine.match = Mock(
-            return_value=("rule-1", "Try a puzzle game!")
-        )
 
         self.window.handle_twitch_message(
             TwitchMessage(
@@ -1091,9 +1603,6 @@ class MainWindowTests(unittest.TestCase):
         self.assertTrue(self.window.response_decision_in_flight)
         self.assertEqual(len(self.window.recent_ai_chat), 1)
         self.assertEqual(self.window.recent_ai_chat.maxlen, 100)
-        worker = self.window.response_decision_thread_pool.start.call_args.args[0]
-        self.assertEqual(worker.messages[0].scripted_rule_id, "rule-1")
-        self.assertEqual(worker.messages[0].scripted_reply, "Try a puzzle game!")
 
     def test_broadcaster_messages_are_evaluated_for_cohost_reasoning(self) -> None:
         store = ChatterHistoryStore(Path("unused.json"))

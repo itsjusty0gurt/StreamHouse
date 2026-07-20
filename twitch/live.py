@@ -44,6 +44,12 @@ class TwitchHelixClient:
     COMMERCIAL_URL = "https://api.twitch.tv/helix/channels/commercial"
     BANS_URL = "https://api.twitch.tv/helix/moderation/bans"
     DELETE_CHAT_URL = "https://api.twitch.tv/helix/moderation/chat"
+    CUSTOM_REWARDS_URL = (
+        "https://api.twitch.tv/helix/channel_points/custom_rewards"
+    )
+    REDEMPTIONS_URL = (
+        "https://api.twitch.tv/helix/channel_points/custom_rewards/redemptions"
+    )
     CHAT_SUBSCRIPTIONS = (
         "channel.chat.message",
         "channel.chat.notification",
@@ -169,7 +175,9 @@ class TwitchHelixClient:
                 activity_specs.append((event_type, "1", {"broadcaster_user_id": broadcaster_user_id}))
         if "bits:read" in scopes:
             activity_specs.append(("channel.cheer", "1", {"broadcaster_user_id": broadcaster_user_id}))
-        if "channel:read:redemptions" in scopes:
+        if scopes.intersection(
+            {"channel:read:redemptions", "channel:manage:redemptions"}
+        ):
             activity_specs.append((
                 "channel.channel_points_custom_reward_redemption.add",
                 "1",
@@ -461,6 +469,116 @@ class TwitchHelixClient:
         url = f"{self.SNOOZE_AD_URL}?{urlencode({'broadcaster_id': broadcaster_id})}"
         payload = self._read_json(Request(url, data=b"", headers=self._headers(token), method="POST"))
         return (payload.get("data") or [{}])[0]
+
+    def get_custom_rewards(
+        self,
+        broadcaster_id: str,
+        token: TwitchToken,
+        *,
+        only_manageable: bool = False,
+    ) -> list[dict[str, Any]]:
+        parameters = {
+            "broadcaster_id": broadcaster_id,
+            "only_manageable_rewards": str(only_manageable).lower(),
+        }
+        payload = self._read_json(
+            Request(
+                f"{self.CUSTOM_REWARDS_URL}?{urlencode(parameters)}",
+                headers=self._headers(token),
+            )
+        )
+        return [
+            item for item in payload.get("data", []) if isinstance(item, dict)
+        ]
+
+    def create_custom_reward(
+        self,
+        broadcaster_id: str,
+        values: dict[str, Any],
+        token: TwitchToken,
+    ) -> dict[str, Any]:
+        return self._write_custom_reward(
+            "POST", broadcaster_id, "", values, token
+        )
+
+    def update_custom_reward(
+        self,
+        broadcaster_id: str,
+        reward_id: str,
+        values: dict[str, Any],
+        token: TwitchToken,
+    ) -> dict[str, Any]:
+        return self._write_custom_reward(
+            "PATCH", broadcaster_id, reward_id, values, token
+        )
+
+    def _write_custom_reward(
+        self,
+        method: str,
+        broadcaster_id: str,
+        reward_id: str,
+        values: dict[str, Any],
+        token: TwitchToken,
+    ) -> dict[str, Any]:
+        parameters = {"broadcaster_id": broadcaster_id}
+        if reward_id:
+            parameters["id"] = reward_id
+        headers = self._headers(token)
+        headers["Content-Type"] = "application/json"
+        payload = self._read_json(
+            Request(
+                f"{self.CUSTOM_REWARDS_URL}?{urlencode(parameters)}",
+                data=json.dumps(values).encode("utf-8"),
+                headers=headers,
+                method=method,
+            )
+        )
+        rewards = payload.get("data", [])
+        if not isinstance(rewards, list) or not rewards:
+            raise ValueError("Twitch did not return the custom reward.")
+        reward = rewards[0]
+        if not isinstance(reward, dict):
+            raise ValueError("Twitch returned an invalid custom reward.")
+        return reward
+
+    def delete_custom_reward(
+        self,
+        broadcaster_id: str,
+        reward_id: str,
+        token: TwitchToken,
+    ) -> None:
+        url = f"{self.CUSTOM_REWARDS_URL}?{urlencode({'broadcaster_id': broadcaster_id, 'id': reward_id})}"
+        with urlopen(
+            Request(url, headers=self._headers(token), method="DELETE"),
+            timeout=15,
+        ):
+            pass
+
+    def update_redemption_status(
+        self,
+        broadcaster_id: str,
+        reward_id: str,
+        redemption_id: str,
+        status: str,
+        token: TwitchToken,
+    ) -> dict[str, Any]:
+        parameters = {
+            "broadcaster_id": broadcaster_id,
+            "reward_id": reward_id,
+            "id": redemption_id,
+        }
+        headers = self._headers(token)
+        headers["Content-Type"] = "application/json"
+        payload = self._read_json(
+            Request(
+                f"{self.REDEMPTIONS_URL}?{urlencode(parameters)}",
+                data=json.dumps({"status": status}).encode("utf-8"),
+                headers=headers,
+                method="PATCH",
+            )
+        )
+        results = payload.get("data", [])
+        return results[0] if isinstance(results, list) and results else {}
 
 
 class TwitchEventSubSocket(QObject):

@@ -87,6 +87,78 @@ class TwitchHelixClientTests(unittest.TestCase):
         self.assertIn("stream.online", event_types)
         self.assertIn("stream.offline", event_types)
 
+    @patch("twitch.live.urlopen")
+    def test_custom_reward_crud_uses_helix_contract(self, open_url) -> None:
+        reward = {"id": "reward-1", "title": "Hydrate", "cost": 500}
+        open_url.side_effect = (
+            _JsonResponse({"data": [reward]}),
+            _JsonResponse({"data": [reward]}),
+            _JsonResponse({"data": [reward]}),
+            _JsonResponse({}),
+        )
+        token = TwitchToken("access", "refresh", 999, [])
+        client = TwitchHelixClient()
+
+        self.assertEqual(
+            client.get_custom_rewards(
+                "channel-1", token, only_manageable=True
+            ),
+            [reward],
+        )
+        client.create_custom_reward(
+            "channel-1", {"title": "Hydrate", "cost": 500}, token
+        )
+        client.update_custom_reward(
+            "channel-1", "reward-1", {"is_enabled": False}, token
+        )
+        client.delete_custom_reward("channel-1", "reward-1", token)
+
+        requests = [call.args[0] for call in open_url.call_args_list]
+        self.assertIn("only_manageable_rewards=true", requests[0].full_url)
+        self.assertEqual(requests[1].method, "POST")
+        self.assertEqual(
+            json.loads(requests[1].data.decode()),
+            {"title": "Hydrate", "cost": 500},
+        )
+        self.assertEqual(requests[2].method, "PATCH")
+        self.assertIn("id=reward-1", requests[2].full_url)
+        self.assertEqual(requests[3].method, "DELETE")
+
+    def test_manage_redemptions_scope_enables_reward_eventsub(self) -> None:
+        client = TwitchHelixClient()
+        client._create_subscription = Mock()
+        token = TwitchToken(
+            "access", "refresh", 999, ["channel:manage:redemptions"]
+        )
+
+        client.create_activity_subscriptions(
+            "session-1", "channel-1", "channel-1", token
+        )
+
+        event_types = {
+            call.args[0] for call in client._create_subscription.call_args_list
+        }
+        self.assertIn(
+            "channel.channel_points_custom_reward_redemption.add",
+            event_types,
+        )
+
+    @patch("twitch.live.urlopen")
+    def test_redemption_status_uses_official_patch_contract(self, open_url) -> None:
+        open_url.return_value = _JsonResponse({"data": [{"id": "redeem-1"}]})
+        token = TwitchToken("access", "refresh", 999, [])
+
+        result = TwitchHelixClient().update_redemption_status(
+            "channel-1", "reward-1", "redeem-1", "FULFILLED", token
+        )
+
+        request = open_url.call_args.args[0]
+        self.assertEqual(request.method, "PATCH")
+        self.assertIn("reward_id=reward-1", request.full_url)
+        self.assertIn("id=redeem-1", request.full_url)
+        self.assertEqual(json.loads(request.data.decode()), {"status": "FULFILLED"})
+        self.assertEqual(result["id"], "redeem-1")
+
 
 class TwitchEventSubSocketTests(unittest.TestCase):
     @classmethod

@@ -26,8 +26,6 @@ class ResponseMessage:
     reply_to_sally: bool = False
     third_person_reference: bool = False
     addressed_to_other: bool = False
-    scripted_reply: str = ""
-    scripted_rule_id: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,8 +44,6 @@ class ResponseDecision:
     engagement_type: str = "none"
     conversation_state: str = "unchanged"
     solicited: bool = False
-    response_source: str = "llm"
-    scripted_rule_id: str = ""
 
 
 class ResponseDecisionEngine:
@@ -192,8 +188,6 @@ class ResponseDecisionEngine:
                 "reply_to_sally": message.reply_to_sally,
                 "third_person_reference": message.third_person_reference,
                 "addressed_to_other": message.addressed_to_other,
-                "rivescript_candidate": message.scripted_reply,
-                "rivescript_rule_id": message.scripted_rule_id,
             }
             for message in messages
         ]
@@ -411,12 +405,6 @@ Sally's personality:
 Language rule:
 {language_rule}
 
-If an input includes a non-empty `rivescript_candidate`, it is a trusted local
-response written by the streamer. Still make the normal reply-or-ignore safety
-and conversation decision. When the decision is `reply`, use that candidate
-instead of drafting different wording. Never reply solely because a candidate
-exists.
-
 Reply when Sally is directly addressed, asked a genuine question, can add useful
 context, or can naturally continue a conversation. A brief greeting may receive
 a brief greeting when chat is quiet. Ignore spam, bait, repeated messages,
@@ -485,15 +473,6 @@ Messages to decide:
             decision = "ignore"
         if decision == "ignore":
             reply = ""
-        response_source = "llm"
-        scripted_rule_id = ""
-        if decision == "reply" and source.scripted_reply:
-            reply = source.scripted_reply
-            response_source = "rivescript"
-            scripted_rule_id = source.scripted_rule_id
-            reason = "Reasoning approved a matching local RiveScript rule."
-        else:
-            reason = str(value.get("reason", "")).strip()[:300]
         try:
             confidence = float(value.get("confidence", 0.0))
         except (TypeError, ValueError):
@@ -531,14 +510,12 @@ Messages to decide:
             received_at=source.received_at,
             decision=decision,
             reply=reply[: self.MAX_REPLY_LENGTH],
-            reason=reason,
+            reason=str(value.get("reason", "")).strip()[:300],
             confidence=min(max(confidence, 0.0), 1.0),
             response_expected=source.response_expected,
             engagement_type=engagement_type,
             conversation_state=conversation_state,
             solicited=self.message_requires_reply(source),
-            response_source=response_source,
-            scripted_rule_id=scripted_rule_id,
         )
 
     @staticmethod

@@ -16,7 +16,7 @@ TWITCH_SCOPES = (
     "channel:manage:ads",
     "channel:edit:commercial",
     "bits:read",
-    "channel:read:redemptions",
+    "channel:manage:redemptions",
 )
 
 TWITCH_BOT_SCOPES = (

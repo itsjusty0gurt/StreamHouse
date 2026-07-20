@@ -108,6 +108,8 @@ def run() -> None:
     window.show()
     twitch_auth.restore()
     twitch_bot_auth.restore()
+    QTimer.singleShot(0, window.fire_application_started_trigger)
+    QTimer.singleShot(250, window.auto_connect_obs)
 
     if os.environ.get("SALLY_SMOKE_TEST") == "1":
         QTimer.singleShot(750, window.close)
