@@ -10,7 +10,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QPoint, Qt
 from PySide6.QtGui import QContextMenuEvent
-from PySide6.QtWidgets import QApplication, QMenu
+from PySide6.QtWidgets import QApplication, QLabel, QMenu
 from PySide6.QtTest import QSignalSpy, QTest
 
 from core.logger import Logger
@@ -193,6 +193,15 @@ class MainWindowTests(unittest.TestCase):
         obs_menu = add_menu.actions()[1].menu()
         twitch_menu = add_menu.actions()[2].menu()
         self.assertIn("Launch application", [action.text() for action in core_menu.actions()])
+        scripts_menu = next(
+            action.menu()
+            for action in core_menu.actions()
+            if action.text() == "Scripts"
+        )
+        self.assertEqual(
+            [action.text() for action in scripts_menu.actions()],
+            ["Run Python script"],
+        )
         self.assertIn("Change scene", [action.text() for action in obs_menu.actions()])
         twitch_tasks = [action.text() for action in twitch_menu.actions()]
         self.assertIn("Send chat message", twitch_tasks)
@@ -868,6 +877,23 @@ class MainWindowTests(unittest.TestCase):
         self.assertIn(
             "Raider raided with 25 viewers",
             self.window.activity_feed_list.item(0).text(),
+        )
+        card = self.window.activity_feed_list.itemWidget(
+            self.window.activity_feed_list.item(0)
+        )
+        self.assertIsNotNone(card)
+        self.assertEqual(card.objectName(), "activityFeedCard")
+        self.assertEqual(
+            card.findChild(QLabel, "activityFeedCategory").text(),
+            "RAIDS",
+        )
+        self.assertEqual(
+            card.findChild(QLabel, "activityFeedBody").text(),
+            "Raider raided with 25 viewers",
+        )
+        self.assertEqual(
+            card.findChild(QLabel, "activityFeedAge").text(),
+            "just now",
         )
 
     def test_twitch_event_trigger_executes_connected_routine(self) -> None:

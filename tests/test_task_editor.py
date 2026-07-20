@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 from types import SimpleNamespace
 
-from PySide6.QtWidgets import QApplication, QComboBox, QLineEdit
+from PySide6.QtWidgets import QApplication, QCheckBox, QComboBox, QLabel, QLineEdit
 from PySide6.QtGui import QTextCursor
 
 from automation.models import TaskDefinition
@@ -90,6 +90,27 @@ class TaskEditorTests(unittest.TestCase):
 
         self.assertEqual(message.toPlainText(), "Hello {user}")
         self.assertIn("Hello TestViewer", dialog.variable_preview_label.text())
+
+    def test_python_script_form_exposes_safe_execution_options(self) -> None:
+        dialog = TaskEditorDialog(
+            "core.run_python_script",
+            variables={"user": "TestViewer"},
+        )
+        fields = dialog.field_widgets["core.run_python_script"]
+        fields["script"].setText("C:/Scripts/welcome.py")
+        fields["arguments"].setText('--user "{user}"')
+
+        self.assertIsInstance(fields["wait_for_completion"], QCheckBox)
+        self.assertIsNotNone(dialog.findChild(QLabel, "pythonScriptWarning"))
+        self.assertTrue(fields["timeout_seconds"].isEnabled())
+        fields["wait_for_completion"].setChecked(False)
+        self.assertFalse(fields["timeout_seconds"].isEnabled())
+        self.assertFalse(fields["capture_output"].isEnabled())
+        self.assertFalse(fields["stop_on_failure"].isEnabled())
+        config = dialog.values()["config"]
+        self.assertEqual(config["script"], "C:/Scripts/welcome.py")
+        self.assertEqual(config["arguments"], '--user "{user}"')
+        self.assertFalse(config["wait_for_completion"])
 
 
 if __name__ == "__main__":

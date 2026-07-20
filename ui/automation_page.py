@@ -447,6 +447,16 @@ class TaskEditorDialog(QDialog):
         "core.open_target": (
             {"key": "target", "label": "File, folder, or URL", "kind": "target", "default": "", "required": True, "placeholder": "https://twitch.tv or C:/path"},
         ),
+        "core.run_python_script": (
+            {"key": "script", "label": "Python script", "kind": "python_file", "default": "", "required": True, "placeholder": "C:/path/to/script.py"},
+            {"key": "python_executable", "label": "Python executable", "kind": "file", "default": "", "placeholder": "Optional; automatically uses Sally's Python when available"},
+            {"key": "arguments", "label": "Arguments", "kind": "text", "default": "", "placeholder": "Optional, for example: --user \"{user}\""},
+            {"key": "working_directory", "label": "Working folder", "kind": "folder", "default": ""},
+            {"key": "timeout_seconds", "label": "Timeout", "kind": "number", "default": 30.0, "minimum": 0.1, "maximum": 86400.0, "suffix": " seconds"},
+            {"key": "wait_for_completion", "label": "", "kind": "bool", "default": True, "text": "Wait for the script to finish"},
+            {"key": "capture_output", "label": "", "kind": "bool", "default": True, "text": "Capture script output in run history"},
+            {"key": "stop_on_failure", "label": "", "kind": "bool", "default": True, "text": "Stop the routine if the script fails or times out"},
+        ),
         "obs.set_program_scene": (
             {"key": "scene", "label": "Scene", "kind": "obs_scene", "default": "", "required": True},
         ),
@@ -495,6 +505,7 @@ class TaskEditorDialog(QDialog):
         "twitch.send_pinned_message": ("message",),
         "twitch.moderate_user": ("user", "reason", "message_id"),
         "twitch.update_redemption": ("reward_id", "redemption_id"),
+        "core.run_python_script": ("script", "arguments", "working_directory"),
     }
 
     def __init__(
@@ -534,6 +545,20 @@ class TaskEditorDialog(QDialog):
         layout.addLayout(obs_toolbar)
 
         layout.addWidget(self._build_page(self.task_type))
+        if self.task_type == "core.run_python_script":
+            warning = QLabel(
+                "Trusted local code: this script runs outside Sally and has the "
+                "same access to your computer as your user account. Only run "
+                "scripts you trust. Trigger values are provided through arguments "
+                "and SALLY_* environment variables."
+            )
+            warning.setObjectName("pythonScriptWarning")
+            warning.setWordWrap(True)
+            warning.setStyleSheet(
+                "background-color:#332b18; border:1px solid #80651f; "
+                "border-radius:4px; color:#f2d675; padding:8px;"
+            )
+            layout.addWidget(warning)
         self._build_variable_help(layout)
 
         variables = QLabel(
@@ -668,7 +693,7 @@ class TaskEditorDialog(QDialog):
     def _create_field(
         self, kind: str, spec: dict[str, object], value: object
     ) -> tuple[QWidget, QWidget]:
-        if kind in {"text", "file", "folder", "target"}:
+        if kind in {"text", "file", "folder", "target", "python_file"}:
             edit = QLineEdit(str(value or ""))
             edit.setPlaceholderText(str(spec.get("placeholder", "")))
             if kind == "text":
@@ -688,7 +713,14 @@ class TaskEditorDialog(QDialog):
                 button = QPushButton("Browse…")
                 button.clicked.connect(
                     (lambda: self._choose_file(edit))
-                    if kind == "file" else (lambda: self._choose_folder(edit))
+                    if kind == "file"
+                    else (
+                        lambda: self._choose_file(
+                            edit, "Python Scripts (*.py *.pyw);;All Files (*)"
+                        )
+                    )
+                    if kind == "python_file"
+                    else (lambda: self._choose_folder(edit))
                 )
                 row.addWidget(button)
             return edit, container
@@ -748,12 +780,31 @@ class TaskEditorDialog(QDialog):
         is_obs = self.task_type.startswith("obs.")
         self.refresh_obs_choices_button.setVisible(is_obs)
         self.obs_choices_status.setVisible(is_obs)
+        if self.task_type == "core.run_python_script":
+            fields = self.field_widgets[self.task_type]
+            wait = fields["wait_for_completion"]
+            dependent = (
+                fields["timeout_seconds"],
+                fields["capture_output"],
+                fields["stop_on_failure"],
+            )
+
+            def update_script_mode(checked: bool) -> None:
+                for widget in dependent:
+                    widget.setEnabled(checked)
+
+            wait.toggled.connect(update_script_mode)
+            update_script_mode(wait.isChecked())
         if self.task is None:
             label = self.LABELS.get(self.task_type, self.task_type)
             self.name_edit.setText(label.partition("—")[2].strip() or label)
 
-    def _choose_file(self, edit: QLineEdit) -> None:
-        filename, _filter = QFileDialog.getOpenFileName(self, "Choose File", edit.text())
+    def _choose_file(
+        self, edit: QLineEdit, file_filter: str = "All Files (*)"
+    ) -> None:
+        filename, _filter = QFileDialog.getOpenFileName(
+            self, "Choose File", edit.text(), file_filter
+        )
         if filename:
             edit.setText(filename)
 
@@ -1303,10 +1354,18 @@ class AutomationPage(QWidget):
         ):
             service = QTreeWidgetItem((service_name, ""))
             service.setExpanded(True)
+            scripts = None
+            if service_name == "Core":
+                scripts = QTreeWidgetItem(("Scripts", ""))
+                scripts.setExpanded(True)
+                service.addChild(scripts)
             for task_type, label in tasks.items():
                 task = QTreeWidgetItem((label.split("—")[-1].strip(), "Available"))
                 task.setData(0, Qt.ItemDataRole.UserRole, task_type)
-                service.addChild(task)
+                if task_type == "core.run_python_script" and scripts is not None:
+                    scripts.addChild(task)
+                else:
+                    service.addChild(task)
             self.task_library_tree.addTopLevelItem(service)
         for service in ("Voice", "Timer", "AI", "Vision"):
             self.task_library_tree.addTopLevelItem(
@@ -2575,8 +2634,19 @@ class AutomationPage(QWidget):
             add_menu.addMenu(service_menu)
             add_menu._sally_task_submenus.append(service_menu)
             service_menu._sally_task_submenus = []
+            scripts_menu = None
+            if service_name == "Core":
+                scripts_menu = QMenu("Scripts", service_menu)
+                service_menu.addMenu(scripts_menu)
+                service_menu._sally_task_submenus.append(scripts_menu)
             for task_type, full_label in task_labels.items():
                 label = full_label.partition("—")[2].strip() or full_label
+                target_menu = (
+                    scripts_menu
+                    if task_type == "core.run_python_script"
+                    and scripts_menu is not None
+                    else service_menu
+                )
                 if task_type == "twitch.run_commercial":
                     duration_menu = QMenu(label, service_menu)
                     for seconds in (30, 60, 90, 180):
@@ -2600,7 +2670,7 @@ class AutomationPage(QWidget):
                     service_menu.addMenu(duration_menu)
                     service_menu._sally_task_submenus.append(duration_menu)
                     continue
-                action = service_menu.addAction(
+                action = target_menu.addAction(
                     label,
                     lambda _checked=False, selected=task_type: self._add_task(selected),
                 )
@@ -2626,15 +2696,18 @@ class AutomationPage(QWidget):
         # Provider availability is static for this process, but this keeps the
         # task library honest if services register later in startup.
         available = set(self.task_registry.registered_types())
-        for root_index in range(self.task_library_tree.topLevelItemCount()):
-            root = self.task_library_tree.topLevelItem(root_index)
-            for child_index in range(root.childCount()):
-                task = root.child(child_index)
-                task.setText(
+        pending = [
+            self.task_library_tree.topLevelItem(index)
+            for index in range(self.task_library_tree.topLevelItemCount())
+        ]
+        while pending:
+            item = pending.pop()
+            pending.extend(item.child(index) for index in range(item.childCount()))
+            task_type = item.data(0, Qt.ItemDataRole.UserRole)
+            if task_type:
+                item.setText(
                     1,
-                    "Available"
-                    if task.data(0, Qt.ItemDataRole.UserRole) in available
-                    else "Unavailable",
+                    "Available" if task_type in available else "Unavailable",
                 )
 
     def _sample_context_for_routine(self, routine) -> dict[str, str]:
@@ -2753,6 +2826,7 @@ class AutomationPage(QWidget):
             "core.launch_application": "Launches an application",
             "core.close_application": "Closes an application",
             "core.open_target": "Opens a file, folder, or URL",
+            "core.run_python_script": "Runs trusted Python code on this computer",
         }
         if task.task_type.startswith("obs."):
             return "Controls OBS Studio"

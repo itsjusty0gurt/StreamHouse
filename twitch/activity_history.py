@@ -30,7 +30,7 @@ class PersistedActivity:
             user_id=str(values.get("user_id", ""))[:100],
         )
 
-    def display_text(self, now: datetime | None = None) -> str:
+    def age_text(self, now: datetime | None = None) -> str:
         occurred = datetime.fromisoformat(self.occurred_at)
         if occurred.tzinfo is None:
             occurred = occurred.replace(tzinfo=timezone.utc)
@@ -51,7 +51,10 @@ class PersistedActivity:
             age = f"{elapsed_seconds // (24 * 60 * 60)}d ago"
         else:
             age = f"{elapsed_seconds // (7 * 24 * 60 * 60)}w ago"
-        return f"{self.text}  -  {age}"
+        return age
+
+    def display_text(self, now: datetime | None = None) -> str:
+        return f"{self.text}  -  {self.age_text(now)}"
 
 
 class ActivityHistoryStore:

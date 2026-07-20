@@ -14,6 +14,7 @@ from pathlib import Path
 from PySide6.QtCore import QThreadPool, QTime, QTimer, Qt, Slot
 from PySide6.QtGui import QCloseEvent, QColor, QCursor, QFont
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QApplication,
     QButtonGroup,
     QComboBox,
@@ -61,6 +62,7 @@ from automation.core_tasks import (
     DelayTask,
     LaunchApplicationTask,
     OpenTargetTask,
+    PythonScriptTask,
     WaitForServiceTask,
 )
 from automation.tasks import TaskRegistry
@@ -128,6 +130,75 @@ from ui.memory_worker import MemoryExtractionResult, MemoryExtractionWorker
 from ui.response_worker import ResponseBatchResult, ResponseDecisionWorker
 from ui.automation_page import AutomationPage
 from ui.channel_points_page import ChannelPointsPage
+
+
+class ActivityFeedCard(QFrame):
+    """Compact, readable presentation for one persisted Twitch event."""
+
+    def __init__(self, entry: PersistedActivity, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("activityFeedCard")
+        self.setAccessibleName(f"{entry.category}: {entry.display_text()}")
+
+        accent = QColor(entry.color)
+        if not accent.isValid():
+            accent = QColor("#bf94ff")
+        accent_color = accent.name()
+
+        self.setStyleSheet(
+            "QFrame#activityFeedCard {"
+            "background-color: #242427;"
+            "border: 1px solid #3c3c42;"
+            "border-radius: 6px;"
+            "}"
+        )
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        accent_bar = QFrame(self)
+        accent_bar.setObjectName("activityFeedAccent")
+        accent_bar.setFixedWidth(4)
+        accent_bar.setStyleSheet(
+            f"background-color: {accent_color};"
+            "border: none;"
+            "border-top-left-radius: 5px;"
+            "border-bottom-left-radius: 5px;"
+        )
+        layout.addWidget(accent_bar)
+
+        content = QWidget(self)
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(10, 7, 10, 8)
+        content_layout.setSpacing(3)
+
+        heading = QHBoxLayout()
+        heading.setSpacing(8)
+        category_label = QLabel(entry.category.upper(), content)
+        category_label.setObjectName("activityFeedCategory")
+        category_label.setStyleSheet(
+            f"color: {accent_color}; font-size: 10px; font-weight: 700;"
+            "letter-spacing: 0.5px; border: none; background: transparent;"
+        )
+        age_label = QLabel(entry.age_text(), content)
+        age_label.setObjectName("activityFeedAge")
+        age_label.setStyleSheet(
+            "color: #9b9ba6; font-size: 10px; border: none; background: transparent;"
+        )
+        heading.addWidget(category_label)
+        heading.addStretch()
+        heading.addWidget(age_label)
+        content_layout.addLayout(heading)
+
+        body_label = QLabel(entry.text, content)
+        body_label.setObjectName("activityFeedBody")
+        body_label.setWordWrap(True)
+        body_label.setStyleSheet(
+            "color: #efeff1; border: none; background: transparent;"
+        )
+        body_label.setToolTip(entry.text)
+        content_layout.addWidget(body_label)
+        layout.addWidget(content, 1)
 
 
 class MainWindow(QMainWindow):
@@ -207,6 +278,7 @@ class MainWindow(QMainWindow):
         self.task_registry.register(CloseApplicationTask())
         self.task_registry.register(DelayTask())
         self.task_registry.register(OpenTargetTask())
+        self.task_registry.register(PythonScriptTask())
         self.task_registry.register(
             WaitForServiceTask(
                 lambda service: (
@@ -926,7 +998,27 @@ class MainWindow(QMainWindow):
         activity_header.addStretch()
         activity_header.addWidget(self.activity_filter_combo)
         self.activity_feed_list = QListWidget()
+        self.activity_feed_list.setObjectName("activityFeedList")
         self.activity_feed_list.setWordWrap(True)
+        self.activity_feed_list.setSpacing(7)
+        self.activity_feed_list.setSelectionMode(
+            QAbstractItemView.SelectionMode.NoSelection
+        )
+        self.activity_feed_list.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        self.activity_feed_list.setStyleSheet(
+            "QListWidget#activityFeedList {"
+            "background-color: #18181b;"
+            "border: 1px solid #303036;"
+            "border-radius: 5px;"
+            "padding: 7px;"
+            "outline: none;"
+            "}"
+            "QListWidget#activityFeedList::item {"
+            "background: transparent; border: none; padding: 0px;"
+            "}"
+        )
         activity_layout.addLayout(activity_header)
         activity_layout.addWidget(self.activity_feed_list)
         self.activity_entries = self.activity_history.entries
@@ -3834,8 +3926,10 @@ class MainWindow(QMainWindow):
         for entry in self.activity_entries:
             if selected == "All activity" or selected == entry.category:
                 item = QListWidgetItem(entry.display_text())
-                item.setForeground(QColor(entry.color))
                 self.activity_feed_list.addItem(item)
+                card = ActivityFeedCard(entry, self.activity_feed_list)
+                item.setSizeHint(card.sizeHint())
+                self.activity_feed_list.setItemWidget(item, card)
         self._schedule_activity_age_refresh()
 
     def _handle_twitch_automation_event(self, twitch_event: TwitchEvent) -> None:

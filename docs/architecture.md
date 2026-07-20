@@ -93,7 +93,12 @@ hotkeys, Studio Mode, and an advanced raw request escape hatch.
 Core task providers can launch and close applications, wait without freezing
 the Qt event loop, wait for Twitch or OBS to connect, and open a file, folder,
 or web address. This supports startup and shutdown workflows without embedding
-platform-specific scripts inside routine definitions.
+platform-specific scripts inside routine definitions. Trusted local Python
+scripts are also available under Core > Scripts. Sally runs them in a separate
+process, supplies normalized trigger context through `SALLY_*` environment
+variables, supports templated arguments, applies an optional timeout, and can
+capture bounded output in run history. Packaged builds use a configured or
+system Python interpreter rather than treating the Sally executable as Python.
 
 Twitch task providers cover normal and pinned chat messages, commercials, ad
 snoozing, user moderation, and fulfilling or refunding reward redemptions.

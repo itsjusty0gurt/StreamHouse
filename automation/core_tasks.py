@@ -1,12 +1,21 @@
 from __future__ import annotations
 
+import json
 import os
 import shlex
+import shutil
 import subprocess
+import sys
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Mapping
 
-from PySide6.QtCore import QEventLoop, QTimer, QUrl
+from PySide6.QtCore import (
+    QEventLoop,
+    QProcess,
+    QProcessEnvironment,
+    QTimer,
+    QUrl,
+)
 from PySide6.QtGui import QDesktopServices
 
 from automation.models import TaskDefinition, TaskExecutionResult, TriggerEvent
@@ -18,6 +27,7 @@ CORE_TASK_LABELS = {
     "core.delay": "Core — Wait / delay",
     "core.wait_for_service": "Core — Wait for service",
     "core.open_target": "Core — Open file, folder, or URL",
+    "core.run_python_script": "Core — Run Python script",
 }
 
 
@@ -134,3 +144,241 @@ class OpenTargetTask:
         url = QUrl(target) if target.casefold().startswith(("http://", "https://")) else QUrl.fromLocalFile(str(Path(target).expanduser().resolve()))
         opened = QDesktopServices.openUrl(url)
         return _result(task, opened, f"Opened {target}." if opened else f"Could not open {target}.")
+
+
+class PythonScriptTask:
+    """Run a trusted Python file outside Sally's process."""
+
+    task_type = "core.run_python_script"
+    MAX_OUTPUT_LENGTH = 8_000
+
+    def execute(self, task: TaskDefinition, trigger: TriggerEvent) -> TaskExecutionResult:
+        try:
+            script = self._script_path(task.config, trigger.context)
+            command = [
+                *self._interpreter_command(task.config),
+                str(script),
+                *self._arguments(task.config, trigger.context),
+            ]
+            working_directory = self._working_directory(
+                task.config, trigger.context, script
+            )
+            environment = self._environment(trigger)
+            if not bool(task.config.get("wait_for_completion", True)):
+                return self._start_background(
+                    task, command, working_directory, environment
+                )
+            return self._run_and_wait(
+                task, command, working_directory, environment
+            )
+        except (OSError, TypeError, ValueError) as error:
+            return _result(task, False, str(error))
+
+    @classmethod
+    def _script_path(
+        cls,
+        config: Mapping[str, object],
+        context: Mapping[str, str],
+    ) -> Path:
+        value = cls._render(str(config.get("script", "")), context).strip()
+        if not value:
+            raise ValueError("Choose a Python script to run.")
+        script = Path(value).expanduser().resolve()
+        if not script.is_file():
+            raise ValueError(f"Python script was not found: {script}")
+        if script.suffix.casefold() not in {".py", ".pyw"}:
+            raise ValueError("Python automation scripts must use .py or .pyw.")
+        return script
+
+    @staticmethod
+    def _interpreter_command(config: Mapping[str, object]) -> list[str]:
+        configured = str(config.get("python_executable", "")).strip()
+        if configured:
+            executable = Path(configured).expanduser().resolve()
+            if not executable.is_file():
+                raise ValueError(f"Python executable was not found: {executable}")
+            return [str(executable)]
+        if not getattr(sys, "frozen", False):
+            return [sys.executable]
+        python = shutil.which("python") or shutil.which("python3")
+        if python:
+            return [python]
+        launcher = shutil.which("py")
+        if launcher:
+            return [launcher, "-3"]
+        raise ValueError(
+            "Python was not found. Choose a Python executable in this task's settings."
+        )
+
+    @classmethod
+    def _arguments(
+        cls,
+        config: Mapping[str, object],
+        context: Mapping[str, str],
+    ) -> list[str]:
+        rendered = cls._render(str(config.get("arguments", "")), context).strip()
+        if not rendered:
+            return []
+        values = shlex.split(rendered, posix=os.name != "nt")
+        if os.name == "nt":
+            values = [cls._strip_matching_quotes(value) for value in values]
+        return values
+
+    @classmethod
+    def _working_directory(
+        cls,
+        config: Mapping[str, object],
+        context: Mapping[str, str],
+        script: Path,
+    ) -> Path:
+        value = cls._render(
+            str(config.get("working_directory", "")), context
+        ).strip()
+        directory = Path(value).expanduser().resolve() if value else script.parent
+        if not directory.is_dir():
+            raise ValueError(f"Working folder was not found: {directory}")
+        return directory
+
+    @staticmethod
+    def _environment(trigger: TriggerEvent) -> dict[str, str]:
+        environment = dict(os.environ)
+        context = {str(key): str(value) for key, value in trigger.context.items()}
+        environment.update(
+            {
+                "SALLY_EVENT_ID": trigger.event_id,
+                "SALLY_TRIGGER_ID": trigger.trigger_id,
+                "SALLY_TRIGGER_SERVICE": trigger.service,
+                "SALLY_TRIGGER_TYPE": trigger.trigger_type,
+                "SALLY_TRIGGER_CONTEXT": json.dumps(context, ensure_ascii=False),
+            }
+        )
+        for key, value in context.items():
+            safe_key = "".join(
+                character if character.isalnum() else "_"
+                for character in key.upper()
+            ).strip("_")
+            if safe_key:
+                environment[f"SALLY_{safe_key}"] = value
+        return environment
+
+    @classmethod
+    def _run_and_wait(
+        cls,
+        task: TaskDefinition,
+        command: list[str],
+        working_directory: Path,
+        environment: Mapping[str, str],
+    ) -> TaskExecutionResult:
+        process = QProcess()
+        process.setProgram(command[0])
+        process.setArguments(command[1:])
+        process.setWorkingDirectory(str(working_directory))
+        process_environment = QProcessEnvironment()
+        for key, value in environment.items():
+            process_environment.insert(key, value)
+        process.setProcessEnvironment(process_environment)
+        capture_output = bool(task.config.get("capture_output", True))
+        if capture_output:
+            process.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
+        else:
+            process.setProcessChannelMode(QProcess.ProcessChannelMode.ForwardedChannels)
+
+        process.start()
+        if not process.waitForStarted(5_000):
+            return _result(
+                task,
+                False,
+                process.errorString() or "Python process could not be started.",
+            )
+
+        timeout_seconds = max(
+            0.1,
+            min(float(task.config.get("timeout_seconds", 30.0)), 86_400.0),
+        )
+        loop = QEventLoop()
+        timer = QTimer()
+        timer.setSingleShot(True)
+        timed_out = False
+
+        def stop_for_timeout() -> None:
+            nonlocal timed_out
+            timed_out = True
+            process.kill()
+
+        process.finished.connect(loop.quit)
+        process.errorOccurred.connect(lambda _error: loop.quit())
+        timer.timeout.connect(stop_for_timeout)
+        timer.start(round(timeout_seconds * 1000))
+        if process.state() is not QProcess.ProcessState.NotRunning:
+            loop.exec()
+        timer.stop()
+        if process.state() is not QProcess.ProcessState.NotRunning:
+            process.kill()
+            process.waitForFinished(1_000)
+
+        output = ""
+        if capture_output:
+            output = bytes(process.readAllStandardOutput()).decode(
+                "utf-8", errors="replace"
+            ).strip()
+        stop_on_failure = bool(task.config.get("stop_on_failure", True))
+        if timed_out:
+            detail = f"Python script timed out after {timeout_seconds:g} seconds."
+            return _result(task, not stop_on_failure, cls._with_output(detail, output))
+
+        exit_code = process.exitCode()
+        succeeded = exit_code == 0 or not stop_on_failure
+        detail = (
+            "Python script completed successfully."
+            if exit_code == 0
+            else f"Python script exited with code {exit_code}."
+        )
+        if exit_code != 0 and not stop_on_failure:
+            detail += " The routine will continue."
+        return _result(task, succeeded, cls._with_output(detail, output))
+
+    @staticmethod
+    def _start_background(
+        task: TaskDefinition,
+        command: list[str],
+        working_directory: Path,
+        environment: Mapping[str, str],
+    ) -> TaskExecutionResult:
+        process = subprocess.Popen(
+            command,
+            cwd=str(working_directory),
+            env=dict(environment),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            start_new_session=os.name != "nt",
+        )
+        return _result(
+            task,
+            True,
+            f"Started Python script in the background (process {process.pid}).",
+        )
+
+    @classmethod
+    def _with_output(cls, detail: str, output: str) -> str:
+        if not output:
+            return detail
+        if len(output) > cls.MAX_OUTPUT_LENGTH:
+            output = "… output truncated …\n" + output[-cls.MAX_OUTPUT_LENGTH :]
+        return f"{detail}\n{output}"
+
+    @staticmethod
+    def _render(template: str, context: Mapping[str, str]) -> str:
+        from automation.variables import TEMPLATE_PATTERN
+
+        return TEMPLATE_PATTERN.sub(
+            lambda match: str(context.get(match.group(1), "")),
+            template,
+        )
+
+    @staticmethod
+    def _strip_matching_quotes(value: str) -> str:
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
+            return value[1:-1]
+        return value
