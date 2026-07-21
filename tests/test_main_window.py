@@ -1397,6 +1397,26 @@ class MainWindowTests(unittest.TestCase):
         config, _password = self.window.obs_config_store.save.call_args.args
         self.assertEqual(config.host, "192.168.1.50")
 
+    def test_obs_default_audio_input_saves_and_resolves_muted_variable(self) -> None:
+        self.window.obs_config_store.save = Mock()
+        self.window.obs_connection_save_timer.setInterval(0)
+        self.window.obs_default_mute_input_edit.setText("Mic/Aux")
+        self.application.processEvents()
+        config, _password = self.window.obs_config_store.save.call_args.args
+        self.assertEqual(config.default_mute_input, "Mic/Aux")
+
+        self.window.obs_service.current_mute_state = Mock(
+            return_value=("Mic/Aux", True)
+        )
+
+        resolved = self.window._resolve_task_variables(
+            "Mic is {muted}",
+            {"muted": "--", "input": "--"},
+        )
+
+        self.window.obs_service.current_mute_state.assert_called_once_with("Mic/Aux")
+        self.assertEqual(resolved["muted"], "Muted")
+
     def test_companion_refresh_updates_stream_stats_and_chatters(self) -> None:
         token = Mock(
             user_id="42",

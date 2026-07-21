@@ -48,6 +48,13 @@ class ObsServiceTests(unittest.TestCase):
     def test_startup_auto_connect_defaults_off(self) -> None:
         self.assertFalse(ObsConnectionConfig().auto_connect)
         self.assertFalse(ObsConnectionConfig.from_dict({}).auto_connect)
+        self.assertEqual(ObsConnectionConfig.from_dict({}).default_mute_input, "")
+        self.assertEqual(
+            ObsConnectionConfig.from_dict(
+                {"default_mute_input": "  Mic/Aux  "}
+            ).default_mute_input,
+            "Mic/Aux",
+        )
 
     def test_identified_message_marks_service_connected(self) -> None:
         service = ObsWebSocketService()

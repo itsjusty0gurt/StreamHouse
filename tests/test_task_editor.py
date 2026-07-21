@@ -91,6 +91,31 @@ class TaskEditorTests(unittest.TestCase):
         self.assertEqual(message.toPlainText(), "Hello {user}")
         self.assertIn("Hello TestViewer", dialog.variable_preview_label.text())
 
+    def test_variable_reference_shows_sources_and_sample_runtime_values(self) -> None:
+        dialog = TaskEditorDialog("twitch.send_chat_message")
+        message = dialog.field_widgets["twitch.send_chat_message"]["message"]
+        message.setPlainText("Mic is {muted} while playing {game}.")
+
+        rows = {
+            dialog.variable_table.item(row, 0).text(): row
+            for row in range(dialog.variable_table.rowCount())
+        }
+
+        muted_row = rows["{muted}"]
+        game_row = rows["{game}"]
+        self.assertEqual(
+            dialog.variable_table.item(muted_row, 1).text(),
+            "OBS runtime lookup",
+        )
+        self.assertEqual(
+            dialog.variable_table.item(game_row, 1).text(),
+            "Twitch live context",
+        )
+        self.assertIn(
+            "Mic is Not Muted while playing Science & Technology.",
+            dialog.variable_preview_label.text(),
+        )
+
     def test_python_script_form_exposes_safe_execution_options(self) -> None:
         dialog = TaskEditorDialog(
             "core.run_python_script",

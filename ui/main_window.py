@@ -907,6 +907,12 @@ class MainWindow(QMainWindow):
         self.obs_password_edit.setEchoMode(QLineEdit.EchoMode.Password)
         self.obs_auto_connect_check = QCheckBox("Connect automatically when Sally opens")
         self.obs_auto_connect_check.setChecked(False)
+        self.obs_default_mute_input_edit = QLineEdit()
+        self.obs_default_mute_input_edit.setPlaceholderText("Optional, for example: Mic/Aux")
+        self.obs_default_mute_input_edit.setToolTip(
+            "Used by automation variables {mute} and {muted} when the trigger "
+            "does not already provide an OBS input."
+        )
         self.obs_status_label = QLabel("Disconnected")
         self.obs_connect_button = QPushButton("Connect")
         self.obs_disconnect_button = QPushButton("Disconnect")
@@ -917,6 +923,7 @@ class MainWindow(QMainWindow):
         obs_form.addRow("Port", self.obs_port_spin)
         obs_form.addRow("WebSocket password", self.obs_password_edit)
         obs_form.addRow("", self.obs_auto_connect_check)
+        obs_form.addRow("Default audio input", self.obs_default_mute_input_edit)
         obs_form.addRow("Status", self.obs_status_label)
         obs_form.addRow("", obs_actions)
         try:
@@ -928,6 +935,7 @@ class MainWindow(QMainWindow):
         self.obs_port_spin.setValue(obs_config.port)
         self.obs_password_edit.setText(obs_password)
         self.obs_auto_connect_check.setChecked(obs_config.auto_connect)
+        self.obs_default_mute_input_edit.setText(obs_config.default_mute_input)
         self.obs_service.configure(
             obs_config.host,
             obs_config.port,
@@ -945,6 +953,9 @@ class MainWindow(QMainWindow):
         self.obs_port_spin.valueChanged.connect(self._schedule_obs_connection_save)
         self.obs_password_edit.textChanged.connect(self._schedule_obs_connection_save)
         self.obs_auto_connect_check.toggled.connect(self._schedule_obs_connection_save)
+        self.obs_default_mute_input_edit.textChanged.connect(
+            self._schedule_obs_connection_save
+        )
         self._handle_obs_status_changed(self.obs_service.state, "Disconnected")
         bot_account_group = QGroupBox("Sally Chat Account")
         self.twitch_bot_account_group = bot_account_group
@@ -1754,6 +1765,7 @@ class MainWindow(QMainWindow):
             host=self.obs_host_edit.text().strip() or "127.0.0.1",
             port=self.obs_port_spin.value(),
             auto_connect=self.obs_auto_connect_check.isChecked(),
+            default_mute_input=self.obs_default_mute_input_edit.text().strip(),
         )
         password = self.obs_password_edit.text()
         try:
@@ -2028,6 +2040,8 @@ class MainWindow(QMainWindow):
             for key in requested.intersection({"mute", "muted"})
         ):
             input_name = str(context.get("input", "")).strip()
+            if input_name in {"", "--"}:
+                input_name = self.obs_default_mute_input_edit.text().strip()
             state = self.obs_service.current_mute_state(
                 "" if input_name == "--" else input_name
             )

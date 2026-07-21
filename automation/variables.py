@@ -40,6 +40,43 @@ VARIABLE_INFO: dict[str, tuple[str, str]] = {
     "media": ("Intro Video", "OBS media input name"),
 }
 
+VARIABLE_SOURCE_INFO: dict[str, str] = {
+    "user": "Trigger context",
+    "user_id": "Trigger context",
+    "target_user_id": "Trigger context",
+    "channel": "Twitch context",
+    "message": "Trigger context",
+    "message_id": "Trigger context",
+    "command": "Twitch command",
+    "args": "Twitch command",
+    "target": "Twitch command",
+    "uses": "Twitch command",
+    "event": "Trigger context",
+    "event_type": "Trigger context",
+    "input": "Trigger context",
+    "amount": "Trigger context",
+    "bits": "Twitch event",
+    "viewers": "Twitch event",
+    "tier": "Twitch event",
+    "reward": "Twitch reward",
+    "reward_id": "Twitch reward",
+    "reward_cost": "Twitch reward",
+    "redemption_id": "Twitch reward",
+    "title": "Twitch live context",
+    "game": "Twitch live context",
+    "uptime": "Twitch live context",
+    "followers": "Twitch live context",
+    "scene": "OBS event",
+    "source": "OBS event",
+    "output_state": "OBS event",
+    "enabled": "OBS event",
+    "mute": "OBS runtime lookup",
+    "muted": "OBS runtime lookup",
+    "volume_db": "OBS event",
+    "media": "OBS event",
+}
+
+
 TWITCH_VARIABLES = tuple(VARIABLE_INFO)
 OBS_VARIABLES = (
     "event",

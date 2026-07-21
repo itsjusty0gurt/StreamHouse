@@ -56,6 +56,7 @@ from automation.variables import (
     OBS_VARIABLES,
     TWITCH_VARIABLES,
     VARIABLE_INFO,
+    VARIABLE_SOURCE_INFO,
     TEMPLATE_PATTERN,
     render_preview,
     sample_context,
@@ -579,19 +580,20 @@ class TaskEditorDialog(QDialog):
 
     def _build_variable_help(self, layout: QVBoxLayout) -> None:
         field_keys = self.TEMPLATED_FIELDS.get(self.task_type, ())
-        if not field_keys or not self.variables:
+        if not field_keys:
             return
-        group = QGroupBox("Trigger Variables")
+        group = QGroupBox("Available Variables")
         group_layout = QVBoxLayout(group)
         help_label = QLabel(
-            "Only variables supplied by this routine's triggers are shown. "
-            "Choose a field and variable, then insert it or preview the result."
+            "Live trigger values are shown first. Other known variables use "
+            "sample values in the preview and are filled from Twitch, OBS, or "
+            "runtime context when the task runs."
         )
         help_label.setWordWrap(True)
         group_layout.addWidget(help_label)
-        self.variable_table = QTableWidget(0, 3)
+        self.variable_table = QTableWidget(0, 4)
         self.variable_table.setHorizontalHeaderLabels(
-            ("Variable", "Test value", "Meaning")
+            ("Variable", "Source", "Test value", "Meaning")
         )
         self.variable_table.horizontalHeader().setStretchLastSection(True)
         self.variable_table.setSelectionBehavior(
@@ -599,12 +601,24 @@ class TaskEditorDialog(QDialog):
         )
         self.variable_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.variable_table.setMaximumHeight(190)
-        for row, (key, value) in enumerate(self.variables.items()):
+        ordered_keys = list(self.variables)
+        ordered_keys.extend(key for key in VARIABLE_INFO if key not in self.variables)
+        self.variable_preview_context = {
+            **sample_context(ordered_keys),
+            **self.variables,
+        }
+        for row, key in enumerate(ordered_keys):
+            value = self.variable_preview_context.get(key, "")
             self.variable_table.insertRow(row)
             description = VARIABLE_INFO.get(key, (value, "Trigger value"))[1]
             self.variable_table.setItem(row, 0, QTableWidgetItem(f"{{{key}}}"))
-            self.variable_table.setItem(row, 1, QTableWidgetItem(value))
-            self.variable_table.setItem(row, 2, QTableWidgetItem(description))
+            self.variable_table.setItem(
+                row,
+                1,
+                QTableWidgetItem(VARIABLE_SOURCE_INFO.get(key, "Trigger context")),
+            )
+            self.variable_table.setItem(row, 2, QTableWidgetItem(value))
+            self.variable_table.setItem(row, 3, QTableWidgetItem(description))
         if self.variable_table.rowCount():
             self.variable_table.selectRow(0)
         group_layout.addWidget(self.variable_table)
@@ -670,7 +684,14 @@ class TaskEditorDialog(QDialog):
         else:
             template = ""
         self.variable_preview_label.setText(
-            "Preview: " + (render_preview(template, self.variables) or "(empty)")
+            "Preview: "
+            + (
+                render_preview(
+                    template,
+                    getattr(self, "variable_preview_context", self.variables),
+                )
+                or "(empty)"
+            )
         )
 
     def _build_page(self, task_type: str) -> QWidget:

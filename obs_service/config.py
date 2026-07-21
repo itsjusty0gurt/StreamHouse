@@ -14,6 +14,7 @@ class ObsConnectionConfig:
     host: str = "127.0.0.1"
     port: int = 4455
     auto_connect: bool = False
+    default_mute_input: str = ""
 
     @classmethod
     def from_dict(cls, values: dict[str, Any]) -> ObsConnectionConfig:
@@ -26,6 +27,7 @@ class ObsConnectionConfig:
             host=host[:255],
             port=min(max(port, 1), 65535),
             auto_connect=bool(values.get("auto_connect", False)),
+            default_mute_input=str(values.get("default_mute_input", "")).strip()[:255],
         )
 
 
