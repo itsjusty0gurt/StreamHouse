@@ -6,8 +6,8 @@ from collections import deque
 from time import monotonic
 from urllib.parse import urlencode
 from uuid import uuid4
-from dataclasses import asdict
-from datetime import datetime, time, timezone
+from dataclasses import asdict, replace
+from datetime import datetime, time, timedelta, timezone
 from html import escape
 from pathlib import Path
 
@@ -37,6 +37,7 @@ from PySide6.QtWidgets import (
     QMenu,
     QMessageBox,
     QPushButton,
+    QProgressBar,
     QSizePolicy,
     QScrollArea,
     QSplitter,
@@ -130,6 +131,54 @@ from ui.memory_worker import MemoryExtractionResult, MemoryExtractionWorker
 from ui.response_worker import ResponseBatchResult, ResponseDecisionWorker
 from ui.automation_page import AutomationPage
 from ui.channel_points_page import ChannelPointsPage
+
+
+class StreamMetricCard(QFrame):
+    """A compact, high-contrast metric inside Stream Overview."""
+
+    def __init__(
+        self,
+        title: str,
+        value: str,
+        accent: str,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.setObjectName("streamMetricCard")
+        self.setMinimumWidth(76)
+        self._accent = accent
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(10, 7, 10, 8)
+        layout.setSpacing(2)
+        self.title_label = QLabel(title.upper(), self)
+        self.title_label.setObjectName("streamMetricTitle")
+        self.title_label.setStyleSheet(
+            "color:#9b9ba6; font-size:9px; font-weight:600; "
+            "letter-spacing:0.5px; border:none; background:transparent;"
+        )
+        self.value_label = QLabel(value, self)
+        self.value_label.setObjectName("streamMetricValue")
+        layout.addWidget(self.title_label)
+        layout.addWidget(self.value_label)
+        self.set_accent(accent)
+
+    def set_accent(self, color: str) -> None:
+        accent = QColor(color)
+        if not accent.isValid():
+            accent = QColor("#bf94ff")
+        self._accent = accent.name()
+        self.setStyleSheet(
+            "QFrame#streamMetricCard {"
+            "background-color:#242427;"
+            "border:1px solid #3c3c42;"
+            f"border-top:3px solid {self._accent};"
+            "border-radius:6px;"
+            "}"
+            "QLabel#streamMetricValue {"
+            f"color:{self._accent}; font-size:17px; font-weight:700;"
+            "border:none; background:transparent;"
+            "}"
+        )
 
 
 class ActivityFeedCard(QFrame):
@@ -273,7 +322,11 @@ class MainWindow(QMainWindow):
             routine_store,
         )
         self.task_registry = TaskRegistry()
-        register_twitch_tasks(self.task_registry, self.twitch_service)
+        register_twitch_tasks(
+            self.task_registry,
+            self.twitch_service,
+            self._resolve_task_variables,
+        )
         self.task_registry.register(LaunchApplicationTask())
         self.task_registry.register(CloseApplicationTask())
         self.task_registry.register(DelayTask())
@@ -404,6 +457,18 @@ class MainWindow(QMainWindow):
         self._core_started_fired = False
         self._core_closing_fired = False
         self.followers_backfilled = False
+        self.stream_is_live = False
+        self.stream_started_at: datetime | None = None
+        self.ad_schedule: dict[str, object] = {}
+        self.ad_schedule_available = False
+        self.ad_next_at: datetime | None = None
+        self.ad_last_ad_at: datetime | None = None
+        self.ad_window_start_at: datetime | None = None
+        self.ad_preroll_free_until: datetime | None = None
+        self.ad_commercial_retry_until: datetime | None = None
+        self.ad_snooze_refresh_at: datetime | None = None
+        self.ad_snooze_count = 0
+        self.ad_upcoming_duration = 0
         self.ui = Ui_MainWindow()
         self.ui.setupUi(self)
         for page_title in (
@@ -641,6 +706,12 @@ class MainWindow(QMainWindow):
         self.companion_refresh_timer.setInterval(60_000)
         self.companion_refresh_timer.timeout.connect(self.refresh_stream_companion)
         self.companion_refresh_timer.start()
+        self.stream_overview_timer = QTimer(self)
+        self.stream_overview_timer.setInterval(1_000)
+        self.stream_overview_timer.timeout.connect(
+            self._update_stream_overview_clock
+        )
+        self.stream_overview_timer.start()
         self.chatter_history_save_timer = QTimer(self)
         self.chatter_history_save_timer.setInterval(10_000)
         self.chatter_history_save_timer.timeout.connect(
@@ -925,33 +996,95 @@ class MainWindow(QMainWindow):
         self.ui.mainStack.addWidget(self.connections_page)
 
         stats = QGroupBox("Stream Overview", self.ui.twitchPage)
+        self.stream_overview_group = stats
         stats.setSizePolicy(
             QSizePolicy.Policy.Preferred,
             QSizePolicy.Policy.Fixed,
         )
-        stats.setMaximumHeight(72)
+        stats.setMinimumHeight(92)
+        stats.setMaximumHeight(118)
         stats_layout = QHBoxLayout(stats)
-        self.stream_live_label = QLabel("Offline")
-        self.stream_time_label = QLabel("00:00:00")
-        self.stream_viewers_label = QLabel("0 viewers")
-        self.stream_followers_label = QLabel("0 followers")
-        self.stream_subscribers_label = QLabel("-- subscribers")
-        for label in (
-            self.stream_live_label,
-            self.stream_time_label,
-            self.stream_viewers_label,
-            self.stream_followers_label,
-            self.stream_subscribers_label,
+        stats_layout.setSpacing(8)
+        self.stream_status_card = StreamMetricCard(
+            "Status", "OFFLINE", "#8c8cff", stats
+        )
+        self.stream_uptime_card = StreamMetricCard(
+            "Uptime", "00:00:00", "#5cafff", stats
+        )
+        self.stream_viewers_card = StreamMetricCard(
+            "Live viewers", "0", "#bf94ff", stats
+        )
+        self.stream_followers_card = StreamMetricCard(
+            "Followers", "0", "#00c7ac", stats
+        )
+        self.stream_subscribers_card = StreamMetricCard(
+            "Subscribers", "—", "#ff75e6", stats
+        )
+        self.stream_live_label = self.stream_status_card.value_label
+        self.stream_time_label = self.stream_uptime_card.value_label
+        self.stream_viewers_label = self.stream_viewers_card.value_label
+        self.stream_followers_label = self.stream_followers_card.value_label
+        self.stream_subscribers_label = self.stream_subscribers_card.value_label
+        for card in (
+            self.stream_status_card,
+            self.stream_uptime_card,
+            self.stream_viewers_card,
+            self.stream_followers_card,
+            self.stream_subscribers_card,
         ):
-            stats_layout.addWidget(label)
-        stats_layout.addStretch()
+            stats_layout.addWidget(card, 1)
+        self.ui.twitchPageLayout.insertWidget(1, stats)
+
+        ad_manager = QGroupBox("Ad Manager", self.ui.twitchPage)
+        self.ad_manager_group = ad_manager
+        ad_manager.setSizePolicy(
+            QSizePolicy.Policy.Preferred,
+            QSizePolicy.Policy.Fixed,
+        )
+        ad_manager.setMaximumHeight(132)
+        ad_layout = QVBoxLayout(ad_manager)
+        ad_layout.setSpacing(5)
+        ad_header = QHBoxLayout()
+        self.ad_next_label = QLabel("Ad schedule unavailable")
+        self.ad_next_label.setObjectName("adNextLabel")
+        self.ad_next_label.setStyleSheet("font-size:13px; font-weight:700;")
+        self.ad_snooze_status_label = QLabel("Snoozes —")
+        self.ad_snooze_status_label.setStyleSheet("color:#adadb8;")
+        ad_header.addWidget(self.ad_next_label)
+        ad_header.addStretch()
+        ad_header.addWidget(self.ad_snooze_status_label)
+        ad_layout.addLayout(ad_header)
+        self.ad_schedule_progress = QProgressBar()
+        self.ad_schedule_progress.setObjectName("adScheduleProgress")
+        self.ad_schedule_progress.setRange(0, 1000)
+        self.ad_schedule_progress.setValue(0)
+        self.ad_schedule_progress.setTextVisible(False)
+        self.ad_schedule_progress.setFixedHeight(9)
+        self.ad_schedule_progress.setStyleSheet(
+            "QProgressBar {background:#18181b; border:1px solid #3c3c42; "
+            "border-radius:4px;}"
+            "QProgressBar::chunk {background:#9147ff; border-radius:3px;}"
+        )
+        ad_layout.addWidget(self.ad_schedule_progress)
+        ad_footer = QHBoxLayout()
+        self.ad_preroll_label = QLabel("Pre-roll status unavailable")
+        self.ad_preroll_label.setObjectName("adPrerollLabel")
+        self.ad_preroll_label.setStyleSheet("color:#adadb8;")
+        self.ad_last_label = QLabel("")
+        self.ad_last_label.setStyleSheet("color:#777783;")
+        ad_footer.addWidget(self.ad_preroll_label)
+        ad_footer.addWidget(self.ad_last_label)
+        ad_footer.addStretch()
         self.ad_length_combo = QComboBox()
         for seconds in (30, 60, 90, 120, 150, 180):
             self.ad_length_combo.addItem(f"{seconds}s ad", seconds)
         self.run_ad_button = QPushButton("Run Ad")
         self.snooze_ad_button = QPushButton("Snooze Ad")
         self.update_companion_permissions_button = QPushButton(
-            "Enable Stats & Chatters"
+            "Enable Stream Tools"
+        )
+        self.update_companion_permissions_button.setToolTip(
+            "Adds permissions for stream stats, chatters, roles, and ad schedule monitoring."
         )
         self.update_companion_permissions_button.clicked.connect(
             self.twitch_auth.sign_in
@@ -967,11 +1100,12 @@ class MainWindow(QMainWindow):
         )
         self.run_ad_button.clicked.connect(self.run_commercial)
         self.snooze_ad_button.clicked.connect(self.snooze_next_ad)
-        stats_layout.addWidget(self.ad_length_combo)
-        stats_layout.addWidget(self.run_ad_button)
-        stats_layout.addWidget(self.snooze_ad_button)
-        stats_layout.addWidget(self.update_companion_permissions_button)
-        self.ui.twitchPageLayout.insertWidget(1, stats)
+        ad_footer.addWidget(self.ad_length_combo)
+        ad_footer.addWidget(self.run_ad_button)
+        ad_footer.addWidget(self.snooze_ad_button)
+        ad_footer.addWidget(self.update_companion_permissions_button)
+        ad_layout.addLayout(ad_footer)
+        self.ui.twitchPageLayout.insertWidget(2, ad_manager)
 
         chatter_panel = QWidget()
         chatter_layout = QVBoxLayout(chatter_panel)
@@ -1423,8 +1557,9 @@ class MainWindow(QMainWindow):
         page = QWidget(self.channel_tabs)
         layout = QVBoxLayout(page)
         introduction = QLabel(
-            "Custom chat commands are handled locally and sent through the "
-            "configured bot account. They do not invoke Sally's AI reasoning."
+            "Custom chat commands trigger automation routines locally. A command "
+            "can optionally send a response through the configured bot account; "
+            "it does not invoke Sally's AI reasoning."
         )
         introduction.setWordWrap(True)
         layout.addWidget(introduction)
@@ -1666,6 +1801,11 @@ class MainWindow(QMainWindow):
 
     def _handle_obs_automation_event(self, obs_event: ObsEvent) -> None:
         for trigger in self.obs_trigger_store.evaluate(obs_event):
+            context = dict(trigger.context)
+            for key, value in self._twitch_command_context().items():
+                if context.get(key, "--") in {"", "--"}:
+                    context[key] = value
+            trigger = replace(trigger, context=context)
             execution = self.automation_service.publish_trigger(trigger)
             self.automation_page.record_execution(
                 execution,
@@ -1838,6 +1978,8 @@ class MainWindow(QMainWindow):
             status = (
                 "Preview: "
                 + SendTwitchChatMessageTask.render(template, result.context)
+                if template
+                else "Preview: command will trigger its automation routine without a chat response."
             )
         elif result.outcome is TwitchCommandTriggerOutcome.NOT_FOUND:
             status = "No custom command matched."
@@ -1855,14 +1997,52 @@ class MainWindow(QMainWindow):
         )
         stream = snapshot.get("stream")
         stream = stream if isinstance(stream, dict) else {}
+        channel = snapshot.get("channel")
+        channel = channel if isinstance(channel, dict) else {}
         followers = snapshot.get("followers")
         return {
             "channel": self.twitch_service.channel or "--",
             "uptime": self.stream_time_label.text(),
             "followers": "--" if followers is None else f"{int(followers):,}",
-            "game": str(stream.get("game_name") or "--"),
-            "title": str(stream.get("title") or "--"),
+            "game": str(
+                stream.get("game_name") or channel.get("game_name") or "--"
+            ),
+            "title": str(stream.get("title") or channel.get("title") or "--"),
         }
+
+    def _resolve_task_variables(
+        self,
+        template: str,
+        context: dict[str, str],
+    ) -> dict[str, str]:
+        requested = set(SendTwitchChatMessageTask.TEMPLATE_PATTERN.findall(template))
+        resolved: dict[str, str] = {}
+        live_twitch = self._twitch_command_context()
+        for key in requested.intersection(live_twitch):
+            if context.get(key, "--") in {"", "--"}:
+                value = live_twitch[key]
+                if value not in {"", "--"}:
+                    resolved[key] = value
+        if requested.intersection({"mute", "muted"}) and all(
+            context.get(key, "--") in {"", "--"}
+            for key in requested.intersection({"mute", "muted"})
+        ):
+            input_name = str(context.get("input", "")).strip()
+            state = self.obs_service.current_mute_state(
+                "" if input_name == "--" else input_name
+            )
+            if state is not None:
+                input_name, is_muted = state
+                label = "Muted" if is_muted else "Not Muted"
+                resolved.update(
+                    {
+                        "input": input_name,
+                        "source": input_name,
+                        "mute": label,
+                        "muted": label,
+                    }
+                )
+        return resolved
 
     def _build_reply_review_tab(self) -> None:
         page = QWidget(self.ai_tabs)
@@ -2229,15 +2409,13 @@ class MainWindow(QMainWindow):
             self.permission_upgrade_started = False
             self.twitch_service.disconnect()
             self.twitch_status_bar_label.setText("Twitch: Signed out")
-            self.run_ad_button.setEnabled(False)
-            self.snooze_ad_button.setEnabled(False)
+            self._apply_ad_schedule(None)
+            self._update_ad_control_state()
             self.ui.twitchSendEdit.setPlaceholderText(
                 "Sign in with your channel account to send a message"
             )
         elif signed_in:
-            scopes = set(self.twitch_auth.token.scopes) if self.twitch_auth.token else set()
-            self.run_ad_button.setEnabled("channel:edit:commercial" in scopes)
-            self.snooze_ad_button.setEnabled("channel:manage:ads" in scopes)
+            self._update_ad_control_state()
             self.ui.twitchChannelEdit.setText(detail)
             self.ui.twitchSendEdit.setPlaceholderText(
                 f"Send a message as @{detail}"
@@ -4363,6 +4541,7 @@ class MainWindow(QMainWindow):
                 self.ui.twitchChatFontCombo.currentFont().family()
             ),
             twitch_chat_font_size=self.ui.twitchChatFontSizeSpin.value(),
+            twitch_last_ad_duration=self.settings.twitch_last_ad_duration,
             local_ai_enabled=self.local_ai_enabled_check.isChecked(),
             local_ai_endpoint=self.local_ai_endpoint_edit.text(),
             local_ai_model=self.local_ai_model_edit.text(),
@@ -4423,6 +4602,11 @@ class MainWindow(QMainWindow):
     def _apply_settings(self, settings: AppSettings) -> None:
         Logger.set_level(getattr(logging, settings.log_level))
         self.ui.logOutput.setMaximumBlockCount(settings.ui_log_limit)
+        ad_duration_index = self.ad_length_combo.findData(
+            settings.twitch_last_ad_duration
+        )
+        if ad_duration_index >= 0:
+            self.ad_length_combo.setCurrentIndex(ad_duration_index)
         self.ui.toggleDeveloperToolsButton.setEnabled(
             settings.show_developer_tools
         )
@@ -5186,43 +5370,35 @@ class MainWindow(QMainWindow):
             self.twitch_auth.recover_unauthorized()
         if isinstance(stream, dict):
             self._maybe_announce_training_capture()
+            self.stream_is_live = True
             self.stream_live_label.setText("LIVE")
-            self.stream_live_label.setStyleSheet(
-                "color:#ff4f64; font-weight:bold;"
-            )
+            self.stream_status_card.set_accent("#ff4f64")
             self.stream_viewers_label.setText(
-                f"{int(stream.get('viewer_count', 0)):,} viewers"
+                f"{int(stream.get('viewer_count', 0)):,}"
             )
-            started_at = datetime.fromisoformat(
-                str(stream.get("started_at", "")).replace("Z", "+00:00")
-            )
-            elapsed = max(
-                int(
-                    (datetime.now(timezone.utc) - started_at).total_seconds()
-                ),
-                0,
-            )
-            self.stream_time_label.setText(
-                f"{elapsed // 3600:02}:"
-                f"{elapsed % 3600 // 60:02}:{elapsed % 60:02}"
+            self.stream_started_at = self._parse_twitch_timestamp(
+                stream.get("started_at")
             )
         else:
-            self.stream_live_label.setText("Offline")
-            self.stream_live_label.setStyleSheet("")
-            self.stream_viewers_label.setText("0 viewers")
-            self.stream_time_label.setText("00:00:00")
+            self.stream_is_live = False
+            self.stream_started_at = None
+            self.stream_live_label.setText("OFFLINE")
+            self.stream_status_card.set_accent("#8c8cff")
+            self.stream_viewers_label.setText("0")
         followers = snapshot.get("followers")
         self.stream_followers_label.setText(
-            "-- followers"
+            "—"
             if followers is None
-            else f"{int(followers):,} followers"
+            else f"{int(followers):,}"
         )
         subscribers = snapshot.get("subscribers")
         self.stream_subscribers_label.setText(
-            "-- subscribers"
+            "—"
             if subscribers is None
-            else f"{int(subscribers):,} subscribers"
+            else f"{int(subscribers):,}"
         )
+        self._apply_ad_schedule(snapshot.get("ad_schedule"))
+        self._update_stream_overview_clock()
         self._apply_chatter_groups(result)
         if result.followers:
             for follower in result.followers:
@@ -5236,6 +5412,225 @@ class MainWindow(QMainWindow):
                 )
             self.followers_backfilled = True
             self._refresh_memory_viewer_list()
+
+    def _apply_ad_schedule(self, value: object) -> None:
+        self.ad_schedule_available = isinstance(value, dict)
+        schedule = value if isinstance(value, dict) else {}
+        self.ad_schedule = dict(schedule)
+        self.ad_next_at = self._parse_twitch_timestamp(
+            schedule.get("next_ad_at")
+        )
+        last_ad_at = self._parse_twitch_timestamp(schedule.get("last_ad_at"))
+        self.ad_window_start_at = (
+            last_ad_at
+            if last_ad_at is not None
+            and self.ad_next_at is not None
+            and last_ad_at < self.ad_next_at
+            else datetime.now(timezone.utc)
+        )
+        self.ad_snooze_refresh_at = self._parse_twitch_timestamp(
+            schedule.get("snooze_refresh_at")
+        )
+        self.ad_snooze_count = self._safe_nonnegative_int(
+            schedule.get("snooze_count")
+        )
+        self.ad_upcoming_duration = self._safe_nonnegative_int(
+            schedule.get("duration")
+        )
+        preroll_seconds = self._safe_nonnegative_int(
+            schedule.get("preroll_free_time")
+        )
+        self.ad_preroll_free_until = (
+            datetime.now(timezone.utc) + timedelta(seconds=preroll_seconds)
+            if preroll_seconds > 0
+            else None
+        )
+        self.ad_last_ad_at = last_ad_at
+        if last_ad_at is not None:
+            schedule_retry = last_ad_at + timedelta(minutes=8)
+            if (
+                schedule_retry > datetime.now(timezone.utc)
+                and (
+                    self.ad_commercial_retry_until is None
+                    or schedule_retry > self.ad_commercial_retry_until
+                )
+            ):
+                self.ad_commercial_retry_until = schedule_retry
+
+    @Slot()
+    def _update_stream_overview_clock(self) -> None:
+        now = datetime.now(timezone.utc)
+        if self.stream_is_live and self.stream_started_at is not None:
+            elapsed = max(int((now - self.stream_started_at).total_seconds()), 0)
+            self.stream_time_label.setText(self._clock_text(elapsed, hours=True))
+        else:
+            self.stream_time_label.setText("00:00:00")
+
+        token = self.twitch_auth.token
+        scopes = set(token.scopes) if token is not None else set()
+        can_read_schedule = "channel:read:ads" in scopes
+        if not self.stream_is_live:
+            self.ad_next_label.setText("Ad schedule available while live")
+            self.ad_preroll_label.setText("Pre-roll status unavailable offline")
+            self.ad_last_label.setText("")
+            self.ad_snooze_status_label.setText("Snoozes —")
+            self.ad_schedule_progress.setValue(0)
+            self._update_ad_control_state(now)
+            return
+        if not can_read_schedule:
+            self.ad_next_label.setText("Enable ad schedule access")
+            self.ad_preroll_label.setText(
+                "Update Twitch permissions to monitor ads and pre-rolls"
+            )
+            self.ad_last_label.setText("")
+            self.ad_snooze_status_label.setText("Snoozes —")
+            self.ad_schedule_progress.setValue(0)
+            self._update_ad_control_state(now)
+            return
+        if not self.ad_schedule_available:
+            self.ad_next_label.setText("Ad schedule unavailable")
+            self.ad_preroll_label.setText("Waiting for Twitch ad schedule data")
+            self.ad_last_label.setText("")
+            self.ad_snooze_status_label.setText("Snoozes —")
+            self.ad_schedule_progress.setValue(0)
+            self._update_ad_control_state(now)
+            return
+
+        if self.ad_next_at is None:
+            self.ad_next_label.setText("No automatic ad scheduled")
+            self.ad_schedule_progress.setValue(0)
+        else:
+            remaining = max(int((self.ad_next_at - now).total_seconds()), 0)
+            duration = (
+                f"{self.ad_upcoming_duration}s "
+                if self.ad_upcoming_duration
+                else ""
+            )
+            self.ad_next_label.setText(
+                f"Next {duration}ad in {self._clock_text(remaining)}"
+                if remaining
+                else f"Next {duration}ad is due now"
+            )
+            window_start = self.ad_window_start_at or now
+            total = max(int((self.ad_next_at - window_start).total_seconds()), 1)
+            elapsed = max(int((now - window_start).total_seconds()), 0)
+            self.ad_schedule_progress.setValue(
+                min(round(elapsed / total * 1000), 1000)
+            )
+
+        preroll_remaining = (
+            max(int((self.ad_preroll_free_until - now).total_seconds()), 0)
+            if self.ad_preroll_free_until is not None
+            else 0
+        )
+        if preroll_remaining:
+            self.ad_preroll_label.setText(
+                f"Pre-roll free for {self._clock_text(preroll_remaining)}"
+            )
+            self.ad_preroll_label.setStyleSheet(
+                "color:#00c7ac; font-weight:600;"
+            )
+        else:
+            self.ad_preroll_label.setText("Pre-rolls active")
+            self.ad_preroll_label.setStyleSheet("color:#f5c542; font-weight:600;")
+
+        last_ad_at = getattr(self, "ad_last_ad_at", None)
+        self.ad_last_label.setText(
+            f"• Last ad {self._elapsed_short(last_ad_at, now)}"
+            if last_ad_at is not None
+            else ""
+        )
+        snooze_text = f"Snoozes {self.ad_snooze_count}"
+        if (
+            self.ad_snooze_refresh_at is not None
+            and self.ad_snooze_refresh_at > now
+        ):
+            snooze_text += (
+                f" • +1 in {self._clock_text(int((self.ad_snooze_refresh_at - now).total_seconds()))}"
+            )
+        self.ad_snooze_status_label.setText(snooze_text)
+        self._update_ad_control_state(now)
+
+    def _update_ad_control_state(self, now: datetime | None = None) -> None:
+        current = now or datetime.now(timezone.utc)
+        token = self.twitch_auth.token
+        scopes = set(token.scopes) if token is not None else set()
+        retry_ready = (
+            self.ad_commercial_retry_until is None
+            or self.ad_commercial_retry_until <= current
+        )
+        self.run_ad_button.setEnabled(
+            self.stream_is_live
+            and "channel:edit:commercial" in scopes
+            and retry_ready
+        )
+        if not retry_ready and self.ad_commercial_retry_until is not None:
+            remaining = max(
+                int((self.ad_commercial_retry_until - current).total_seconds()),
+                0,
+            )
+            self.run_ad_button.setToolTip(
+                f"Another commercial can run in {self._clock_text(remaining)}."
+            )
+        else:
+            self.run_ad_button.setToolTip(
+                "Requires channel:edit:commercial and an eligible live channel."
+            )
+        schedule_known = (
+            "channel:read:ads" in scopes and self.ad_schedule_available
+        )
+        self.snooze_ad_button.setEnabled(
+            self.stream_is_live
+            and "channel:manage:ads" in scopes
+            and (
+                not schedule_known
+                or (self.ad_next_at is not None and self.ad_snooze_count > 0)
+            )
+        )
+
+    @staticmethod
+    def _parse_twitch_timestamp(value: object) -> datetime | None:
+        text = str(value or "").strip()
+        if not text:
+            return None
+        try:
+            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        return parsed.replace(tzinfo=parsed.tzinfo or timezone.utc).astimezone(
+            timezone.utc
+        )
+
+    @staticmethod
+    def _safe_nonnegative_int(value: object) -> int:
+        try:
+            return max(int(value or 0), 0)
+        except (TypeError, ValueError):
+            return 0
+
+    @staticmethod
+    def _clock_text(seconds: int, *, hours: bool = False) -> str:
+        value = max(int(seconds), 0)
+        if hours or value >= 3600:
+            return (
+                f"{value // 3600:02}:"
+                f"{value % 3600 // 60:02}:{value % 60:02}"
+            )
+        return f"{value // 60:02}:{value % 60:02}"
+
+    @staticmethod
+    def _session_duration_text(seconds: int) -> str:
+        value = max(int(seconds), 0)
+        return f"{value // 3600}h:{value % 3600 // 60:02}m"
+
+    @staticmethod
+    def _elapsed_short(value: datetime, now: datetime) -> str:
+        seconds = max(int((now - value).total_seconds()), 0)
+        if seconds < 60:
+            return "just now"
+        if seconds < 3600:
+            return f"{seconds // 60}m ago"
+        return f"{seconds // 3600}h ago"
 
     @Slot()
     def _expire_daily_memory(self) -> None:
@@ -5519,10 +5914,7 @@ class MainWindow(QMainWindow):
                 started_text = started.astimezone().strftime(
                     "%b %d, %Y %H:%M"
                 )
-                duration_text = (
-                    f"{duration_seconds // 3600:02}:"
-                    f"{duration_seconds % 3600 // 60:02}"
-                )
+                duration_text = self._session_duration_text(duration_seconds)
             except ValueError:
                 started_text = session.started_at
                 duration_text = "--"
@@ -5787,13 +6179,33 @@ class MainWindow(QMainWindow):
         token = self.twitch_auth.token
         if token is None or not self.twitch_service.broadcaster_user_id:
             return
+        duration = int(self.ad_length_combo.currentData())
+        if self.settings.twitch_last_ad_duration != duration:
+            self.settings.twitch_last_ad_duration = duration
+            try:
+                self.settings_store.save(self.settings)
+            except OSError as error:
+                Logger.warning(
+                    f"Could not save the last ad duration: {error}",
+                    source="SETTINGS",
+                )
         try:
             result = self.twitch_service.helix.start_commercial(
                 self.twitch_service.broadcaster_user_id,
-                int(self.ad_length_combo.currentData()),
+                duration,
                 token,
             )
-            self.statusBar().showMessage(str(result.get("message", "Commercial started.")), 8000)
+            retry_after = self._safe_nonnegative_int(result.get("retry_after"))
+            self.ad_commercial_retry_until = (
+                datetime.now(timezone.utc) + timedelta(seconds=retry_after)
+                if retry_after
+                else None
+            )
+            self._update_ad_control_state()
+            self.statusBar().showMessage(
+                str(result.get("message") or "Commercial started."), 8000
+            )
+            QTimer.singleShot(1_000, self.refresh_stream_companion)
         except Exception as error:
             self.handle_twitch_error(f"Could not start commercial: {error}")
 
@@ -5803,10 +6215,22 @@ class MainWindow(QMainWindow):
         if token is None or not self.twitch_service.broadcaster_user_id:
             return
         try:
-            self.twitch_service.helix.snooze_ad(
+            result = self.twitch_service.helix.snooze_ad(
                 self.twitch_service.broadcaster_user_id,
                 token,
             )
+            self.ad_schedule_available = True
+            self.ad_schedule.update(result)
+            self.ad_next_at = self._parse_twitch_timestamp(
+                result.get("next_ad_at")
+            )
+            self.ad_snooze_refresh_at = self._parse_twitch_timestamp(
+                result.get("snooze_refresh_at")
+            )
+            self.ad_snooze_count = self._safe_nonnegative_int(
+                result.get("snooze_count")
+            )
+            self._update_stream_overview_clock()
             self.statusBar().showMessage("Next ad snoozed by 5 minutes.", 8000)
         except Exception as error:
             self.handle_twitch_error(f"Could not snooze ad: {error}")

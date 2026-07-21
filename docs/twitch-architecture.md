@@ -86,6 +86,14 @@ backup. Command triggers persist at `twitch/commands.json`; their managed
 routines persist at `automation/routines.json`. Both are included in Sally
 backups. Older chatter records migrate through defaulted version-three fields.
 
+The stream companion reads Twitch's ad schedule with `channel:read:ads` and
+shows the next break and duration, the last break, remaining pre-roll-free
+time, available snoozes, and the next snooze refresh. A one-second local timer
+updates countdowns between the normal one-minute Helix refreshes. Running and
+snoozing ads continue to require `channel:edit:commercial` and
+`channel:manage:ads`; the last manually used commercial duration is retained
+as a local UI preference.
+
 Editing a Twitch command updates its managed chat-response task in place. Any
 additional tasks attached in Automation remain ordered and intact, even when
 the response task has been moved away from the first position.

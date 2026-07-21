@@ -32,5 +32,6 @@ TWITCH_COMPANION_SCOPES = frozenset(
         "moderation:read",
         "channel:read:vips",
         "channel:read:subscriptions",
+        "channel:read:ads",
     }
 )

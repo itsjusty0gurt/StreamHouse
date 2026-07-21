@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from typing import Mapping
 from urllib.error import HTTPError, URLError
 
@@ -42,14 +43,22 @@ class SendTwitchChatMessageTask:
             "source",
             "output_state",
             "enabled",
+            "mute",
             "muted",
             "volume_db",
             "media",
         }
     )
 
-    def __init__(self, twitch_service: TwitchService) -> None:
+    def __init__(
+        self,
+        twitch_service: TwitchService,
+        variable_resolver: Callable[
+            [str, Mapping[str, str]], Mapping[str, str]
+        ] | None = None,
+    ) -> None:
         self.twitch_service = twitch_service
+        self.variable_resolver = variable_resolver
 
     def execute(
         self,
@@ -66,7 +75,10 @@ class SendTwitchChatMessageTask:
                 succeeded=False,
                 detail=str(error),
             )
-        message = self.render(template, trigger.context)[:500]
+        context = dict(trigger.context)
+        if self.variable_resolver is not None:
+            context.update(self.variable_resolver(template, context))
+        message = self.render(template, context)[:500]
         succeeded = self.twitch_service.send_message(
             message,
             as_bot=bool(task.config.get("as_bot", True)),
@@ -91,7 +103,7 @@ class SendTwitchChatMessageTask:
     @classmethod
     def render(cls, template: str, values: Mapping[str, str]) -> str:
         return cls.TEMPLATE_PATTERN.sub(
-            lambda match: values.get(match.group(1), "--"),
+            lambda match: str(values.get(match.group(1), "--")).strip(),
             template,
         )
 
@@ -107,9 +119,17 @@ TWITCH_TASK_LABELS = {
 
 
 class TwitchAutomationTask:
-    def __init__(self, service: TwitchService, task_type: str) -> None:
+    def __init__(
+        self,
+        service: TwitchService,
+        task_type: str,
+        variable_resolver: Callable[
+            [str, Mapping[str, str]], Mapping[str, str]
+        ] | None = None,
+    ) -> None:
         self.service = service
         self.task_type = task_type
+        self.variable_resolver = variable_resolver
 
     def execute(
         self, task: TaskDefinition, trigger: TriggerEvent
@@ -126,9 +146,12 @@ class TwitchAutomationTask:
 
     def _execute(self, task: TaskDefinition, trigger: TriggerEvent) -> str:
         config = task.config
-        render = lambda key, default="": SendTwitchChatMessageTask.render(
-            str(config.get(key, default)), trigger.context
-        ).strip()
+        def render(key: str, default: str = "") -> str:
+            template = str(config.get(key, default))
+            context = dict(trigger.context)
+            if self.variable_resolver is not None:
+                context.update(self.variable_resolver(template, context))
+            return SendTwitchChatMessageTask.render(template, context).strip()
         if self.task_type == "twitch.send_pinned_message":
             message = render("message")[:500]
             SendTwitchChatMessageTask.validate_template(
@@ -172,8 +195,16 @@ class TwitchAutomationTask:
         raise ValueError(f"Unsupported Twitch task type: {self.task_type}")
 
 
-def register_twitch_tasks(registry, service: TwitchService) -> None:
-    registry.register(SendTwitchChatMessageTask(service))
+def register_twitch_tasks(
+    registry,
+    service: TwitchService,
+    variable_resolver: Callable[
+        [str, Mapping[str, str]], Mapping[str, str]
+    ] | None = None,
+) -> None:
+    registry.register(SendTwitchChatMessageTask(service, variable_resolver))
     for task_type in TWITCH_TASK_LABELS:
         if task_type != SendTwitchChatMessageTask.task_type:
-            registry.register(TwitchAutomationTask(service, task_type))
+            registry.register(
+                TwitchAutomationTask(service, task_type, variable_resolver)
+            )

@@ -34,6 +34,7 @@ class TwitchHelixClient:
     GLOBAL_BADGES_URL = "https://api.twitch.tv/helix/chat/badges/global"
     CHANNEL_BADGES_URL = "https://api.twitch.tv/helix/chat/badges"
     STREAMS_URL = "https://api.twitch.tv/helix/streams"
+    CHANNELS_URL = "https://api.twitch.tv/helix/channels"
     FOLLOWERS_URL = "https://api.twitch.tv/helix/channels/followers"
     CHANNEL_SUBSCRIPTIONS_URL = "https://api.twitch.tv/helix/subscriptions"
     CHATTERS_URL = "https://api.twitch.tv/helix/chat/chatters"
@@ -387,10 +388,16 @@ class TwitchHelixClient:
         stream_payload = self._read_json(Request(
             f"{self.STREAMS_URL}?{urlencode({'user_id': broadcaster_id})}", headers=headers
         ))
+        channel_payload = self._read_json(Request(
+            f"{self.CHANNELS_URL}?{urlencode({'broadcaster_id': broadcaster_id})}",
+            headers=headers,
+        ))
         result = {
             "stream": (stream_payload.get("data") or [None])[0],
+            "channel": (channel_payload.get("data") or [None])[0],
             "followers": None,
             "subscribers": None,
+            "ad_schedule": None,
             "warnings": [],
         }
         scopes = set(token.scopes)
@@ -410,6 +417,18 @@ class TwitchHelixClient:
                 result["subscribers"] = int(subscriptions.get("total", 0))
             except (HTTPError, URLError, OSError, ValueError) as error:
                 result["warnings"].append(f"subscribers: {error}")
+        if "channel:read:ads" in scopes:
+            try:
+                ad_payload = self._read_json(
+                    Request(
+                        f"{self.AD_SCHEDULE_URL}?"
+                        f"{urlencode({'broadcaster_id': broadcaster_id})}",
+                        headers=headers,
+                    )
+                )
+                result["ad_schedule"] = (ad_payload.get("data") or [None])[0]
+            except (HTTPError, URLError, OSError, ValueError) as error:
+                result["warnings"].append(f"ad schedule: {error}")
         return result
 
     def get_chatters(self, broadcaster_id: str, moderator_id: str, token: TwitchToken) -> list[dict]:

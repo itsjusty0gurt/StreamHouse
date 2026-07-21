@@ -453,16 +453,13 @@ class RoutineStore:
         trigger_id: str,
         name: str,
         managed_by: str,
-        task_type: str,
-        task_name: str,
-        task_config: dict[str, Any],
+        task_type: str = "",
+        task_name: str = "",
+        task_config: dict[str, Any] | None = None,
     ) -> RoutineDefinition:
-        routine = RoutineDefinition(
-            routine_id=uuid4().hex,
-            name=self._clean_name(name),
-            trigger_id=trigger_id.strip(),
-            managed_by=managed_by,
-            tasks=[
+        tasks = []
+        if task_type.strip() and task_config is not None:
+            tasks.append(
                 TaskDefinition(
                     task_id=uuid4().hex,
                     task_type=task_type.strip().casefold(),
@@ -470,7 +467,13 @@ class RoutineStore:
                     config=deepcopy(task_config),
                     managed_key=managed_by,
                 )
-            ],
+            )
+        routine = RoutineDefinition(
+            routine_id=uuid4().hex,
+            name=self._clean_name(name),
+            trigger_id=trigger_id.strip(),
+            managed_by=managed_by,
+            tasks=tasks,
         )
         routines = deepcopy(self.routines)
         routines.append(routine)
@@ -483,9 +486,9 @@ class RoutineStore:
         *,
         trigger_id: str,
         managed_by: str,
-        task_type: str,
-        task_name: str,
-        task_config: dict[str, Any],
+        task_type: str = "",
+        task_name: str = "",
+        task_config: dict[str, Any] | None = None,
     ) -> RoutineDefinition:
         routines = deepcopy(self.routines)
         routine = self._find_routine(routines, routine_id)
@@ -495,16 +498,17 @@ class RoutineStore:
             routine.additional_trigger_ids.insert(0, routine.trigger_id)
         routine.trigger_id = trigger_id.strip()
         routine.managed_by = managed_by
-        routine.tasks.insert(
-            0,
-            TaskDefinition(
-                task_id=uuid4().hex,
-                task_type=task_type.strip().casefold(),
-                name=self._clean_name(task_name),
-                config=deepcopy(task_config),
-                managed_key=managed_by,
-            ),
-        )
+        if task_type.strip() and task_config is not None:
+            routine.tasks.insert(
+                0,
+                TaskDefinition(
+                    task_id=uuid4().hex,
+                    task_type=task_type.strip().casefold(),
+                    name=self._clean_name(task_name),
+                    config=deepcopy(task_config),
+                    managed_key=managed_by,
+                ),
+            )
         self._commit(deepcopy(self.groups), routines)
         return self.get(routine_id)  # type: ignore[return-value]
 
@@ -561,7 +565,7 @@ class RoutineStore:
         managed_by: str,
         task_type: str,
         task_name: str,
-        task_config: dict[str, Any],
+        task_config: dict[str, Any] | None,
     ) -> RoutineDefinition:
         routines = deepcopy(self.routines)
         routine = self._find_routine(routines, routine_id)
@@ -569,7 +573,10 @@ class RoutineStore:
             raise ValueError("The selected routine is not managed by this trigger.")
         routine.name = self._clean_name(name)
         task = self.managed_task(routine, managed_by, task_type)
-        if task is None:
+        if task_config is None:
+            if task is not None:
+                routine.tasks.remove(task)
+        elif task is None:
             task = TaskDefinition(
                 task_id=uuid4().hex,
                 task_type=task_type.strip().casefold(),

@@ -35,6 +35,7 @@ class AppSettings:
     twitch_chat_show_timestamps: bool = True
     twitch_chat_font_family: str = "Segoe UI"
     twitch_chat_font_size: int = 10
+    twitch_last_ad_duration: int = 30
     local_ai_enabled: bool = True
     local_ai_endpoint: str = "http://127.0.0.1:11434"
     local_ai_model: str = "qwen3:14b"
@@ -120,6 +121,16 @@ class AppSettings:
         if not isinstance(font_size, int) or isinstance(font_size, bool):
             font_size = defaults.twitch_chat_font_size
         font_size = min(max(font_size, 8), 24)
+
+        ad_duration = values.get(
+            "twitch_last_ad_duration", defaults.twitch_last_ad_duration
+        )
+        if (
+            not isinstance(ad_duration, int)
+            or isinstance(ad_duration, bool)
+            or ad_duration not in {30, 60, 90, 120, 150, 180}
+        ):
+            ad_duration = defaults.twitch_last_ad_duration
 
         local_ai_enabled = values.get("local_ai_enabled", defaults.local_ai_enabled)
         if not isinstance(local_ai_enabled, bool):
@@ -297,6 +308,7 @@ class AppSettings:
             twitch_chat_show_timestamps=show_timestamps,
             twitch_chat_font_family=font_family,
             twitch_chat_font_size=font_size,
+            twitch_last_ad_duration=ad_duration,
             local_ai_enabled=local_ai_enabled,
             local_ai_endpoint=local_ai_endpoint,
             local_ai_model=local_ai_model,

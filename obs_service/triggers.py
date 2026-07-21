@@ -217,6 +217,16 @@ class ObsTriggerStore:
                 if value is not None and str(value).strip():
                     return str(value)
             return "--"
+
+        muted_value = values.get("inputMuted")
+        if isinstance(muted_value, bool):
+            muted = "Muted" if muted_value else "Not Muted"
+        elif str(muted_value).strip().casefold() in {"true", "1", "yes", "on"}:
+            muted = "Muted"
+        elif str(muted_value).strip().casefold() in {"false", "0", "no", "off"}:
+            muted = "Not Muted"
+        else:
+            muted = "--" if muted_value is None else str(muted_value).strip()
         return {
             "event": OBS_TRIGGER_TYPES.get(event.event_type, event.event_type),
             "event_type": event.event_type,
@@ -225,7 +235,8 @@ class ObsTriggerStore:
             "input": first("inputName"),
             "output_state": first("outputState"),
             "enabled": first("sceneItemEnabled", "studioModeEnabled"),
-            "muted": first("inputMuted"),
+            "mute": muted,
+            "muted": muted,
             "volume_db": first("inputVolumeDb"),
             "media": first("inputName"),
             "channel": "--", "user": "--", "message": "--", "amount": "--",

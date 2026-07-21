@@ -51,7 +51,7 @@ class TwitchCommandDialog(QDialog):
         self.response_edit = QTextEdit(response)
         self.response_edit.setAcceptRichText(False)
         self.response_edit.setPlaceholderText(
-            "Hey {user}, find the community at https://example.com"
+            "Optional — leave blank to only run the automation routine"
         )
         self.response_edit.setMaximumHeight(110)
         self.permission_combo = QComboBox()
@@ -76,13 +76,13 @@ class TwitchCommandDialog(QDialog):
         )
         form.addRow("Command", self.name_edit)
         form.addRow("Alternate commands", self.aliases_edit)
-        form.addRow("Response", self.response_edit)
+        form.addRow("Chat response (optional)", self.response_edit)
         form.addRow("Permission", self.permission_combo)
         form.addRow("Global cooldown", self.global_cooldown_spin)
         form.addRow("Viewer cooldown", self.user_cooldown_spin)
         layout.addLayout(form)
         variables = QLabel(
-            "Variables: {user}, {channel}, {uptime}, {followers}, {game}, "
+            "Optional response variables: {user}, {channel}, {uptime}, {followers}, {game}, "
             "{title}, {command}, {args}, {target}, {uses}"
         )
         variables.setWordWrap(True)
@@ -133,7 +133,7 @@ class TwitchCommandManagerDialog(QDialog):
         introduction = QLabel(
             "Commands are Twitch triggers attached to routines. Create New adds "
             "a command to the selected routine; Edit Selected can update any "
-            "existing command."
+            "existing command. Chat response text is optional."
         )
         introduction.setWordWrap(True)
         layout.addWidget(introduction)

@@ -119,7 +119,7 @@ class TwitchCommandTriggerStoreTests(unittest.TestCase):
         self.assertTrue(trigger.routine_id)
         self.assertEqual(self.store.response_for(trigger), "Hello {user}")
         saved = json.loads(self.path.read_text(encoding="utf-8"))
-        self.assertEqual(saved["version"], 2)
+        self.assertEqual(saved["version"], 3)
         self.assertIn("triggers", saved)
 
     def test_validation_rejects_collisions_reserved_names_and_bad_variables(self) -> None:
@@ -162,6 +162,90 @@ class TwitchCommandTriggerStoreTests(unittest.TestCase):
         )
         self.assertEqual(len(loaded.load()), 1)
         self.assertEqual(loaded.response_for(loaded.triggers[0]), "Welcome {user}")
+
+    def test_command_can_trigger_routine_without_chat_response(self) -> None:
+        routine = self.routine_store.add("Toggle the lights")
+        task = self.routine_store.add_task(
+            routine.routine_id,
+            task_type="core.open_path",
+            name="Run lighting automation",
+            config={"path": "lights.py"},
+        )
+
+        trigger = self.store.attach_routine(
+            routine.routine_id,
+            "lights",
+            "",
+        )
+
+        attached = self.routine_store.get(routine.routine_id)
+        self.assertEqual(attached.trigger_id, trigger.trigger_id)
+        self.assertEqual([value.task_id for value in attached.tasks], [task.task_id])
+        self.assertEqual(self.store.response_for(trigger), "")
+
+        chat_task = self.routine_store.add_task(
+            routine.routine_id,
+            task_type=SendTwitchChatMessageTask.task_type,
+            name="A normal automation task",
+            config={"message": "This task is not the command response"},
+        )
+        self.store.update(
+            trigger.trigger_id,
+            name="lights",
+            response="",
+            aliases=[],
+            permission="everyone",
+            global_cooldown_seconds=10,
+            user_cooldown_seconds=30,
+        )
+        self.assertEqual(self.store.response_for(trigger), "")
+        self.assertIn(
+            chat_task.task_id,
+            [value.task_id for value in self.routine_store.get(routine.routine_id).tasks],
+        )
+
+        loaded = TwitchCommandTriggerStore(
+            self.path,
+            RoutineStore(self.routine_store.path),
+        )
+        self.assertEqual(len(loaded.load()), 1)
+        self.assertEqual(loaded.response_for(loaded.triggers[0]), "")
+
+    def test_clearing_response_removes_only_managed_response_task(self) -> None:
+        trigger = self.store.add("hello", "Hello {user}")
+        extra = self.routine_store.add_task(
+            trigger.routine_id,
+            task_type="core.delay",
+            name="Wait",
+            config={"seconds": 1},
+        )
+
+        self.store.update(
+            trigger.trigger_id,
+            name="hello",
+            response="",
+            aliases=[],
+            permission="everyone",
+            global_cooldown_seconds=0,
+            user_cooldown_seconds=0,
+        )
+
+        routine = self.routine_store.get(trigger.routine_id)
+        self.assertEqual([task.task_id for task in routine.tasks], [extra.task_id])
+        self.assertEqual(self.store.response_for(trigger), "")
+
+        self.store.update(
+            trigger.trigger_id,
+            name="hello",
+            response="Done, {user}",
+            aliases=[],
+            permission="everyone",
+            global_cooldown_seconds=0,
+            user_cooldown_seconds=0,
+        )
+
+        self.assertEqual(self.store.response_for(trigger), "Done, {user}")
+        self.assertEqual(len(self.routine_store.get(trigger.routine_id).tasks), 2)
 
     def test_trigger_can_attach_to_and_detach_from_existing_routine(self) -> None:
         routine = self.routine_store.add("Existing workflow")

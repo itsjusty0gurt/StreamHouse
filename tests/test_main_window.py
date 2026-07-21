@@ -27,9 +27,11 @@ from automation.models import (
     TaskExecutionResult,
 )
 from obs_service.triggers import OBS_TRIGGER_TYPES
+from obs_service.models import ObsEvent
 from twitch.commands import TwitchCommandTriggerStore
 from twitch.automation_triggers import TwitchEventTriggerStore
 from twitch.service import TwitchConnectionState
+from twitch.session_history import StreamSession
 from twitch.models import (
     TwitchChatNotice,
     TwitchEmote,
@@ -41,9 +43,10 @@ from twitch.models import (
     TwitchReply,
 )
 from ui.main_window import MainWindow
+from ui.companion_worker import CompanionRefreshResult
 from ui.memory_worker import MemoryExtractionResult
 from ui.response_worker import ResponseBatchResult
-from ui.twitch_command_dialog import TwitchCommandManagerDialog
+from ui.twitch_command_dialog import TwitchCommandDialog, TwitchCommandManagerDialog
 
 
 class MainWindowTests(unittest.TestCase):
@@ -381,6 +384,26 @@ class MainWindowTests(unittest.TestCase):
         )
         self.assertFalse(attached_manager.create_button.isEnabled())
         attached_manager.close()
+
+    def test_twitch_command_dialog_allows_trigger_only_command(self) -> None:
+        dialog = TwitchCommandDialog(self.window)
+        dialog.name_edit.setText("lights")
+
+        values = dialog.values()
+
+        self.assertEqual(values["response"], "")
+        command = self.twitch_command_trigger_store.add(**values)
+        self.assertEqual(
+            self.twitch_command_trigger_store.response_for(command),
+            "",
+        )
+        self.assertEqual(
+            self.twitch_command_trigger_store.routine_store.get(
+                command.routine_id
+            ).tasks,
+            [],
+        )
+        dialog.close()
 
     def test_task_drag_reorder_persists_to_routine(self) -> None:
         store = self.twitch_command_trigger_store.routine_store
@@ -734,6 +757,42 @@ class MainWindowTests(unittest.TestCase):
         self.assertEqual(command.uses, 1)
         self.window._queue_response_decision.assert_not_called()
 
+    def test_twitch_command_task_resolves_live_obs_and_twitch_variables(self) -> None:
+        self.twitch_command_trigger_store.add(
+            "status",
+            "Mic is {muted}; playing {game}.",
+            global_cooldown_seconds=0,
+            user_cooldown_seconds=0,
+        )
+        self.window.last_companion_result = CompanionRefreshResult(
+            request_id=1,
+            snapshot={
+                "stream": None,
+                "channel": {"game_name": "Science & Technology"},
+            },
+        )
+        self.window.obs_service.current_mute_state = Mock(
+            return_value=("Mic/Aux", False)
+        )
+        self.window.twitch_service.send_message = Mock(return_value=True)
+
+        self.window.handle_twitch_message(
+            TwitchMessage(
+                username="Viewer",
+                text="!status",
+                received_at=datetime.now(timezone.utc),
+                user_id="viewer-1",
+                user_login="viewer",
+                broadcaster_user_id="broadcaster-1",
+            )
+        )
+
+        self.window.obs_service.current_mute_state.assert_called_once_with("")
+        self.window.twitch_service.send_message.assert_called_once_with(
+            "Mic is Not Muted; playing Science & Technology.",
+            as_bot=True,
+        )
+
     def test_twitch_command_actions_require_a_selected_command(self) -> None:
         self.window._refresh_twitch_commands()
 
@@ -834,8 +893,13 @@ class MainWindowTests(unittest.TestCase):
         ):
             self.assertTrue(title.isHidden())
 
-        overview = self.window.stream_live_label.parentWidget()
-        self.assertLessEqual(overview.maximumHeight(), 72)
+        overview = self.window.stream_overview_group
+        self.assertLessEqual(overview.maximumHeight(), 118)
+        self.assertIsNot(overview, self.window.ad_manager_group)
+        self.assertEqual(
+            len(overview.findChildren(type(self.window.stream_status_card))),
+            5,
+        )
         self.assertLessEqual(
             self.window.chatter_list.parentWidget().maximumWidth(),
             210,
@@ -935,6 +999,46 @@ class MainWindowTests(unittest.TestCase):
         )
         self.assertEqual(self.window.automation_page.history[0]["result"], "Completed")
 
+    def test_obs_trigger_uses_mute_alias_and_twitch_channel_context(self) -> None:
+        routine_store = self.twitch_command_trigger_store.routine_store
+        routine = routine_store.add("Report mute state")
+        routine_store.add_task(
+            routine.routine_id,
+            task_type="twitch.send_chat_message",
+            name="Report status",
+            config={
+                "message": "Mic is {mute} while playing {game}",
+                "as_bot": True,
+            },
+        )
+        self.window.obs_trigger_store.add(
+            routine.routine_id,
+            "InputMuteStateChanged",
+        )
+        self.window.last_companion_result = CompanionRefreshResult(
+            request_id=1,
+            snapshot={
+                "stream": None,
+                "channel": {
+                    "game_name": "Science & Technology",
+                    "title": "Building Sally",
+                },
+            },
+        )
+        self.window.twitch_service.send_message = Mock(return_value=True)
+
+        self.window._handle_obs_automation_event(
+            ObsEvent(
+                "InputMuteStateChanged",
+                {"inputName": "Mic/Aux", "inputMuted": True},
+            )
+        )
+
+        self.window.twitch_service.send_message.assert_called_once_with(
+            "Mic is Muted while playing Science & Technology",
+            as_bot=True,
+        )
+
     def test_stream_online_event_posts_training_notice_once(self) -> None:
         self.window.settings.ai_training_capture_enabled = True
         self.window.settings.ai_training_notice_enabled = True
@@ -992,6 +1096,7 @@ class MainWindowTests(unittest.TestCase):
             twitch_chat_show_timestamps=False,
             twitch_chat_font_family="Consolas",
             twitch_chat_font_size=14,
+            twitch_last_ad_duration=120,
             local_ai_endpoint="http://localhost:11434",
             local_ai_model="qwen3:14b",
         )
@@ -1039,6 +1144,7 @@ class MainWindowTests(unittest.TestCase):
             self.window.ai_allow_strong_profanity_check.isChecked()
         )
         self.assertEqual(self.window.ui.twitchChatFontSizeSpin.value(), 14)
+        self.assertEqual(self.window.ad_length_combo.currentData(), 120)
         self.assertEqual(
             self.window.ui.twitchChatOutput.document()
             .defaultFont()
@@ -1327,9 +1433,9 @@ class MainWindowTests(unittest.TestCase):
         self.window.refresh_stream_companion()
         self.application.processEvents()
 
-        self.assertEqual(self.window.stream_live_label.text(), "Offline")
-        self.assertEqual(self.window.stream_followers_label.text(), "123 followers")
-        self.assertEqual(self.window.stream_subscribers_label.text(), "7 subscribers")
+        self.assertEqual(self.window.stream_live_label.text(), "OFFLINE")
+        self.assertEqual(self.window.stream_followers_label.text(), "123")
+        self.assertEqual(self.window.stream_subscribers_label.text(), "7")
         self.assertEqual(self.window.chatter_title_label.text(), "Chatters (5)")
         expected_groups = (
             ("Moderators (1)", "ModOne"),
@@ -1366,13 +1472,95 @@ class MainWindowTests(unittest.TestCase):
             self.window.chatter_list.topLevelItem(4).child(0).text(0),
             "ViewerOne",
         )
-
         self.window.handle_twitch_auth_changed(
             TwitchAuthState.SIGNED_IN,
             "sallybot",
         )
         self.assertEqual(self.window.ui.twitchAccountStatusLabel.text(), "sallybot")
         self.assertTrue(self.window.ui.twitchSignOutButton.isEnabled())
+
+    def test_live_overview_cards_and_ad_manager_show_schedule(self) -> None:
+        now = datetime.now(timezone.utc)
+        self.window.twitch_auth.token = Mock(
+            scopes=[
+                "channel:read:ads",
+                "channel:manage:ads",
+                "channel:edit:commercial",
+            ]
+        )
+        self.window._apply_companion_refresh(
+            CompanionRefreshResult(
+                request_id=self.window.companion_refresh_request_id,
+                snapshot={
+                    "stream": {
+                        "id": "stream-1",
+                        "viewer_count": 42,
+                        "started_at": (now - timedelta(seconds=3661)).isoformat(),
+                    },
+                    "followers": 445,
+                    "subscribers": 12,
+                    "ad_schedule": {
+                        "next_ad_at": (now + timedelta(minutes=10)).isoformat(),
+                        "last_ad_at": (now - timedelta(minutes=20)).isoformat(),
+                        "duration": 90,
+                        "preroll_free_time": 300,
+                        "snooze_count": 2,
+                        "snooze_refresh_at": (
+                            now + timedelta(minutes=30)
+                        ).isoformat(),
+                    },
+                },
+            )
+        )
+
+        self.assertEqual(self.window.stream_live_label.text(), "LIVE")
+        self.assertEqual(self.window.stream_viewers_label.text(), "42")
+        self.assertEqual(self.window.stream_followers_label.text(), "445")
+        self.assertEqual(self.window.stream_subscribers_label.text(), "12")
+        self.assertTrue(self.window.stream_time_label.text().startswith("01:01:"))
+        self.assertIn("#ff4f64", self.window.stream_status_card.styleSheet())
+        self.assertIn("Next 90s ad in", self.window.ad_next_label.text())
+        self.assertIn("Pre-roll free for", self.window.ad_preroll_label.text())
+        self.assertIn("Snoozes 2", self.window.ad_snooze_status_label.text())
+        self.assertGreater(self.window.ad_schedule_progress.value(), 0)
+        self.assertTrue(self.window.run_ad_button.isEnabled())
+        self.assertTrue(self.window.snooze_ad_button.isEnabled())
+
+    def test_stream_session_duration_uses_hours_and_minutes(self) -> None:
+        self.session_store.sessions = [
+            StreamSession(
+                started_at="2026-07-20T08:00:00+00:00",
+                ended_at="2026-07-20T10:07:59+00:00",
+            )
+        ]
+
+        self.window._refresh_session_history()
+
+        self.assertEqual(self.window.session_table.item(0, 1).text(), "2h:07m")
+
+    def test_running_ad_remembers_duration_and_applies_retry_cooldown(self) -> None:
+        self.window.stream_is_live = True
+        self.window.twitch_auth.token = Mock(scopes=["channel:edit:commercial"])
+        self.window.twitch_service.broadcaster_user_id = "42"
+        self.window.twitch_service.helix.start_commercial = Mock(
+            return_value={"message": "Commercial started", "retry_after": 480}
+        )
+        self.window.settings_store.save = Mock()
+        self.window.ad_length_combo.setCurrentIndex(
+            self.window.ad_length_combo.findData(90)
+        )
+
+        with patch("ui.main_window.QTimer.singleShot"):
+            self.window.run_commercial()
+
+        self.assertEqual(self.window.settings.twitch_last_ad_duration, 90)
+        self.window.settings_store.save.assert_called_once_with(
+            self.window.settings
+        )
+        self.window.twitch_service.helix.start_commercial.assert_called_once_with(
+            "42", 90, self.window.twitch_auth.token
+        )
+        self.assertFalse(self.window.run_ad_button.isEnabled())
 
     def test_twitch_event_viewer_filters_details_and_clears(self) -> None:
         self.window.ui.twitchChannelEdit.setText("channel")

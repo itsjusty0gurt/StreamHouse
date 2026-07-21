@@ -29,6 +29,7 @@ class SettingsStoreTests(unittest.TestCase):
             twitch_chat_show_timestamps=False,
             twitch_chat_font_family="Consolas",
             twitch_chat_font_size=13,
+            twitch_last_ad_duration=90,
             local_ai_enabled=True,
             local_ai_endpoint="http://localhost:11434",
             local_ai_model="qwen3:14b",
@@ -72,6 +73,7 @@ class SettingsStoreTests(unittest.TestCase):
                     "twitch_chat_show_timestamps": "yes",
                     "twitch_chat_font_family": "",
                     "twitch_chat_font_size": 100,
+                    "twitch_last_ad_duration": 45,
                     "local_ai_enabled": "yes",
                     "local_ai_endpoint": "not-a-url",
                     "local_ai_model": "",
@@ -111,6 +113,7 @@ class SettingsStoreTests(unittest.TestCase):
         self.assertTrue(settings.twitch_chat_show_timestamps)
         self.assertEqual(settings.twitch_chat_font_family, "Segoe UI")
         self.assertEqual(settings.twitch_chat_font_size, 24)
+        self.assertEqual(settings.twitch_last_ad_duration, 30)
         self.assertTrue(settings.local_ai_enabled)
         self.assertEqual(settings.local_ai_endpoint, "http://127.0.0.1:11434")
         self.assertEqual(settings.local_ai_model, "qwen3:14b")

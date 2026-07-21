@@ -34,7 +34,8 @@ VARIABLE_INFO: dict[str, tuple[str, str]] = {
     "source": ("Camera", "OBS scene source name"),
     "output_state": ("OBS_WEBSOCKET_OUTPUT_STARTED", "OBS output state"),
     "enabled": ("true", "OBS source or Studio Mode state"),
-    "muted": ("false", "OBS input mute state"),
+    "mute": ("Not Muted", "OBS input mute state"),
+    "muted": ("Not Muted", "OBS input mute state"),
     "volume_db": ("-8.0", "OBS input volume in decibels"),
     "media": ("Intro Video", "OBS media input name"),
 }
@@ -48,6 +49,7 @@ OBS_VARIABLES = (
     "input",
     "output_state",
     "enabled",
+    "mute",
     "muted",
     "volume_db",
     "media",
@@ -80,6 +82,8 @@ def sample_context(keys: Iterable[str]) -> dict[str, str]:
 
 def render_preview(template: str, context: Mapping[str, str]) -> str:
     return TEMPLATE_PATTERN.sub(
-        lambda match: context.get(match.group(1), f"{{{match.group(1)}}}"),
+        lambda match: str(
+            context.get(match.group(1), f"{{{match.group(1)}}}")
+        ).strip(),
         template,
     )

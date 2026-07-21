@@ -47,6 +47,7 @@ class TwitchCommandTrigger:
     enabled: bool = True
     uses: int = 0
     last_used_at: str = ""
+    has_chat_response: bool = True
 
     @classmethod
     def from_dict(cls, values: Mapping[str, Any]) -> TwitchCommandTrigger:
@@ -74,6 +75,7 @@ class TwitchCommandTrigger:
             enabled=bool(values.get("enabled", True)),
             uses=max(int(values.get("uses", 0)), 0),
             last_used_at=str(values.get("last_used_at", "")),
+            has_chat_response=bool(values.get("has_chat_response", True)),
         )
 
 
@@ -105,7 +107,7 @@ class TwitchCommandTriggerResult:
 
 
 class TwitchCommandTriggerStore:
-    VERSION = 2
+    VERSION = 3
     MANAGED_BY = "twitch.command"
     NAME_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]{0,24}$")
     RESERVED_NAMES = frozenset({"sallymemory", "sallytrain"})
@@ -141,9 +143,9 @@ class TwitchCommandTriggerStore:
                 continue
             try:
                 trigger = TwitchCommandTrigger.from_dict(value)
-                response = str(value.get("response", "")).strip()
-                if not trigger.routine_id and response:
-                    SendTwitchChatMessageTask.validate_template(response)
+                response = self._validated_response(value.get("response", ""))
+                if not trigger.routine_id:
+                    trigger.has_chat_response = bool(response)
                     routine = self._create_routine(trigger, response)
                     trigger.routine_id = routine.routine_id
                     migrated = True
@@ -168,14 +170,14 @@ class TwitchCommandTriggerStore:
     def add(
         self,
         name: str,
-        response: str,
+        response: str = "",
         *,
         aliases: list[str] | tuple[str, ...] = (),
         permission: str = TwitchCommandPermission.EVERYONE.value,
         global_cooldown_seconds: int = 10,
         user_cooldown_seconds: int = 30,
     ) -> TwitchCommandTrigger:
-        SendTwitchChatMessageTask.validate_template(response.strip())
+        response = self._validated_response(response)
         trigger = TwitchCommandTrigger(
             trigger_id=uuid4().hex,
             routine_id="",
@@ -184,9 +186,10 @@ class TwitchCommandTriggerStore:
             permission=str(permission).casefold(),
             global_cooldown_seconds=int(global_cooldown_seconds),
             user_cooldown_seconds=int(user_cooldown_seconds),
+            has_chat_response=bool(response),
         )
         self._validate_trigger(trigger)
-        routine = self._create_routine(trigger, response.strip())
+        routine = self._create_routine(trigger, response)
         trigger.routine_id = routine.routine_id
         self.triggers.append(trigger)
         try:
@@ -203,14 +206,14 @@ class TwitchCommandTriggerStore:
         self,
         routine_id: str,
         name: str,
-        response: str,
+        response: str = "",
         *,
         aliases: list[str] | tuple[str, ...] = (),
         permission: str = TwitchCommandPermission.EVERYONE.value,
         global_cooldown_seconds: int = 10,
         user_cooldown_seconds: int = 30,
     ) -> TwitchCommandTrigger:
-        SendTwitchChatMessageTask.validate_template(response.strip())
+        response = self._validated_response(response)
         trigger = TwitchCommandTrigger(
             trigger_id=uuid4().hex,
             routine_id=routine_id,
@@ -219,6 +222,7 @@ class TwitchCommandTriggerStore:
             permission=str(permission).casefold(),
             global_cooldown_seconds=int(global_cooldown_seconds),
             user_cooldown_seconds=int(user_cooldown_seconds),
+            has_chat_response=bool(response),
         )
         self._validate_trigger(trigger)
         self.routine_store.attach_managed(
@@ -227,7 +231,11 @@ class TwitchCommandTriggerStore:
             managed_by=self.MANAGED_BY,
             task_type=SendTwitchChatMessageTask.task_type,
             task_name="Send Twitch chat response",
-            task_config={"message": response.strip(), "as_bot": True},
+            task_config=(
+                {"message": response, "as_bot": True}
+                if response
+                else None
+            ),
         )
         self.triggers.append(trigger)
         try:
@@ -252,7 +260,7 @@ class TwitchCommandTriggerStore:
         trigger = self.get(trigger_id)
         if trigger is None:
             raise ValueError("The selected Twitch command trigger no longer exists.")
-        SendTwitchChatMessageTask.validate_template(response.strip())
+        response = self._validated_response(response)
         candidate = TwitchCommandTrigger(
             trigger_id=trigger.trigger_id,
             routine_id=trigger.routine_id,
@@ -264,20 +272,28 @@ class TwitchCommandTriggerStore:
             enabled=trigger.enabled,
             uses=trigger.uses,
             last_used_at=trigger.last_used_at,
+            has_chat_response=bool(response),
         )
         self._validate_trigger(candidate, excluding_id=trigger_id)
         routine = self.routine_store.get(trigger.routine_id)
         managed_name = f"Command !{candidate.name}"
         if routine is not None and routine.name != f"Command !{trigger.name}":
             managed_name = routine.name
-        self.routine_store.update_managed_task(
-            trigger.routine_id,
-            name=managed_name,
-            managed_by=self.MANAGED_BY,
-            task_type=SendTwitchChatMessageTask.task_type,
-            task_name="Send Twitch chat response",
-            task_config={"message": response.strip(), "as_bot": True},
-        )
+        if response or trigger.has_chat_response:
+            self.routine_store.update_managed_task(
+                trigger.routine_id,
+                name=managed_name,
+                managed_by=self.MANAGED_BY,
+                task_type=SendTwitchChatMessageTask.task_type,
+                task_name="Send Twitch chat response",
+                task_config=(
+                    {"message": response, "as_bot": True}
+                    if response
+                    else None
+                ),
+            )
+        else:
+            self.routine_store.update(trigger.routine_id, name=managed_name)
         index = self.triggers.index(trigger)
         self.triggers[index] = candidate
         self.save()
@@ -318,6 +334,8 @@ class TwitchCommandTriggerStore:
         self.save()
 
     def response_for(self, trigger: TwitchCommandTrigger) -> str:
+        if not trigger.has_chat_response:
+            return ""
         routine = self.routine_store.get(trigger.routine_id)
         if routine is None:
             return ""
@@ -366,7 +384,11 @@ class TwitchCommandTriggerStore:
             managed_by=self.MANAGED_BY,
             task_type=SendTwitchChatMessageTask.task_type,
             task_name="Send Twitch chat response",
-            task_config={"message": response, "as_bot": True},
+            task_config=(
+                {"message": response, "as_bot": True}
+                if response
+                else None
+            ),
         )
 
     def _validate_routine(self, trigger: TwitchCommandTrigger) -> None:
@@ -382,11 +404,19 @@ class TwitchCommandTriggerStore:
             self.MANAGED_BY,
             SendTwitchChatMessageTask.task_type,
         )
-        if task is None:
+        if trigger.has_chat_response and task is None:
             raise ValueError("The Twitch command trigger has no response task.")
-        SendTwitchChatMessageTask.validate_template(
-            str(task.config.get("message", ""))
-        )
+        if task is not None:
+            SendTwitchChatMessageTask.validate_template(
+                str(task.config.get("message", ""))
+            )
+
+    @staticmethod
+    def _validated_response(value: object) -> str:
+        response = str(value or "").strip()
+        if response:
+            SendTwitchChatMessageTask.validate_template(response)
+        return response
 
     def _validate_trigger(
         self,

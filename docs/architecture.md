@@ -145,6 +145,9 @@ Qwen decides whether a message warrants a response or should be escalated to a
 future cloud provider. Sally Core owns routing, privacy, cooldown, and safety
 rules so model providers remain replaceable.
 
+The broader local-first AI, voice, TTS, memory, and routing direction is captured
+in `docs/offline-design-checkpoint-2026-07-20.md`.
+
 ## Future avatar and Twitch extension
 
 The future avatar is a browser-source overlay hosted by Sally for OBS. Initial

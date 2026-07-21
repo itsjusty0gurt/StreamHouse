@@ -1,8 +1,11 @@
 import json
+import os
 import unittest
 from unittest.mock import Mock, patch
 
-from PySide6.QtCore import QCoreApplication
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+from PySide6.QtWidgets import QApplication
 
 from twitch.auth import TwitchToken
 from twitch.live import TwitchEventSubSocket, TwitchHelixClient
@@ -25,6 +28,52 @@ class _JsonResponse:
 
 
 class TwitchHelixClientTests(unittest.TestCase):
+    @patch("twitch.live.urlopen")
+    def test_companion_snapshot_includes_official_ad_schedule_fields(
+        self, open_url
+    ) -> None:
+        schedule = {
+            "next_ad_at": "2026-07-20T16:30:00Z",
+            "last_ad_at": "2026-07-20T16:00:00Z",
+            "duration": 90,
+            "preroll_free_time": 1200,
+            "snooze_count": 2,
+            "snooze_refresh_at": "2026-07-20T17:00:00Z",
+        }
+        open_url.side_effect = (
+            _JsonResponse({"data": [{"id": "stream-1"}]}),
+            _JsonResponse(
+                {
+                    "data": [
+                        {
+                            "game_name": "Science & Technology",
+                            "title": "Building Sally",
+                        }
+                    ]
+                }
+            ),
+            _JsonResponse({"data": [schedule]}),
+        )
+        token = TwitchToken(
+            "access", "refresh", 999, ["channel:read:ads"]
+        )
+
+        snapshot = TwitchHelixClient().get_companion_snapshot(
+            "channel-1", token
+        )
+
+        self.assertEqual(snapshot["ad_schedule"], schedule)
+        self.assertEqual(
+            snapshot["channel"]["game_name"],
+            "Science & Technology",
+        )
+        channel_request = open_url.call_args_list[1].args[0]
+        self.assertIn("helix/channels", channel_request.full_url)
+        self.assertIn("broadcaster_id=channel-1", channel_request.full_url)
+        request = open_url.call_args_list[2].args[0]
+        self.assertIn("channels/ads", request.full_url)
+        self.assertIn("broadcaster_id=channel-1", request.full_url)
+
     @patch("twitch.live.urlopen")
     def test_paginated_collection_follows_cursor(self, open_url) -> None:
         open_url.side_effect = (
@@ -163,7 +212,7 @@ class TwitchHelixClientTests(unittest.TestCase):
 class TwitchEventSubSocketTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        cls.application = QCoreApplication.instance() or QCoreApplication([])
+        cls.application = QApplication.instance() or QApplication([])
 
     def test_welcome_and_chat_notification_are_forwarded_once(self) -> None:
         welcomes = []

@@ -6,7 +6,7 @@ import json
 from collections.abc import Callable
 from uuid import uuid4
 
-from PySide6.QtCore import QObject, QTimer, QUrl, Signal
+from PySide6.QtCore import QEventLoop, QObject, QTimer, QUrl, Signal
 from PySide6.QtNetwork import QAbstractSocket
 from PySide6.QtWebSockets import QWebSocket
 
@@ -34,6 +34,8 @@ class ObsWebSocketService(QObject):
         self._intentional_close = True
         self._identified = False
         self._callbacks: dict[str, Callable[[ObsRequestResult], None]] = {}
+        self._input_mute_states: dict[str, bool] = {}
+        self._primary_audio_input = ""
         self.reconnect_timer = QTimer(self)
         self.reconnect_timer.setSingleShot(True)
         self.reconnect_timer.setInterval(2_000)
@@ -132,6 +134,83 @@ class ObsWebSocketService(QObject):
             found,
         )
 
+    def current_mute_state(
+        self,
+        input_name: str = "",
+        *,
+        timeout_ms: int = 1500,
+    ) -> tuple[str, bool] | None:
+        """Read an OBS input's current mute state for task variables."""
+        if not self.connected:
+            return None
+        name = input_name.strip()
+        if not name or name == "--":
+            name = self._primary_audio_input
+        if not name:
+            inputs_result = self._request_sync(
+                "GetInputList",
+                timeout_ms=timeout_ms,
+            )
+            if inputs_result is None or not inputs_result.succeeded:
+                return None
+            raw_inputs = inputs_result.response_data.get("inputs", [])
+            inputs = [
+                value
+                for value in raw_inputs
+                if isinstance(value, dict)
+                and str(value.get("inputName", "")).strip()
+            ] if isinstance(raw_inputs, list) else []
+            if not inputs:
+                return None
+
+            def priority(value: dict[str, object]) -> tuple[int, str]:
+                candidate = str(value.get("inputName", "")).strip()
+                kind = str(value.get("inputKind", "")).casefold()
+                lowered = candidate.casefold()
+                if "mic" in lowered or "microphone" in lowered:
+                    rank = 0
+                elif "input_capture" in kind and "output" not in kind:
+                    rank = 1
+                elif "audio" in lowered:
+                    rank = 2
+                else:
+                    rank = 3
+                return rank, lowered
+
+            name = str(min(inputs, key=priority).get("inputName", "")).strip()
+            self._primary_audio_input = name
+        mute_result = self._request_sync(
+            "GetInputMute",
+            {"inputName": name},
+            timeout_ms=timeout_ms,
+        )
+        if mute_result is None or not mute_result.succeeded:
+            return None
+        muted = bool(mute_result.response_data.get("inputMuted", False))
+        self._input_mute_states[name] = muted
+        self._primary_audio_input = name
+        return name, muted
+
+    def _request_sync(
+        self,
+        request_type: str,
+        request_data: dict[str, object] | None = None,
+        *,
+        timeout_ms: int = 1500,
+    ) -> ObsRequestResult | None:
+        result: list[ObsRequestResult] = []
+        loop = QEventLoop()
+
+        def completed(value: ObsRequestResult) -> None:
+            result.append(value)
+            loop.quit()
+
+        self.send_request(request_type, request_data, completed)
+        QTimer.singleShot(max(int(timeout_ms), 1), loop.quit)
+        if not result:
+            loop.exec()
+        return result[0] if result else None
+
     def _set_resolved_scene_item(
         self, scene_name: str, item_id: object, enabled: bool
     ) -> None:
@@ -221,6 +300,13 @@ class ObsWebSocketService(QObject):
     def _publish_event(self, event_type: str, event_data: dict[str, object]) -> None:
         if not event_type:
             return
+        if event_type == "InputMuteStateChanged":
+            input_name = str(event_data.get("inputName", "")).strip()
+            if input_name and isinstance(event_data.get("inputMuted"), bool):
+                self._input_mute_states[input_name] = bool(
+                    event_data["inputMuted"]
+                )
+                self._primary_audio_input = input_name
         event = ObsEvent(event_type, dict(event_data))
         Events.emit("obs_event", obs_event=event)
         Events.emit(f"obs_event.{event_type}", obs_event=event)

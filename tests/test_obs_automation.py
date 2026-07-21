@@ -5,6 +5,7 @@ import hashlib
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import Mock
 
 from PySide6.QtWidgets import QApplication
 
@@ -12,7 +13,7 @@ from automation.core_tasks import DelayTask, WaitForServiceTask
 from automation.models import TaskDefinition, TriggerEvent
 from automation.routines import RoutineStore
 from automation.tasks import TaskRegistry
-from obs_service.models import ObsConnectionState, ObsEvent
+from obs_service.models import ObsConnectionState, ObsEvent, ObsRequestResult
 from obs_service.config import ObsConnectionConfig
 from obs_service.service import ObsWebSocketService
 from obs_service.tasks import OBS_TASK_LABELS, register_obs_tasks
@@ -55,6 +56,47 @@ class ObsServiceTests(unittest.TestCase):
         self.assertTrue(service.connected)
         service.disconnect()
 
+    def test_current_mute_state_queries_preferred_microphone(self) -> None:
+        service = ObsWebSocketService()
+        service.state = ObsConnectionState.CONNECTED
+        service._identified = True
+        service._request_sync = Mock(
+            side_effect=(
+                ObsRequestResult(
+                    "list",
+                    "GetInputList",
+                    True,
+                    100,
+                    response_data={
+                        "inputs": [
+                            {
+                                "inputName": "Desktop Audio",
+                                "inputKind": "wasapi_output_capture",
+                            },
+                            {
+                                "inputName": "Mic/Aux",
+                                "inputKind": "wasapi_input_capture",
+                            },
+                        ]
+                    },
+                ),
+                ObsRequestResult(
+                    "mute",
+                    "GetInputMute",
+                    True,
+                    100,
+                    response_data={"inputMuted": True},
+                ),
+            )
+        )
+
+        self.assertEqual(service.current_mute_state(), ("Mic/Aux", True))
+        self.assertEqual(
+            service._request_sync.call_args_list[1].args,
+            ("GetInputMute", {"inputName": "Mic/Aux"}),
+        )
+        service.disconnect()
+
 
 class ObsTriggerStoreTests(unittest.TestCase):
     def test_round_trip_and_filter_match(self) -> None:
@@ -77,6 +119,19 @@ class ObsTriggerStoreTests(unittest.TestCase):
             store = ObsTriggerStore(Path(directory) / "obs.json", routines)
             with self.assertRaises(ValueError):
                 store.add(routine.routine_id, "MadeUpEvent")
+
+    def test_mute_context_is_human_readable(self) -> None:
+        muted = ObsTriggerStore.context_for(
+            ObsEvent("InputMuteStateChanged", {"inputMuted": True})
+        )
+        unmuted = ObsTriggerStore.context_for(
+            ObsEvent("InputMuteStateChanged", {"inputMuted": False})
+        )
+
+        self.assertEqual(muted["muted"], "Muted")
+        self.assertEqual(muted["mute"], "Muted")
+        self.assertEqual(unmuted["muted"], "Not Muted")
+        self.assertEqual(unmuted["mute"], "Not Muted")
 
 
 class ObsTaskTests(unittest.TestCase):

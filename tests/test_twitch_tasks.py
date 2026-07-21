@@ -5,6 +5,7 @@ import unittest
 from automation.models import TaskDefinition, TriggerEvent
 from automation.tasks import TaskRegistry
 from twitch.tasks import TWITCH_TASK_LABELS, register_twitch_tasks
+from twitch.tasks import SendTwitchChatMessageTask
 
 
 class FakeTwitchService:
@@ -64,6 +65,15 @@ class TwitchTaskTests(unittest.TestCase):
 
     def test_all_twitch_tasks_are_registered(self) -> None:
         self.assertEqual(set(TWITCH_TASK_LABELS), set(self.registry.registered_types()))
+
+    def test_template_variables_do_not_include_value_padding(self) -> None:
+        self.assertEqual(
+            SendTwitchChatMessageTask.render(
+                "hey {user}!",
+                {"user": "  TestViewer  "},
+            ),
+            "hey TestViewer!",
+        )
 
     def test_moderation_uses_trigger_user_and_message_ids(self) -> None:
         self.assertTrue(
