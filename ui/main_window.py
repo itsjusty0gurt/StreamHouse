@@ -57,6 +57,7 @@ from core.events import Events
 from core.logger import Logger
 from core.settings import AppSettings, SettingsStore
 from automation.service import AutomationService
+from automation.custom_variables import CustomVariableStore
 from automation.core_triggers import CoreTriggerStore
 from automation.core_tasks import (
     CloseApplicationTask,
@@ -68,6 +69,10 @@ from automation.core_tasks import (
     WaitForServiceTask,
 )
 from automation.tasks import TaskRegistry
+from automation.variable_tasks import RunRoutineTask, register_variable_tasks
+from automation.logic_tasks import register_logic_tasks
+from automation.file_tasks import register_file_tasks
+from automation.queues import AutomationQueueManager, AutomationQueueStore
 from ai.providers import OllamaProvider
 from ai.memory_extractor import BufferedChatMessage
 from ai.memory import build_viewer_context
@@ -314,6 +319,31 @@ class MainWindow(QMainWindow):
             routine_store=routine_store,
         )
         data_root = routine_store.path.parent.parent
+        self.custom_variable_store = CustomVariableStore(
+            routine_store.path.with_name("variables.json")
+        )
+        try:
+            self.custom_variable_store.load()
+        except (OSError, ValueError, json.JSONDecodeError) as error:
+            self.custom_variable_store.global_values = {}
+            Logger.warning(
+                f"Could not load automation variables: {error}",
+                source="AUTOMATION",
+            )
+        self.automation_queue_store = AutomationQueueStore(
+            routine_store.path.with_name("queues.json")
+        )
+        try:
+            self.automation_queue_store.load()
+        except (OSError, ValueError, json.JSONDecodeError) as error:
+            self.automation_queue_store.queues = []
+            Logger.warning(
+                f"Could not load automation queues: {error}",
+                source="AUTOMATION",
+            )
+        self.automation_queue_manager = AutomationQueueManager(
+            self.automation_queue_store
+        )
         self.obs_service = obs_service or ObsWebSocketService(self)
         self.obs_config_store = obs_config_store or ObsConfigStore(
             data_root / "obs" / "connection.json"
@@ -334,6 +364,8 @@ class MainWindow(QMainWindow):
         self.task_registry.register(OpenTargetTask())
         self.task_registry.register(PlayAudioTask())
         self.task_registry.register(PythonScriptTask())
+        register_variable_tasks(self.task_registry, self.custom_variable_store)
+        register_file_tasks(self.task_registry)
         self.task_registry.register(
             WaitForServiceTask(
                 lambda service: (
@@ -347,7 +379,16 @@ class MainWindow(QMainWindow):
         self.automation_service = AutomationService(
             self.twitch_command_trigger_store.routine_store,
             self.task_registry,
+            self.custom_variable_store,
+            self.automation_queue_manager,
         )
+        self.task_registry.register(
+            RunRoutineTask(
+                self.automation_service.run_nested_routine,
+                self.automation_service.routine_name,
+            )
+        )
+        register_logic_tasks(self.task_registry, self.automation_service)
         self.training_opted_in_users: set[str] = set()
         self.training_notice_attempt_context = ""
         try:
@@ -1753,6 +1794,8 @@ class MainWindow(QMainWindow):
             self.automation_service,
             obs_service=self.obs_service,
             commands_changed=self._refresh_twitch_commands,
+            queue_store=self.automation_queue_store,
+            queue_manager=self.automation_queue_manager,
         )
         self.ui.mainStack.addWidget(self.automation_page)
 

@@ -373,7 +373,7 @@ class AutomationServiceTests(unittest.TestCase):
         self.store.load()
 
         saved = json.loads(self.store.path.read_text(encoding="utf-8"))
-        self.assertEqual(saved["version"], 3)
+        self.assertEqual(saved["version"], 4)
         self.assertEqual(saved["groups"], [])
         self.assertEqual(saved["routines"][0]["routine_id"], "legacy-routine")
         self.assertEqual(saved["routines"][0]["tasks"][0]["task_id"], "legacy-task")

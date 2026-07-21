@@ -25,6 +25,7 @@ from automation.models import (
     AutomationExecutionResult,
     RoutineExecutionResult,
     TaskExecutionResult,
+    TriggerEvent,
 )
 from obs_service.triggers import OBS_TRIGGER_TYPES
 from obs_service.models import ObsEvent
@@ -187,6 +188,34 @@ class MainWindowTests(unittest.TestCase):
         saved = store.get(routine.routine_id)
         self.assertEqual(saved.name, "Welcome Everyone")
         self.assertEqual(saved.description, "Updated description")
+
+    def test_automation_queues_tab_assigns_and_displays_pending_routines(self) -> None:
+        page = self.window.automation_page
+        queue = self.window.automation_queue_store.add("Soundboard")
+        self.window.automation_queue_store.update(queue.queue_id, paused=True)
+        store = self.twitch_command_trigger_store.routine_store
+        routine = store.add("Play sound", trigger_id="sound", queue_id=queue.queue_id)
+        store.add_task(
+            routine.routine_id,
+            task_type="core.delay",
+            name="Tiny delay",
+            config={"seconds": 0},
+        )
+
+        execution = self.window.automation_service.publish_trigger(
+            TriggerEvent("sound", "test", "event", {"user": "Viewer"})
+        )
+        page.refresh(routine.routine_id)
+        page._refresh_queues(queue.queue_id)
+
+        self.assertTrue(execution.succeeded)
+        self.assertEqual(page.tabs.tabText(1), "Queues")
+        self.assertEqual(page.pending_queue_list.count(), 1)
+        self.assertIn("Play sound", page.pending_queue_list.item(0).text())
+        self.assertEqual(
+            page.settings_queue_combo.currentData(),
+            queue.queue_id,
+        )
 
     def test_task_add_menu_is_grouped_by_service(self) -> None:
         menu = QMenu()

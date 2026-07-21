@@ -20,6 +20,9 @@ from PySide6.QtGui import QDesktopServices
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 
 from automation.models import TaskDefinition, TaskExecutionResult, TriggerEvent
+from automation.variable_tasks import VARIABLE_TASK_LABELS
+from automation.logic_tasks import LOGIC_TASK_LABELS
+from automation.file_tasks import FILE_TASK_LABELS
 
 
 CORE_TASK_LABELS = {
@@ -31,6 +34,9 @@ CORE_TASK_LABELS = {
     "core.run_python_script": "Core — Run Python script",
 }
 CORE_TASK_LABELS["core.play_audio"] = "Play audio file"
+CORE_TASK_LABELS.update(VARIABLE_TASK_LABELS)
+CORE_TASK_LABELS.update(LOGIC_TASK_LABELS)
+CORE_TASK_LABELS.update(FILE_TASK_LABELS)
 
 
 def _result(task: TaskDefinition, succeeded: bool, detail: str) -> TaskExecutionResult:

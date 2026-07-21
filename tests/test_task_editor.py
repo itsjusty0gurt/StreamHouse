@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import unittest
+import tempfile
+from pathlib import Path
 from types import SimpleNamespace
 
 from PySide6.QtWidgets import QApplication, QCheckBox, QComboBox, QLabel, QLineEdit
 from PySide6.QtGui import QTextCursor
 
 from automation.models import TaskDefinition
+from automation.routines import RoutineStore
 from ui.automation_page import TaskEditorDialog
 
 
@@ -109,6 +112,102 @@ class TaskEditorTests(unittest.TestCase):
 
         self.assertIn("Audio file was not found", dialog.audio_test_status.text())
         self.assertEqual(dialog.audio_test_status.property("state"), "error")
+
+    def test_run_routine_form_lists_existing_routines(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = RoutineStore(Path(directory) / "routines.json")
+            target = store.add("Reusable greeting")
+            dialog = TaskEditorDialog("core.run_routine", routine_store=store)
+            routine = dialog.field_widgets["core.run_routine"]["routine_id"]
+
+            self.assertIsInstance(routine, QComboBox)
+            self.assertEqual(dialog.name_edit.text(), "Run routine")
+            self.assertGreaterEqual(routine.findData(target.routine_id), 0)
+            routine.setCurrentIndex(routine.findData(target.routine_id))
+            self.assertEqual(
+                dialog.values()["config"]["routine_id"],
+                target.routine_id,
+            )
+
+    def test_custom_variable_value_has_template_help(self) -> None:
+        dialog = TaskEditorDialog(
+            "core.create_routine_variable",
+            variables={"user": "TestViewer", "score": "4"},
+        )
+
+        rows = {
+            dialog.variable_table.item(row, 0).text(): row
+            for row in range(dialog.variable_table.rowCount())
+        }
+        self.assertIn("{score}", rows)
+        self.assertEqual(
+            dialog.variable_table.item(rows["{score}"], 1).text(),
+            "Custom variable",
+        )
+
+    def test_if_else_form_disables_value_for_unary_comparison(self) -> None:
+        dialog = TaskEditorDialog("core.logic_if_else")
+        fields = dialog.field_widgets["core.logic_if_else"]
+        operator = fields["operator"]
+        operator.setCurrentIndex(operator.findData("is_true"))
+
+        self.assertFalse(fields["right"].isEnabled())
+        self.assertEqual(dialog.name_edit.text(), "If / Else")
+
+    def test_switch_form_round_trips_case_routines(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = RoutineStore(Path(directory) / "routines.json")
+            target = store.add("Hydrate response")
+            dialog = TaskEditorDialog("core.logic_switch", routine_store=store)
+            fields = dialog.field_widgets["core.logic_switch"]
+            fields["input"].setText("{reward}")
+            cases = fields["cases"]
+            cases.add_case("Hydrate", target.routine_id)
+
+            config = dialog.values()["config"]
+
+            self.assertEqual(config["cases"], {"Hydrate": target.routine_id})
+
+    def test_random_choice_form_round_trips_weighted_routines(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = RoutineStore(Path(directory) / "routines.json")
+            target = store.add("Play rare sound")
+            dialog = TaskEditorDialog("core.logic_random_choice", routine_store=store)
+            choices = dialog.field_widgets["core.logic_random_choice"]["choices"]
+            choices.add_choice("Rare", 2.5, target.routine_id)
+
+            config = dialog.values()["config"]
+
+            self.assertEqual(
+                config["choices"],
+                [{"label": "Rare", "weight": 2.5, "routine_id": target.routine_id}],
+            )
+
+    def test_file_task_forms_expose_clear_options_without_json(self) -> None:
+        read_dialog = TaskEditorDialog("core.file_random_line")
+        read_fields = read_dialog.field_widgets["core.file_random_line"]
+        read_fields["path"].setText("C:/Sally/responses.txt")
+        read_fields["variable"].setText("sally_response")
+
+        read_config = read_dialog.values()["config"]
+
+        self.assertEqual(read_config["path"], "C:/Sally/responses.txt")
+        self.assertEqual(read_config["variable"], "sally_response")
+        self.assertTrue(read_config["ignore_blank_lines"])
+        self.assertTrue(read_config["stop_on_failure"])
+
+        write_dialog = TaskEditorDialog("core.file_write")
+        write_fields = write_dialog.field_widgets["core.file_write"]
+        write_fields["path"].setText("C:/Sally/activity.txt")
+        write_fields["text"].setPlainText("{user} redeemed {reward}")
+        write_fields["mode"].setCurrentIndex(
+            write_fields["mode"].findData("overwrite")
+        )
+
+        write_config = write_dialog.values()["config"]
+
+        self.assertEqual(write_config["mode"], "overwrite")
+        self.assertEqual(write_config["text"], "{user} redeemed {reward}")
 
     def test_trigger_variable_can_be_inserted_and_previewed(self) -> None:
         dialog = TaskEditorDialog(

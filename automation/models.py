@@ -82,6 +82,7 @@ class RoutineDefinition:
     group_id: str = ""
     description: str = ""
     additional_trigger_ids: list[str] = field(default_factory=list)
+    queue_id: str = ""
 
     @classmethod
     def from_dict(cls, values: Mapping[str, Any]) -> RoutineDefinition:
@@ -106,6 +107,7 @@ class RoutineDefinition:
                 for value in values.get("additional_trigger_ids", [])
                 if str(value).strip()
             ],
+            queue_id=str(values.get("queue_id", "")),
         )
 
     @property
@@ -124,6 +126,7 @@ class TaskExecutionResult:
     succeeded: bool
     detail: str = ""
     duration_ms: int = 0
+    flow_action: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -132,6 +135,7 @@ class RoutineExecutionResult:
     succeeded: bool
     task_results: tuple[TaskExecutionResult, ...] = ()
     detail: str = ""
+    flow_action: str = ""
 
 
 @dataclass(frozen=True, slots=True)

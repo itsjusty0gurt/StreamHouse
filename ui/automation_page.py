@@ -41,6 +41,7 @@ from PySide6.QtWidgets import (
 )
 
 from automation.models import AutomationExecutionResult, TaskDefinition, TriggerEvent
+from automation.custom_variables import CustomVariableStore
 from automation.core_triggers import (
     CORE_TRIGGER_TYPES,
     CoreAutomationTrigger,
@@ -50,6 +51,21 @@ from automation.routines import RoutineStore
 from automation.service import AutomationService
 from automation.tasks import TaskRegistry
 from automation.core_tasks import CORE_TASK_LABELS, PlayAudioTask
+from automation.variable_tasks import (
+    VARIABLE_MANAGEMENT_TASK_TYPES,
+    VARIABLE_TASK_LABELS,
+)
+from automation.logic_tasks import (
+    COMPARISON_CHOICES,
+    LOGIC_TASK_LABELS,
+    UNARY_OPERATORS,
+)
+from automation.file_tasks import FILE_TASK_TYPES
+from automation.queues import (
+    AutomationQueueDefinition,
+    AutomationQueueManager,
+    AutomationQueueStore,
+)
 from automation.transfer import export_routine, import_routine, validate_import
 from automation.variables import (
     CORE_VARIABLES,
@@ -397,6 +413,152 @@ class ObsTriggerDialog(QDialog):
         }
 
 
+class SwitchCasesEditor(QWidget):
+    def __init__(
+        self,
+        routine_store: RoutineStore | None,
+        cases: object = None,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.routine_store = routine_store
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        self.table = QTableWidget(0, 2)
+        self.table.setHorizontalHeaderLabels(("Case value", "Routine"))
+        self.table.horizontalHeader().setStretchLastSection(True)
+        layout.addWidget(self.table)
+        buttons = QHBoxLayout()
+        add_button = QPushButton("+ Case")
+        remove_button = QPushButton("Remove Selected")
+        buttons.addWidget(add_button)
+        buttons.addWidget(remove_button)
+        buttons.addStretch()
+        layout.addLayout(buttons)
+        add_button.clicked.connect(lambda: self.add_case())
+        remove_button.clicked.connect(self.remove_selected)
+        if isinstance(cases, dict):
+            for value, routine_id in cases.items():
+                self.add_case(str(value), str(routine_id))
+
+    def add_case(self, value: str = "", routine_id: str = "") -> None:
+        row = self.table.rowCount()
+        self.table.insertRow(row)
+        self.table.setItem(row, 0, QTableWidgetItem(value))
+        routine = QComboBox()
+        routine.addItem("Choose a routine…", "")
+        if self.routine_store is not None:
+            for definition in self.routine_store.routines:
+                routine.addItem(definition.name, definition.routine_id)
+        routine.setCurrentIndex(max(routine.findData(routine_id), 0))
+        self.table.setCellWidget(row, 1, routine)
+
+    def remove_selected(self) -> None:
+        rows = sorted(
+            {index.row() for index in self.table.selectedIndexes()},
+            reverse=True,
+        )
+        for row in rows:
+            self.table.removeRow(row)
+
+    def value(self) -> dict[str, str]:
+        cases: dict[str, str] = {}
+        for row in range(self.table.rowCount()):
+            item = self.table.item(row, 0)
+            combo = self.table.cellWidget(row, 1)
+            value = item.text().strip() if item is not None else ""
+            routine_id = str(combo.currentData() or "") if isinstance(combo, QComboBox) else ""
+            if value and routine_id:
+                cases[value] = routine_id
+        return cases
+
+
+class RandomChoicesEditor(QWidget):
+    def __init__(
+        self,
+        routine_store: RoutineStore | None,
+        choices: object = None,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.routine_store = routine_store
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        self.table = QTableWidget(0, 3)
+        self.table.setHorizontalHeaderLabels(("Label", "Weight", "Routine"))
+        self.table.horizontalHeader().setStretchLastSection(True)
+        layout.addWidget(self.table)
+        buttons = QHBoxLayout()
+        add_button = QPushButton("+ Choice")
+        remove_button = QPushButton("Remove Selected")
+        buttons.addWidget(add_button)
+        buttons.addWidget(remove_button)
+        buttons.addStretch()
+        layout.addLayout(buttons)
+        add_button.clicked.connect(lambda: self.add_choice())
+        remove_button.clicked.connect(self.remove_selected)
+        if isinstance(choices, list):
+            for entry in choices:
+                if isinstance(entry, dict):
+                    self.add_choice(
+                        str(entry.get("label", "")),
+                        float(entry.get("weight", 1)),
+                        str(entry.get("routine_id", "")),
+                    )
+
+    def add_choice(
+        self,
+        label: str = "",
+        weight: float = 1,
+        routine_id: str = "",
+    ) -> None:
+        row = self.table.rowCount()
+        self.table.insertRow(row)
+        self.table.setItem(row, 0, QTableWidgetItem(label))
+        weight_input = QDoubleSpinBox()
+        weight_input.setRange(0.01, 1000000)
+        weight_input.setDecimals(2)
+        weight_input.setValue(weight)
+        self.table.setCellWidget(row, 1, weight_input)
+        routine = QComboBox()
+        routine.addItem("Choose a routine…", "")
+        if self.routine_store is not None:
+            for definition in self.routine_store.routines:
+                routine.addItem(definition.name, definition.routine_id)
+        routine.setCurrentIndex(max(routine.findData(routine_id), 0))
+        self.table.setCellWidget(row, 2, routine)
+
+    def remove_selected(self) -> None:
+        rows = sorted(
+            {index.row() for index in self.table.selectedIndexes()},
+            reverse=True,
+        )
+        for row in rows:
+            self.table.removeRow(row)
+
+    def value(self) -> list[dict[str, object]]:
+        choices: list[dict[str, object]] = []
+        for row in range(self.table.rowCount()):
+            label_item = self.table.item(row, 0)
+            weight = self.table.cellWidget(row, 1)
+            routine = self.table.cellWidget(row, 2)
+            routine_id = (
+                str(routine.currentData() or "")
+                if isinstance(routine, QComboBox)
+                else ""
+            )
+            if not routine_id:
+                continue
+            choices.append(
+                {
+                    "label": label_item.text().strip() if label_item else "",
+                    "weight": weight.value() if isinstance(weight, QDoubleSpinBox) else 1,
+                    "routine_id": routine_id,
+                }
+            )
+        return choices
+
+
 class TaskEditorDialog(QDialog):
     LABELS = {
         **TWITCH_TASK_LABELS,
@@ -453,6 +615,109 @@ class TaskEditorDialog(QDialog):
             {"key": "volume", "label": "Volume", "kind": "number", "default": 80, "minimum": 0, "maximum": 100, "suffix": "%"},
             {"key": "wait_for_completion", "label": "", "kind": "bool", "default": False, "text": "Wait for the audio to finish before continuing"},
             {"key": "timeout_seconds", "label": "Timeout", "kind": "number", "default": 30.0, "minimum": 0.1, "maximum": 86400.0, "suffix": " seconds"},
+        ),
+        "core.create_global_variable": (
+            {"key": "name", "label": "Variable name", "kind": "text", "default": "", "required": True, "placeholder": "death_count"},
+            {"key": "value", "label": "Value", "kind": "text", "default": "", "placeholder": "0 or a template such as {user}"},
+        ),
+        "core.create_session_variable": (
+            {"key": "name", "label": "Variable name", "kind": "text", "default": "", "required": True, "placeholder": "current_song"},
+            {"key": "value", "label": "Value", "kind": "text", "default": "", "placeholder": "Value is forgotten when Sally closes"},
+        ),
+        "core.create_routine_variable": (
+            {"key": "name", "label": "Variable name", "kind": "text", "default": "", "required": True, "placeholder": "winner"},
+            {"key": "value", "label": "Value", "kind": "text", "default": "", "placeholder": "Shared with nested routines during this run"},
+        ),
+        "core.delete_variable": (
+            {"key": "name", "label": "Variable name", "kind": "text", "default": "", "required": True, "placeholder": "death_count"},
+        ),
+        "core.adjust_variable": (
+            {"key": "name", "label": "Variable name", "kind": "text", "default": "", "required": True, "placeholder": "death_count"},
+            {"key": "amount", "label": "Amount", "kind": "number", "default": 1.0, "minimum": -1000000.0, "maximum": 1000000.0},
+        ),
+        "core.toggle_variable": (
+            {"key": "name", "label": "Variable name", "kind": "text", "default": "", "required": True, "placeholder": "feature_enabled"},
+        ),
+        "core.run_routine": (
+            {"key": "routine_id", "label": "Routine", "kind": "routine", "default": "", "required": True},
+            {"key": "stop_on_failure", "label": "", "kind": "bool", "default": True, "text": "Stop this routine if the nested routine fails"},
+        ),
+        "core.logic_break": (),
+        "core.logic_get_input": (
+            {"key": "name", "label": "Output variable", "kind": "text", "default": "input_result", "required": True},
+            {"key": "title", "label": "Window title", "kind": "text", "default": "Sally Input", "required": True},
+            {"key": "prompt", "label": "Prompt", "kind": "text", "default": "Enter a value:", "required": True},
+            {"key": "default", "label": "Default text", "kind": "text", "default": ""},
+            {"key": "break_on_cancel", "label": "", "kind": "bool", "default": False, "text": "Break the routine if the input is cancelled"},
+        ),
+        "core.logic_random_number": (
+            {"key": "name", "label": "Output variable", "kind": "text", "default": "random_number", "required": True},
+            {"key": "mode", "label": "Number type", "kind": "choice", "default": "integer", "choices": (("Integer between two values", "integer"), ("Decimal from 0 to 1", "decimal"))},
+            {"key": "minimum", "label": "Minimum", "kind": "number", "default": 0, "minimum": -1000000000, "maximum": 1000000000},
+            {"key": "maximum", "label": "Maximum", "kind": "number", "default": 100, "minimum": -1000000000, "maximum": 1000000000},
+        ),
+        "core.logic_random_choice": (
+            {"key": "choices", "label": "Weighted choices", "kind": "random_choices", "default": []},
+        ),
+        "core.file_read": (
+            {"key": "path", "label": "Text file", "kind": "file", "default": "", "required": True},
+            {"key": "variable", "label": "Output variable", "kind": "text", "default": "file_text", "required": True},
+            {"key": "trim", "label": "", "kind": "bool", "default": False, "text": "Trim whitespace from the beginning and end"},
+            {"key": "stop_on_failure", "label": "", "kind": "bool", "default": True, "text": "Stop the routine if the file cannot be read"},
+        ),
+        "core.file_random_line": (
+            {"key": "path", "label": "Text file", "kind": "file", "default": "", "required": True},
+            {"key": "variable", "label": "Output variable", "kind": "text", "default": "random_line", "required": True},
+            {"key": "ignore_blank_lines", "label": "", "kind": "bool", "default": True, "text": "Ignore blank lines"},
+            {"key": "stop_on_failure", "label": "", "kind": "bool", "default": True, "text": "Stop the routine if the file cannot be read"},
+        ),
+        "core.file_specific_line": (
+            {"key": "path", "label": "Text file", "kind": "file", "default": "", "required": True},
+            {"key": "line_number", "label": "Line number", "kind": "text", "default": "1", "required": True, "placeholder": "1 or {line_number}"},
+            {"key": "variable", "label": "Output variable", "kind": "text", "default": "file_line", "required": True},
+            {"key": "ignore_blank_lines", "label": "", "kind": "bool", "default": False, "text": "Ignore blank lines when counting"},
+            {"key": "stop_on_failure", "label": "", "kind": "bool", "default": True, "text": "Stop the routine if the line cannot be read"},
+        ),
+        "core.file_write": (
+            {"key": "path", "label": "Text file", "kind": "file", "default": "", "required": True},
+            {"key": "mode", "label": "Write mode", "kind": "choice", "default": "append", "choices": (("Append to the file", "append"), ("Overwrite the file", "overwrite"))},
+            {"key": "text", "label": "Text", "kind": "multiline", "default": "", "placeholder": "{user} redeemed {reward}"},
+            {"key": "add_newline", "label": "", "kind": "bool", "default": True, "text": "Add a new line after the text"},
+            {"key": "create_folders", "label": "", "kind": "bool", "default": False, "text": "Create missing parent folders"},
+            {"key": "stop_on_failure", "label": "", "kind": "bool", "default": True, "text": "Stop the routine if the file cannot be written"},
+        ),
+        "core.path_exists": (
+            {"key": "path", "label": "Path", "kind": "target", "default": "", "required": True},
+            {"key": "path_type", "label": "Expected type", "kind": "choice", "default": "either", "choices": (("File or folder", "either"), ("File", "file"), ("Folder", "folder"))},
+            {"key": "variable", "label": "Output variable", "kind": "text", "default": "path_exists", "required": True},
+        ),
+        "core.file_count_lines": (
+            {"key": "path", "label": "Text file", "kind": "file", "default": "", "required": True},
+            {"key": "variable", "label": "Output variable", "kind": "text", "default": "line_count", "required": True},
+            {"key": "ignore_blank_lines", "label": "", "kind": "bool", "default": False, "text": "Do not count blank lines"},
+            {"key": "stop_on_failure", "label": "", "kind": "bool", "default": True, "text": "Stop the routine if the file cannot be read"},
+        ),
+        "core.logic_if_else": (
+            {"key": "left", "label": "Input", "kind": "text", "default": "", "required": True, "placeholder": "{death_count}"},
+            {"key": "operator", "label": "Comparison", "kind": "choice", "default": "equals", "choices": COMPARISON_CHOICES},
+            {"key": "right", "label": "Value", "kind": "text", "default": ""},
+            {"key": "true_routine_id", "label": "If true, run", "kind": "routine", "default": ""},
+            {"key": "false_routine_id", "label": "If false, run", "kind": "routine", "default": ""},
+            {"key": "break_if_false", "label": "", "kind": "bool", "default": False, "text": "Break this routine when the condition is false"},
+        ),
+        "core.logic_switch": (
+            {"key": "input", "label": "Input", "kind": "text", "default": "", "required": True, "placeholder": "{reward}"},
+            {"key": "cases", "label": "Cases", "kind": "switch_cases", "default": {}},
+            {"key": "default_routine_id", "label": "Default routine", "kind": "routine", "default": ""},
+            {"key": "ignore_case", "label": "", "kind": "bool", "default": True, "text": "Ignore uppercase and lowercase differences"},
+        ),
+        "core.logic_while": (
+            {"key": "left", "label": "Input", "kind": "text", "default": "", "required": True, "placeholder": "{counter}"},
+            {"key": "operator", "label": "Comparison", "kind": "choice", "default": "less_than", "choices": COMPARISON_CHOICES},
+            {"key": "right", "label": "Value", "kind": "text", "default": "10"},
+            {"key": "routine_id", "label": "Repeat routine", "kind": "routine", "default": "", "required": True},
+            {"key": "max_iterations", "label": "Maximum iterations", "kind": "number", "default": 100, "minimum": 1, "maximum": 10000},
+            {"key": "timeout_seconds", "label": "Time limit", "kind": "number", "default": 10, "minimum": 0.1, "maximum": 3600, "suffix": " seconds"},
         ),
         "core.run_python_script": (
             {"key": "script", "label": "Python script", "kind": "python_file", "default": "", "required": True, "placeholder": "C:/path/to/script.py"},
@@ -512,7 +777,20 @@ class TaskEditorDialog(QDialog):
         "twitch.send_pinned_message": ("message",),
         "twitch.moderate_user": ("user", "reason", "message_id"),
         "twitch.update_redemption": ("reward_id", "redemption_id"),
+        "core.create_global_variable": ("value",),
+        "core.create_session_variable": ("value",),
+        "core.create_routine_variable": ("value",),
+        "core.logic_get_input": ("title", "prompt", "default"),
+        "core.logic_if_else": ("left", "right"),
+        "core.logic_switch": ("input",),
+        "core.logic_while": ("left", "right"),
         "core.run_python_script": ("script", "arguments", "working_directory"),
+        "core.file_read": ("path",),
+        "core.file_random_line": ("path",),
+        "core.file_specific_line": ("path", "line_number"),
+        "core.file_write": ("path", "text"),
+        "core.path_exists": ("path",),
+        "core.file_count_lines": ("path",),
     }
 
     def __init__(
@@ -522,12 +800,14 @@ class TaskEditorDialog(QDialog):
         task: TaskDefinition | None = None,
         obs_service: ObsWebSocketService | None = None,
         variables: dict[str, str] | None = None,
+        routine_store: RoutineStore | None = None,
     ) -> None:
         super().__init__(parent)
         self.task = task
         self.task_type = task.task_type if task is not None else task_type
         self.obs_service = obs_service
         self.variables = dict(variables or {})
+        self.routine_store = routine_store
         self.field_widgets: dict[str, dict[str, QWidget]] = {}
         self.setWindowTitle("Edit Task" if task else "Add Task")
         self.setMinimumWidth(620)
@@ -633,7 +913,12 @@ class TaskEditorDialog(QDialog):
             self.variable_table.setItem(
                 row,
                 1,
-                QTableWidgetItem(VARIABLE_SOURCE_INFO.get(key, "Trigger context")),
+                QTableWidgetItem(
+                    VARIABLE_SOURCE_INFO.get(
+                        key,
+                        "Trigger context" if key in VARIABLE_INFO else "Custom variable",
+                    )
+                ),
             )
             self.variable_table.setItem(row, 2, QTableWidgetItem(value))
             self.variable_table.setItem(row, 3, QTableWidgetItem(description))
@@ -788,6 +1073,23 @@ class TaskEditorDialog(QDialog):
             index = combo.findData(value)
             combo.setCurrentIndex(max(index, 0))
             return combo, combo
+        if kind == "routine":
+            combo = QComboBox()
+            combo.addItem("Choose a routine…", "")
+            if self.routine_store is not None:
+                for routine in self.routine_store.routines:
+                    combo.addItem(routine.name, routine.routine_id)
+            index = combo.findData(str(value or ""))
+            combo.setCurrentIndex(max(index, 0))
+            return combo, combo
+        if kind == "switch_cases":
+            editor = SwitchCasesEditor(self.routine_store, value)
+            editor.setMinimumHeight(180)
+            return editor, editor
+        if kind == "random_choices":
+            editor = RandomChoicesEditor(self.routine_store, value)
+            editor.setMinimumHeight(200)
+            return editor, editor
         if kind.startswith("obs_"):
             combo = QComboBox()
             combo.setEditable(True)
@@ -843,6 +1145,28 @@ class TaskEditorDialog(QDialog):
 
             wait.toggled.connect(update_audio_mode)
             update_audio_mode(wait.isChecked())
+        if self.task_type == "core.logic_random_number":
+            fields = self.field_widgets[self.task_type]
+            mode = fields["mode"]
+
+            def update_random_mode(_index: int = 0) -> None:
+                integer_mode = mode.currentData() == "integer"
+                fields["minimum"].setEnabled(integer_mode)
+                fields["maximum"].setEnabled(integer_mode)
+
+            mode.currentIndexChanged.connect(update_random_mode)
+            update_random_mode()
+        if self.task_type in {"core.logic_if_else", "core.logic_while"}:
+            fields = self.field_widgets[self.task_type]
+            operator = fields["operator"]
+
+            def update_condition(_index: int = 0) -> None:
+                fields["right"].setEnabled(
+                    str(operator.currentData()) not in UNARY_OPERATORS
+                )
+
+            operator.currentIndexChanged.connect(update_condition)
+            update_condition()
         if self.task is None:
             label = self.LABELS.get(self.task_type, self.task_type)
             self.name_edit.setText(label.partition("—")[2].strip() or label)
@@ -995,13 +1319,41 @@ class TaskEditorDialog(QDialog):
                 value = widget.value()
             elif isinstance(widget, QComboBox):
                 value = widget.currentText().strip() if kind.startswith("obs_") else widget.currentData()
+            elif isinstance(widget, SwitchCasesEditor):
+                value = widget.value()
+            elif isinstance(widget, RandomChoicesEditor):
+                value = widget.value()
             else:
                 value = ""
             if spec.get("required") and not str(value).strip():
                 raise ValueError(f"{spec.get('label', key)} is required.")
             config[key] = value
+        if task_type == "core.logic_random_choice" and not config.get("choices"):
+            raise ValueError("Add at least one weighted choice and select its routine.")
         if task_type == SendTwitchChatMessageTask.task_type:
-            SendTwitchChatMessageTask.validate_template(str(config.get("message", "")))
+            SendTwitchChatMessageTask.validate_template(
+                str(config.get("message", "")),
+                self.variables,
+            )
+        if task_type in {
+            "core.create_global_variable",
+            "core.create_session_variable",
+            "core.create_routine_variable",
+            "core.delete_variable",
+            "core.adjust_variable",
+            "core.toggle_variable",
+            "core.logic_get_input",
+            "core.logic_random_number",
+            "core.file_read",
+            "core.file_random_line",
+            "core.file_specific_line",
+            "core.path_exists",
+            "core.file_count_lines",
+        }:
+            variable_key = "variable" if task_type in FILE_TASK_TYPES else "name"
+            config[variable_key] = CustomVariableStore.validate_name(
+                str(config.get(variable_key, ""))
+            )
         name = self.name_edit.text().strip()
         if not name:
             raise ValueError("Task name is required.")
@@ -1123,6 +1475,68 @@ class RoutineTreeWidget(QTreeWidget):
         event.acceptProposedAction()
 
 
+class QueueEditorDialog(QDialog):
+    def __init__(
+        self,
+        queue: AutomationQueueDefinition | None = None,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Edit Queue" if queue else "New Queue")
+        layout = QVBoxLayout(self)
+        form = QFormLayout()
+        self.name_edit = QLineEdit(queue.name if queue else "")
+        self.name_edit.setPlaceholderText("Soundboard")
+        self.max_length_spin = QSpinBox()
+        self.max_length_spin.setRange(1, 10_000)
+        self.max_length_spin.setValue(queue.max_length if queue else 100)
+        self.duplicate_combo = QComboBox()
+        self.duplicate_combo.addItem("Allow every trigger", "allow")
+        self.duplicate_combo.addItem("Ignore if already queued or running", "ignore")
+        self.duplicate_combo.addItem("Replace the older pending copy", "replace")
+        if queue:
+            self.duplicate_combo.setCurrentIndex(
+                max(self.duplicate_combo.findData(queue.duplicate_policy), 0)
+            )
+        self.delay_spin = QDoubleSpinBox()
+        self.delay_spin.setRange(0, 3600)
+        self.delay_spin.setDecimals(2)
+        self.delay_spin.setSuffix(" seconds")
+        self.delay_spin.setValue(queue.delay_seconds if queue else 0)
+        form.addRow("Name", self.name_edit)
+        form.addRow("Maximum pending", self.max_length_spin)
+        form.addRow("Duplicate triggers", self.duplicate_combo)
+        form.addRow("Delay between routines", self.delay_spin)
+        layout.addLayout(form)
+        note = QLabel(
+            "Queues execute one routine at a time. Nested routines remain part "
+            "of their parent and do not create another queue item."
+        )
+        note.setWordWrap(True)
+        layout.addWidget(note)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Save
+            | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self._accept_values)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def _accept_values(self) -> None:
+        if not self.name_edit.text().strip():
+            QMessageBox.warning(self, "Queue Name Required", "Enter a queue name.")
+            return
+        self.accept()
+
+    def values(self) -> dict[str, object]:
+        return {
+            "name": self.name_edit.text().strip(),
+            "max_length": self.max_length_spin.value(),
+            "duplicate_policy": str(self.duplicate_combo.currentData()),
+            "delay_seconds": self.delay_spin.value(),
+        }
+
+
 class AutomationPage(QWidget):
     KIND_ROLE = int(Qt.ItemDataRole.UserRole) + 1
 
@@ -1138,6 +1552,8 @@ class AutomationPage(QWidget):
         *,
         obs_service: ObsWebSocketService | None = None,
         commands_changed: Callable[[], None] | None = None,
+        queue_store: AutomationQueueStore | None = None,
+        queue_manager: AutomationQueueManager | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -1150,6 +1566,10 @@ class AutomationPage(QWidget):
         self.automation_service = automation_service
         self.obs_service = obs_service
         self.commands_changed = commands_changed or (lambda: None)
+        self.queue_store = queue_store or AutomationQueueStore(
+            routine_store.path.with_name("queues.json")
+        )
+        self.queue_manager = queue_manager or AutomationQueueManager(self.queue_store)
         self.history: list[dict[str, object]] = []
         self._selected_routine_id = ""
         self.setObjectName("automationPage")
@@ -1163,8 +1583,13 @@ class AutomationPage(QWidget):
         self.tabs.setObjectName("automationTabs")
         root.addWidget(self.tabs)
         self._build_routines_tab()
+        self._build_queues_tab()
         self._build_task_library_tab()
         self._build_history_tab()
+        self.queue_timer = QTimer(self)
+        self.queue_timer.setInterval(100)
+        self.queue_timer.timeout.connect(self._poll_queues)
+        self.queue_timer.start()
 
     def _build_routines_tab(self) -> None:
         page = QWidget()
@@ -1265,6 +1690,268 @@ class AutomationPage(QWidget):
         self.routine_enabled_check.toggled.connect(self._toggle_selected_routine)
         self.test_routine_button.clicked.connect(self._test_selected_routine)
         self._install_routine_shortcuts()
+
+    def _build_queues_tab(self) -> None:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        intro = QLabel(
+            "Assign routines to independent sequential queues. Immediate is the "
+            "default and bypasses queueing."
+        )
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+        splitter.setChildrenCollapsible(False)
+        layout.addWidget(splitter, 1)
+
+        browser = QWidget()
+        browser_layout = QVBoxLayout(browser)
+        queue_toolbar = QHBoxLayout()
+        self.add_queue_button = QPushButton("+ New Queue")
+        self.edit_queue_button = QPushButton("Edit")
+        self.delete_queue_button = QPushButton("Delete")
+        queue_toolbar.addWidget(self.add_queue_button)
+        queue_toolbar.addWidget(self.edit_queue_button)
+        queue_toolbar.addWidget(self.delete_queue_button)
+        browser_layout.addLayout(queue_toolbar)
+        self.queue_list = QListWidget()
+        self.queue_list.setAlternatingRowColors(True)
+        browser_layout.addWidget(self.queue_list, 1)
+        splitter.addWidget(browser)
+
+        details = QWidget()
+        details_layout = QVBoxLayout(details)
+        header = QHBoxLayout()
+        self.queue_title_label = QLabel("Select a queue")
+        title_font = self.queue_title_label.font()
+        title_font.setBold(True)
+        title_font.setPointSize(13)
+        self.queue_title_label.setFont(title_font)
+        self.pause_queue_button = QPushButton("Pause")
+        self.clear_queue_button = QPushButton("Clear Pending")
+        header.addWidget(self.queue_title_label)
+        header.addStretch()
+        header.addWidget(self.pause_queue_button)
+        header.addWidget(self.clear_queue_button)
+        details_layout.addLayout(header)
+        self.queue_status_label = QLabel("Choose a custom queue to inspect it.")
+        self.queue_status_label.setWordWrap(True)
+        details_layout.addWidget(self.queue_status_label)
+        details_layout.addWidget(QLabel("Pending routines — drag to reorder"))
+        self.pending_queue_list = QListWidget()
+        self.pending_queue_list.setAlternatingRowColors(True)
+        self.pending_queue_list.setDragEnabled(True)
+        self.pending_queue_list.setAcceptDrops(True)
+        self.pending_queue_list.setDropIndicatorShown(True)
+        self.pending_queue_list.setDragDropMode(
+            QAbstractItemView.DragDropMode.InternalMove
+        )
+        self.pending_queue_list.setDefaultDropAction(Qt.DropAction.MoveAction)
+        details_layout.addWidget(self.pending_queue_list, 1)
+        self.remove_queue_item_button = QPushButton("Remove Selected")
+        details_layout.addWidget(self.remove_queue_item_button)
+        splitter.addWidget(details)
+        splitter.setStretchFactor(0, 1)
+        splitter.setStretchFactor(1, 3)
+        splitter.setSizes([300, 850])
+        self.tabs.addTab(page, "Queues")
+
+        self.add_queue_button.clicked.connect(self._add_queue)
+        self.edit_queue_button.clicked.connect(self._edit_queue)
+        self.delete_queue_button.clicked.connect(self._delete_queue)
+        self.pause_queue_button.clicked.connect(self._toggle_queue_pause)
+        self.clear_queue_button.clicked.connect(self._clear_queue)
+        self.remove_queue_item_button.clicked.connect(self._remove_queue_item)
+        self.queue_list.itemSelectionChanged.connect(self._queue_selected)
+        self.pending_queue_list.model().rowsMoved.connect(
+            lambda *_args: QTimer.singleShot(0, self._persist_queue_order)
+        )
+        self._queue_state_snapshot: tuple = ()
+
+    def _selected_queue_id(self) -> str:
+        item = self.queue_list.currentItem()
+        return str(item.data(Qt.ItemDataRole.UserRole) or "") if item else ""
+
+    def _selected_queue(self) -> AutomationQueueDefinition | None:
+        return self.queue_store.get(self._selected_queue_id())
+
+    def _queue_snapshot(self) -> tuple:
+        return tuple(
+            (
+                queue.queue_id,
+                queue.name,
+                queue.paused,
+                queue.max_length,
+                queue.duplicate_policy,
+                queue.delay_seconds,
+                getattr(self.queue_manager.current.get(queue.queue_id), "item_id", ""),
+                tuple(item.item_id for item in self.queue_manager.pending.get(queue.queue_id, [])),
+            )
+            for queue in self.queue_store.queues
+        )
+
+    def _refresh_queues(self, selected_queue_id: str = "") -> None:
+        selected_queue_id = selected_queue_id or self._selected_queue_id()
+        self.queue_list.blockSignals(True)
+        self.queue_list.clear()
+        selected_item = None
+        for queue in self.queue_store.queues:
+            pending = self.queue_manager.count(queue.queue_id)
+            state = "Paused" if queue.paused else "Running"
+            item = QListWidgetItem(f"{queue.name}  —  {state} • {pending} pending")
+            item.setData(Qt.ItemDataRole.UserRole, queue.queue_id)
+            self.queue_list.addItem(item)
+            if queue.queue_id == selected_queue_id:
+                selected_item = item
+        self.queue_list.blockSignals(False)
+        if selected_item is not None:
+            self.queue_list.setCurrentItem(selected_item)
+        elif self.queue_list.count():
+            self.queue_list.setCurrentRow(0)
+        else:
+            self._show_queue(None)
+        self._queue_state_snapshot = self._queue_snapshot()
+
+    def _queue_selected(self) -> None:
+        self._show_queue(self._selected_queue())
+
+    def _show_queue(self, queue: AutomationQueueDefinition | None) -> None:
+        enabled = queue is not None
+        self.edit_queue_button.setEnabled(enabled)
+        self.delete_queue_button.setEnabled(enabled)
+        self.pause_queue_button.setEnabled(enabled)
+        self.clear_queue_button.setEnabled(enabled)
+        self.remove_queue_item_button.setEnabled(enabled)
+        self.pending_queue_list.clear()
+        if queue is None:
+            self.queue_title_label.setText("Select a queue")
+            self.queue_status_label.setText(
+                "Create a queue, then assign routines from their Settings tab."
+            )
+            return
+        self.queue_title_label.setText(queue.name)
+        self.pause_queue_button.setText("Resume" if queue.paused else "Pause")
+        current = self.queue_manager.current.get(queue.queue_id)
+        self.queue_status_label.setText(
+            f"Current: {current.routine_name if current else 'None'}  •  "
+            f"Limit: {queue.max_length}  •  Duplicates: {queue.duplicate_policy.title()}  •  "
+            f"Delay: {queue.delay_seconds:g}s"
+        )
+        for item in self.queue_manager.pending.get(queue.queue_id, []):
+            row = QListWidgetItem(item.routine_name)
+            row.setData(Qt.ItemDataRole.UserRole, item.item_id)
+            row.setToolTip(
+                f"Trigger: {item.trigger.trigger_id}\nEvent: {item.trigger.event_id}"
+            )
+            self.pending_queue_list.addItem(row)
+
+    def _add_queue(self) -> None:
+        dialog = QueueEditorDialog(parent=self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        try:
+            queue = self.queue_store.add(**dialog.values())
+        except (OSError, TypeError, ValueError) as error:
+            self._error("Could Not Create Queue", error)
+            return
+        self._refresh_queues(queue.queue_id)
+        self.refresh(self._selected_routine_id)
+
+    def _edit_queue(self) -> None:
+        queue = self._selected_queue()
+        if queue is None:
+            return
+        dialog = QueueEditorDialog(queue, self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        try:
+            self.queue_store.update(queue.queue_id, **dialog.values())
+        except (OSError, TypeError, ValueError) as error:
+            self._error("Could Not Update Queue", error)
+            return
+        self._refresh_queues(queue.queue_id)
+        self.refresh(self._selected_routine_id)
+
+    def _delete_queue(self) -> None:
+        queue = self._selected_queue()
+        if queue is None:
+            return
+        if QMessageBox.question(
+            self,
+            "Delete Queue",
+            f'Delete "{queue.name}"? Assigned routines will become Immediate.',
+        ) != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            for routine in tuple(self.routine_store.routines):
+                if routine.queue_id == queue.queue_id:
+                    self.routine_store.update(routine.routine_id, queue_id="")
+            self.queue_manager.clear(queue.queue_id)
+            self.queue_store.delete(queue.queue_id)
+        except (OSError, ValueError) as error:
+            self._error("Could Not Delete Queue", error)
+            return
+        self._refresh_queues()
+        self.refresh(self._selected_routine_id)
+
+    def _toggle_queue_pause(self) -> None:
+        queue = self._selected_queue()
+        if queue is None:
+            return
+        try:
+            self.queue_store.update(queue.queue_id, paused=not queue.paused)
+        except (OSError, ValueError) as error:
+            self._error("Could Not Update Queue", error)
+            return
+        self._refresh_queues(queue.queue_id)
+
+    def _clear_queue(self) -> None:
+        queue = self._selected_queue()
+        if queue is None:
+            return
+        self.queue_manager.clear(queue.queue_id)
+        self._refresh_queues(queue.queue_id)
+
+    def _remove_queue_item(self) -> None:
+        queue = self._selected_queue()
+        item = self.pending_queue_list.currentItem()
+        if queue is None or item is None:
+            return
+        self.queue_manager.remove(
+            queue.queue_id,
+            str(item.data(Qt.ItemDataRole.UserRole) or ""),
+        )
+        self._refresh_queues(queue.queue_id)
+
+    def _persist_queue_order(self) -> None:
+        queue = self._selected_queue()
+        if queue is None:
+            return
+        try:
+            self.queue_manager.reorder(
+                queue.queue_id,
+                [
+                    str(self.pending_queue_list.item(index).data(Qt.ItemDataRole.UserRole) or "")
+                    for index in range(self.pending_queue_list.count())
+                ],
+            )
+        except ValueError as error:
+            self._error("Could Not Reorder Queue", error)
+        self._refresh_queues(queue.queue_id)
+
+    def _poll_queues(self) -> None:
+        for execution in self.automation_service.process_queues():
+            routine = (
+                self.routine_store.get(execution.routine_results[0].routine_id)
+                if execution.routine_results
+                else None
+            )
+            self.record_execution(
+                execution,
+                f"Queued — {routine.name if routine else execution.trigger_id}",
+            )
+        if self._queue_snapshot() != self._queue_state_snapshot:
+            self._refresh_queues(self._selected_queue_id())
 
     def _add_shortcut(self, sequence: str, parent: QWidget, callback: Callable) -> None:
         shortcut = QShortcut(QKeySequence(sequence), parent)
@@ -1373,10 +2060,12 @@ class AutomationPage(QWidget):
         form = QFormLayout(group)
         self.settings_name_edit = QLineEdit()
         self.settings_group_combo = QComboBox()
+        self.settings_queue_combo = QComboBox()
         self.settings_description_edit = QLineEdit()
         self.settings_enabled_check = QCheckBox("Enabled")
         form.addRow("Name", self.settings_name_edit)
         form.addRow("Group", self.settings_group_combo)
+        form.addRow("Execution queue", self.settings_queue_combo)
         form.addRow("Description", self.settings_description_edit)
         form.addRow("", self.settings_enabled_check)
         layout.addWidget(group)
@@ -1432,15 +2121,36 @@ class AutomationPage(QWidget):
             service = QTreeWidgetItem((service_name, ""))
             service.setExpanded(True)
             scripts = None
+            variables = None
+            logic = None
+            files = None
             if service_name == "Core":
                 scripts = QTreeWidgetItem(("Scripts", ""))
                 scripts.setExpanded(True)
                 service.addChild(scripts)
+                variables = QTreeWidgetItem(("Variables", ""))
+                variables.setExpanded(True)
+                service.addChild(variables)
+                logic = QTreeWidgetItem(("Logic", ""))
+                logic.setExpanded(True)
+                service.addChild(logic)
+                files = QTreeWidgetItem(("Files", ""))
+                files.setExpanded(True)
+                service.addChild(files)
             for task_type, label in tasks.items():
                 task = QTreeWidgetItem((label.split("—")[-1].strip(), "Available"))
                 task.setData(0, Qt.ItemDataRole.UserRole, task_type)
                 if task_type == "core.run_python_script" and scripts is not None:
                     scripts.addChild(task)
+                elif (
+                    task_type in VARIABLE_MANAGEMENT_TASK_TYPES
+                    and variables is not None
+                ):
+                    variables.addChild(task)
+                elif task_type in LOGIC_TASK_LABELS and logic is not None:
+                    logic.addChild(task)
+                elif task_type in FILE_TASK_TYPES and files is not None:
+                    files.addChild(task)
                 else:
                     service.addChild(task)
             self.task_library_tree.addTopLevelItem(service)
@@ -1551,6 +2261,7 @@ class AutomationPage(QWidget):
             self.setProperty("selectedRoutineId", "")
             self._show_routine(None)
         self._refresh_task_library()
+        self._refresh_queues(self._selected_queue_id())
 
     def select_routine(self, routine_id: str) -> None:
         self.tabs.setCurrentIndex(0)
@@ -1588,10 +2299,52 @@ class AutomationPage(QWidget):
             key = str(spec["key"])
             if not str(task.config.get(key, "")).strip():
                 issues.append(f'{spec.get("label", key)} is required')
+        if (
+            task.task_type == "core.run_routine"
+            and str(task.config.get("routine_id", "")).strip()
+            and self.routine_store.get(str(task.config["routine_id"])) is None
+        ):
+            issues.append("Nested routine no longer exists")
+        routine_reference_keys = {
+            "core.logic_if_else": ("true_routine_id", "false_routine_id"),
+            "core.logic_switch": ("default_routine_id",),
+            "core.logic_while": ("routine_id",),
+        }
+        for key in routine_reference_keys.get(task.task_type, ()):
+            routine_id = str(task.config.get(key, "")).strip()
+            if routine_id and self.routine_store.get(routine_id) is None:
+                issues.append(f"Referenced routine for {key.replace('_', ' ')} no longer exists")
+        if task.task_type == "core.logic_switch":
+            cases = task.config.get("cases", {})
+            if isinstance(cases, dict):
+                for case, routine_id in cases.items():
+                    if routine_id and self.routine_store.get(str(routine_id)) is None:
+                        issues.append(f'Switch case "{case}" references a missing routine')
+        if task.task_type == "core.logic_random_choice":
+            choices = task.config.get("choices", [])
+            if not isinstance(choices, list) or not choices:
+                issues.append("Random choice has no choices")
+            else:
+                for index, choice in enumerate(choices, start=1):
+                    if not isinstance(choice, dict):
+                        issues.append(f"Random choice {index} is invalid")
+                        continue
+                    routine_id = str(choice.get("routine_id", "")).strip()
+                    if not routine_id:
+                        issues.append(f"Random choice {index} has no routine")
+                    elif self.routine_store.get(routine_id) is None:
+                        issues.append(f"Random choice {index} references a missing routine")
+                    try:
+                        if float(choice.get("weight", 0)) <= 0:
+                            issues.append(f"Random choice {index} needs a positive weight")
+                    except (TypeError, ValueError):
+                        issues.append(f"Random choice {index} has an invalid weight")
         return issues
 
     def _routine_issues(self, routine, trigger_count: int | None = None) -> list[str]:
         issues: list[str] = []
+        if routine.queue_id and self.queue_store.get(routine.queue_id) is None:
+            issues.append("Assigned automation queue no longer exists")
         if not routine.tasks:
             issues.append("Routine has no tasks")
         elif not any(task.enabled for task in routine.tasks):
@@ -1635,10 +2388,12 @@ class AutomationPage(QWidget):
         self.routine_title_label.setText(routine.name)
         trigger_count = self._routine_trigger_count(routine.routine_id)
         group = self.routine_store.get_group(routine.group_id)
+        queue = self.queue_store.get(routine.queue_id)
         issues = self._routine_issues(routine, trigger_count)
         self.routine_summary_label.setText(
             f"{group.name if group else 'Ungrouped'}  •  {trigger_count} trigger(s)"
             f"  •  {len(routine.tasks)} task(s)"
+            f"  •  {queue.name if queue else 'Immediate'}"
             + (f"  •  Warning: {issues[0]}" if issues else "  •  Ready")
         )
         self.routine_summary_label.setToolTip("\n".join(issues))
@@ -1732,6 +2487,12 @@ class AutomationPage(QWidget):
             self.settings_group_combo.addItem(group.name, group.group_id)
         index = self.settings_group_combo.findData(routine.group_id)
         self.settings_group_combo.setCurrentIndex(max(index, 0))
+        self.settings_queue_combo.clear()
+        self.settings_queue_combo.addItem("Immediate (no queue)", "")
+        for queue in self.queue_store.queues:
+            self.settings_queue_combo.addItem(queue.name, queue.queue_id)
+        queue_index = self.settings_queue_combo.findData(routine.queue_id)
+        self.settings_queue_combo.setCurrentIndex(max(queue_index, 0))
 
     def _resolve_group(self, name: str, group_id: str = "") -> str:
         clean = name.strip()
@@ -2093,6 +2854,7 @@ class AutomationPage(QWidget):
                 group_id=str(self.settings_group_combo.currentData() or ""),
                 description=self.settings_description_edit.text(),
                 enabled=self.settings_enabled_check.isChecked(),
+                queue_id=str(self.settings_queue_combo.currentData() or ""),
             )
         except (OSError, ValueError) as error:
             self._error("Could Not Save Routine", error)
@@ -2456,6 +3218,7 @@ class AutomationPage(QWidget):
             self,
             obs_service=self.obs_service,
             variables=self._sample_context_for_routine(routine),
+            routine_store=self.routine_store,
         )
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
@@ -2500,6 +3263,7 @@ class AutomationPage(QWidget):
             task,
             self.obs_service,
             self._sample_context_for_routine(routine),
+            self.routine_store,
         )
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
@@ -2712,17 +3476,44 @@ class AutomationPage(QWidget):
             add_menu._sally_task_submenus.append(service_menu)
             service_menu._sally_task_submenus = []
             scripts_menu = None
+            variables_menu = None
+            logic_menu = None
+            files_menu = None
             if service_name == "Core":
                 scripts_menu = QMenu("Scripts", service_menu)
                 service_menu.addMenu(scripts_menu)
                 service_menu._sally_task_submenus.append(scripts_menu)
+                variables_menu = QMenu("Variables", service_menu)
+                service_menu.addMenu(variables_menu)
+                service_menu._sally_task_submenus.append(variables_menu)
+                logic_menu = QMenu("Logic", service_menu)
+                service_menu.addMenu(logic_menu)
+                service_menu._sally_task_submenus.append(logic_menu)
+                files_menu = QMenu("Files", service_menu)
+                service_menu.addMenu(files_menu)
+                service_menu._sally_task_submenus.append(files_menu)
             for task_type, full_label in task_labels.items():
                 label = full_label.partition("—")[2].strip() or full_label
                 target_menu = (
                     scripts_menu
                     if task_type == "core.run_python_script"
                     and scripts_menu is not None
-                    else service_menu
+                    else (
+                        variables_menu
+                        if task_type in VARIABLE_MANAGEMENT_TASK_TYPES
+                        and variables_menu is not None
+                        else (
+                            logic_menu
+                            if task_type in LOGIC_TASK_LABELS
+                            and logic_menu is not None
+                            else (
+                                files_menu
+                                if task_type in FILE_TASK_TYPES
+                                and files_menu is not None
+                                else service_menu
+                            )
+                        )
+                    )
                 )
                 if task_type == "twitch.run_commercial":
                     duration_menu = QMenu(label, service_menu)
@@ -2802,7 +3593,26 @@ class AutomationPage(QWidget):
             for value in task.config.values():
                 if isinstance(value, str):
                     keys.update(TEMPLATE_PATTERN.findall(value))
-        return sample_context(keys)
+        context = sample_context(keys)
+        context.update(self.automation_service.variable_store.values())
+        for definition in self.routine_store.routines:
+            for task in definition.tasks:
+                if task.task_type not in {
+                    "core.create_global_variable",
+                    "core.create_session_variable",
+                    "core.create_routine_variable",
+                }:
+                    continue
+                name = str(task.config.get("name", "")).strip().casefold()
+                if name and name not in VARIABLE_INFO:
+                    context.setdefault(
+                        name,
+                        str(task.config.get("value", "CustomValue")),
+                    )
+        for key in keys:
+            if key not in VARIABLE_INFO:
+                context.setdefault(key, "CustomValue")
+        return context
 
     def _test_selected_task(self) -> None:
         routine = self.routine_store.get(self._selected_routine_id)
@@ -2904,6 +3714,15 @@ class AutomationPage(QWidget):
             "core.close_application": "Closes an application",
             "core.open_target": "Opens a file, folder, or URL",
             "core.run_python_script": "Runs trusted Python code on this computer",
+            "core.play_audio": "Plays an audio file",
+            "core.run_routine": "Runs another routine and all its enabled tasks",
+            "core.create_global_variable": "Changes saved automation data",
+            "core.file_write": "Writes data to a local text file",
+            "core.logic_get_input": "Opens an interactive input window",
+            "core.logic_random_choice": "Runs one randomly selected routine",
+            "core.logic_if_else": "May run another routine",
+            "core.logic_switch": "May run another routine",
+            "core.logic_while": "May run another routine repeatedly",
         }
         if task.task_type.startswith("obs."):
             return "Controls OBS Studio"

@@ -105,7 +105,7 @@ CORE_VARIABLES = (
     "followers",
 )
 
-TEMPLATE_PATTERN = re.compile(r"\{([a-z_]+)\}")
+TEMPLATE_PATTERN = re.compile(r"\{([a-z][a-z0-9_]*)\}")
 
 
 def sample_context(keys: Iterable[str]) -> dict[str, str]:

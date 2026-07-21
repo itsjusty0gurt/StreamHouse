@@ -19,7 +19,7 @@ class RoutineStore:
     routine relationships.
     """
 
-    VERSION = 3
+    VERSION = 4
 
     def __init__(self, path: Path | None = None) -> None:
         self.path = path or user_data_root() / "automation" / "routines.json"
@@ -210,6 +210,7 @@ class RoutineStore:
         group_id: str = "",
         description: str = "",
         enabled: bool = True,
+        queue_id: str = "",
         tasks: Iterable[TaskDefinition] = (),
     ) -> RoutineDefinition:
         routine = RoutineDefinition(
@@ -220,6 +221,7 @@ class RoutineStore:
             enabled=bool(enabled),
             group_id=group_id,
             description=description.strip()[:500],
+            queue_id=queue_id.strip(),
         )
         routines = deepcopy(self.routines)
         routines.append(routine)
@@ -235,6 +237,7 @@ class RoutineStore:
         group_id: str | None = None,
         description: str | None = None,
         enabled: bool | None = None,
+        queue_id: str | None = None,
     ) -> RoutineDefinition:
         routines = deepcopy(self.routines)
         routine = self._find_routine(routines, routine_id)
@@ -252,6 +255,8 @@ class RoutineStore:
             routine.description = description.strip()[:500]
         if enabled is not None:
             routine.enabled = bool(enabled)
+        if queue_id is not None:
+            routine.queue_id = queue_id.strip()
         self._commit(deepcopy(self.groups), routines)
         return self.get(routine_id)  # type: ignore[return-value]
 
@@ -306,6 +311,7 @@ class RoutineStore:
             additional_trigger_ids=(
                 list(source.additional_trigger_ids) if include_trigger else []
             ),
+            queue_id=source.queue_id,
         )
         routines = deepcopy(self.routines)
         routines.append(duplicate)

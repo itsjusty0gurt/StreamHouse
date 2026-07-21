@@ -11,7 +11,7 @@ from twitch.service import TwitchService
 
 class SendTwitchChatMessageTask:
     task_type = "twitch.send_chat_message"
-    TEMPLATE_PATTERN = re.compile(r"\{([a-z_]+)\}")
+    TEMPLATE_PATTERN = re.compile(r"\{([a-z][a-z0-9_]*)\}")
     TEMPLATE_VARIABLES = frozenset(
         {
             "args",
@@ -66,8 +66,11 @@ class SendTwitchChatMessageTask:
         trigger: TriggerEvent,
     ) -> TaskExecutionResult:
         template = str(task.config.get("message", "")).strip()
+        context = dict(trigger.context)
+        if self.variable_resolver is not None:
+            context.update(self.variable_resolver(template, context))
         try:
-            self.validate_template(template)
+            self.validate_template(template, context)
         except ValueError as error:
             return TaskExecutionResult(
                 task_id=task.task_id,
@@ -75,9 +78,6 @@ class SendTwitchChatMessageTask:
                 succeeded=False,
                 detail=str(error),
             )
-        context = dict(trigger.context)
-        if self.variable_resolver is not None:
-            context.update(self.variable_resolver(template, context))
         message = self.render(template, context)[:500]
         succeeded = self.twitch_service.send_message(
             message,
@@ -91,11 +91,18 @@ class SendTwitchChatMessageTask:
         )
 
     @classmethod
-    def validate_template(cls, template: str) -> None:
+    def validate_template(
+        cls,
+        template: str,
+        allowed_variables: Mapping[str, object] | set[str] | tuple[str, ...] = (),
+    ) -> None:
         if not template or len(template) > 500:
             raise ValueError("Twitch messages must contain 1-500 characters.")
+        allowed = set(allowed_variables)
         unknown = sorted(
-            set(cls.TEMPLATE_PATTERN.findall(template)) - cls.TEMPLATE_VARIABLES
+            set(cls.TEMPLATE_PATTERN.findall(template))
+            - cls.TEMPLATE_VARIABLES
+            - allowed
         )
         if unknown:
             raise ValueError(f"Unknown command variable: {{{unknown[0]}}}")
@@ -155,7 +162,8 @@ class TwitchAutomationTask:
         if self.task_type == "twitch.send_pinned_message":
             message = render("message")[:500]
             SendTwitchChatMessageTask.validate_template(
-                str(config.get("message", ""))
+                str(config.get("message", "")),
+                trigger.context,
             )
             sent, pinned = self.service.send_pinned_message(message)
             if not sent or not pinned:
