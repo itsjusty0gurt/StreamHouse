@@ -9,7 +9,7 @@ from unittest.mock import Mock
 
 from PySide6.QtWidgets import QApplication
 
-from automation.core_tasks import DelayTask, WaitForServiceTask
+from automation.core_tasks import DelayTask, PlayAudioTask, WaitForServiceTask
 from automation.models import TaskDefinition, TriggerEvent
 from automation.routines import RoutineStore
 from automation.tasks import TaskRegistry
@@ -180,6 +180,93 @@ class CoreTaskTests(unittest.TestCase):
         wait = TaskDefinition("wait", "core.wait_for_service", "Wait", {"service": "obs", "timeout_seconds": 1})
         self.assertTrue(DelayTask().execute(delay, trigger).succeeded)
         self.assertTrue(WaitForServiceTask(lambda name: name == "obs").execute(wait, trigger).succeeded)
+
+    def test_play_audio_validates_file_and_starts_with_volume(self) -> None:
+        class Signal:
+            def connect(self, callback):
+                self.callback = callback
+
+        class FakePlayer:
+            def __init__(self):
+                self.playbackStateChanged = Signal()
+                self.errorOccurred = Signal()
+                self.played = False
+                self.stopped = False
+                self.source = None
+                self.audio_output = None
+
+            def setAudioOutput(self, output):
+                self.audio_output = output
+
+            def setSource(self, source):
+                self.source = source
+
+            def play(self):
+                self.played = True
+
+            def stop(self):
+                self.stopped = True
+
+        class FakeAudioOutput:
+            def __init__(self):
+                self.volume = None
+
+            def setVolume(self, volume):
+                self.volume = volume
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "sound.mp3"
+            path.write_bytes(b"fake")
+            players: list[FakePlayer] = []
+            outputs: list[FakeAudioOutput] = []
+
+            def player_factory():
+                player = FakePlayer()
+                players.append(player)
+                return player
+
+            def output_factory():
+                output = FakeAudioOutput()
+                outputs.append(output)
+                return output
+
+            trigger = TriggerEvent("manual", "sally", "manual", {})
+            task = TaskDefinition(
+                "audio",
+                "core.play_audio",
+                "Audio",
+                {"file": str(path), "volume": 35},
+            )
+
+            audio_task = PlayAudioTask(
+                player_factory=player_factory,
+                audio_output_factory=output_factory,
+            )
+            result = audio_task.execute(task, trigger)
+            audio_task.stop_all()
+
+        self.assertTrue(result.succeeded)
+        self.assertTrue(players[0].played)
+        self.assertTrue(players[0].stopped)
+        self.assertEqual(outputs[0].volume, 0.35)
+        self.assertIn("Started audio", result.detail)
+
+    def test_play_audio_rejects_unsupported_extension(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "sound.txt"
+            path.write_text("fake", encoding="utf-8")
+            trigger = TriggerEvent("manual", "sally", "manual", {})
+            task = TaskDefinition(
+                "audio",
+                "core.play_audio",
+                "Audio",
+                {"file": str(path)},
+            )
+
+            result = PlayAudioTask().execute(task, trigger)
+
+        self.assertFalse(result.succeeded)
+        self.assertIn(".ogg, .mp3, or .wav", result.detail)
 
 
 if __name__ == "__main__":

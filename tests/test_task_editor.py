@@ -76,6 +76,40 @@ class TaskEditorTests(unittest.TestCase):
         target.setText("https://twitch.tv")
         self.assertEqual(dialog.values()["config"]["target"], "https://twitch.tv")
 
+    def test_play_audio_form_exposes_volume_and_wait_controls(self) -> None:
+        dialog = TaskEditorDialog("core.play_audio")
+        fields = dialog.field_widgets["core.play_audio"]
+        fields["file"].setText("C:/Sounds/hello.mp3")
+        fields["volume"].setValue(42)
+
+        self.assertIsInstance(fields["wait_for_completion"], QCheckBox)
+        self.assertFalse(fields["timeout_seconds"].isEnabled())
+        fields["wait_for_completion"].setChecked(True)
+        self.assertTrue(fields["timeout_seconds"].isEnabled())
+        config = dialog.values()["config"]
+        self.assertEqual(config["file"], "C:/Sounds/hello.mp3")
+        self.assertEqual(config["volume"], 42)
+        self.assertTrue(config["wait_for_completion"])
+        self.assertFalse(hasattr(dialog, "variable_table"))
+        self.assertFalse(
+            any(
+                "templates support variables" in label.text()
+                for label in dialog.findChildren(QLabel)
+            )
+        )
+        self.assertEqual(dialog.test_audio_button.text(), "Test Audio")
+
+    def test_audio_preview_reports_an_invalid_file_without_saving(self) -> None:
+        dialog = TaskEditorDialog("core.play_audio")
+        fields = dialog.field_widgets["core.play_audio"]
+        fields["file"].setText("C:/Sounds/does-not-exist.ogg")
+        fields["volume"].setValue(35)
+
+        dialog.test_audio_button.click()
+
+        self.assertIn("Audio file was not found", dialog.audio_test_status.text())
+        self.assertEqual(dialog.audio_test_status.property("state"), "error")
+
     def test_trigger_variable_can_be_inserted_and_previewed(self) -> None:
         dialog = TaskEditorDialog(
             "twitch.send_chat_message",

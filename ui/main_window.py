@@ -63,6 +63,7 @@ from automation.core_tasks import (
     DelayTask,
     LaunchApplicationTask,
     OpenTargetTask,
+    PlayAudioTask,
     PythonScriptTask,
     WaitForServiceTask,
 )
@@ -331,6 +332,7 @@ class MainWindow(QMainWindow):
         self.task_registry.register(CloseApplicationTask())
         self.task_registry.register(DelayTask())
         self.task_registry.register(OpenTargetTask())
+        self.task_registry.register(PlayAudioTask())
         self.task_registry.register(PythonScriptTask())
         self.task_registry.register(
             WaitForServiceTask(

@@ -40,7 +40,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from automation.models import AutomationExecutionResult, TaskDefinition
+from automation.models import AutomationExecutionResult, TaskDefinition, TriggerEvent
 from automation.core_triggers import (
     CORE_TRIGGER_TYPES,
     CoreAutomationTrigger,
@@ -49,7 +49,7 @@ from automation.core_triggers import (
 from automation.routines import RoutineStore
 from automation.service import AutomationService
 from automation.tasks import TaskRegistry
-from automation.core_tasks import CORE_TASK_LABELS
+from automation.core_tasks import CORE_TASK_LABELS, PlayAudioTask
 from automation.transfer import export_routine, import_routine, validate_import
 from automation.variables import (
     CORE_VARIABLES,
@@ -448,6 +448,12 @@ class TaskEditorDialog(QDialog):
         "core.open_target": (
             {"key": "target", "label": "File, folder, or URL", "kind": "target", "default": "", "required": True, "placeholder": "https://twitch.tv or C:/path"},
         ),
+        "core.play_audio": (
+            {"key": "file", "label": "Audio file", "kind": "file", "default": "", "required": True, "placeholder": "C:/path/to/sound.ogg, .mp3, or .wav"},
+            {"key": "volume", "label": "Volume", "kind": "number", "default": 80, "minimum": 0, "maximum": 100, "suffix": "%"},
+            {"key": "wait_for_completion", "label": "", "kind": "bool", "default": False, "text": "Wait for the audio to finish before continuing"},
+            {"key": "timeout_seconds", "label": "Timeout", "kind": "number", "default": 30.0, "minimum": 0.1, "maximum": 86400.0, "suffix": " seconds"},
+        ),
         "core.run_python_script": (
             {"key": "script", "label": "Python script", "kind": "python_file", "default": "", "required": True, "placeholder": "C:/path/to/script.py"},
             {"key": "python_executable", "label": "Python executable", "kind": "file", "default": "", "placeholder": "Optional; automatically uses Sally's Python when available"},
@@ -546,6 +552,17 @@ class TaskEditorDialog(QDialog):
         layout.addLayout(obs_toolbar)
 
         layout.addWidget(self._build_page(self.task_type))
+        if self.task_type == "core.play_audio":
+            self._audio_preview = PlayAudioTask()
+            preview_row = QHBoxLayout()
+            self.test_audio_button = QPushButton("Test Audio")
+            self.audio_test_status = QLabel("")
+            self.audio_test_status.setWordWrap(True)
+            preview_row.addWidget(self.test_audio_button)
+            preview_row.addWidget(self.audio_test_status, 1)
+            layout.addLayout(preview_row)
+            self.test_audio_button.clicked.connect(self._test_audio)
+            self.finished.connect(lambda _result: self._audio_preview.stop_all())
         if self.task_type == "core.run_python_script":
             warning = QLabel(
                 "Trusted local code: this script runs outside Sally and has the "
@@ -562,13 +579,14 @@ class TaskEditorDialog(QDialog):
             layout.addWidget(warning)
         self._build_variable_help(layout)
 
-        variables = QLabel(
-            "Twitch message templates support variables such as {user}, "
-            "{channel}, {event_type}, {scene}, {source}, {input}, {message}, "
-            "{viewers}, {reward}, {command}, and {args}."
-        )
-        variables.setWordWrap(True)
-        layout.addWidget(variables)
+        if self.TEMPLATED_FIELDS.get(self.task_type):
+            variables = QLabel(
+                "Task templates support variables such as {user}, {channel}, "
+                "{event_type}, {scene}, {source}, {input}, {message}, "
+                "{viewers}, {reward}, {command}, and {args}."
+            )
+            variables.setWordWrap(True)
+            layout.addWidget(variables)
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel
         )
@@ -816,9 +834,47 @@ class TaskEditorDialog(QDialog):
 
             wait.toggled.connect(update_script_mode)
             update_script_mode(wait.isChecked())
+        if self.task_type == "core.play_audio":
+            fields = self.field_widgets[self.task_type]
+            wait = fields["wait_for_completion"]
+
+            def update_audio_mode(checked: bool) -> None:
+                fields["timeout_seconds"].setEnabled(checked)
+
+            wait.toggled.connect(update_audio_mode)
+            update_audio_mode(wait.isChecked())
         if self.task is None:
             label = self.LABELS.get(self.task_type, self.task_type)
             self.name_edit.setText(label.partition("—")[2].strip() or label)
+
+    def _test_audio(self) -> None:
+        fields = self.field_widgets["core.play_audio"]
+        config = {
+            "file": fields["file"].text().strip(),
+            "volume": fields["volume"].value(),
+            "wait_for_completion": False,
+        }
+        self._audio_preview.stop_all()
+        result = self._audio_preview.execute(
+            TaskDefinition(
+                task_id="audio-preview",
+                task_type="core.play_audio",
+                name="Audio preview",
+                config=config,
+            ),
+            TriggerEvent(
+                trigger_id="audio-preview",
+                service="core",
+                trigger_type="preview",
+                context={},
+            ),
+        )
+        self.audio_test_status.setText(result.detail)
+        self.audio_test_status.setProperty(
+            "state", "success" if result.succeeded else "error"
+        )
+        self.audio_test_status.style().unpolish(self.audio_test_status)
+        self.audio_test_status.style().polish(self.audio_test_status)
 
     def _choose_file(
         self, edit: QLineEdit, file_filter: str = "All Files (*)"

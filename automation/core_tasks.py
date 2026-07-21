@@ -17,6 +17,7 @@ from PySide6.QtCore import (
     QUrl,
 )
 from PySide6.QtGui import QDesktopServices
+from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 
 from automation.models import TaskDefinition, TaskExecutionResult, TriggerEvent
 
@@ -29,6 +30,7 @@ CORE_TASK_LABELS = {
     "core.open_target": "Core — Open file, folder, or URL",
     "core.run_python_script": "Core — Run Python script",
 }
+CORE_TASK_LABELS["core.play_audio"] = "Play audio file"
 
 
 def _result(task: TaskDefinition, succeeded: bool, detail: str) -> TaskExecutionResult:
@@ -144,6 +146,148 @@ class OpenTargetTask:
         url = QUrl(target) if target.casefold().startswith(("http://", "https://")) else QUrl.fromLocalFile(str(Path(target).expanduser().resolve()))
         opened = QDesktopServices.openUrl(url)
         return _result(task, opened, f"Opened {target}." if opened else f"Could not open {target}.")
+
+
+class PlayAudioTask:
+    task_type = "core.play_audio"
+    SUPPORTED_EXTENSIONS = frozenset({".ogg", ".mp3", ".wav"})
+
+    def __init__(
+        self,
+        *,
+        player_factory=QMediaPlayer,
+        audio_output_factory=QAudioOutput,
+    ) -> None:
+        self._player_factory = player_factory
+        self._audio_output_factory = audio_output_factory
+        self._active_players: list[tuple[object, object]] = []
+
+    def execute(self, task: TaskDefinition, trigger: TriggerEvent) -> TaskExecutionResult:
+        try:
+            audio_file = self._audio_path(task.config)
+            volume_percent = max(0, min(int(task.config.get("volume", 80)), 100))
+            wait_for_completion = bool(task.config.get("wait_for_completion", False))
+            player = self._player_factory()
+            audio_output = self._audio_output_factory()
+            audio_output.setVolume(volume_percent / 100)
+            player.setAudioOutput(audio_output)
+            player.setSource(QUrl.fromLocalFile(str(audio_file)))
+            if wait_for_completion:
+                return self._play_and_wait(
+                    task,
+                    player,
+                    audio_output,
+                    audio_file,
+                    volume_percent,
+                )
+            self._play_background(player, audio_output)
+            return _result(
+                task,
+                True,
+                f"Started audio: {audio_file.name} at {volume_percent}%.",
+            )
+        except (OSError, TypeError, ValueError) as error:
+            return _result(task, False, str(error))
+
+    @classmethod
+    def _audio_path(
+        cls,
+        config: Mapping[str, object],
+    ) -> Path:
+        value = str(config.get("file", "")).strip()
+        if not value:
+            raise ValueError("Choose an audio file to play.")
+        audio_file = Path(value).expanduser().resolve()
+        if not audio_file.is_file():
+            raise ValueError(f"Audio file was not found: {audio_file}")
+        if audio_file.suffix.casefold() not in cls.SUPPORTED_EXTENSIONS:
+            raise ValueError("Audio files must be .ogg, .mp3, or .wav.")
+        return audio_file
+
+    def _play_background(self, player, audio_output) -> None:
+        entry = (player, audio_output)
+        self._active_players.append(entry)
+
+        def forget(*_args) -> None:
+            if entry in self._active_players:
+                self._active_players.remove(entry)
+
+        player.playbackStateChanged.connect(
+            lambda state: (
+                forget()
+                if state == QMediaPlayer.PlaybackState.StoppedState
+                else None
+            )
+        )
+        player.errorOccurred.connect(lambda *_args: forget())
+        player.play()
+
+    def stop_all(self) -> None:
+        """Stop any background audio started by this task instance."""
+        for player, _audio_output in tuple(self._active_players):
+            player.stop()
+        self._active_players.clear()
+
+    def _play_and_wait(
+        self,
+        task: TaskDefinition,
+        player,
+        audio_output,
+        audio_file: Path,
+        volume_percent: int,
+    ) -> TaskExecutionResult:
+        loop = QEventLoop()
+        timer = QTimer()
+        timer.setSingleShot(True)
+        timeout_seconds = max(
+            0.1,
+            min(float(task.config.get("timeout_seconds", 30.0)), 86_400.0),
+        )
+        timed_out = False
+        failed = False
+
+        def finish() -> None:
+            if loop.isRunning():
+                loop.quit()
+
+        def timeout() -> None:
+            nonlocal timed_out
+            timed_out = True
+            player.stop()
+            finish()
+
+        def fail(*_args) -> None:
+            nonlocal failed
+            failed = True
+            finish()
+
+        player.playbackStateChanged.connect(
+            lambda state: (
+                finish()
+                if state == QMediaPlayer.PlaybackState.StoppedState
+                else None
+            )
+        )
+        player.errorOccurred.connect(fail)
+        timer.timeout.connect(timeout)
+        timer.start(round(timeout_seconds * 1000))
+        player.play()
+        _keep_alive = (player, audio_output)
+        loop.exec()
+        timer.stop()
+        if timed_out:
+            return _result(
+                task,
+                False,
+                f"Audio timed out after {timeout_seconds:g} seconds.",
+            )
+        if failed:
+            return _result(task, False, "Audio playback failed.")
+        return _result(
+            task,
+            True,
+            f"Played audio: {audio_file.name} at {volume_percent}%.",
+        )
 
 
 class PythonScriptTask:
