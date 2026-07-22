@@ -60,6 +60,23 @@ class CompanionClient:
         except Exception as error:
             return CompanionStatus(False, error=str(error))
 
+    def ping(self) -> CompanionStatus:
+        try:
+            payload = self._request("/v1/ping", {})
+            version = int(payload.get("protocol_version", 0))
+            return CompanionStatus(
+                bool(payload.get("available", False))
+                and version == PROTOCOL_VERSION,
+                version,
+                error=(
+                    ""
+                    if version == PROTOCOL_VERSION
+                    else f"Protocol mismatch: {version}."
+                ),
+            )
+        except Exception as error:
+            return CompanionStatus(False, error=str(error))
+
     def decide(
         self,
         messages: tuple[ResponseMessage, ...],

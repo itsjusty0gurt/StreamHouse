@@ -42,6 +42,7 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QSplitter,
     QSpinBox,
+    QStackedWidget,
     QTabWidget,
     QTableWidget,
     QTableWidgetItem,
@@ -140,6 +141,7 @@ from ui.companion_worker import (
 from ui.controllers.release_controller import ReleaseController
 from ui.memory_worker import MemoryExtractionResult, MemoryExtractionWorker
 from ui.response_worker import ResponseBatchResult, ResponseDecisionWorker
+from ui.ai_companion_worker import CompanionHealthResult, CompanionHealthWorker
 from ui.automation_page import AutomationPage
 from ui.channel_points_page import ChannelPointsPage
 from ui.soundboard_page import SoundboardPageWidget
@@ -821,6 +823,11 @@ class MainWindow(QMainWindow):
         self.companion_refresh_timer.setInterval(60_000)
         self.companion_refresh_timer.timeout.connect(self.refresh_stream_companion)
         self.companion_refresh_timer.start()
+        self.ai_companion_health_timer = QTimer(self)
+        self.ai_companion_health_timer.setInterval(5_000)
+        self.ai_companion_health_timer.timeout.connect(self._check_ai_companion)
+        self.ai_companion_health_timer.start()
+        QTimer.singleShot(500, self._check_ai_companion)
         self.stream_overview_timer = QTimer(self)
         self.stream_overview_timer.setInterval(1_000)
         self.stream_overview_timer.timeout.connect(
@@ -1320,6 +1327,8 @@ class MainWindow(QMainWindow):
         ai_page_layout = QVBoxLayout(self.ai_page)
         self.ai_tabs = QTabWidget()
         ai_page_layout.addWidget(self.ai_tabs)
+        self.ai_tabs.hide()
+        self._build_ai_remote_dashboard(ai_page_layout)
         self.memories_page = QWidget()
         page_layout = QHBoxLayout(self.memories_page)
         splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -1666,6 +1675,109 @@ class MainWindow(QMainWindow):
             self._apply_analytics_retention
         )
         self._refresh_analytics()
+
+    def _build_ai_remote_dashboard(self, layout: QVBoxLayout) -> None:
+        self.ai_remote_stack = QStackedWidget(self.ai_page)
+        disconnected = QWidget(self.ai_remote_stack)
+        disconnected_layout = QVBoxLayout(disconnected)
+        disconnected_layout.addStretch()
+        disconnected_title = QLabel("AI Companion is not connected")
+        disconnected_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        disconnected_title.setStyleSheet("font-size:24px; font-weight:600;")
+        disconnected_help = QLabel(
+            "Open Sally AI Companion, then connect here. Sally Bot does not "
+            "load AI models or reasoning on its own."
+        )
+        disconnected_help.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        disconnected_help.setWordWrap(True)
+        endpoint_row = QHBoxLayout()
+        self.ai_remote_endpoint_edit = QLineEdit("http://127.0.0.1:8765")
+        self.ai_remote_connect_button = QPushButton("Connect to Companion")
+        endpoint_row.addStretch()
+        endpoint_row.addWidget(self.ai_remote_endpoint_edit)
+        endpoint_row.addWidget(self.ai_remote_connect_button)
+        endpoint_row.addStretch()
+        self.ai_remote_connection_detail = QLabel("")
+        self.ai_remote_connection_detail.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        disconnected_layout.addWidget(disconnected_title)
+        disconnected_layout.addWidget(disconnected_help)
+        disconnected_layout.addLayout(endpoint_row)
+        disconnected_layout.addWidget(self.ai_remote_connection_detail)
+        disconnected_layout.addStretch()
+
+        dashboard = QWidget(self.ai_remote_stack)
+        dashboard_layout = QVBoxLayout(dashboard)
+        connection_group = QGroupBox("AI Companion")
+        connection_form = QFormLayout(connection_group)
+        self.ai_remote_state_label = QLabel("Connected")
+        self.ai_remote_model_label = QLabel("--")
+        self.ai_remote_ollama_label = QLabel("--")
+        self.ai_remote_protocol_label = QLabel("--")
+        connection_form.addRow("Status", self.ai_remote_state_label)
+        connection_form.addRow("Model", self.ai_remote_model_label)
+        connection_form.addRow("Ollama", self.ai_remote_ollama_label)
+        connection_form.addRow("Protocol", self.ai_remote_protocol_label)
+        dashboard_layout.addWidget(connection_group)
+        dashboard_help = QLabel(
+            "Reasoning, memories, training, personality, and diagnostics are "
+            "managed in the Sally AI Companion window. This page is the Bot's "
+            "connection remote."
+        )
+        dashboard_help.setWordWrap(True)
+        dashboard_layout.addWidget(dashboard_help)
+        self.ai_remote_refresh_button = QPushButton("Refresh Connection")
+        dashboard_layout.addWidget(self.ai_remote_refresh_button)
+        dashboard_layout.addStretch()
+
+        self.ai_remote_stack.addWidget(disconnected)
+        self.ai_remote_stack.addWidget(dashboard)
+        layout.addWidget(self.ai_remote_stack, 1)
+        self.ai_companion_health_pool = QThreadPool(self)
+        self.ai_companion_health_pool.setMaxThreadCount(1)
+        self.ai_companion_health_in_flight = False
+        self.ai_remote_connect_button.clicked.connect(self._check_ai_companion)
+        self.ai_remote_refresh_button.clicked.connect(self._check_ai_companion)
+        self.ai_remote_endpoint_edit.returnPressed.connect(self._check_ai_companion)
+
+    @Slot()
+    def _check_ai_companion(self) -> None:
+        if self.ai_companion_health_in_flight:
+            return
+        endpoint = self.ai_remote_endpoint_edit.text().strip().rstrip("/")
+        if not endpoint:
+            return
+        self.ai_companion_health_in_flight = True
+        self.ai_remote_connection_detail.setText("Connecting…")
+        worker = CompanionHealthWorker(endpoint)
+        worker.signals.completed.connect(self._apply_ai_companion_health)
+        self.ai_companion_health_pool.start(worker)
+
+    @Slot(object)
+    def _apply_ai_companion_health(self, result: CompanionHealthResult) -> None:
+        self.ai_companion_health_in_flight = False
+        status = result.status
+        connected = status.available and status.protocol_version > 0
+        if not connected:
+            self.ai_remote_stack.setCurrentIndex(0)
+            self.ai_remote_connection_detail.setText(
+                status.error or "Companion is not running."
+            )
+            return
+        self.ai_remote_stack.setCurrentIndex(1)
+        endpoint = self.ai_remote_endpoint_edit.text().strip().rstrip("/")
+        if endpoint and endpoint != self.settings.ai_companion_endpoint:
+            self.settings = replace(self.settings, ai_companion_endpoint=endpoint)
+            try:
+                self.settings_store.save(self.settings)
+            except OSError:
+                pass
+        self.ai_remote_state_label.setText("Connected")
+        self.ai_remote_state_label.setStyleSheet("color:#00d084; font-weight:600;")
+        self.ai_remote_model_label.setText(str(result.settings.get("model", "--")))
+        self.ai_remote_ollama_label.setText(
+            str(result.settings.get("ollama_endpoint", "--"))
+        )
+        self.ai_remote_protocol_label.setText(str(status.protocol_version))
         self.twitch_channel_splitter.setSizes([1000, 170, 420])
 
     def _build_twitch_commands_tab(self) -> None:
@@ -4723,6 +4835,7 @@ class MainWindow(QMainWindow):
             settings.twitch_chat_font_size
         )
         self.local_ai_enabled_check.setChecked(settings.local_ai_enabled)
+        self.ai_remote_endpoint_edit.setText(settings.ai_companion_endpoint)
         self.ai_companion_endpoint_edit.setText(settings.ai_companion_endpoint)
         self.local_ai_endpoint_edit.setText(settings.local_ai_endpoint)
         self.local_ai_model_edit.setText(settings.local_ai_model)
@@ -6627,6 +6740,8 @@ class MainWindow(QMainWindow):
         self.companion_refresh_request_id += 1
         self.companion_thread_pool.clear()
         self.companion_thread_pool.waitForDone(2_000)
+        self.ai_companion_health_pool.clear()
+        self.ai_companion_health_pool.waitForDone(2_000)
         self.channel_points_page.shutdown()
         self.soundboard_page.shutdown()
         self.memory_reasoning_thread_pool.clear()

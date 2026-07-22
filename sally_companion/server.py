@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from time import monotonic
 from typing import Any
 
 from ai.memory_extractor import MemoryExtractor
@@ -28,6 +29,9 @@ class CompanionReasoningService:
         companion_settings: CompanionSettings | None = None,
         settings_store: CompanionSettingsStore | None = None,
     ) -> None:
+        self.decision_history: list[dict[str, Any]] = []
+        self.memory_history: list[dict[str, Any]] = []
+        self.last_bot_contact = 0.0
         self.training_store = training_store or TrainingStore()
         self.test_report_store = test_report_store or AITestReportStore()
         self.settings_store = settings_store or CompanionSettingsStore()
@@ -56,6 +60,15 @@ class CompanionReasoningService:
             "ollama_endpoint": self.settings.ollama_endpoint,
         }
 
+    def ping(self, _body: dict[str, Any]) -> dict[str, Any]:
+        self.last_bot_contact = monotonic()
+        return {
+            "protocol_version": PROTOCOL_VERSION,
+            "available": True,
+            "models": [],
+            "error": "",
+        }
+
     def decisions(self, body: dict[str, Any]) -> dict[str, Any]:
         messages = tuple(
             response_message_from_dict(item)
@@ -75,6 +88,10 @@ class CompanionReasoningService:
             self.settings.allow_mild_profanity,
             self.settings.allow_strong_profanity,
         )
+        self.decision_history.extend(
+            response_decision_to_dict(item) for item in decisions
+        )
+        self.decision_history = self.decision_history[-500:]
         return {
             "protocol_version": PROTOCOL_VERSION,
             "decisions": [response_decision_to_dict(item) for item in decisions],
@@ -92,6 +109,14 @@ class CompanionReasoningService:
             messages,
             tuple(str(item) for item in body.get("existing_memories", [])),
         )
+        self.memory_history.extend(
+            {
+                "user_name": str(body.get("user_name", "")),
+                **extracted_memory_to_dict(item),
+            }
+            for item in memories
+        )
+        self.memory_history = self.memory_history[-500:]
         return {
             "protocol_version": PROTOCOL_VERSION,
             "memories": [extracted_memory_to_dict(item) for item in memories],
@@ -203,6 +228,8 @@ def create_server(
                     "/v1/decisions": reasoning.decisions,
                     "/v1/memories": reasoning.memories,
                 }
+                if hasattr(reasoning, "ping"):
+                    routes["/v1/ping"] = reasoning.ping
                 if hasattr(reasoning, "training"):
                     routes["/v1/training"] = reasoning.training
                 if hasattr(reasoning, "test_report"):
