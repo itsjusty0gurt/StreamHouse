@@ -22,6 +22,7 @@ try {
         --icon "assets\sally-icon.ico" `
         --version-file "packaging\windows-version-info.txt" `
         --add-data "assets;assets" `
+        --add-data "twitch_extension;twitch_extension" `
         "main.py"
     if ($LASTEXITCODE -ne 0) {
         throw "PyInstaller failed with exit code $LASTEXITCODE."

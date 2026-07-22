@@ -797,6 +797,7 @@ class MainWindowTests(unittest.TestCase):
             [
                 "Chat",
                 "Analytics",
+                "Soundboard",
                 "Commands",
                 "Channel Points",
             ],
@@ -820,7 +821,7 @@ class MainWindowTests(unittest.TestCase):
         )
         self.assertTrue(all(page is not None for page in pages))
         self.assertEqual(self.window.ai_tabs.count(), 5)
-        self.assertEqual(self.window.channel_tabs.count(), 4)
+        self.assertEqual(self.window.channel_tabs.count(), 5)
         self.assertFalse(self.window.channel_points_page.create_button.isEnabled())
         self.assertEqual(
             [

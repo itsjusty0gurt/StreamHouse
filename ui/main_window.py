@@ -140,6 +140,14 @@ from ui.memory_worker import MemoryExtractionResult, MemoryExtractionWorker
 from ui.response_worker import ResponseBatchResult, ResponseDecisionWorker
 from ui.automation_page import AutomationPage
 from ui.channel_points_page import ChannelPointsPage
+from ui.soundboard_page import SoundboardPageWidget
+from soundboard.server import SoundboardLocalServer
+from soundboard.store import SoundboardStore
+from soundboard.relay import (
+    SoundboardRelayClient,
+    SoundboardRelayConfig,
+    SoundboardRelayConfigStore,
+)
 
 
 class StreamMetricCard(QFrame):
@@ -278,6 +286,10 @@ class MainWindow(QMainWindow):
         obs_service: ObsWebSocketService | None = None,
         obs_config_store: ObsConfigStore | None = None,
         obs_trigger_store: ObsTriggerStore | None = None,
+        soundboard_store: SoundboardStore | None = None,
+        soundboard_server: SoundboardLocalServer | None = None,
+        soundboard_relay_config_store: SoundboardRelayConfigStore | None = None,
+        soundboard_relay_client: SoundboardRelayClient | None = None,
         auto_upgrade_permissions: bool = True,
     ) -> None:
         super().__init__()
@@ -322,6 +334,34 @@ class MainWindow(QMainWindow):
             routine_store=routine_store,
         )
         data_root = routine_store.path.parent.parent
+        self.soundboard_store = soundboard_store or SoundboardStore(
+            data_root / "twitch" / "soundboard.json"
+        )
+        try:
+            self.soundboard_store.load()
+        except (OSError, ValueError, json.JSONDecodeError) as error:
+            self.soundboard_store.pages = []
+            Logger.warning(
+                f"Could not load the viewer soundboard: {error}",
+                source="TWITCH",
+            )
+        self.soundboard_relay_config_store = (
+            soundboard_relay_config_store
+            or SoundboardRelayConfigStore(
+                data_root / "twitch" / "soundboard-relay.json"
+            )
+        )
+        try:
+            self.soundboard_relay_config, self.soundboard_relay_key = (
+                self.soundboard_relay_config_store.load()
+            )
+        except (OSError, ValueError, json.JSONDecodeError) as error:
+            self.soundboard_relay_config = SoundboardRelayConfig()
+            self.soundboard_relay_key = ""
+            Logger.warning(
+                f"Could not load soundboard relay settings: {error}",
+                source="TWITCH",
+            )
         self.custom_variable_store = CustomVariableStore(
             routine_store.path.with_name("variables.json")
         )
@@ -392,6 +432,20 @@ class MainWindow(QMainWindow):
             self.task_registry,
             self.custom_variable_store,
             self.automation_queue_manager,
+        )
+        self.soundboard_server = soundboard_server or SoundboardLocalServer(
+            self.soundboard_store,
+            self,
+        )
+        self.soundboard_server.trigger_requested.connect(
+            self._handle_soundboard_trigger
+        )
+        self.soundboard_relay_client = (
+            soundboard_relay_client
+            or SoundboardRelayClient(self.soundboard_store, self)
+        )
+        self.soundboard_relay_client.trigger_received.connect(
+            self._handle_soundboard_relay_trigger
         )
         self.task_registry.register(
             RunRoutineTask(
@@ -1543,6 +1597,7 @@ class MainWindow(QMainWindow):
         retention_layout.addStretch()
         analytics_layout.addLayout(retention_layout)
         self.channel_tabs.addTab(analytics_page, "Analytics")
+        self._build_soundboard_tab()
         self._build_twitch_commands_tab()
         self._build_channel_points_tab()
         self.ui.mainStack.addWidget(self.ai_page)
@@ -1710,10 +1765,96 @@ class MainWindow(QMainWindow):
             self._channel_workspace_tab_changed
         )
 
+    def _build_soundboard_tab(self) -> None:
+        self.soundboard_page = SoundboardPageWidget(
+            self.soundboard_store,
+            self.twitch_command_trigger_store.routine_store,
+            self.automation_service,
+            self.soundboard_server,
+            self.soundboard_relay_client,
+            self.soundboard_relay_config_store,
+            self.soundboard_relay_config,
+            self.soundboard_relay_key,
+            self.channel_tabs,
+        )
+        self.channel_tabs.addTab(self.soundboard_page, "Soundboard")
+
     @Slot(int)
     def _channel_workspace_tab_changed(self, index: int) -> None:
         if self.channel_tabs.widget(index) is self.channel_points_page:
             self.channel_points_page.activate()
+        elif self.channel_tabs.widget(index) is self.soundboard_page:
+            self.soundboard_page.activate()
+
+    @Slot(str, str, dict)
+    def _handle_soundboard_trigger(
+        self,
+        button_id: str,
+        routine_id: str,
+        context: dict[str, str],
+    ) -> None:
+        found = self.soundboard_store.get_button(button_id)
+        label = found[1].label if found else "Soundboard button"
+        try:
+            result = self.automation_service.run_routine(routine_id, context)
+        except ValueError as error:
+            Logger.warning(
+                f'Soundboard request for "{label}" failed: {error}',
+                source="AUTOMATION",
+            )
+            self.statusBar().showMessage(str(error), 5000)
+            return
+        detail = (
+            f'Soundboard ran "{label}".'
+            if result.succeeded
+            else f'Soundboard routine for "{label}" did not complete.'
+        )
+        Logger.info(detail, source="AUTOMATION")
+        self.statusBar().showMessage(detail, 5000)
+
+    @Slot(str, dict)
+    def _handle_soundboard_relay_trigger(
+        self,
+        button_id: str,
+        context: dict[str, str],
+    ) -> None:
+        found = self.soundboard_store.get_button(button_id)
+        if found is None:
+            Logger.warning(
+                "Ignored a Twitch Extension request for an unknown sound.",
+                source="AUTOMATION",
+            )
+            return
+        _page, button = found
+        if not button.enabled or not button.routine_id:
+            Logger.warning(
+                f'Ignored unavailable soundboard button "{button.label}".',
+                source="AUTOMATION",
+            )
+            return
+        self._handle_soundboard_trigger(
+            button.button_id,
+            button.routine_id,
+            {
+                **context,
+                "soundboard_button": button.label,
+            },
+        )
+
+    def auto_connect_soundboard_relay(self) -> None:
+        config = self.soundboard_relay_config
+        if not config.auto_connect or not config.url or not self.soundboard_relay_key:
+            return
+        try:
+            self.soundboard_relay_client.connect_relay(
+                config,
+                self.soundboard_relay_key,
+            )
+        except ValueError as error:
+            Logger.warning(
+                f"Could not auto-connect the soundboard relay: {error}",
+                source="TWITCH",
+            )
 
     def _refresh_twitch_commands(self, selected_trigger_id: str = "") -> None:
         if not selected_trigger_id:
@@ -6413,6 +6554,7 @@ class MainWindow(QMainWindow):
         self.companion_thread_pool.clear()
         self.companion_thread_pool.waitForDone(2_000)
         self.channel_points_page.shutdown()
+        self.soundboard_page.shutdown()
         self.memory_reasoning_thread_pool.clear()
         self.memory_reasoning_thread_pool.waitForDone(2_000)
         self.memory_message_buffers.clear()
