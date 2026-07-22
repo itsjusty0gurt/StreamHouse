@@ -66,6 +66,16 @@ def draw_icon(painter: QPainter, rect: QRectF) -> None:
     QSvgRenderer(str(ICON)).render(painter, rect)
 
 
+def save_logo() -> None:
+    image = QImage(100, 100, QImage.Format_ARGB32)
+    image.fill(DARK)
+    painter = QPainter(image)
+    painter.setRenderHint(QPainter.Antialiasing)
+    draw_icon(painter, QRectF(0, 0, 100, 100))
+    painter.end()
+    image.save(str(OUTPUT / "logo-100x100.png"))
+
+
 def save_discovery() -> None:
     image = QImage(300, 200, QImage.Format_ARGB32)
     image.fill(DARK)
@@ -159,6 +169,7 @@ def save_screenshot() -> None:
 def main() -> None:
     application = QGuiApplication.instance() or QGuiApplication(sys.argv[:1])
     OUTPUT.mkdir(parents=True, exist_ok=True)
+    save_logo()
     save_discovery()
     save_screenshot()
     application.quit()
