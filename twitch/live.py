@@ -35,6 +35,7 @@ class TwitchHelixClient:
     CHANNEL_BADGES_URL = "https://api.twitch.tv/helix/chat/badges"
     STREAMS_URL = "https://api.twitch.tv/helix/streams"
     CHANNELS_URL = "https://api.twitch.tv/helix/channels"
+    SEARCH_CATEGORIES_URL = "https://api.twitch.tv/helix/search/categories"
     FOLLOWERS_URL = "https://api.twitch.tv/helix/channels/followers"
     CHANNEL_SUBSCRIPTIONS_URL = "https://api.twitch.tv/helix/subscriptions"
     CHATTERS_URL = "https://api.twitch.tv/helix/chat/chatters"
@@ -382,6 +383,49 @@ class TwitchHelixClient:
                             version.get("image_url_1x", "")
                         )
         return badges
+
+    def search_categories(
+        self,
+        query: str,
+        token: TwitchToken,
+    ) -> list[dict[str, Any]]:
+        clean_query = query.strip()
+        if not clean_query:
+            raise ValueError("Enter a Twitch category name.")
+        payload = self._read_json(
+            Request(
+                f"{self.SEARCH_CATEGORIES_URL}?"
+                f"{urlencode({'query': clean_query, 'first': 20})}",
+                headers=self._headers(token),
+            )
+        )
+        return [
+            item for item in payload.get("data", []) if isinstance(item, dict)
+        ]
+
+    def update_channel_information(
+        self,
+        broadcaster_id: str,
+        values: dict[str, str],
+        token: TwitchToken,
+    ) -> None:
+        allowed = {
+            key: str(value).strip()
+            for key, value in values.items()
+            if key in {"title", "game_id"} and str(value).strip()
+        }
+        if not allowed:
+            raise ValueError("Choose a stream title or category to update.")
+        headers = self._headers(token)
+        headers["Content-Type"] = "application/json"
+        request = Request(
+            f"{self.CHANNELS_URL}?{urlencode({'broadcaster_id': broadcaster_id})}",
+            data=json.dumps(allowed).encode("utf-8"),
+            headers=headers,
+            method="PATCH",
+        )
+        with urlopen(request, timeout=15):
+            pass
 
     def get_companion_snapshot(self, broadcaster_id: str, token: TwitchToken) -> dict:
         headers = self._headers(token)

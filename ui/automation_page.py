@@ -577,6 +577,12 @@ class TaskEditorDialog(QDialog):
             {"key": "length", "label": "Length", "kind": "choice", "default": 30, "choices": (("30 seconds", 30), ("60 seconds", 60), ("90 seconds", 90), ("120 seconds", 120), ("150 seconds", 150), ("180 seconds", 180))},
         ),
         "twitch.snooze_ad": (),
+        "twitch.update_stream_title": (
+            {"key": "title", "label": "Stream title", "kind": "text", "default": "", "required": True, "placeholder": "Playing {game} with {user}"},
+        ),
+        "twitch.update_stream_category": (
+            {"key": "category", "label": "Category name", "kind": "text", "default": "", "required": True, "placeholder": "Science & Technology"},
+        ),
         "twitch.moderate_user": (
             {"key": "action", "label": "Action", "kind": "choice", "default": "timeout", "choices": (("Timeout", "timeout"), ("Ban", "ban"), ("Unban", "unban"), ("Delete message", "delete_message"))},
             {"key": "user", "label": "User ID or login", "kind": "text", "default": "{user_id}", "required": True, "placeholder": "{user_id}, {target}, or a login"},
@@ -603,12 +609,22 @@ class TaskEditorDialog(QDialog):
         "core.delay": (
             {"key": "seconds", "label": "Duration", "kind": "number", "default": 1.0, "minimum": 0.0, "maximum": 86400.0, "suffix": " seconds"},
         ),
+        "core.random_delay": (
+            {"key": "minimum_seconds", "label": "Minimum", "kind": "number", "default": 1.0, "minimum": 0.0, "maximum": 86400.0, "suffix": " seconds"},
+            {"key": "maximum_seconds", "label": "Maximum", "kind": "number", "default": 5.0, "minimum": 0.0, "maximum": 86400.0, "suffix": " seconds"},
+        ),
         "core.wait_for_service": (
             {"key": "service", "label": "Service", "kind": "choice", "default": "obs", "choices": (("OBS Studio", "obs"), ("Twitch", "twitch"))},
             {"key": "timeout_seconds", "label": "Timeout", "kind": "number", "default": 15.0, "minimum": 0.1, "maximum": 3600.0, "suffix": " seconds"},
         ),
         "core.open_target": (
             {"key": "target", "label": "File, folder, or URL", "kind": "target", "default": "", "required": True, "placeholder": "https://twitch.tv or C:/path"},
+        ),
+        "core.show_notification": (
+            {"key": "title", "label": "Title", "kind": "text", "default": "Sally", "required": True, "placeholder": "Stream reminder"},
+            {"key": "message", "label": "Message", "kind": "multiline", "default": "", "required": True, "placeholder": "{user} triggered a reminder"},
+            {"key": "icon", "label": "Icon", "kind": "choice", "default": "information", "choices": (("Information", "information"), ("Warning", "warning"), ("Critical", "critical"), ("No icon", "none"))},
+            {"key": "duration_seconds", "label": "Display duration", "kind": "number", "default": 5, "minimum": 1, "maximum": 60, "suffix": " seconds"},
         ),
         "core.play_audio": (
             {"key": "file", "label": "Audio file", "kind": "file", "default": "", "required": True, "placeholder": "C:/path/to/sound.ogg, .mp3, or .wav"},
@@ -641,6 +657,22 @@ class TaskEditorDialog(QDialog):
         "core.run_routine": (
             {"key": "routine_id", "label": "Routine", "kind": "routine", "default": "", "required": True},
             {"key": "stop_on_failure", "label": "", "kind": "bool", "default": True, "text": "Stop this routine if the nested routine fails"},
+        ),
+        "core.set_routine_state": (
+            {"key": "routine_id", "label": "Routine", "kind": "routine", "default": "", "required": True},
+            {"key": "action", "label": "Action", "kind": "choice", "default": "toggle", "choices": (("Toggle", "toggle"), ("Enable", "enable"), ("Disable", "disable"))},
+        ),
+        "core.set_task_state": (
+            {"key": "routine_id", "label": "Routine", "kind": "routine", "default": "", "required": True},
+            {"key": "task_id", "label": "Task", "kind": "routine_task", "default": "", "required": True},
+            {"key": "action", "label": "Action", "kind": "choice", "default": "toggle", "choices": (("Toggle", "toggle"), ("Enable", "enable"), ("Disable", "disable"))},
+        ),
+        "core.set_queue_state": (
+            {"key": "queue_id", "label": "Queue", "kind": "queue", "default": "", "required": True},
+            {"key": "action", "label": "Action", "kind": "choice", "default": "toggle", "choices": (("Toggle pause", "toggle"), ("Pause", "pause"), ("Resume", "resume"))},
+        ),
+        "core.clear_queue": (
+            {"key": "queue_id", "label": "Queue", "kind": "queue", "default": "", "required": True},
         ),
         "core.logic_break": (),
         "core.logic_get_input": (
@@ -748,6 +780,24 @@ class TaskEditorDialog(QDialog):
             {"key": "input", "label": "Audio input", "kind": "obs_input", "default": "", "required": True},
             {"key": "volume_db", "label": "Volume", "kind": "number", "default": 0.0, "minimum": -100.0, "maximum": 26.0, "suffix": " dB"},
         ),
+        "obs.set_source_filter_state": (
+            {"key": "source", "label": "Source", "kind": "obs_input", "default": "", "required": True},
+            {"key": "filter", "label": "Filter", "kind": "obs_filter", "default": "", "required": True},
+            {"key": "action", "label": "Action", "kind": "choice", "default": "toggle", "choices": (("Toggle", "toggle"), ("Enable", "enable"), ("Disable", "disable"))},
+        ),
+        "obs.set_scene_filter_state": (
+            {"key": "scene", "label": "Scene", "kind": "obs_scene", "default": "", "required": True},
+            {"key": "filter", "label": "Filter", "kind": "obs_filter", "default": "", "required": True},
+            {"key": "action", "label": "Action", "kind": "choice", "default": "toggle", "choices": (("Toggle", "toggle"), ("Enable", "enable"), ("Disable", "disable"))},
+        ),
+        "obs.set_text_source": (
+            {"key": "input", "label": "Text source", "kind": "obs_input", "default": "", "required": True},
+            {"key": "text", "label": "Text", "kind": "multiline", "default": "", "placeholder": "Now playing: {game}"},
+        ),
+        "obs.set_image_source": (
+            {"key": "input", "label": "Image source", "kind": "obs_input", "default": "", "required": True},
+            {"key": "file", "label": "Image file", "kind": "file", "default": "", "required": True},
+        ),
         "obs.stream_control": (
             {"key": "action", "label": "Action", "kind": "choice", "default": "start", "choices": (("Start streaming", "start"), ("Stop streaming", "stop"))},
         ),
@@ -775,6 +825,8 @@ class TaskEditorDialog(QDialog):
     TEMPLATED_FIELDS: dict[str, tuple[str, ...]] = {
         "twitch.send_chat_message": ("message",),
         "twitch.send_pinned_message": ("message",),
+        "twitch.update_stream_title": ("title",),
+        "twitch.update_stream_category": ("category",),
         "twitch.moderate_user": ("user", "reason", "message_id"),
         "twitch.update_redemption": ("reward_id", "redemption_id"),
         "core.create_global_variable": ("value",),
@@ -785,12 +837,15 @@ class TaskEditorDialog(QDialog):
         "core.logic_switch": ("input",),
         "core.logic_while": ("left", "right"),
         "core.run_python_script": ("script", "arguments", "working_directory"),
+        "core.show_notification": ("title", "message"),
         "core.file_read": ("path",),
         "core.file_random_line": ("path",),
         "core.file_specific_line": ("path", "line_number"),
         "core.file_write": ("path", "text"),
         "core.path_exists": ("path",),
         "core.file_count_lines": ("path",),
+        "obs.set_text_source": ("text",),
+        "obs.set_image_source": ("file",),
     }
 
     def __init__(
@@ -801,6 +856,7 @@ class TaskEditorDialog(QDialog):
         obs_service: ObsWebSocketService | None = None,
         variables: dict[str, str] | None = None,
         routine_store: RoutineStore | None = None,
+        queue_store: AutomationQueueStore | None = None,
     ) -> None:
         super().__init__(parent)
         self.task = task
@@ -808,6 +864,7 @@ class TaskEditorDialog(QDialog):
         self.obs_service = obs_service
         self.variables = dict(variables or {})
         self.routine_store = routine_store
+        self.queue_store = queue_store
         self.field_widgets: dict[str, dict[str, QWidget]] = {}
         self.setWindowTitle("Edit Task" if task else "Add Task")
         self.setMinimumWidth(620)
@@ -1082,6 +1139,28 @@ class TaskEditorDialog(QDialog):
             index = combo.findData(str(value or ""))
             combo.setCurrentIndex(max(index, 0))
             return combo, combo
+        if kind == "routine_task":
+            combo = QComboBox()
+            combo.addItem("Choose a task...", "")
+            if self.routine_store is not None:
+                for routine in self.routine_store.routines:
+                    for routine_task in routine.tasks:
+                        combo.addItem(
+                            f"{routine.name} / {routine_task.name}",
+                            routine_task.task_id,
+                        )
+            index = combo.findData(str(value or ""))
+            combo.setCurrentIndex(max(index, 0))
+            return combo, combo
+        if kind == "queue":
+            combo = QComboBox()
+            combo.addItem("Choose a queue...", "")
+            if self.queue_store is not None:
+                for queue in self.queue_store.queues:
+                    combo.addItem(queue.name, queue.queue_id)
+            index = combo.findData(str(value or ""))
+            combo.setCurrentIndex(max(index, 0))
+            return combo, combo
         if kind == "switch_cases":
             editor = SwitchCasesEditor(self.routine_store, value)
             editor.setMinimumHeight(180)
@@ -1330,6 +1409,12 @@ class TaskEditorDialog(QDialog):
             config[key] = value
         if task_type == "core.logic_random_choice" and not config.get("choices"):
             raise ValueError("Add at least one weighted choice and select its routine.")
+        if (
+            task_type == "core.random_delay"
+            and float(config.get("minimum_seconds", 0))
+            > float(config.get("maximum_seconds", 0))
+        ):
+            raise ValueError("Minimum delay cannot be greater than maximum delay.")
         if task_type == SendTwitchChatMessageTask.task_type:
             SendTwitchChatMessageTask.validate_template(
                 str(config.get("message", "")),
@@ -1427,6 +1512,22 @@ class RoutineTreeWidget(QTreeWidget):
     routine_dropped = Signal(str, str, int)
     KIND_ROLE = int(Qt.ItemDataRole.UserRole) + 1
 
+    def _schedule_routine_drop(
+        self,
+        routine_id: str,
+        group_id: str,
+        destination_index: int,
+    ) -> None:
+        """Persist the move after Qt has finished processing the active drop."""
+        QTimer.singleShot(
+            0,
+            lambda: self.routine_dropped.emit(
+                routine_id,
+                group_id,
+                destination_index,
+            ),
+        )
+
     def dropEvent(self, event) -> None:
         if not bool(self.property("routine_reorder_enabled")):
             event.ignore()
@@ -1467,7 +1568,7 @@ class RoutineTreeWidget(QTreeWidget):
         destination.insertChild(destination_index, source)
         destination.setExpanded(True)
         self.setCurrentItem(source)
-        self.routine_dropped.emit(
+        self._schedule_routine_drop(
             str(source.data(0, Qt.ItemDataRole.UserRole) or ""),
             str(destination.data(0, Qt.ItemDataRole.UserRole) or ""),
             destination_index,
@@ -1607,12 +1708,20 @@ class AutomationPage(QWidget):
         self.new_group_button = QPushButton("+ Group")
         self.import_routine_button = QPushButton("Import")
         self.export_routine_button = QPushButton("Export")
+        self.sort_routines_button = QPushButton("Sort A-Z")
+        self.sort_routines_button.setObjectName("automationRoutineSortButton")
+        self.sort_routines_button.setCheckable(True)
+        self.sort_routines_button.setToolTip(
+            "Show groups and routines alphabetically. Ungrouped always stays first."
+        )
         toolbar.addWidget(self.new_routine_button)
         toolbar.addWidget(self.new_group_button)
         browser_layout.addLayout(toolbar)
         transfer_toolbar = QHBoxLayout()
         transfer_toolbar.addWidget(self.import_routine_button)
         transfer_toolbar.addWidget(self.export_routine_button)
+        transfer_toolbar.addStretch()
+        transfer_toolbar.addWidget(self.sort_routines_button)
         browser_layout.addLayout(transfer_toolbar)
         self.search_edit = QLineEdit()
         self.search_edit.setPlaceholderText("Search routines…")
@@ -1675,6 +1784,7 @@ class AutomationPage(QWidget):
         self.new_group_button.clicked.connect(self._new_group)
         self.import_routine_button.clicked.connect(self._import_routine)
         self.export_routine_button.clicked.connect(self._export_routine)
+        self.sort_routines_button.toggled.connect(lambda _checked: self.refresh())
         self.search_edit.textChanged.connect(lambda _text: self.refresh())
         self.routine_tree.currentItemChanged.connect(self._routine_selected)
         self.routine_tree.customContextMenuRequested.connect(
@@ -2192,13 +2302,20 @@ class AutomationPage(QWidget):
     def refresh(self, selected_routine_id: str = "") -> None:
         selected_routine_id = selected_routine_id or self._selected_routine_id
         query = self.search_edit.text().strip().casefold()
-        self.routine_tree.setProperty("routine_reorder_enabled", not bool(query))
+        alphabetical = self.sort_routines_button.isChecked()
+        reorder_enabled = not query and not alphabetical
+        self.routine_tree.setProperty("routine_reorder_enabled", reorder_enabled)
+        self.routine_tree.setDragEnabled(reorder_enabled)
+        self.routine_tree.setAcceptDrops(reorder_enabled)
         self.routine_tree.blockSignals(True)
         self.routine_tree.clear()
         selected_item = None
         # Ungrouped is the inbox for new/manual routines, so keep it visible
         # above the user's explicitly ordered custom groups.
-        groups = [None, *self.routine_store.groups]
+        custom_groups = list(self.routine_store.groups)
+        if alphabetical:
+            custom_groups.sort(key=lambda group: group.name.casefold())
+        groups = [None, *custom_groups]
         visible_count = 0
         for group in groups:
             group_id = group.group_id if group else ""
@@ -2209,6 +2326,8 @@ class AutomationPage(QWidget):
                 or query in routine.name.casefold()
                 or query in routine.description.casefold()
             ]
+            if alphabetical:
+                routines.sort(key=lambda routine: routine.name.casefold())
             if query and not routines:
                 continue
             title = group.name if group else "Ungrouped"
@@ -2251,9 +2370,13 @@ class AutomationPage(QWidget):
                 if routine.routine_id == selected_routine_id:
                     selected_item = item
         self.routine_tree.blockSignals(False)
-        self.routine_count_label.setText(
-            f"{visible_count} routine(s) • drag to reorder or regroup"
-        )
+        if alphabetical:
+            order_hint = "alphabetical view • turn off sorting to drag"
+        elif query:
+            order_hint = "clear search to drag or regroup"
+        else:
+            order_hint = "drag to reorder or regroup"
+        self.routine_count_label.setText(f"{visible_count} routine(s) • {order_hint}")
         if selected_item is not None:
             self.routine_tree.setCurrentItem(selected_item)
         elif selected_routine_id:
@@ -3219,6 +3342,7 @@ class AutomationPage(QWidget):
             obs_service=self.obs_service,
             variables=self._sample_context_for_routine(routine),
             routine_store=self.routine_store,
+            queue_store=self.queue_store,
         )
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
@@ -3264,6 +3388,7 @@ class AutomationPage(QWidget):
             self.obs_service,
             self._sample_context_for_routine(routine),
             self.routine_store,
+            self.queue_store,
         )
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
@@ -3708,11 +3833,14 @@ class AutomationPage(QWidget):
             "twitch.send_pinned_message": "Sends and pins a Twitch chat message",
             "twitch.run_commercial": "Starts a Twitch commercial",
             "twitch.snooze_ad": "Changes the Twitch ad schedule",
+            "twitch.update_stream_title": "Changes the Twitch stream title",
+            "twitch.update_stream_category": "Changes the Twitch stream category",
             "twitch.moderate_user": "Performs a Twitch moderation action",
             "twitch.update_redemption": "Fulfills or refunds a redemption",
             "core.launch_application": "Launches an application",
             "core.close_application": "Closes an application",
             "core.open_target": "Opens a file, folder, or URL",
+            "core.show_notification": "Shows a desktop notification",
             "core.run_python_script": "Runs trusted Python code on this computer",
             "core.play_audio": "Plays an audio file",
             "core.run_routine": "Runs another routine and all its enabled tasks",

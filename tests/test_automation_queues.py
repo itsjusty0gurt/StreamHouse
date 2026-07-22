@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 
 from automation.models import TaskDefinition, TaskExecutionResult, TriggerEvent
+from automation.control_tasks import register_control_tasks
 from automation.queues import AutomationQueueManager, AutomationQueueStore
 from automation.routines import RoutineStore
 from automation.service import AutomationService
@@ -32,6 +33,12 @@ class AutomationQueueTests(unittest.TestCase):
         self.registry = TaskRegistry()
         self.capture = CaptureTask()
         self.registry.register(self.capture)
+        register_control_tasks(
+            self.registry,
+            self.routine_store,
+            self.queue_store,
+            self.manager,
+        )
         self.service = AutomationService(
             self.routine_store,
             self.registry,
@@ -142,6 +149,61 @@ class AutomationQueueTests(unittest.TestCase):
 
         self.assertIsNone(self.manager.take_ready(queue.queue_id, now=11.9))
         self.assertIsNotNone(self.manager.take_ready(queue.queue_id, now=12))
+
+    def test_routine_and_task_state_tasks_toggle_enabled_state(self) -> None:
+        routine = self.routine_store.add("Toggle me")
+        target_task = self.routine_store.add_task(
+            routine.routine_id,
+            task_type=self.capture.task_type,
+            name="Capture",
+        )
+        controller = self.routine_store.add("Controller")
+        self.routine_store.add_task(
+            controller.routine_id,
+            task_type="core.set_task_state",
+            name="Disable capture",
+            config={
+                "routine_id": routine.routine_id,
+                "task_id": target_task.task_id,
+                "action": "disable",
+            },
+        )
+        self.routine_store.add_task(
+            controller.routine_id,
+            task_type="core.set_routine_state",
+            name="Disable routine",
+            config={"routine_id": routine.routine_id, "action": "disable"},
+        )
+
+        result = self.service.run_routine(controller.routine_id)
+
+        self.assertTrue(result.succeeded)
+        updated = self.routine_store.get(routine.routine_id)
+        self.assertFalse(updated.enabled)
+        self.assertFalse(updated.tasks[0].enabled)
+
+    def test_queue_control_tasks_pause_and_clear_pending_items(self) -> None:
+        queue = self.queue_store.add("Controlled")
+        self.manager.enqueue(queue.queue_id, "a", "A", self.event("A"))
+        controller = self.routine_store.add("Queue controller")
+        self.routine_store.add_task(
+            controller.routine_id,
+            task_type="core.set_queue_state",
+            name="Pause queue",
+            config={"queue_id": queue.queue_id, "action": "pause"},
+        )
+        self.routine_store.add_task(
+            controller.routine_id,
+            task_type="core.clear_queue",
+            name="Clear queue",
+            config={"queue_id": queue.queue_id},
+        )
+
+        result = self.service.run_routine(controller.routine_id)
+
+        self.assertTrue(result.succeeded)
+        self.assertTrue(self.queue_store.get(queue.queue_id).paused)
+        self.assertEqual(self.manager.count(queue.queue_id), 0)
 
 
 if __name__ == "__main__":

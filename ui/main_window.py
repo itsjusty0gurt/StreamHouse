@@ -62,14 +62,17 @@ from automation.core_triggers import CoreTriggerStore
 from automation.core_tasks import (
     CloseApplicationTask,
     DelayTask,
+    DesktopNotificationTask,
     LaunchApplicationTask,
     OpenTargetTask,
     PlayAudioTask,
     PythonScriptTask,
+    RandomDelayTask,
     WaitForServiceTask,
 )
 from automation.tasks import TaskRegistry
 from automation.variable_tasks import RunRoutineTask, register_variable_tasks
+from automation.control_tasks import register_control_tasks
 from automation.logic_tasks import register_logic_tasks
 from automation.file_tasks import register_file_tasks
 from automation.queues import AutomationQueueManager, AutomationQueueStore
@@ -361,10 +364,18 @@ class MainWindow(QMainWindow):
         self.task_registry.register(LaunchApplicationTask())
         self.task_registry.register(CloseApplicationTask())
         self.task_registry.register(DelayTask())
+        self.task_registry.register(RandomDelayTask())
         self.task_registry.register(OpenTargetTask())
+        self.task_registry.register(DesktopNotificationTask())
         self.task_registry.register(PlayAudioTask())
         self.task_registry.register(PythonScriptTask())
         register_variable_tasks(self.task_registry, self.custom_variable_store)
+        register_control_tasks(
+            self.task_registry,
+            self.twitch_command_trigger_store.routine_store,
+            self.automation_queue_store,
+            self.automation_queue_manager,
+        )
         register_file_tasks(self.task_registry)
         self.task_registry.register(
             WaitForServiceTask(
@@ -1437,31 +1448,6 @@ class MainWindow(QMainWindow):
         self._build_ai_test_report_tab()
         self._build_training_tab()
         self._build_personality_tab()
-        sessions_page = QWidget()
-        sessions_layout = QVBoxLayout(sessions_page)
-        self.session_summary_label = QLabel("No active stream session")
-        self.session_table = QTableWidget(0, 8)
-        self.session_table.setHorizontalHeaderLabels(
-            (
-                "Started",
-                "Duration",
-                "Peak",
-                "Messages",
-                "Follows",
-                "Subs",
-                "Cheers",
-                "Raids",
-            )
-        )
-        self.session_table.horizontalHeader().setSectionResizeMode(
-            QHeaderView.ResizeMode.Stretch
-        )
-        self.session_table.setEditTriggers(
-            QTableWidget.EditTrigger.NoEditTriggers
-        )
-        sessions_layout.addWidget(self.session_summary_label)
-        sessions_layout.addWidget(self.session_table)
-        self.channel_tabs.addTab(sessions_page, "Stream Sessions")
         analytics_page = QWidget()
         analytics_layout = QVBoxLayout(analytics_page)
         analytics_toolbar = QHBoxLayout()
@@ -1478,6 +1464,9 @@ class MainWindow(QMainWindow):
         analytics_toolbar.addWidget(self.analytics_export_csv_button)
         analytics_toolbar.addWidget(self.analytics_export_json_button)
         analytics_layout.addLayout(analytics_toolbar)
+        self.session_summary_label = QLabel("No active stream session")
+        self.session_summary_label.setWordWrap(True)
+        analytics_layout.addWidget(self.session_summary_label)
 
         analytics_summary = QGroupBox("Overview")
         summary_layout = QGridLayout(analytics_summary)
@@ -1510,10 +1499,20 @@ class MainWindow(QMainWindow):
         analytics_layout.addWidget(analytics_summary)
 
         analytics_tables = QTabWidget()
-        self.analytics_sessions_table = QTableWidget(0, 6)
+        self.analytics_sessions_table = QTableWidget(0, 8)
         self.analytics_sessions_table.setHorizontalHeaderLabels(
-            ("Started", "Peak", "Messages", "Follows", "Subs", "Engagement")
+            (
+                "Started",
+                "Duration",
+                "Peak",
+                "Messages",
+                "Follows",
+                "Subs",
+                "Cheers",
+                "Raids",
+            )
         )
+        self.session_table = self.analytics_sessions_table
         self.analytics_viewers_table = QTableWidget(0, 5)
         self.analytics_viewers_table.setHorizontalHeaderLabels(
             ("Viewer", "Messages", "Active days", "First seen", "Last seen")
@@ -5531,6 +5530,7 @@ class MainWindow(QMainWindow):
         if not self.stream_is_live:
             self.ad_next_label.setText("Ad schedule available while live")
             self.ad_preroll_label.setText("Pre-roll status unavailable offline")
+            self.ad_preroll_label.setStyleSheet("color:#adadb8;")
             self.ad_last_label.setText("")
             self.ad_snooze_status_label.setText("Snoozes —")
             self.ad_schedule_progress.setValue(0)
@@ -5541,6 +5541,7 @@ class MainWindow(QMainWindow):
             self.ad_preroll_label.setText(
                 "Update Twitch permissions to monitor ads and pre-rolls"
             )
+            self.ad_preroll_label.setStyleSheet("color:#adadb8;")
             self.ad_last_label.setText("")
             self.ad_snooze_status_label.setText("Snoozes —")
             self.ad_schedule_progress.setValue(0)
@@ -5549,6 +5550,7 @@ class MainWindow(QMainWindow):
         if not self.ad_schedule_available:
             self.ad_next_label.setText("Ad schedule unavailable")
             self.ad_preroll_label.setText("Waiting for Twitch ad schedule data")
+            self.ad_preroll_label.setStyleSheet("color:#adadb8;")
             self.ad_last_label.setText("")
             self.ad_snooze_status_label.setText("Snoozes —")
             self.ad_schedule_progress.setValue(0)
@@ -5587,7 +5589,7 @@ class MainWindow(QMainWindow):
                 f"Pre-roll free for {self._clock_text(preroll_remaining)}"
             )
             self.ad_preroll_label.setStyleSheet(
-                "color:#00c7ac; font-weight:600;"
+                "color:#66ffd1; font-weight:700;"
             )
         else:
             self.ad_preroll_label.setText("Pre-rolls active")
@@ -5948,7 +5950,7 @@ class MainWindow(QMainWindow):
             )
 
     def _refresh_session_history(self) -> None:
-        if not hasattr(self, "session_table"):
+        if not hasattr(self, "analytics_sessions_table"):
             return
         current = self.session_store.current
         if current is None:
@@ -5961,38 +5963,6 @@ class MainWindow(QMainWindow):
                 f"{current.follows:,} follows, "
                 f"{current.subscriptions:,} subscriptions"
             )
-        self.session_table.setRowCount(len(self.session_store.sessions))
-        for row, session in enumerate(self.session_store.sessions):
-            try:
-                started = datetime.fromisoformat(session.started_at)
-                ended = datetime.fromisoformat(session.ended_at)
-                duration_seconds = max(
-                    int((ended - started).total_seconds()),
-                    0,
-                )
-                started_text = started.astimezone().strftime(
-                    "%b %d, %Y %H:%M"
-                )
-                duration_text = self._session_duration_text(duration_seconds)
-            except ValueError:
-                started_text = session.started_at
-                duration_text = "--"
-            values = (
-                started_text,
-                duration_text,
-                f"{session.peak_viewers:,}",
-                f"{session.messages:,}",
-                f"{session.follows:,}",
-                f"{session.subscriptions:,}",
-                f"{session.cheers:,}",
-                f"{session.raids:,}",
-            )
-            for column, value in enumerate(values):
-                self.session_table.setItem(
-                    row,
-                    column,
-                    QTableWidgetItem(value),
-                )
         self._refresh_analytics()
 
     def _analytics_snapshot(self) -> AnalyticsSnapshot:
@@ -6027,19 +5997,24 @@ class MainWindow(QMainWindow):
             self.analytics_labels[key].setText(value)
         self.analytics_sessions_table.setRowCount(len(snapshot.sessions))
         for row, session in enumerate(snapshot.sessions):
-            engagement = (
-                session.follows
-                + session.subscriptions
-                + session.cheers
-                + session.raids
-            )
+            try:
+                started = datetime.fromisoformat(session.started_at)
+                ended = datetime.fromisoformat(session.ended_at)
+                duration_seconds = max(int((ended - started).total_seconds()), 0)
+                started_text = started.astimezone().strftime("%b %d, %Y %H:%M")
+                duration_text = self._session_duration_text(duration_seconds)
+            except ValueError:
+                started_text = session.started_at
+                duration_text = "--"
             row_values = (
-                self._format_memory_timestamp(session.started_at),
+                started_text,
+                duration_text,
                 f"{session.peak_viewers:,}",
                 f"{session.messages:,}",
                 f"{session.follows:,}",
                 f"{session.subscriptions:,}",
-                f"{engagement:,}",
+                f"{session.cheers:,}",
+                f"{session.raids:,}",
             )
             for column, value in enumerate(row_values):
                 self.analytics_sessions_table.setItem(

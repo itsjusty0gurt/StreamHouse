@@ -2,7 +2,14 @@ from __future__ import annotations
 
 from PySide6.QtCore import QByteArray, QSettings
 from PySide6.QtGui import QGuiApplication
-from PySide6.QtWidgets import QComboBox, QMainWindow, QSplitter, QTabWidget, QWidget
+from PySide6.QtWidgets import (
+    QAbstractButton,
+    QComboBox,
+    QMainWindow,
+    QSplitter,
+    QTabWidget,
+    QWidget,
+)
 
 
 class WindowStateStore:
@@ -40,6 +47,18 @@ class WindowStateStore:
         if activity_filter is not None and saved_filter:
             activity_filter.setCurrentText(str(saved_filter))
         automation_page = window.findChild(QWidget, "automationPage")
+        routine_sort_button = window.findChild(
+            QAbstractButton,
+            "automationRoutineSortButton",
+        )
+        if routine_sort_button is not None:
+            routine_sort_button.setChecked(
+                self.settings.value(
+                    "window/automation_routine_alphabetical",
+                    False,
+                    type=bool,
+                )
+            )
         routine_id = str(
             self.settings.value("window/automation_selected_routine", "") or ""
         )
@@ -91,6 +110,15 @@ class WindowStateStore:
             self.settings.setValue(
                 "window/automation_selected_routine",
                 str(automation_page.property("selectedRoutineId") or ""),
+            )
+        routine_sort_button = window.findChild(
+            QAbstractButton,
+            "automationRoutineSortButton",
+        )
+        if routine_sort_button is not None:
+            self.settings.setValue(
+                "window/automation_routine_alphabetical",
+                routine_sort_button.isChecked(),
             )
         automation_splitter = window.findChild(QSplitter, "automationSplitter")
         if automation_splitter is not None:

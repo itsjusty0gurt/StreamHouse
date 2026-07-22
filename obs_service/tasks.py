@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 
 from automation.models import TaskDefinition, TaskExecutionResult, TriggerEvent
+from automation.variables import render_preview
 from obs_service.service import ObsWebSocketService
 
 
@@ -12,6 +13,10 @@ OBS_TASK_LABELS = {
     "obs.set_scene_item_enabled": "OBS — Show, hide, or toggle source",
     "obs.set_input_mute": "OBS — Mute, unmute, or toggle input",
     "obs.set_input_volume": "OBS — Set input volume",
+    "obs.set_source_filter_state": "OBS - Enable, disable, or toggle source filter",
+    "obs.set_scene_filter_state": "OBS - Enable, disable, or toggle scene filter",
+    "obs.set_text_source": "OBS — Set text source",
+    "obs.set_image_source": "OBS — Set image source",
     "obs.stream_control": "OBS — Start or stop streaming",
     "obs.record_control": "OBS — Control recording",
     "obs.replay_buffer_control": "OBS — Control replay buffer",
@@ -43,7 +48,29 @@ class ObsTask:
                     "Queued OBS source visibility request."
                     if request_id else "OBS is not connected.",
                 )
-            request_type, request_data = self._request(task)
+            if self.task_type in {
+                "obs.set_source_filter_state",
+                "obs.set_scene_filter_state",
+            }:
+                c = task.config
+                source = (
+                    self._required(c, "scene")
+                    if self.task_type == "obs.set_scene_filter_state"
+                    else self._required(c, "source")
+                )
+                request_id = self.service.set_source_filter_enabled(
+                    source,
+                    self._required(c, "filter"),
+                    str(c.get("action", "toggle")).casefold(),
+                )
+                return TaskExecutionResult(
+                    task.task_id,
+                    task.task_type,
+                    bool(request_id),
+                    "Queued OBS filter state request."
+                    if request_id else "OBS is not connected.",
+                )
+            request_type, request_data = self._request(task, trigger)
             request_id = self.service.send_request(request_type, request_data)
         except (TypeError, ValueError, json.JSONDecodeError) as error:
             return TaskExecutionResult(task.task_id, task.task_type, False, str(error))
@@ -54,7 +81,11 @@ class ObsTask:
             f"Queued OBS request {request_type}." if request_id else "OBS is not connected.",
         )
 
-    def _request(self, task: TaskDefinition) -> tuple[str, dict[str, object]]:
+    def _request(
+        self,
+        task: TaskDefinition,
+        trigger: TriggerEvent,
+    ) -> tuple[str, dict[str, object]]:
         c = task.config
         if self.task_type == "obs.set_program_scene":
             return "SetCurrentProgramScene", {"sceneName": self._required(c, "scene")}
@@ -67,6 +98,25 @@ class ObsTask:
             return "SetInputMute", {"inputName": name, "inputMuted": action == "mute"}
         if self.task_type == "obs.set_input_volume":
             return "SetInputVolume", {"inputName": self._required(c, "input"), "inputVolumeDb": float(c.get("volume_db", 0))}
+        if self.task_type == "obs.set_text_source":
+            text = render_preview(str(c.get("text", "")), trigger.context)
+            return "SetInputSettings", {
+                "inputName": self._required(c, "input"),
+                "inputSettings": {"text": text},
+                "overlay": True,
+            }
+        if self.task_type == "obs.set_image_source":
+            image_file = render_preview(
+                self._required(c, "file"),
+                trigger.context,
+            ).strip()
+            if not image_file:
+                raise ValueError("OBS task requires an image file.")
+            return "SetInputSettings", {
+                "inputName": self._required(c, "input"),
+                "inputSettings": {"file": image_file},
+                "overlay": True,
+            }
         if self.task_type == "obs.stream_control":
             return ("StartStream" if c.get("action", "start") == "start" else "StopStream"), {}
         if self.task_type == "obs.record_control":

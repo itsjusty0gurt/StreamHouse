@@ -425,6 +425,48 @@ class TwitchService:
         broadcaster_id, token = self._broadcaster_credentials()
         return self.helix.snooze_ad(broadcaster_id, token)
 
+    def update_stream_title(self, title: str) -> None:
+        clean_title = title.strip()
+        if not clean_title:
+            raise ValueError("Enter a stream title.")
+        broadcaster_id, token = self._broadcaster_credentials()
+        self.helix.update_channel_information(
+            broadcaster_id,
+            {"title": clean_title[:140]},
+            token,
+        )
+
+    def update_stream_category(self, category: str) -> str:
+        clean_category = category.strip()
+        if not clean_category:
+            raise ValueError("Enter a Twitch category name.")
+        broadcaster_id, token = self._broadcaster_credentials()
+        matches = self.helix.search_categories(clean_category, token)
+        exact = next(
+            (
+                item
+                for item in matches
+                if str(item.get("name", "")).casefold()
+                == clean_category.casefold()
+            ),
+            None,
+        )
+        selected = exact or (matches[0] if len(matches) == 1 else None)
+        if selected is None:
+            raise ValueError(
+                f'Twitch category "{clean_category}" was not an exact match.'
+            )
+        game_id = str(selected.get("id", "")).strip()
+        category_name = str(selected.get("name", clean_category)).strip()
+        if not game_id:
+            raise ValueError("Twitch returned an invalid category.")
+        self.helix.update_channel_information(
+            broadcaster_id,
+            {"game_id": game_id},
+            token,
+        )
+        return category_name
+
     def resolve_user_id(self, reference: str) -> str:
         clean = reference.strip().lstrip("@")
         if not clean or clean == "--":

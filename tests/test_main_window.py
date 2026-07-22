@@ -458,11 +458,20 @@ class MainWindowTests(unittest.TestCase):
             2,
         )
         self.assertTrue(moved)
+        self.assertEqual(
+            [task.task_id for task in store.get(routine.routine_id).tasks],
+            [first.task_id, second.task_id],
+        )
+
         self.application.processEvents()
+
         self.assertEqual(
             [task.task_id for task in store.get(routine.routine_id).tasks],
             [second.task_id, first.task_id],
         )
+        page.task_list.setCurrentRow(1)
+        self.assertEqual(page._selected_task().task_id, first.task_id)
+        self.assertTrue(page.task_list.isEnabled())
 
     def test_task_copy_and_paste_preserves_config_with_new_id(self) -> None:
         store = self.twitch_command_trigger_store.routine_store
@@ -503,6 +512,33 @@ class MainWindowTests(unittest.TestCase):
         )
         self.assertEqual(page._selected_routine_id, second.routine_id)
 
+    def test_routine_drop_waits_until_drag_event_has_finished(self) -> None:
+        store = self.twitch_command_trigger_store.routine_store
+        group = store.add_group("Moved here")
+        first = store.add("First", group_id=group.group_id)
+        second = store.add("Second")
+        page = self.window.automation_page
+
+        page.routine_tree._schedule_routine_drop(
+            second.routine_id,
+            group.group_id,
+            0,
+        )
+
+        self.assertEqual(
+            [routine.routine_id for routine in store.grouped(group.group_id)],
+            [first.routine_id],
+        )
+
+        self.application.processEvents()
+
+        self.assertEqual(
+            [routine.routine_id for routine in store.grouped(group.group_id)],
+            [second.routine_id, first.routine_id],
+        )
+        self.assertEqual(page._selected_routine_id, second.routine_id)
+        self.assertTrue(page.routine_tree.isEnabled())
+
     def test_ungrouped_routines_stay_above_custom_groups(self) -> None:
         store = self.twitch_command_trigger_store.routine_store
         group = store.add_group("Custom Group")
@@ -514,6 +550,50 @@ class MainWindowTests(unittest.TestCase):
 
         self.assertTrue(page.routine_tree.topLevelItem(0).text(0).startswith("Ungrouped"))
         self.assertTrue(page.routine_tree.topLevelItem(1).text(0).startswith("Custom Group"))
+
+    def test_alphabetical_routine_view_keeps_ungrouped_first(self) -> None:
+        store = self.twitch_command_trigger_store.routine_store
+        zebra_group = store.add_group("Zebra")
+        store.add_group("Alpha")
+        ungrouped_zulu = store.add("Zulu")
+        ungrouped_alpha = store.add("Alpha")
+        store.add("Zulu grouped", group_id=zebra_group.group_id)
+        store.add("Alpha grouped", group_id=zebra_group.group_id)
+        page = self.window.automation_page
+
+        page.sort_routines_button.setChecked(True)
+
+        self.assertTrue(page.routine_tree.topLevelItem(0).text(0).startswith("Ungrouped"))
+        self.assertTrue(page.routine_tree.topLevelItem(1).text(0).startswith("Alpha"))
+        self.assertTrue(page.routine_tree.topLevelItem(2).text(0).startswith("Zebra"))
+        ungrouped_item = page.routine_tree.topLevelItem(0)
+        self.assertEqual(
+            [
+                ungrouped_item.child(index).data(0, Qt.ItemDataRole.UserRole)
+                for index in range(ungrouped_item.childCount())
+            ],
+            [ungrouped_alpha.routine_id, ungrouped_zulu.routine_id],
+        )
+        zebra_item = page.routine_tree.topLevelItem(2)
+        self.assertEqual(
+            [
+                store.get(
+                    zebra_item.child(index).data(0, Qt.ItemDataRole.UserRole)
+                ).name
+                for index in range(zebra_item.childCount())
+            ],
+            ["Alpha grouped", "Zulu grouped"],
+        )
+        self.assertFalse(page.routine_tree.property("routine_reorder_enabled"))
+
+        page.sort_routines_button.setChecked(False)
+
+        self.assertTrue(page.routine_tree.topLevelItem(1).text(0).startswith("Zebra"))
+        self.assertEqual(
+            [routine.routine_id for routine in store.grouped("")],
+            [ungrouped_zulu.routine_id, ungrouped_alpha.routine_id],
+        )
+        self.assertTrue(page.routine_tree.property("routine_reorder_enabled"))
 
     def test_routine_rows_show_validation_and_counts(self) -> None:
         store = self.twitch_command_trigger_store.routine_store
@@ -693,7 +773,7 @@ class MainWindowTests(unittest.TestCase):
         self.window.memory_search_edit.setText("missing")
         self.assertEqual(self.window.memory_viewer_list.count(), 0)
 
-    def test_channel_workspace_contains_sessions_and_analytics(self) -> None:
+    def test_channel_workspace_keeps_stream_sessions_inside_analytics(self) -> None:
         ai_tab_names = [
             self.window.ai_tabs.tabText(index)
             for index in range(self.window.ai_tabs.count())
@@ -716,7 +796,6 @@ class MainWindowTests(unittest.TestCase):
             channel_tab_names,
             [
                 "Chat",
-                "Stream Sessions",
                 "Analytics",
                 "Commands",
                 "Channel Points",
@@ -741,7 +820,7 @@ class MainWindowTests(unittest.TestCase):
         )
         self.assertTrue(all(page is not None for page in pages))
         self.assertEqual(self.window.ai_tabs.count(), 5)
-        self.assertEqual(self.window.channel_tabs.count(), 5)
+        self.assertEqual(self.window.channel_tabs.count(), 4)
         self.assertFalse(self.window.channel_points_page.create_button.isEnabled())
         self.assertEqual(
             [
@@ -1570,6 +1649,7 @@ class MainWindowTests(unittest.TestCase):
         self.assertIn("#ff4f64", self.window.stream_status_card.styleSheet())
         self.assertIn("Next 90s ad in", self.window.ad_next_label.text())
         self.assertIn("Pre-roll free for", self.window.ad_preroll_label.text())
+        self.assertIn("#66ffd1", self.window.ad_preroll_label.styleSheet())
         self.assertIn("Snoozes 2", self.window.ad_snooze_status_label.text())
         self.assertGreater(self.window.ad_schedule_progress.value(), 0)
         self.assertTrue(self.window.run_ad_button.isEnabled())

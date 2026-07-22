@@ -28,6 +28,13 @@ class FakeTwitchService:
         self.calls.append(("snooze",))
         return {}
 
+    def update_stream_title(self, title):
+        self.calls.append(("title", title))
+
+    def update_stream_category(self, category):
+        self.calls.append(("category", category))
+        return category
+
     def resolve_user_id(self, reference):
         self.calls.append(("resolve", reference))
         return "42"
@@ -106,6 +113,25 @@ class TwitchTaskTests(unittest.TestCase):
         )
         self.assertIn(("commercial", 90), self.service.calls)
         self.assertIn(("redemption", "reward-1", "redeem-1", "CANCELED"), self.service.calls)
+
+    def test_stream_title_and_category_tasks_render_variables(self) -> None:
+        self.trigger.context.update({"game": "Portal 2", "user": "Viewer"})
+
+        self.assertTrue(
+            self.execute(
+                "twitch.update_stream_title",
+                {"title": "Playing {game} with {user}"},
+            )
+        )
+        self.assertTrue(
+            self.execute(
+                "twitch.update_stream_category",
+                {"category": "{game}"},
+            )
+        )
+
+        self.assertIn(("title", "Playing Portal 2 with Viewer"), self.service.calls)
+        self.assertIn(("category", "Portal 2"), self.service.calls)
 
 if __name__ == "__main__":
     unittest.main()

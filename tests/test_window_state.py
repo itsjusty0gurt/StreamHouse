@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
     QMainWindow,
+    QPushButton,
     QSplitter,
     QTabWidget,
     QWidget,
@@ -106,6 +107,10 @@ class WindowStateStoreTests(unittest.TestCase):
             editor_tabs.addTab(QWidget(), "Triggers")
             editor_tabs.addTab(QWidget(), "Tasks")
             editor_tabs.setCurrentIndex(1)
+            sort_button = QPushButton(page)
+            sort_button.setObjectName("automationRoutineSortButton")
+            sort_button.setCheckable(True)
+            sort_button.setChecked(True)
             original.setCentralWidget(page)
             store.save(original)
 
@@ -120,12 +125,16 @@ class WindowStateStoreTests(unittest.TestCase):
             restored_editor_tabs.setObjectName("automationEditorTabs")
             restored_editor_tabs.addTab(QWidget(), "Triggers")
             restored_editor_tabs.addTab(QWidget(), "Tasks")
+            restored_sort_button = QPushButton(restored_page)
+            restored_sort_button.setObjectName("automationRoutineSortButton")
+            restored_sort_button.setCheckable(True)
             restored.setCentralWidget(restored_page)
 
             store.restore(restored)
 
             self.assertEqual(restored_tabs.currentIndex(), 1)
             self.assertEqual(restored_editor_tabs.currentIndex(), 1)
+            self.assertTrue(restored_sort_button.isChecked())
 
 
 if __name__ == "__main__":

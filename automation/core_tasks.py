@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import random
 import shlex
 import shutil
 import subprocess
@@ -18,25 +19,31 @@ from PySide6.QtCore import (
 )
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
+from PySide6.QtWidgets import QApplication, QStyle, QSystemTrayIcon
 
 from automation.models import TaskDefinition, TaskExecutionResult, TriggerEvent
+from automation.variables import render_preview
 from automation.variable_tasks import VARIABLE_TASK_LABELS
 from automation.logic_tasks import LOGIC_TASK_LABELS
 from automation.file_tasks import FILE_TASK_LABELS
+from automation.control_tasks import CONTROL_TASK_LABELS
 
 
 CORE_TASK_LABELS = {
     "core.launch_application": "Core — Launch application",
     "core.close_application": "Core — Close application",
     "core.delay": "Core — Wait / delay",
+    "core.random_delay": "Core — Wait a random duration",
     "core.wait_for_service": "Core — Wait for service",
     "core.open_target": "Core — Open file, folder, or URL",
+    "core.show_notification": "Core — Show desktop notification",
     "core.run_python_script": "Core — Run Python script",
 }
 CORE_TASK_LABELS["core.play_audio"] = "Play audio file"
 CORE_TASK_LABELS.update(VARIABLE_TASK_LABELS)
 CORE_TASK_LABELS.update(LOGIC_TASK_LABELS)
 CORE_TASK_LABELS.update(FILE_TASK_LABELS)
+CORE_TASK_LABELS.update(CONTROL_TASK_LABELS)
 
 
 def _result(task: TaskDefinition, succeeded: bool, detail: str) -> TaskExecutionResult:
@@ -102,10 +109,40 @@ class DelayTask:
 
     def execute(self, task: TaskDefinition, trigger: TriggerEvent) -> TaskExecutionResult:
         seconds = max(0.0, min(float(task.config.get("seconds", 1.0)), 86_400.0))
+        self._wait(seconds)
+        return _result(task, True, f"Waited {seconds:g} seconds.")
+
+    @staticmethod
+    def _wait(seconds: float) -> None:
         loop = QEventLoop()
         QTimer.singleShot(round(seconds * 1000), loop.quit)
         loop.exec()
-        return _result(task, True, f"Waited {seconds:g} seconds.")
+
+
+class RandomDelayTask:
+    task_type = "core.random_delay"
+
+    def __init__(self, rng: random.Random | None = None, wait=None) -> None:
+        self._rng = rng or random.Random()
+        self._wait = wait or DelayTask._wait
+
+    def execute(self, task: TaskDefinition, trigger: TriggerEvent) -> TaskExecutionResult:
+        try:
+            minimum = max(
+                0.0,
+                min(float(task.config.get("minimum_seconds", 1.0)), 86_400.0),
+            )
+            maximum = max(
+                0.0,
+                min(float(task.config.get("maximum_seconds", 5.0)), 86_400.0),
+            )
+            if minimum > maximum:
+                raise ValueError("Minimum delay cannot be greater than maximum delay.")
+            seconds = self._rng.uniform(minimum, maximum)
+            self._wait(seconds)
+            return _result(task, True, f"Waited {seconds:.2f} seconds (random).")
+        except (TypeError, ValueError) as error:
+            return _result(task, False, str(error))
 
 
 class WaitForServiceTask:
@@ -152,6 +189,85 @@ class OpenTargetTask:
         url = QUrl(target) if target.casefold().startswith(("http://", "https://")) else QUrl.fromLocalFile(str(Path(target).expanduser().resolve()))
         opened = QDesktopServices.openUrl(url)
         return _result(task, opened, f"Opened {target}." if opened else f"Could not open {target}.")
+
+
+class DesktopNotificationTask:
+    task_type = "core.show_notification"
+
+    def __init__(self, notifier=None) -> None:
+        self._notifier = notifier or self._show_system_notification
+        self._tray_icon: QSystemTrayIcon | None = None
+
+    def execute(self, task: TaskDefinition, trigger: TriggerEvent) -> TaskExecutionResult:
+        try:
+            title = render_preview(
+                str(task.config.get("title", "Sally")),
+                trigger.context,
+            ).strip()
+            message = render_preview(
+                str(task.config.get("message", "")),
+                trigger.context,
+            ).strip()
+            icon = str(task.config.get("icon", "information")).casefold()
+            duration_seconds = max(
+                1,
+                min(int(task.config.get("duration_seconds", 5)), 60),
+            )
+            if not title:
+                raise ValueError("Enter a notification title.")
+            if not message:
+                raise ValueError("Enter a notification message.")
+            shown = bool(
+                self._notifier(
+                    title[:128],
+                    message[:1000],
+                    icon,
+                    duration_seconds * 1000,
+                )
+            )
+            return _result(
+                task,
+                shown,
+                "Displayed desktop notification."
+                if shown
+                else "Desktop notifications are unavailable.",
+            )
+        except (TypeError, ValueError) as error:
+            return _result(task, False, str(error))
+
+    def _show_system_notification(
+        self,
+        title: str,
+        message: str,
+        icon: str,
+        duration_ms: int,
+    ) -> bool:
+        application = QApplication.instance()
+        if application is None or not QSystemTrayIcon.isSystemTrayAvailable():
+            return False
+        if self._tray_icon is None:
+            self._tray_icon = QSystemTrayIcon(application)
+            tray_icon = application.windowIcon()
+            if tray_icon.isNull():
+                tray_icon = application.style().standardIcon(
+                    QStyle.StandardPixmap.SP_MessageBoxInformation
+                )
+            self._tray_icon.setIcon(tray_icon)
+            self._tray_icon.setToolTip("Sally AI")
+            self._tray_icon.show()
+        icons = {
+            "none": QSystemTrayIcon.MessageIcon.NoIcon,
+            "information": QSystemTrayIcon.MessageIcon.Information,
+            "warning": QSystemTrayIcon.MessageIcon.Warning,
+            "critical": QSystemTrayIcon.MessageIcon.Critical,
+        }
+        self._tray_icon.showMessage(
+            title,
+            message,
+            icons.get(icon, QSystemTrayIcon.MessageIcon.Information),
+            duration_ms,
+        )
+        return True
 
 
 class PlayAudioTask:

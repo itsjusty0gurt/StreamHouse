@@ -39,7 +39,7 @@ class ObsWebSocketService(QObject):
         self.reconnect_timer = QTimer(self)
         self.reconnect_timer.setSingleShot(True)
         self.reconnect_timer.setInterval(2_000)
-        self.reconnect_timer.timeout.connect(self.connect)
+        self.reconnect_timer.timeout.connect(self._retry_connect)
 
     def configure(
         self,
@@ -54,7 +54,7 @@ class ObsWebSocketService(QObject):
         self.password = password
         self.auto_reconnect = bool(auto_reconnect)
 
-    def connect(self) -> None:
+    def connect(self, *, silent: bool = False) -> None:
         if self.socket.state() in {
             QAbstractSocket.SocketState.ConnectingState,
             QAbstractSocket.SocketState.ConnectedState,
@@ -63,8 +63,12 @@ class ObsWebSocketService(QObject):
         self.reconnect_timer.stop()
         self._intentional_close = False
         self._identified = False
-        self._set_state(ObsConnectionState.CONNECTING, f"{self.host}:{self.port}")
+        if not silent:
+            self._set_state(ObsConnectionState.CONNECTING, f"{self.host}:{self.port}")
         self.socket.open(QUrl(f"ws://{self.host}:{self.port}"))
+
+    def _retry_connect(self) -> None:
+        self.connect(silent=True)
 
     def disconnect(self) -> None:
         self._intentional_close = True
@@ -132,6 +136,28 @@ class ObsWebSocketService(QObject):
             "GetSceneItemId",
             {"sceneName": scene_name, "sourceName": source_name},
             found,
+        )
+
+    def set_source_filter_enabled(
+        self,
+        source_name: str,
+        filter_name: str,
+        action: str,
+    ) -> str:
+        if action == "toggle":
+            return self.send_request(
+                "GetSourceFilter",
+                {"sourceName": source_name, "filterName": filter_name},
+                lambda result: self._set_resolved_source_filter(
+                    source_name,
+                    filter_name,
+                    not bool(result.response_data.get("filterEnabled", False)),
+                ) if result.succeeded else None,
+            )
+        return self._set_resolved_source_filter(
+            source_name,
+            filter_name,
+            action == "enable",
         )
 
     def current_mute_state(
@@ -220,6 +246,21 @@ class ObsWebSocketService(QObject):
                 "sceneName": scene_name,
                 "sceneItemId": item_id,
                 "sceneItemEnabled": enabled,
+            },
+        )
+
+    def _set_resolved_source_filter(
+        self,
+        source_name: str,
+        filter_name: str,
+        enabled: bool,
+    ) -> str:
+        return self.send_request(
+            "SetSourceFilterEnabled",
+            {
+                "sourceName": source_name,
+                "filterName": filter_name,
+                "filterEnabled": enabled,
             },
         )
 
@@ -321,8 +362,8 @@ class ObsWebSocketService(QObject):
             return
         if self.auto_reconnect:
             self._set_state(
-                ObsConnectionState.CONNECTING,
-                "Reconnecting automatically…",
+                ObsConnectionState.DISCONNECTED,
+                "Waiting for OBS to open.",
             )
             self.reconnect_timer.start()
         else:
@@ -332,9 +373,11 @@ class ObsWebSocketService(QObject):
         detail = self.socket.errorString() or "OBS connection failed"
         if self.auto_reconnect and not self._intentional_close:
             self._set_state(
-                ObsConnectionState.CONNECTING,
-                f"{detail} — retrying automatically…",
+                ObsConnectionState.DISCONNECTED,
+                f"{detail}. Waiting for OBS to open.",
             )
+            if not self.reconnect_timer.isActive():
+                self.reconnect_timer.start()
         else:
             self._set_state(ObsConnectionState.ERROR, detail)
 

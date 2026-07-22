@@ -9,7 +9,13 @@ from unittest.mock import Mock
 
 from PySide6.QtWidgets import QApplication
 
-from automation.core_tasks import DelayTask, PlayAudioTask, WaitForServiceTask
+from automation.core_tasks import (
+    DelayTask,
+    DesktopNotificationTask,
+    PlayAudioTask,
+    RandomDelayTask,
+    WaitForServiceTask,
+)
 from automation.models import TaskDefinition, TriggerEvent
 from automation.routines import RoutineStore
 from automation.tasks import TaskRegistry
@@ -31,6 +37,10 @@ class FakeObsService:
 
     def set_scene_item_enabled(self, scene, source, action):
         self.requests.append(("resolved-scene-item", {"scene": scene, "source": source, "action": action}))
+        return "request-id"
+
+    def set_source_filter_enabled(self, source, filter_name, action):
+        self.requests.append(("source-filter", {"source": source, "filter": filter_name, "action": action}))
         return "request-id"
 
 
@@ -61,6 +71,20 @@ class ObsServiceTests(unittest.TestCase):
         service._receive_text('{"op":2,"d":{"negotiatedRpcVersion":1}}')
         self.assertEqual(service.state, ObsConnectionState.CONNECTED)
         self.assertTrue(service.connected)
+        service.disconnect()
+
+    def test_unexpected_disconnect_reports_waiting_without_connected_status(self) -> None:
+        service = ObsWebSocketService()
+        states: list[tuple[ObsConnectionState, str]] = []
+        service.state_changed.connect(lambda state, detail: states.append((state, detail)))
+        service.state = ObsConnectionState.CONNECTED
+        service._identified = True
+        service._intentional_close = False
+
+        service._disconnected()
+
+        self.assertEqual(service.state, ObsConnectionState.DISCONNECTED)
+        self.assertEqual(states[-1], (ObsConnectionState.DISCONNECTED, "Waiting for OBS to open."))
         service.disconnect()
 
     def test_current_mute_state_queries_preferred_microphone(self) -> None:
@@ -165,6 +189,69 @@ class ObsTaskTests(unittest.TestCase):
         self.assertTrue(self.run_task("obs.set_scene_item_enabled", {"scene": "Gameplay", "source": "Camera", "action": "hide"}))
         self.assertEqual(self.service.requests[0][0], "resolved-scene-item")
 
+    def test_filter_tasks_use_source_filter_state_request(self) -> None:
+        self.assertTrue(
+            self.run_task(
+                "obs.set_source_filter_state",
+                {"source": "Camera", "filter": "Blur", "action": "enable"},
+            )
+        )
+        self.assertTrue(
+            self.run_task(
+                "obs.set_scene_filter_state",
+                {"scene": "Gameplay", "filter": "Color", "action": "toggle"},
+            )
+        )
+
+        self.assertEqual(
+            self.service.requests,
+            [
+                (
+                    "source-filter",
+                    {"source": "Camera", "filter": "Blur", "action": "enable"},
+                ),
+                (
+                    "source-filter",
+                    {"source": "Gameplay", "filter": "Color", "action": "toggle"},
+                ),
+            ],
+        )
+
+    def test_text_and_image_sources_use_overlay_input_settings(self) -> None:
+        self.trigger = TriggerEvent(
+            "manual",
+            "sally",
+            "manual",
+            {"game": "Portal 2", "image": "C:/art/portal.png"},
+        )
+        self.assertTrue(
+            self.run_task(
+                "obs.set_text_source",
+                {"input": "Now Playing", "text": "Playing {game}"},
+            )
+        )
+        self.assertTrue(
+            self.run_task(
+                "obs.set_image_source",
+                {"input": "Game Art", "file": "{image}"},
+            )
+        )
+        self.assertEqual(
+            self.service.requests[0],
+            (
+                "SetInputSettings",
+                {
+                    "inputName": "Now Playing",
+                    "inputSettings": {"text": "Playing Portal 2"},
+                    "overlay": True,
+                },
+            ),
+        )
+        self.assertEqual(
+            self.service.requests[1][1]["inputSettings"],
+            {"file": "C:/art/portal.png"},
+        )
+
     def test_raw_request_rejects_non_object_json(self) -> None:
         self.assertFalse(self.run_task("obs.raw_request", {"request_type": "GetVersion", "request_data": "[]"}))
 
@@ -180,6 +267,66 @@ class CoreTaskTests(unittest.TestCase):
         wait = TaskDefinition("wait", "core.wait_for_service", "Wait", {"service": "obs", "timeout_seconds": 1})
         self.assertTrue(DelayTask().execute(delay, trigger).succeeded)
         self.assertTrue(WaitForServiceTask(lambda name: name == "obs").execute(wait, trigger).succeeded)
+
+    def test_random_delay_uses_a_duration_inside_the_configured_range(self) -> None:
+        waited: list[float] = []
+        rng = Mock()
+        rng.uniform.return_value = 2.75
+        task = TaskDefinition(
+            "random-delay",
+            "core.random_delay",
+            "Random delay",
+            {"minimum_seconds": 2, "maximum_seconds": 4},
+        )
+
+        result = RandomDelayTask(rng=rng, wait=waited.append).execute(
+            task,
+            TriggerEvent("manual", "sally", "manual", {}),
+        )
+
+        self.assertTrue(result.succeeded)
+        rng.uniform.assert_called_once_with(2.0, 4.0)
+        self.assertEqual(waited, [2.75])
+
+    def test_desktop_notification_renders_context_without_showing_ui(self) -> None:
+        notifications: list[tuple[str, str, str, int]] = []
+
+        def notify(title, message, icon, duration_ms):
+            notifications.append((title, message, icon, duration_ms))
+            return True
+
+        task = TaskDefinition(
+            "notification",
+            "core.show_notification",
+            "Notification",
+            {
+                "title": "Sally alert for {user}",
+                "message": "{user} redeemed {reward}",
+                "icon": "warning",
+                "duration_seconds": 8,
+            },
+        )
+        trigger = TriggerEvent(
+            "reward",
+            "twitch",
+            "channel_points",
+            {"user": "Viewer", "reward": "Hydrate"},
+        )
+
+        result = DesktopNotificationTask(notifier=notify).execute(task, trigger)
+
+        self.assertTrue(result.succeeded)
+        self.assertEqual(
+            notifications,
+            [
+                (
+                    "Sally alert for Viewer",
+                    "Viewer redeemed Hydrate",
+                    "warning",
+                    8000,
+                )
+            ],
+        )
 
     def test_play_audio_validates_file_and_starts_with_volume(self) -> None:
         class Signal:

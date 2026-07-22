@@ -29,6 +29,36 @@ class _JsonResponse:
 
 class TwitchHelixClientTests(unittest.TestCase):
     @patch("twitch.live.urlopen")
+    def test_channel_updates_use_category_search_and_patch_contract(
+        self,
+        open_url,
+    ) -> None:
+        open_url.side_effect = (
+            _JsonResponse({"data": [{"id": "509658", "name": "Just Chatting"}]}),
+            _JsonResponse({}),
+        )
+        token = TwitchToken("access", "refresh", 999, [])
+        client = TwitchHelixClient()
+
+        matches = client.search_categories("Just Chatting", token)
+        client.update_channel_information(
+            "channel-1",
+            {"game_id": matches[0]["id"]},
+            token,
+        )
+
+        search_request = open_url.call_args_list[0].args[0]
+        self.assertIn("search/categories", search_request.full_url)
+        self.assertIn("query=Just+Chatting", search_request.full_url)
+        update_request = open_url.call_args_list[1].args[0]
+        self.assertEqual(update_request.method, "PATCH")
+        self.assertIn("broadcaster_id=channel-1", update_request.full_url)
+        self.assertEqual(
+            json.loads(update_request.data.decode()),
+            {"game_id": "509658"},
+        )
+
+    @patch("twitch.live.urlopen")
     def test_companion_snapshot_includes_official_ad_schedule_fields(
         self, open_url
     ) -> None:

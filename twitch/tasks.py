@@ -120,6 +120,8 @@ TWITCH_TASK_LABELS = {
     "twitch.send_pinned_message": "Twitch — Send and pin chat message",
     "twitch.run_commercial": "Twitch — Run commercial",
     "twitch.snooze_ad": "Twitch — Snooze next ad",
+    "twitch.update_stream_title": "Twitch — Change stream title",
+    "twitch.update_stream_category": "Twitch — Change stream category",
     "twitch.moderate_user": "Twitch — Moderate user",
     "twitch.update_redemption": "Twitch — Fulfill or refund redemption",
 }
@@ -177,6 +179,18 @@ class TwitchAutomationTask:
         if self.task_type == "twitch.snooze_ad":
             self.service.snooze_next_ad()
             return "Snoozed the next ad by five minutes."
+        if self.task_type == "twitch.update_stream_title":
+            title = render("title")[:140]
+            if not title:
+                raise ValueError("Enter a stream title.")
+            self.service.update_stream_title(title)
+            return f'Changed the Twitch stream title to "{title}".'
+        if self.task_type == "twitch.update_stream_category":
+            category = render("category")
+            if not category:
+                raise ValueError("Enter a Twitch category name.")
+            selected = self.service.update_stream_category(category)
+            return f'Changed the Twitch stream category to "{selected}".'
         if self.task_type == "twitch.moderate_user":
             action = str(config.get("action", "timeout"))
             user_id = self.service.resolve_user_id(render("user", "{user_id}"))
