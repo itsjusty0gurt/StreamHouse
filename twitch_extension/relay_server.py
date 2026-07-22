@@ -26,6 +26,86 @@ from threading import RLock
 from urllib.parse import urlparse
 
 
+SUPPORT_EMAIL = "xxitsjusty0gurtxx@gmail.com"
+
+
+def _legal_page(title: str, body: str) -> str:
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{title} - Sally Soundboard</title>
+  <style>
+    :root {{ color-scheme: dark; font-family: Inter, system-ui, sans-serif; }}
+    body {{ margin: 0; background: #18181b; color: #efeff1; line-height: 1.6; }}
+    main {{ width: min(760px, calc(100% - 32px)); margin: 48px auto; }}
+    h1, h2 {{ color: #00d47b; }}
+    a {{ color: #7ee8b7; }}
+    .updated {{ color: #adadb8; }}
+  </style>
+</head>
+<body><main><h1>{title}</h1>{body}</main></body>
+</html>"""
+
+
+PRIVACY_PAGE = _legal_page(
+    "Privacy Policy",
+    f"""
+<p class="updated">Effective July 21, 2026</p>
+<p>Sally Soundboard lets Twitch viewers request sounds configured by a broadcaster
+running Sally AI Bot.</p>
+<h2>Information processed</h2>
+<p>The Extension receives a Twitch-signed authorization token containing the
+broadcaster channel ID, an opaque viewer identifier, and the viewer role. The
+opaque identifier is used temporarily to enforce a short rate limit and is not
+stored in the relay database. The relay stores the broadcaster's public button
+configuration and pending requests containing a random event ID, button ID,
+viewer role, and timestamp.</p>
+<h2>Retention and sharing</h2>
+<p>Pending requests expire after five minutes or are deleted as soon as Sally
+acknowledges them. We do not sell personal information, use advertising trackers,
+or request a viewer's linked Twitch identity. Data is processed by Twitch and by
+our hosting provider, Render, only as needed to provide and secure the service.
+Infrastructure logs may temporarily include standard request information such as
+IP addresses.</p>
+<h2>Your choices</h2>
+<p>Using a sound button is optional. You may stop using the Extension at any time.
+Broadcasters can deactivate the Extension and disconnect Sally from the relay.</p>
+<h2>Contact</h2>
+<p>Questions or privacy requests may be sent to
+<a href="mailto:{SUPPORT_EMAIL}">{SUPPORT_EMAIL}</a>.</p>
+""",
+)
+
+
+TERMS_PAGE = _legal_page(
+    "Terms of Service",
+    f"""
+<p class="updated">Effective July 21, 2026</p>
+<p>By using Sally Soundboard, you agree to these terms and Twitch's applicable
+terms and policies.</p>
+<h2>Using the Extension</h2>
+<p>Sally Soundboard sends a viewer's selected button request to the broadcaster's
+Sally AI Bot installation. The broadcaster chooses every available button,
+routine, audio file, volume, and resulting stream action. Do not use the Extension
+to harass others, disrupt a service, evade rate limits, or trigger unlawful,
+harmful, or rights-infringing content.</p>
+<h2>Availability</h2>
+<p>The Extension is provided as-is and may be changed, interrupted, rate-limited,
+or discontinued. Sound playback is not guaranteed because it depends on Twitch,
+the hosted relay, the broadcaster's computer, and the broadcaster's configuration.</p>
+<h2>Responsibility</h2>
+<p>Viewers are responsible for their use of the Extension. Broadcasters are
+responsible for the sounds and automation routines they make available and for
+complying with Twitch rules and applicable law.</p>
+<h2>Contact</h2>
+<p>Questions may be sent to
+<a href="mailto:{SUPPORT_EMAIL}">{SUPPORT_EMAIL}</a>.</p>
+""",
+)
+
+
 def _base64url_decode(value: str) -> bytes:
     return base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
 
@@ -236,6 +316,12 @@ class RelayHandler(BaseHTTPRequestHandler):
             if path == "/health":
                 self._send_json({"status": "ok"})
                 return
+            if path == "/privacy":
+                self._send_html(PRIVACY_PAGE)
+                return
+            if path == "/terms":
+                self._send_html(TERMS_PAGE)
+                return
             if path == "/api/config":
                 claims = self.state.verify_twitch_jwt(
                     self.headers.get("Authorization", "")
@@ -318,6 +404,17 @@ class RelayHandler(BaseHTTPRequestHandler):
         self.end_headers()
         if body:
             self.wfile.write(body)
+
+    def _send_html(self, html: str, status: HTTPStatus = HTTPStatus.OK) -> None:
+        body = html.encode("utf-8")
+        self.send_response(int(status))
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "public, max-age=300")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'")
+        self.end_headers()
+        self.wfile.write(body)
 
     def log_message(self, format_value: str, *args: object) -> None:
         print(f"[relay] {self.address_string()} {format_value % args}")

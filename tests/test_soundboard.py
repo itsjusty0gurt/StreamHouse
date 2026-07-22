@@ -333,6 +333,21 @@ class SoundboardRelayClientTests(unittest.TestCase):
             [event["event_id"] for event in self.state.poll("123")],
         )
 
+    def test_relay_serves_public_legal_pages(self) -> None:
+        base_url = f"http://127.0.0.1:{self.http_server.server_port}"
+        for path, heading in (
+            ("/privacy", "Privacy Policy"),
+            ("/terms", "Terms of Service"),
+        ):
+            with urlopen(base_url + path, timeout=2) as response:
+                body = response.read().decode("utf-8")
+                self.assertEqual(response.status, 200)
+                self.assertEqual(
+                    response.headers.get_content_type(), "text/html"
+                )
+            self.assertIn(heading, body)
+            self.assertIn("xxitsjusty0gurtxx@gmail.com", body)
+
 
 if __name__ == "__main__":
     unittest.main()
