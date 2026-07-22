@@ -76,16 +76,18 @@ from automation.control_tasks import register_control_tasks
 from automation.logic_tasks import register_logic_tasks
 from automation.file_tasks import register_file_tasks
 from automation.queues import AutomationQueueManager, AutomationQueueStore
-from ai.providers import OllamaProvider
-from ai.memory_extractor import BufferedChatMessage
-from ai.memory import build_viewer_context
-from ai.response_engine import (
+from sally_shared.models import (
+    BufferedChatMessage,
     ResponseDecision,
-    ResponseDecisionEngine,
     ResponseMessage,
 )
-from ai.training_store import TrainingStore
-from ai.test_report import AITestReportStore
+from sally_shared.response_policy import ResponsePolicy
+from sally_shared.viewer_context import build_viewer_context
+from sally_companion.remote_stores import (
+    CompanionTestReportStore as AITestReportStore,
+    CompanionTrainingStore as TrainingStore,
+)
+from sally_companion.client import CompanionClient
 from core.window_state import WindowStateStore
 from config.twitch import (
     TWITCH_BOT_SCOPES,
@@ -545,6 +547,7 @@ class MainWindow(QMainWindow):
             maxlen=100
         )
         self.response_decision_in_flight = False
+        self.companion_retry_after = 0.0
         self.auto_send_diagnostic_reasons: dict[str, str] = {}
         self.ai_test_report_flush_timer = QTimer(self)
         self.ai_test_report_flush_timer.setSingleShot(True)
@@ -622,6 +625,10 @@ class MainWindow(QMainWindow):
 
         self.settings_store = SettingsStore()
         self.settings = self._load_settings()
+        for remote_store in (self.training_store, self.test_report_store):
+            configure = getattr(remote_store, "configure", None)
+            if callable(configure):
+                configure(self.settings.ai_companion_endpoint)
 
         self.log_handler = QtLogHandler()
         self.log_handler.setLevel(logging.DEBUG)
@@ -2532,7 +2539,11 @@ class MainWindow(QMainWindow):
     def _save_personality(self) -> None:
         self.save_settings()
         if self.ui.settingsStatusLabel.text() == "Settings saved.":
-            self.ai_personality_status_label.setText("Personality saved.")
+            self.ai_personality_status_label.setText(
+                "Personality saved to AI Companion."
+                if getattr(self, "last_companion_settings_saved", False)
+                else "Saved locally; AI Companion is currently unavailable."
+            )
 
     @Slot()
     def toggle_developer_tools(self) -> None:
@@ -3294,6 +3305,7 @@ class MainWindow(QMainWindow):
             record.user_name,
             messages,
             existing,
+            self.settings.ai_companion_endpoint,
             self.settings.local_ai_endpoint,
             self.settings.local_ai_model,
         )
@@ -3301,7 +3313,7 @@ class MainWindow(QMainWindow):
         worker.signals.failed.connect(self._memory_extraction_failed)
         self.memory_extraction_in_flight.add(user_id)
         self.memory_reasoning_status_label.setText(
-            f"Analyzing recent chat from {record.user_name} locally…"
+            f"Analyzing recent chat from {record.user_name} with AI Companion…"
         )
         self.memory_reasoning_thread_pool.start(worker)
 
@@ -3651,6 +3663,7 @@ class MainWindow(QMainWindow):
             or not self.response_decision_queue
             or not self.settings.local_ai_enabled
             or not self.settings.ai_response_decisions_enabled
+            or monotonic() < self.companion_retry_after
         ):
             return
         batch = tuple(
@@ -3660,6 +3673,7 @@ class MainWindow(QMainWindow):
         worker = ResponseDecisionWorker(
             batch,
             tuple(self.recent_ai_chat),
+            self.settings.ai_companion_endpoint,
             self.settings.local_ai_endpoint,
             self.settings.local_ai_model,
             self.settings.ai_personality,
@@ -3677,6 +3691,7 @@ class MainWindow(QMainWindow):
     @Slot(object)
     def _apply_response_batch(self, result: ResponseBatchResult) -> None:
         self.response_decision_in_flight = False
+        self.companion_retry_after = 0.0
         reply_count = 0
         sent_count = 0
         for decision in result.decisions:
@@ -3725,7 +3740,7 @@ class MainWindow(QMainWindow):
         self, decision: ResponseDecision
     ) -> None:
         if not (
-            ResponseDecisionEngine.requires_reply(decision.source_text)
+            ResponsePolicy.requires_reply(decision.source_text)
             or decision.solicited
         ):
             return
@@ -3749,16 +3764,17 @@ class MainWindow(QMainWindow):
         error: str,
     ) -> None:
         self.response_decision_in_flight = False
+        self.companion_retry_after = monotonic() + 30.0
         for message in messages if isinstance(messages, tuple) else ():
             if not isinstance(message, ResponseMessage):
                 continue
-            if ResponseDecisionEngine.message_requires_reply(message):
+            if ResponsePolicy.message_requires_reply(message):
                 recent_replies = [
                     str(item.get("message", ""))
                     for item in self.recent_ai_chat
                     if str(item.get("speaker", "")).casefold() == "sally"
                 ]
-                decision = ResponseDecisionEngine._fallback_reply(
+                decision = ResponsePolicy.fallback_reply(
                     message, recent_replies
                 )
             else:
@@ -3771,7 +3787,7 @@ class MainWindow(QMainWindow):
                     received_at=message.received_at,
                     decision="ignore",
                     reply="",
-                    reason=f"Local AI unavailable: {error}"[:300],
+                    reason=f"AI Companion unavailable: {error}"[:300],
                     confidence=0.0,
                 )
             sent = self._maybe_auto_send_reply(decision)
@@ -3780,10 +3796,10 @@ class MainWindow(QMainWindow):
             )
             self._add_reply_decision(decision, sent=sent)
         self.reply_decision_status_label.setText(
-            "Local AI reply evaluation failed; continuing with newer chat."
+            "AI Companion reply evaluation failed; continuing with newer chat."
         )
         Logger.warning(
-            f"Local reply decision failed: {error}",
+            f"AI Companion reply decision failed: {error}",
             source="AI",
         )
         self._start_next_response_batch()
@@ -3802,7 +3818,7 @@ class MainWindow(QMainWindow):
 
     def _maybe_auto_send_reply(self, decision: ResponseDecision) -> bool:
         required = (
-            ResponseDecisionEngine.requires_reply(decision.source_text)
+            ResponsePolicy.requires_reply(decision.source_text)
             or decision.response_expected
             or decision.solicited
         )
@@ -3947,7 +3963,7 @@ class MainWindow(QMainWindow):
         latency_seconds: float,
     ) -> None:
         response_expected = bool(
-            ResponseDecisionEngine.requires_reply(decision.source_text)
+            ResponsePolicy.requires_reply(decision.source_text)
             or decision.response_expected
             or decision.solicited
         )
@@ -4507,13 +4523,14 @@ class MainWindow(QMainWindow):
         self._settings_to_controls(self.settings)
 
     def _build_ai_settings(self) -> None:
-        group = QGroupBox("Local AI", self.ui.settingsPage)
+        group = QGroupBox("AI Companion", self.ui.settingsPage)
         self.local_ai_settings_group = group
         layout = QFormLayout(group)
-        self.local_ai_enabled_check = QCheckBox("Use local AI when available")
+        self.local_ai_enabled_check = QCheckBox("Use AI Companion when available")
+        self.ai_companion_endpoint_edit = QLineEdit()
         self.local_ai_endpoint_edit = QLineEdit()
         self.local_ai_model_edit = QLineEdit()
-        self.local_ai_test_button = QPushButton("Test Local AI")
+        self.local_ai_test_button = QPushButton("Test AI Companion")
         self.local_ai_status_label = QLabel("Not tested")
         self.ai_viewer_memory_check = QCheckBox(
             "Enable opt-in viewer memories"
@@ -4582,7 +4599,8 @@ class MainWindow(QMainWindow):
         self.ai_training_notice_edit = QLineEdit()
         self.ai_training_notice_edit.setMaxLength(500)
         layout.addRow("Enabled", self.local_ai_enabled_check)
-        layout.addRow("Endpoint", self.local_ai_endpoint_edit)
+        layout.addRow("Companion", self.ai_companion_endpoint_edit)
+        layout.addRow("Ollama", self.local_ai_endpoint_edit)
         layout.addRow("Model", self.local_ai_model_edit)
         layout.addRow("Viewer memory system", self.ai_viewer_memory_check)
         layout.addRow("Memory reasoning", self.ai_memory_reasoning_check)
@@ -4636,23 +4654,57 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def _test_local_ai(self) -> None:
-        provider = OllamaProvider(
+        client = CompanionClient(
+            self.ai_companion_endpoint_edit.text().strip(),
+            timeout=7.0,
+        )
+        try:
+            client.update_settings(
+                {
+                    "ollama_endpoint": self.local_ai_endpoint_edit.text().strip(),
+                    "model": self.local_ai_model_edit.text().strip(),
+                    "personality": self.ai_personality_edit.toPlainText(),
+                    "allow_mild_profanity": (
+                        self.ai_allow_mild_profanity_check.isChecked()
+                    ),
+                    "allow_strong_profanity": (
+                        self.ai_allow_strong_profanity_check.isChecked()
+                    ),
+                }
+            )
+        except OSError as error:
+            self.local_ai_status_label.setText(f"Companion unavailable: {error}")
+            return
+        status = client.status(
             self.local_ai_endpoint_edit.text().strip(),
             self.local_ai_model_edit.text().strip(),
-            timeout=5.0,
         )
-        status = provider.status()
         if not status.available:
             self.local_ai_status_label.setText(f"Unavailable: {status.error}")
             return
-        if provider.model not in status.models:
+        model = self.local_ai_model_edit.text().strip()
+        if model not in status.models:
             self.local_ai_status_label.setText(
-                f"Connected; model {provider.model} is not installed"
+                f"Companion connected; model {model} is not installed"
             )
             return
         self.local_ai_status_label.setText(
-            f"Ready: {provider.model} ({len(status.models)} local model(s))"
+            f"Companion ready: {model} ({len(status.models)} local model(s))"
         )
+        for remote_store in (self.training_store, self.test_report_store):
+            configure = getattr(remote_store, "configure", None)
+            connect = getattr(remote_store, "connect", None)
+            try:
+                if callable(configure):
+                    configure(self.ai_companion_endpoint_edit.text().strip())
+                if callable(connect):
+                    connect()
+            except OSError as error:
+                Logger.warning(
+                    f"Could not refresh Companion data: {error}", source="AI"
+                )
+        self._refresh_training_examples()
+        self._refresh_ai_test_report()
 
     def _settings_to_controls(self, settings: AppSettings) -> None:
         self.ui.startupPageCombo.setCurrentText(settings.startup_page)
@@ -4671,6 +4723,7 @@ class MainWindow(QMainWindow):
             settings.twitch_chat_font_size
         )
         self.local_ai_enabled_check.setChecked(settings.local_ai_enabled)
+        self.ai_companion_endpoint_edit.setText(settings.ai_companion_endpoint)
         self.local_ai_endpoint_edit.setText(settings.local_ai_endpoint)
         self.local_ai_model_edit.setText(settings.local_ai_model)
         self.ai_viewer_memory_check.setChecked(settings.ai_viewer_memory_enabled)
@@ -4742,6 +4795,7 @@ class MainWindow(QMainWindow):
             twitch_chat_font_size=self.ui.twitchChatFontSizeSpin.value(),
             twitch_last_ad_duration=self.settings.twitch_last_ad_duration,
             local_ai_enabled=self.local_ai_enabled_check.isChecked(),
+            ai_companion_endpoint=self.ai_companion_endpoint_edit.text(),
             local_ai_endpoint=self.local_ai_endpoint_edit.text(),
             local_ai_model=self.local_ai_model_edit.text(),
             ai_viewer_memory_enabled=self.ai_viewer_memory_check.isChecked(),
@@ -4843,7 +4897,7 @@ class MainWindow(QMainWindow):
         ):
             self.response_decision_queue.clear()
             self.reply_decision_status_label.setText(
-                "Local AI reply decisions are disabled."
+                "AI Companion reply decisions are disabled."
             )
         if not settings.ai_training_capture_enabled:
             self.training_opted_in_users.clear()
@@ -6444,6 +6498,26 @@ class MainWindow(QMainWindow):
             return
 
         self.settings = settings
+        self.last_companion_settings_saved = False
+        try:
+            CompanionClient(
+                settings.ai_companion_endpoint,
+                timeout=7.0,
+            ).update_settings(
+                {
+                    "ollama_endpoint": settings.local_ai_endpoint,
+                    "model": settings.local_ai_model,
+                    "personality": settings.ai_personality,
+                    "allow_mild_profanity": settings.ai_allow_mild_profanity,
+                    "allow_strong_profanity": settings.ai_allow_strong_profanity,
+                }
+            )
+            self.last_companion_settings_saved = True
+        except OSError as error:
+            Logger.info(
+                f"AI Companion settings will sync when it is available: {error}",
+                source="AI",
+            )
         self._apply_settings(settings)
         self.ui.settingsStatusLabel.setText("Settings saved.")
         Logger.info("Application settings saved.", source="SETTINGS")

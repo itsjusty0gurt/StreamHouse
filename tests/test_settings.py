@@ -31,6 +31,7 @@ class SettingsStoreTests(unittest.TestCase):
             twitch_chat_font_size=13,
             twitch_last_ad_duration=90,
             local_ai_enabled=True,
+            ai_companion_endpoint="http://localhost:8765",
             local_ai_endpoint="http://localhost:11434",
             local_ai_model="qwen3:14b",
             ai_viewer_memory_enabled=True,
@@ -75,6 +76,7 @@ class SettingsStoreTests(unittest.TestCase):
                     "twitch_chat_font_size": 100,
                     "twitch_last_ad_duration": 45,
                     "local_ai_enabled": "yes",
+                    "ai_companion_endpoint": "not-a-url",
                     "local_ai_endpoint": "not-a-url",
                     "local_ai_model": "",
                     "ai_viewer_memory_enabled": "yes",
@@ -115,6 +117,7 @@ class SettingsStoreTests(unittest.TestCase):
         self.assertEqual(settings.twitch_chat_font_size, 24)
         self.assertEqual(settings.twitch_last_ad_duration, 30)
         self.assertTrue(settings.local_ai_enabled)
+        self.assertEqual(settings.ai_companion_endpoint, "http://127.0.0.1:8765")
         self.assertEqual(settings.local_ai_endpoint, "http://127.0.0.1:11434")
         self.assertEqual(settings.local_ai_model, "qwen3:14b")
         self.assertFalse(settings.ai_viewer_memory_enabled)

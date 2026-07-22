@@ -4,8 +4,8 @@ from dataclasses import dataclass
 
 from PySide6.QtCore import QObject, QRunnable, Signal, Slot
 
-from ai.memory_extractor import BufferedChatMessage, ExtractedMemory, MemoryExtractor
-from ai.providers import OllamaProvider
+from sally_shared.models import BufferedChatMessage, ExtractedMemory
+from sally_companion.client import CompanionClient
 
 
 @dataclass(frozen=True, slots=True)
@@ -28,6 +28,7 @@ class MemoryExtractionWorker(QRunnable):
         user_name: str,
         messages: tuple[BufferedChatMessage, ...],
         existing_memories: tuple[str, ...],
+        companion_endpoint: str,
         endpoint: str,
         model: str,
     ) -> None:
@@ -36,6 +37,7 @@ class MemoryExtractionWorker(QRunnable):
         self.user_name = user_name
         self.messages = messages
         self.existing_memories = existing_memories
+        self.companion_endpoint = companion_endpoint
         self.endpoint = endpoint
         self.model = model
         self.signals = MemoryExtractionSignals()
@@ -44,16 +46,15 @@ class MemoryExtractionWorker(QRunnable):
     def run(self) -> None:
         buffer_ids = tuple(message.buffer_id for message in self.messages)
         try:
-            provider = OllamaProvider(
-                self.endpoint,
-                self.model,
-                timeout=120.0,
-            )
-            proposals = MemoryExtractor().extract(
-                provider,
+            proposals = CompanionClient(
+                self.companion_endpoint,
+                timeout=125.0,
+            ).extract_memories(
                 self.user_name,
                 self.messages,
                 self.existing_memories,
+                self.endpoint,
+                self.model,
             )
         except Exception as error:
             self.signals.failed.emit(

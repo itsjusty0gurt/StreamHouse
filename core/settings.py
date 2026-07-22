@@ -37,6 +37,7 @@ class AppSettings:
     twitch_chat_font_size: int = 10
     twitch_last_ad_duration: int = 30
     local_ai_enabled: bool = True
+    ai_companion_endpoint: str = "http://127.0.0.1:8765"
     local_ai_endpoint: str = "http://127.0.0.1:11434"
     local_ai_model: str = "qwen3:14b"
     ai_viewer_memory_enabled: bool = False
@@ -135,6 +136,14 @@ class AppSettings:
         local_ai_enabled = values.get("local_ai_enabled", defaults.local_ai_enabled)
         if not isinstance(local_ai_enabled, bool):
             local_ai_enabled = defaults.local_ai_enabled
+        companion_endpoint = values.get(
+            "ai_companion_endpoint", defaults.ai_companion_endpoint
+        )
+        if not isinstance(companion_endpoint, str) or not companion_endpoint.strip():
+            companion_endpoint = defaults.ai_companion_endpoint
+        companion_endpoint = companion_endpoint.strip().rstrip("/")[:500]
+        if not companion_endpoint.startswith(("http://", "https://")):
+            companion_endpoint = defaults.ai_companion_endpoint
         local_ai_endpoint = values.get(
             "local_ai_endpoint", defaults.local_ai_endpoint
         )
@@ -310,6 +319,7 @@ class AppSettings:
             twitch_chat_font_size=font_size,
             twitch_last_ad_duration=ad_duration,
             local_ai_enabled=local_ai_enabled,
+            ai_companion_endpoint=companion_endpoint,
             local_ai_endpoint=local_ai_endpoint,
             local_ai_model=local_ai_model,
             ai_viewer_memory_enabled=viewer_memory_enabled,

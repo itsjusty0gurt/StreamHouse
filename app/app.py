@@ -65,7 +65,7 @@ def shutdown_application() -> None:
 
 
 def run() -> None:
-    """Create and run the Sally AI Bot desktop application."""
+    """Create and run the Sally Bot desktop application."""
 
     Logger.timer_start("Application startup")
 
@@ -75,7 +75,7 @@ def run() -> None:
     )
 
     application = QApplication(sys.argv)
-    application.setApplicationName("Sally AI Bot")
+    application.setApplicationName("Sally Bot")
     application.setOrganizationName("Sally AI")
     application.setApplicationVersion(VERSION)
     application.setWindowIcon(

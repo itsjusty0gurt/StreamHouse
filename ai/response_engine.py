@@ -3,47 +3,10 @@ from __future__ import annotations
 import json
 import re
 from difflib import SequenceMatcher
-from dataclasses import dataclass
 from typing import Any, Iterable
 
 from ai.providers import OllamaProvider
-
-
-@dataclass(frozen=True, slots=True)
-class ResponseMessage:
-    request_id: str
-    message_id: str
-    user_id: str
-    user_name: str
-    text: str
-    received_at: str
-    memory_summary: str = ""
-    memories: tuple[str, ...] = ()
-    conversation_continuation: bool = False
-    previous_sally_reply: str = ""
-    response_expected: bool = False
-    directed_at_sally: bool = False
-    reply_to_sally: bool = False
-    third_person_reference: bool = False
-    addressed_to_other: bool = False
-
-
-@dataclass(frozen=True, slots=True)
-class ResponseDecision:
-    request_id: str
-    message_id: str
-    user_id: str
-    user_name: str
-    source_text: str
-    received_at: str
-    decision: str
-    reply: str
-    reason: str
-    confidence: float
-    response_expected: bool = False
-    engagement_type: str = "none"
-    conversation_state: str = "unchanged"
-    solicited: bool = False
+from sally_shared.models import ResponseDecision, ResponseMessage
 
 
 class ResponseDecisionEngine:

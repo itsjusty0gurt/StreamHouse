@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from uuid import uuid4
 
-from ai.response_engine import ResponseDecision
+from sally_shared.models import ResponseDecision
 from core.json_store import atomic_write_json, load_json_with_backup
 from core.paths import user_data_root
 

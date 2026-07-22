@@ -4,12 +4,11 @@ from dataclasses import dataclass
 
 from PySide6.QtCore import QObject, QRunnable, Signal, Slot
 
-from ai.providers import OllamaProvider
-from ai.response_engine import (
+from sally_shared.models import (
     ResponseDecision,
-    ResponseDecisionEngine,
     ResponseMessage,
 )
+from sally_companion.client import CompanionClient
 
 
 @dataclass(frozen=True, slots=True)
@@ -27,6 +26,7 @@ class ResponseDecisionWorker(QRunnable):
         self,
         messages: tuple[ResponseMessage, ...],
         recent_chat: tuple[dict[str, str], ...],
+        companion_endpoint: str,
         endpoint: str,
         model: str,
         personality: str,
@@ -36,6 +36,7 @@ class ResponseDecisionWorker(QRunnable):
         super().__init__()
         self.messages = messages
         self.recent_chat = recent_chat
+        self.companion_endpoint = companion_endpoint
         self.endpoint = endpoint
         self.model = model
         self.personality = personality
@@ -46,10 +47,14 @@ class ResponseDecisionWorker(QRunnable):
     @Slot()
     def run(self) -> None:
         try:
-            decisions = ResponseDecisionEngine().decide(
-                OllamaProvider(self.endpoint, self.model, timeout=60.0),
+            decisions = CompanionClient(
+                self.companion_endpoint,
+                timeout=65.0,
+            ).decide(
                 self.messages,
                 self.recent_chat,
+                self.endpoint,
+                self.model,
                 self.personality,
                 self.allow_mild_profanity,
                 self.allow_strong_profanity,

@@ -1411,7 +1411,7 @@ class MainWindowTests(unittest.TestCase):
         self.assertTrue(saved.ai_allow_strong_profanity)
         self.assertEqual(
             self.window.ai_personality_status_label.text(),
-            "Personality saved.",
+            "Saved locally; AI Companion is currently unavailable.",
         )
 
     def test_signed_in_user_can_update_missing_permissions_without_sign_out(self) -> None:

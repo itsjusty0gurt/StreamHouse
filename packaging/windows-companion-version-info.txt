@@ -14,12 +14,12 @@ VSVersionInfo(
       StringTable(
         u'040904B0',
         [StringStruct(u'CompanyName', u'Sally AI'),
-         StringStruct(u'FileDescription', u'Sally Bot Stream Automation'),
+         StringStruct(u'FileDescription', u'Sally AI Companion'),
          StringStruct(u'FileVersion', u'0.1.0'),
-         StringStruct(u'InternalName', u'SallyBot'),
+         StringStruct(u'InternalName', u'SallyAICompanion'),
          StringStruct(u'LegalCopyright', u'Copyright 2026 Sally AI'),
-         StringStruct(u'OriginalFilename', u'SallyBot.exe'),
-         StringStruct(u'ProductName', u'Sally Bot'),
+         StringStruct(u'OriginalFilename', u'SallyAICompanion.exe'),
+         StringStruct(u'ProductName', u'Sally AI Companion'),
          StringStruct(u'ProductVersion', u'0.1.0')])
     ]),
     VarFileInfo([VarStruct(u'Translation', [1033, 1200])])

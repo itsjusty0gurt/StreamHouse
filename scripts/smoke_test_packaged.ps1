@@ -1,10 +1,15 @@
 $ErrorActionPreference = "Stop"
 
 $projectRoot = Split-Path -Parent $PSScriptRoot
-$executable = Join-Path $projectRoot "dist\SallyAI\SallyAI.exe"
+$executables = @(
+    (Join-Path $projectRoot "dist\SallyBot\SallyBot.exe"),
+    (Join-Path $projectRoot "dist\SallyAICompanion\SallyAICompanion.exe")
+)
 
-if (-not (Test-Path -LiteralPath $executable)) {
-    throw "Build dist\SallyAI first with scripts\build_windows.ps1."
+foreach ($executable in $executables) {
+    if (-not (Test-Path -LiteralPath $executable)) {
+        throw "Missing packaged executable: $executable"
+    }
 }
 
 $smokeData = Join-Path ([System.IO.Path]::GetTempPath()) (
@@ -21,11 +26,13 @@ try {
     $env:SALLY_SMOKE_TEST = "1"
     $env:QT_QPA_PLATFORM = "offscreen"
 
-    $process = Start-Process -FilePath $executable -PassThru -Wait
-    if ($process.ExitCode -ne 0) {
-        throw "Packaged smoke test exited with code $($process.ExitCode)."
+    foreach ($executable in $executables) {
+        $process = Start-Process -FilePath $executable -PassThru -Wait
+        if ($process.ExitCode -ne 0) {
+            throw "Packaged smoke test failed for $executable with code $($process.ExitCode)."
+        }
     }
-    Write-Host "Packaged smoke test passed."
+    Write-Host "Packaged smoke tests passed."
 }
 finally {
     $env:SALLY_DATA_DIR = $oldDataDir

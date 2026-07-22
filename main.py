@@ -11,7 +11,7 @@ def main():
     # Log any unhandled crashes
     sys.excepthook = Logger.log_unhandled_exception
 
-    Logger.info("Starting Sally AI...", source="APP")
+    Logger.info("Starting Sally Bot...", source="APP")
     if migrated_files:
         Logger.info(
             "Migrated local data to Windows app storage: "
@@ -21,7 +21,7 @@ def main():
 
     run()
 
-    Logger.info("Sally AI shut down.", source="APP")
+    Logger.info("Sally Bot shut down.", source="APP")
 
 
 if __name__ == "__main__":

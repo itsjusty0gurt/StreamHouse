@@ -127,7 +127,7 @@ class SallyFormatter(logging.Formatter):
 
 
 class Logger:
-    """Central logging system for Sally AI Bot."""
+    """Central logging system shared by Sally Bot and AI Companion."""
 
     LEVEL_WIDTH = 9
     SOURCE_WIDTH = 8
@@ -489,7 +489,7 @@ class Logger:
 
         banner = (
             f"\n{separator}\n"
-            " Sally AI Bot\n"
+            " Sally Suite\n"
             "\n"
             f" Version : {VERSION}\n"
             f" Python  : {platform.python_version()}\n"

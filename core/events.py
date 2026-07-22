@@ -13,7 +13,7 @@ EventCallback = Callable[..., None]
 
 class Events:
     """
-    Central event bus for Sally AI Bot.
+    Central event bus for Sally Bot.
 
     Event activity is logged at DEBUG level so normal INFO logs
     do not become cluttered.

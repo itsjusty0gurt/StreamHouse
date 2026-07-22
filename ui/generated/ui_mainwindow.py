@@ -669,7 +669,7 @@ class Ui_MainWindow(object):
     # setupUi
 
     def retranslateUi(self, MainWindow):
-        MainWindow.setWindowTitle(QCoreApplication.translate("MainWindow", u"Sally AI", None))
+        MainWindow.setWindowTitle(QCoreApplication.translate("MainWindow", u"Sally Bot", None))
         self.dashboardButton.setText(QCoreApplication.translate("MainWindow", u"Dashboard", None))
         self.twitchButton.setText(QCoreApplication.translate("MainWindow", u"Your Channel", None))
         self.logsButton.setText(QCoreApplication.translate("MainWindow", u"Logs", None))

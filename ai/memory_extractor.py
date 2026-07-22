@@ -2,29 +2,10 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass
 from typing import Any, Iterable
 
 from ai.providers import OllamaProvider
-
-
-@dataclass(frozen=True, slots=True)
-class BufferedChatMessage:
-    buffer_id: str
-    message_id: str
-    user_id: str
-    user_name: str
-    text: str
-    timestamp: str
-
-
-@dataclass(frozen=True, slots=True)
-class ExtractedMemory:
-    text: str
-    category: str
-    key: str
-    confidence: float
-    evidence: tuple[dict[str, str], ...]
+from sally_shared.models import BufferedChatMessage, ExtractedMemory
 
 
 class MemoryExtractor:
