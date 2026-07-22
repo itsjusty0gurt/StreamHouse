@@ -21,10 +21,14 @@
     return [3, 3];
   }
 
-  function notify(message) {
+  function notify(message, kind = "error") {
     toast.textContent = message;
+    toast.classList.toggle("success", kind === "success");
     toast.classList.add("show");
-    setTimeout(() => toast.classList.remove("show"), 1800);
+    setTimeout(() => {
+      toast.classList.remove("show");
+      toast.classList.remove("success");
+    }, 1800);
   }
 
   function requestHeaders() {
@@ -51,6 +55,7 @@
       });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || "Sound was rejected.");
+      notify("Sent to Sally", "success");
     } catch (error) {
       notify(error.message);
     } finally {

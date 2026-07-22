@@ -104,3 +104,8 @@ body {
 }
 
 #toast.show { opacity: 1; }
+
+#toast.success {
+  background: #075d3c;
+  color: #fff;
+}
