@@ -1,7 +1,10 @@
+import io
+import json
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import Mock
+from urllib.error import HTTPError
+from unittest.mock import Mock, call, patch
 
 from twitch.auth import TwitchAuthService, TwitchAuthState, TwitchToken
 from twitch.token_store import TwitchTokenStore
@@ -29,6 +32,40 @@ class TwitchTokenStoreTests(unittest.TestCase):
 
 
 class TwitchAuthServiceTests(unittest.TestCase):
+    @staticmethod
+    def _device_error(reason: str, description: str = "") -> HTTPError:
+        payload = {"status": 400, "message": reason}
+        if description:
+            payload = {
+                "error": reason,
+                "error_description": description,
+            }
+        return HTTPError(
+            "https://id.twitch.tv/oauth2/token",
+            400,
+            "Bad Request",
+            {},
+            io.BytesIO(json.dumps(payload).encode("utf-8")),
+        )
+
+    @staticmethod
+    def _device_service(*responses):
+        client = Mock()
+        client.start_device_flow.return_value = {
+            "user_code": "TEST-CODE",
+            "verification_uri": "https://www.twitch.tv/activate",
+            "interval": 1,
+            "expires_in": 600,
+            "device_code": "device-code",
+        }
+        client.exchange_device_code.side_effect = responses
+        store = Mock()
+        service = TwitchAuthService(client=client, store=store)
+        service._cancel = Mock()
+        service._cancel.wait.return_value = False
+        service._cancel.is_set.return_value = False
+        return service, client, store
+
     def test_sign_out_clears_token_and_store(self) -> None:
         store = Mock()
         service = TwitchAuthService(client=Mock(), store=store)
@@ -94,6 +131,73 @@ class TwitchAuthServiceTests(unittest.TestCase):
         self.assertIs(service.token, new_token)
         store.save.assert_called_once_with(new_token)
         self.assertFalse(service.recover_unauthorized())
+
+    @patch("twitch.auth.webbrowser.open")
+    def test_device_flow_keeps_polling_while_authorization_is_pending(
+        self,
+        _open: Mock,
+    ) -> None:
+        token = TwitchToken("access", "refresh", 9999, [], login="sallybot")
+        service, client, store = self._device_service(
+            self._device_error("authorization_pending"),
+            token,
+        )
+        client.validate.return_value = token
+
+        service._device_flow()
+
+        self.assertIs(service.state, TwitchAuthState.SIGNED_IN)
+        self.assertEqual(service._cancel.wait.call_args_list, [call(1), call(1)])
+        store.save.assert_called_once_with(token)
+
+    @patch("twitch.auth.webbrowser.open")
+    def test_device_flow_slow_down_adds_five_seconds_to_polling(
+        self,
+        _open: Mock,
+    ) -> None:
+        token = TwitchToken("access", "refresh", 9999, [], login="sallybot")
+        service, client, _store = self._device_service(
+            self._device_error("slow_down"),
+            token,
+        )
+        client.validate.return_value = token
+
+        service._device_flow()
+
+        self.assertIs(service.state, TwitchAuthState.SIGNED_IN)
+        self.assertEqual(service._cancel.wait.call_args_list, [call(1), call(6)])
+
+    @patch("twitch.auth.webbrowser.open")
+    def test_device_flow_reports_denial_immediately(self, _open: Mock) -> None:
+        service, client, _store = self._device_service(
+            self._device_error("access_denied")
+        )
+        service._set_state = Mock(wraps=service._set_state)
+
+        service._device_flow()
+
+        self.assertIs(service.state, TwitchAuthState.ERROR)
+        self.assertEqual(client.exchange_device_code.call_count, 1)
+        service._set_state.assert_called_with(
+            TwitchAuthState.ERROR,
+            "Twitch authorization was denied.",
+        )
+
+    @patch("twitch.auth.webbrowser.open")
+    def test_device_flow_reports_expired_code_immediately(self, _open: Mock) -> None:
+        service, client, _store = self._device_service(
+            self._device_error("expired_token")
+        )
+        service._set_state = Mock(wraps=service._set_state)
+
+        service._device_flow()
+
+        self.assertIs(service.state, TwitchAuthState.ERROR)
+        self.assertEqual(client.exchange_device_code.call_count, 1)
+        service._set_state.assert_called_with(
+            TwitchAuthState.ERROR,
+            "The Twitch activation code expired.",
+        )
 
 
 if __name__ == "__main__":

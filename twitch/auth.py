@@ -263,9 +263,24 @@ class TwitchAuthService:
                         str(values["device_code"]), list(self.scopes)
                     )
                 except HTTPError as error:
-                    if error.code == 400:
+                    if error.code != 400:
+                        raise
+                    reason, description = self._device_flow_error(error)
+                    if reason == "authorization_pending":
                         continue
-                    raise
+                    if reason == "slow_down":
+                        interval += 5
+                        continue
+                    if reason == "access_denied":
+                        raise ValueError("Twitch authorization was denied.") from error
+                    if reason == "expired_token":
+                        raise TimeoutError(
+                            "The Twitch activation code expired."
+                        ) from error
+                    detail = description or reason or "unknown response"
+                    raise ValueError(
+                        f"Twitch authorization failed: {detail}."
+                    ) from error
                 if self._cancel.is_set():
                     return
                 self.token = self.client.validate(token)
@@ -276,6 +291,25 @@ class TwitchAuthService:
                 raise TimeoutError("The Twitch activation code expired.")
         except (HTTPError, URLError, OSError, ValueError, KeyError, TimeoutError) as error:
             self._set_state(TwitchAuthState.ERROR, str(error))
+
+    @staticmethod
+    def _device_flow_error(error: HTTPError) -> tuple[str, str]:
+        """Extract RFC 8628 error details from Twitch's HTTP 400 response."""
+        try:
+            payload = json.loads(error.read().decode("utf-8"))
+        except (AttributeError, json.JSONDecodeError, UnicodeDecodeError):
+            return "", ""
+        if not isinstance(payload, dict):
+            return "", ""
+        raw_reason = str(payload.get("error") or payload.get("message") or "").strip()
+        reason = raw_reason.casefold().replace("-", "_").replace(" ", "_")
+        description = str(
+            payload.get("error_description")
+            or payload.get("message")
+            or payload.get("error")
+            or ""
+        ).strip()
+        return reason, description
 
     def _set_state(self, state: TwitchAuthState, detail: str) -> None:
         self.state = state
