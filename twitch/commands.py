@@ -9,6 +9,7 @@ from time import monotonic
 from typing import Any, Callable, Mapping
 from uuid import uuid4
 
+from automation.custom_variables import CustomVariableStore
 from automation.models import TriggerEvent
 from automation.routines import RoutineStore
 from core.json_store import atomic_write_json, load_json_with_backup
@@ -407,8 +408,17 @@ class TwitchCommandTriggerStore:
         if trigger.has_chat_response and task is None:
             raise ValueError("The Twitch command trigger has no response task.")
         if task is not None:
+            generated_variables = {
+                name
+                for candidate in routine.tasks
+                for name in CustomVariableStore.generated_names(
+                    candidate.task_type,
+                    candidate.config,
+                )
+            }
             SendTwitchChatMessageTask.validate_template(
-                str(task.config.get("message", ""))
+                str(task.config.get("message", "")),
+                generated_variables,
             )
 
     @staticmethod

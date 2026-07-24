@@ -163,6 +163,35 @@ class TwitchCommandTriggerStoreTests(unittest.TestCase):
         self.assertEqual(len(loaded.load()), 1)
         self.assertEqual(loaded.response_for(loaded.triggers[0]), "Welcome {user}")
 
+    def test_command_response_accepts_variable_generated_by_another_task(self) -> None:
+        trigger = self.store.add("random", "Placeholder")
+        routine = self.routine_store.get(trigger.routine_id)
+        response = routine.tasks[0]
+        self.routine_store.add_task(
+            routine.routine_id,
+            task_type="core.file_random_line",
+            name="Choose response",
+            config={"path": "responses.txt", "variable": "random_line"},
+            index=0,
+        )
+        self.routine_store.update_task(
+            routine.routine_id,
+            response.task_id,
+            config={"message": "{random_line}", "as_bot": True},
+        )
+        self.store.save()
+
+        loaded = TwitchCommandTriggerStore(
+            self.path,
+            RoutineStore(self.routine_store.path),
+        )
+
+        self.assertEqual(len(loaded.load()), 1)
+        self.assertEqual(
+            loaded.response_for(loaded.triggers[0]),
+            "{random_line}",
+        )
+
     def test_command_can_trigger_routine_without_chat_response(self) -> None:
         routine = self.routine_store.add("Toggle the lights")
         task = self.routine_store.add_task(

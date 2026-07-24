@@ -60,6 +60,32 @@ class AutomationVariableTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "reserved"):
             self.variable_store.set("global", "user", "Someone")
 
+    def test_variable_names_accept_optional_template_braces(self) -> None:
+        self.assertEqual(
+            CustomVariableStore.validate_name("random_line"),
+            "random_line",
+        )
+        self.assertEqual(
+            CustomVariableStore.validate_name("{random_line}"),
+            "random_line",
+        )
+
+    def test_generated_names_cover_output_tasks(self) -> None:
+        self.assertEqual(
+            CustomVariableStore.generated_names(
+                "core.file_random_line",
+                {"variable": "random_line"},
+            ),
+            ("random_line",),
+        )
+        self.assertEqual(
+            CustomVariableStore.generated_names(
+                "core.logic_get_input",
+                {"name": "{answer}"},
+            ),
+            ("answer", "answer_accepted"),
+        )
+
     def test_nested_routine_shares_routine_variables_with_parent(self) -> None:
         child = self.routine_store.add("Child")
         self.routine_store.add_task(

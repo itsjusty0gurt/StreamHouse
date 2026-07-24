@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import tempfile
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from automation.routines import RoutineStore
 from twitch.automation_triggers import TwitchEventTriggerStore
 from twitch.commands import TwitchCommandTriggerStore
-from twitch.models import TwitchEvent, TwitchEventTransport
+from twitch.models import TwitchEvent, TwitchEventTransport, TwitchMessage
 
 
 def twitch_event(event_type: str, event: dict) -> TwitchEvent:
@@ -106,6 +106,98 @@ class TwitchEventTriggerStoreTests(unittest.TestCase):
         routine = self.routines.add("Unsupported")
         with self.assertRaisesRegex(ValueError, "not connected"):
             self.store.add(routine.routine_id, "channel.poll.end")
+
+    def test_first_message_fires_once_per_viewer_during_stream(self) -> None:
+        routine = self.routines.add("Welcome viewers")
+        trigger = self.store.add(
+            routine.routine_id,
+            "channel.chat.first_message",
+        )
+        started = datetime(2026, 7, 24, 14, 0, tzinfo=timezone.utc)
+        self.store.observe_stream({"id": "stream-1"}, started)
+        message = TwitchMessage(
+            username="Viewer",
+            user_id="viewer-1",
+            text="hello",
+            received_at=started + timedelta(minutes=1),
+            broadcaster_user_name="Streamer",
+        )
+
+        first = self.store.evaluate_first_message(
+            message,
+            stream_is_live=True,
+        )
+        repeated = self.store.evaluate_first_message(
+            message,
+            stream_is_live=True,
+        )
+
+        self.assertEqual(len(first), 1)
+        self.assertEqual(first[0].trigger_id, trigger.trigger_id)
+        self.assertEqual(first[0].context["user"], "Viewer")
+        self.assertEqual(first[0].context["message"], "hello")
+        self.assertEqual(repeated, ())
+
+    def test_short_offline_period_does_not_repeat_welcome(self) -> None:
+        routine = self.routines.add("Welcome viewers")
+        self.store.add(
+            routine.routine_id,
+            "channel.chat.first_message",
+            reset_minutes=15,
+        )
+        started = datetime(2026, 7, 24, 14, 0, tzinfo=timezone.utc)
+        message = TwitchMessage(
+            username="Viewer",
+            user_id="viewer-1",
+            text="hello",
+            received_at=started,
+        )
+        self.store.observe_stream({"id": "stream-1"}, started)
+        self.assertEqual(
+            len(self.store.evaluate_first_message(message, stream_is_live=True)),
+            1,
+        )
+        self.store.observe_stream(None, started + timedelta(minutes=5))
+        self.store.observe_stream(
+            {"id": "stream-1"},
+            started + timedelta(minutes=10),
+        )
+
+        self.assertEqual(
+            self.store.evaluate_first_message(message, stream_is_live=True),
+            (),
+        )
+
+    def test_welcomes_reset_after_offline_grace_period(self) -> None:
+        routine = self.routines.add("Welcome viewers")
+        trigger = self.store.add(
+            routine.routine_id,
+            "channel.chat.first_message",
+            reset_minutes=15,
+        )
+        started = datetime(2026, 7, 24, 14, 0, tzinfo=timezone.utc)
+        message = TwitchMessage(
+            username="Viewer",
+            user_id="viewer-1",
+            text="hello",
+            received_at=started,
+        )
+        self.store.observe_stream({"id": "stream-1"}, started)
+        self.store.evaluate_first_message(message, stream_is_live=True)
+        self.store.observe_stream(None, started + timedelta(minutes=1))
+        self.store.observe_stream(
+            {"id": "stream-2"},
+            started + timedelta(minutes=17),
+        )
+
+        result = self.store.evaluate_first_message(
+            message,
+            stream_is_live=True,
+            observed_at=started + timedelta(minutes=18),
+        )
+
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0].trigger_id, trigger.trigger_id)
 
 
 if __name__ == "__main__":

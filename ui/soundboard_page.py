@@ -20,6 +20,8 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QMessageBox,
     QPushButton,
+    QScrollArea,
+    QSizePolicy,
     QSplitter,
     QVBoxLayout,
     QWidget,
@@ -64,6 +66,16 @@ class SoundboardPageWidget(QWidget):
         self.preview_buttons: dict[str, QPushButton] = {}
 
         root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        self.scroll_area = QScrollArea(self)
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded
+        )
+        self.scroll_content = QWidget(self.scroll_area)
+        content_layout = QVBoxLayout(self.scroll_content)
+        self.scroll_area.setWidget(self.scroll_content)
+        root.addWidget(self.scroll_area)
         header = QHBoxLayout()
         introduction = QLabel(
             "Build the soundboard viewers will see. Each sound runs an automation "
@@ -71,17 +83,23 @@ class SoundboardPageWidget(QWidget):
         )
         introduction.setWordWrap(True)
         header.addWidget(introduction, 1)
-        root.addLayout(header)
+        content_layout.addLayout(header)
 
-        splitter = QSplitter(Qt.Orientation.Horizontal, self)
-        splitter.addWidget(self._build_page_panel())
-        splitter.addWidget(self._build_preview_panel())
-        splitter.addWidget(self._build_editor_panel())
-        splitter.setStretchFactor(0, 0)
-        splitter.setStretchFactor(1, 1)
-        splitter.setStretchFactor(2, 0)
-        splitter.setSizes([190, 650, 270])
-        root.addWidget(splitter, 1)
+        self.editor_area = QWidget(self.scroll_content)
+        self.editor_grid = QGridLayout(self.editor_area)
+        self.editor_grid.setContentsMargins(0, 0, 0, 0)
+        self.editor_grid.setSpacing(8)
+        self.page_panel = self._build_page_panel()
+        self.preview_panel = self._build_preview_panel()
+        self.sound_editor_panel = self._build_editor_panel()
+        self.editor_grid.addWidget(self.page_panel, 0, 0)
+        self.editor_grid.addWidget(self.preview_panel, 0, 1)
+        self.editor_grid.addWidget(self.sound_editor_panel, 0, 2)
+        self.editor_grid.setColumnStretch(0, 0)
+        self.editor_grid.setColumnStretch(1, 1)
+        self.editor_grid.setColumnStretch(2, 0)
+        self.editor_area.setMinimumHeight(430)
+        content_layout.addWidget(self.editor_area, 1)
 
         local = QGroupBox("Local Viewer Test", self)
         local_layout = QHBoxLayout(local)
@@ -95,13 +113,13 @@ class SoundboardPageWidget(QWidget):
         local_layout.addWidget(self.viewer_url_edit, 1)
         local_layout.addWidget(self.copy_url_button)
         local_layout.addWidget(self.open_preview_button)
-        root.addWidget(local)
+        content_layout.addWidget(local)
         local_note = QLabel(
             "Local testing only: this address works on the Sally PC. The hosted "
             "Twitch relay will replace it when the Extension is published."
         )
         local_note.setWordWrap(True)
-        root.addWidget(local_note)
+        content_layout.addWidget(local_note)
 
         hosted = QGroupBox("Hosted Twitch Extension Relay", self)
         hosted_layout = QFormLayout(hosted)
@@ -137,13 +155,13 @@ class SoundboardPageWidget(QWidget):
         hosted_layout.addRow("", relay_actions)
         self.relay_status_label = QLabel(relay_client.status, hosted)
         hosted_layout.addRow("Status", self.relay_status_label)
-        root.addWidget(hosted)
+        content_layout.addWidget(hosted)
 
         self.status_label = QLabel(
             "Add a sound, choose a routine, then test it here or in the local viewer."
         )
         self.status_label.setWordWrap(True)
-        root.addWidget(self.status_label)
+        content_layout.addWidget(self.status_label)
 
         self.page_list.currentItemChanged.connect(self._page_changed)
         self.add_page_button.clicked.connect(self._add_page)
@@ -166,6 +184,33 @@ class SoundboardPageWidget(QWidget):
         )
         self.relay_client.status_changed.connect(self.relay_status_label.setText)
         self.refresh()
+
+    def set_responsive_orientation(self, portrait: bool) -> None:
+        for panel in (
+            self.page_panel,
+            self.preview_panel,
+            self.sound_editor_panel,
+        ):
+            self.editor_grid.removeWidget(panel)
+        if portrait:
+            self.editor_grid.addWidget(self.preview_panel, 0, 0, 1, 2)
+            self.editor_grid.addWidget(self.page_panel, 1, 0)
+            self.editor_grid.addWidget(self.sound_editor_panel, 1, 1)
+            self.editor_grid.setColumnStretch(0, 1)
+            self.editor_grid.setColumnStretch(1, 1)
+            self.editor_grid.setColumnStretch(2, 0)
+            self.preview_panel.setMinimumHeight(300)
+            self.editor_area.setMinimumHeight(650)
+        else:
+            self.editor_grid.addWidget(self.page_panel, 0, 0)
+            self.editor_grid.addWidget(self.preview_panel, 0, 1)
+            self.editor_grid.addWidget(self.sound_editor_panel, 0, 2)
+            self.editor_grid.setColumnStretch(0, 0)
+            self.editor_grid.setColumnStretch(1, 1)
+            self.editor_grid.setColumnStretch(2, 0)
+            self.preview_panel.setMinimumHeight(0)
+            self.editor_area.setMinimumHeight(430)
+        self.editor_grid.invalidate()
 
     def _build_page_panel(self) -> QWidget:
         panel = QGroupBox("Pages", self)

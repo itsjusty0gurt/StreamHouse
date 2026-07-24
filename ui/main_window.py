@@ -2,6 +2,7 @@ import json
 import csv
 import logging
 import re
+import sys
 from collections import deque
 from time import monotonic
 from urllib.parse import urlencode
@@ -16,6 +17,7 @@ from PySide6.QtGui import QCloseEvent, QColor, QCursor, QFont
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
+    QBoxLayout,
     QButtonGroup,
     QComboBox,
     QCheckBox,
@@ -84,11 +86,13 @@ from sally_shared.models import (
 )
 from sally_shared.response_policy import ResponsePolicy
 from sally_shared.viewer_context import build_viewer_context
+from sally_shared.presence_protocol import COMPANION_PRESENCE_MESSAGE
 from sally_companion.remote_stores import (
     CompanionTestReportStore as AITestReportStore,
     CompanionTrainingStore as TrainingStore,
 )
 from sally_companion.client import CompanionClient
+from sally_companion.protocol import PROTOCOL_VERSION
 from core.window_state import WindowStateStore
 from config.twitch import (
     TWITCH_BOT_SCOPES,
@@ -145,6 +149,13 @@ from ui.ai_companion_worker import CompanionHealthResult, CompanionHealthWorker
 from ui.automation_page import AutomationPage
 from ui.channel_points_page import ChannelPointsPage
 from ui.soundboard_page import SoundboardPageWidget
+from ui.responsive import (
+    LAYOUT_MODE_AUTOMATIC,
+    LAYOUT_MODE_LANDSCAPE,
+    LAYOUT_MODE_PORTRAIT,
+    normalize_layout_mode,
+    resolve_orientation,
+)
 from soundboard.server import SoundboardLocalServer
 from soundboard.store import SoundboardStore
 from soundboard.relay import (
@@ -152,6 +163,18 @@ from soundboard.relay import (
     SoundboardRelayConfig,
     SoundboardRelayConfigStore,
 )
+
+if sys.platform == "win32":
+    import ctypes
+    from ctypes import wintypes
+
+    _AI_COMPANION_PRESENCE_MESSAGE_ID = int(
+        ctypes.windll.user32.RegisterWindowMessageW(
+            COMPANION_PRESENCE_MESSAGE
+        )
+    )
+else:
+    _AI_COMPANION_PRESENCE_MESSAGE_ID = 0
 
 
 class StreamMetricCard(QFrame):
@@ -584,6 +607,8 @@ class MainWindow(QMainWindow):
         self.ad_upcoming_duration = 0
         self.ui = Ui_MainWindow()
         self.ui.setupUi(self)
+        self._responsive_ready = False
+        self._active_layout_orientation = ""
         for page_title in (
             self.ui.dashboardTitleLabel,
             self.ui.twitchTitleLabel,
@@ -607,6 +632,7 @@ class MainWindow(QMainWindow):
         self._build_automation_page()
         self._build_release_tools()
         self._build_ai_settings()
+        self._build_responsive_settings()
         self._build_settings_tabs()
         self._make_layout_responsive()
         self.twitch_status_bar_label = QLabel("Twitch: Signed out")
@@ -812,6 +838,8 @@ class MainWindow(QMainWindow):
         self._show_empty_twitch_chat()
         self._show_startup_page()
         self.window_state_store.restore(self)
+        self._responsive_ready = True
+        self._update_responsive_layout(force=True)
         self.auth_maintenance_timer = QTimer(self)
         self.auth_maintenance_timer.setInterval(30 * 60 * 1000)
         self.auth_maintenance_timer.timeout.connect(self.twitch_auth.maintain)
@@ -823,11 +851,6 @@ class MainWindow(QMainWindow):
         self.companion_refresh_timer.setInterval(60_000)
         self.companion_refresh_timer.timeout.connect(self.refresh_stream_companion)
         self.companion_refresh_timer.start()
-        self.ai_companion_health_timer = QTimer(self)
-        self.ai_companion_health_timer.setInterval(5_000)
-        self.ai_companion_health_timer.timeout.connect(self._check_ai_companion)
-        self.ai_companion_health_timer.start()
-        QTimer.singleShot(500, self._check_ai_companion)
         self.stream_overview_timer = QTimer(self)
         self.stream_overview_timer.setInterval(1_000)
         self.stream_overview_timer.timeout.connect(
@@ -882,6 +905,31 @@ class MainWindow(QMainWindow):
             self._export_diagnostic_bundle
         )
 
+    def _build_responsive_settings(self) -> None:
+        self.responsive_settings_group = QGroupBox("Window Layout")
+        layout = QFormLayout(self.responsive_settings_group)
+        self.layout_mode_combo = QComboBox()
+        self.layout_mode_combo.addItem("Automatic", LAYOUT_MODE_AUTOMATIC)
+        self.layout_mode_combo.addItem("Landscape", LAYOUT_MODE_LANDSCAPE)
+        self.layout_mode_combo.addItem("Portrait", LAYOUT_MODE_PORTRAIT)
+        saved_mode = normalize_layout_mode(
+            self.window_state_store.settings.value(
+                "window/layout_mode",
+                LAYOUT_MODE_AUTOMATIC,
+            )
+        )
+        self.layout_mode_combo.setCurrentIndex(
+            max(self.layout_mode_combo.findData(saved_mode), 0)
+        )
+        self.layout_mode_combo.setToolTip(
+            "Automatic changes layout when the window crosses between "
+            "landscape and portrait dimensions."
+        )
+        layout.addRow("Orientation", self.layout_mode_combo)
+        self.layout_mode_combo.currentIndexChanged.connect(
+            self._layout_mode_changed
+        )
+
     def _build_settings_tabs(self) -> None:
         self.settings_tabs = QTabWidget(self.ui.settingsPage)
         self.settings_tabs.setObjectName("settingsTabs")
@@ -891,6 +939,7 @@ class MainWindow(QMainWindow):
                 (
                     self.ui.generalSettingsGroup,
                     self.ui.loggingSettingsGroup,
+                    self.responsive_settings_group,
                     self.release_tools_group,
                 ),
             ),
@@ -928,6 +977,133 @@ class MainWindow(QMainWindow):
         self.ui.mainStack.removeWidget(self.ui.settingsPage)
         self.settings_container.setWidget(self.ui.settingsPage)
         self.ui.mainStack.insertWidget(settings_index, self.settings_container)
+
+    def _layout_mode_changed(self) -> None:
+        if not hasattr(self, "layout_mode_combo"):
+            return
+        mode = normalize_layout_mode(self.layout_mode_combo.currentData())
+        self.window_state_store.settings.setValue("window/layout_mode", mode)
+        self.window_state_store.settings.sync()
+        self._update_responsive_layout(force=True)
+
+    def _update_responsive_layout(self, *, force: bool = False) -> None:
+        if not self._responsive_ready:
+            return
+        orientation = resolve_orientation(
+            self.width(),
+            self.height(),
+            str(self.layout_mode_combo.currentData()),
+            self._active_layout_orientation,
+        )
+        if not force and orientation == self._active_layout_orientation:
+            return
+        self._active_layout_orientation = orientation
+        self._apply_responsive_layout(
+            orientation == LAYOUT_MODE_PORTRAIT
+        )
+
+    def _apply_responsive_layout(self, portrait: bool) -> None:
+        maximum = 16_777_215
+        self.ui.horizontalLayout.setDirection(
+            QBoxLayout.Direction.TopToBottom
+            if portrait
+            else QBoxLayout.Direction.LeftToRight
+        )
+        self.ui.verticalLayout.setDirection(
+            QBoxLayout.Direction.LeftToRight
+            if portrait
+            else QBoxLayout.Direction.TopToBottom
+        )
+        if portrait:
+            self.setMinimumSize(420, 520)
+            self.ui.navigationFrame.setMinimumSize(0, 40)
+            self.ui.navigationFrame.setMaximumSize(maximum, 52)
+            self.ui.verticalSpacer.changeSize(
+                0,
+                0,
+                QSizePolicy.Policy.Expanding,
+                QSizePolicy.Policy.Minimum,
+            )
+        else:
+            self.setMinimumSize(520, 360)
+            self.ui.navigationFrame.setMinimumSize(120, 0)
+            self.ui.navigationFrame.setMaximumSize(180, maximum)
+            self.ui.verticalSpacer.changeSize(
+                20,
+                40,
+                QSizePolicy.Policy.Minimum,
+                QSizePolicy.Policy.Expanding,
+            )
+        for button in (
+            self.ui.dashboardButton,
+            self.ui.twitchButton,
+            self.ai_button,
+            self.automation_button,
+            self.connections_button,
+            self.ui.logsButton,
+            self.ui.settingsButton,
+        ):
+            button.setMinimumWidth(0)
+            button.setSizePolicy(
+                QSizePolicy.Policy.Expanding,
+                QSizePolicy.Policy.Fixed,
+            )
+
+        for card in self.stream_metric_cards:
+            self.stream_stats_layout.removeWidget(card)
+            card.setMinimumWidth(55 if portrait else 76)
+        if portrait:
+            positions = (
+                (0, 0, 1, 1),
+                (0, 1, 1, 1),
+                (0, 2, 1, 1),
+                (1, 0, 1, 1),
+                (1, 1, 1, 2),
+            )
+            self.stream_overview_group.setMinimumHeight(130)
+            self.stream_overview_group.setMaximumHeight(165)
+        else:
+            positions = tuple(
+                (0, column, 1, 1)
+                for column in range(len(self.stream_metric_cards))
+            )
+            self.stream_overview_group.setMinimumHeight(92)
+            self.stream_overview_group.setMaximumHeight(118)
+        for card, position in zip(self.stream_metric_cards, positions):
+            self.stream_stats_layout.addWidget(card, *position)
+
+        self.ad_footer_layout.setDirection(QBoxLayout.Direction.LeftToRight)
+        self.ad_manager_group.setMaximumHeight(165 if portrait else 132)
+        self.stream_tools_container.setMaximumHeight(175 if portrait else 138)
+        self.twitch_channel_splitter.setOrientation(
+            Qt.Orientation.Vertical
+            if portrait
+            else Qt.Orientation.Horizontal
+        )
+        if portrait:
+            self.chatter_panel.setMinimumWidth(0)
+            self.chatter_panel.setMaximumWidth(maximum)
+            self.activity_panel.setMinimumWidth(0)
+            self.twitch_channel_splitter.setStretchFactor(0, 9)
+            self.twitch_channel_splitter.setStretchFactor(1, 1)
+            self.twitch_channel_splitter.setSizes([900, 180])
+            self.channel_side_splitter.setSizes([1, 2])
+        else:
+            self.chatter_panel.setMinimumWidth(80)
+            self.chatter_panel.setMaximumWidth(180)
+            self.activity_panel.setMinimumWidth(140)
+            self.twitch_channel_splitter.setStretchFactor(0, 4)
+            self.twitch_channel_splitter.setStretchFactor(1, 2)
+            self.twitch_channel_splitter.setSizes([1000, 590])
+            self.channel_side_splitter.setSizes([170, 420])
+        self.automation_page.set_responsive_orientation(portrait)
+        self.soundboard_page.set_responsive_orientation(portrait)
+        self.ui.horizontalLayout.invalidate()
+        self.ui.verticalLayout.invalidate()
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._update_responsive_layout()
 
     def _build_developer_dock(self) -> None:
         self.developer_dock = QDockWidget("Developer Tools", self)
@@ -1136,8 +1312,9 @@ class MainWindow(QMainWindow):
         )
         stats.setMinimumHeight(92)
         stats.setMaximumHeight(118)
-        stats_layout = QHBoxLayout(stats)
+        stats_layout = QGridLayout(stats)
         stats_layout.setSpacing(8)
+        self.stream_stats_layout = stats_layout
         self.stream_status_card = StreamMetricCard(
             "Status", "OFFLINE", "#8c8cff", stats
         )
@@ -1158,14 +1335,15 @@ class MainWindow(QMainWindow):
         self.stream_viewers_label = self.stream_viewers_card.value_label
         self.stream_followers_label = self.stream_followers_card.value_label
         self.stream_subscribers_label = self.stream_subscribers_card.value_label
-        for card in (
+        self.stream_metric_cards = (
             self.stream_status_card,
             self.stream_uptime_card,
             self.stream_viewers_card,
             self.stream_followers_card,
             self.stream_subscribers_card,
-        ):
-            stats_layout.addWidget(card, 1)
+        )
+        for column, card in enumerate(self.stream_metric_cards):
+            stats_layout.addWidget(card, 0, column)
         self.ui.twitchPageLayout.insertWidget(1, stats)
 
         ad_manager = QGroupBox("Ad Manager", self.ui.twitchPage)
@@ -1200,6 +1378,7 @@ class MainWindow(QMainWindow):
         )
         ad_layout.addWidget(self.ad_schedule_progress)
         ad_footer = QHBoxLayout()
+        self.ad_footer_layout = ad_footer
         self.ad_preroll_label = QLabel("Pre-roll status unavailable")
         self.ad_preroll_label.setObjectName("adPrerollLabel")
         self.ad_preroll_label.setStyleSheet("color:#adadb8;")
@@ -1239,8 +1418,22 @@ class MainWindow(QMainWindow):
         ad_footer.addWidget(self.update_companion_permissions_button)
         ad_layout.addLayout(ad_footer)
         self.ui.twitchPageLayout.insertWidget(2, ad_manager)
+        self.ui.twitchPageLayout.removeWidget(stats)
+        self.ui.twitchPageLayout.removeWidget(ad_manager)
+        self.stream_tools_container = QWidget(self.ui.twitchPage)
+        self.stream_tools_layout = QHBoxLayout(self.stream_tools_container)
+        self.stream_tools_layout.setContentsMargins(0, 0, 0, 0)
+        self.stream_tools_layout.setSpacing(8)
+        self.stream_tools_layout.addWidget(stats, 1)
+        self.stream_tools_layout.addWidget(ad_manager, 1)
+        self.stream_tools_container.setSizePolicy(
+            QSizePolicy.Policy.Preferred,
+            QSizePolicy.Policy.Fixed,
+        )
+        self.ui.twitchPageLayout.insertWidget(1, self.stream_tools_container)
 
         chatter_panel = QWidget()
+        self.chatter_panel = chatter_panel
         chatter_layout = QVBoxLayout(chatter_panel)
         self.chatter_title_label = QLabel("Chatters (0)")
         self.chatter_title_label.setStyleSheet("font-weight:bold;")
@@ -1250,8 +1443,8 @@ class MainWindow(QMainWindow):
         chatter_panel.setMaximumWidth(180)
         chatter_layout.addWidget(self.chatter_title_label)
         chatter_layout.addWidget(self.chatter_list)
-        self.twitch_channel_splitter.insertWidget(1, chatter_panel)
         activity_panel = QWidget()
+        self.activity_panel = activity_panel
         activity_layout = QVBoxLayout(activity_panel)
         activity_header = QHBoxLayout()
         activity_title = QLabel("Activity Feed")
@@ -1293,13 +1486,21 @@ class MainWindow(QMainWindow):
             lambda _text: self._rebuild_activity_feed()
         )
         self._rebuild_activity_feed()
-        self.twitch_channel_splitter.addWidget(activity_panel)
+        self.channel_side_splitter = QSplitter(
+            Qt.Orientation.Horizontal,
+            self.ui.twitchPage,
+        )
+        self.channel_side_splitter.setObjectName("channelSideSplitter")
+        self.channel_side_splitter.addWidget(chatter_panel)
+        self.channel_side_splitter.addWidget(activity_panel)
+        self.channel_side_splitter.setStretchFactor(0, 1)
+        self.channel_side_splitter.setStretchFactor(1, 2)
+        self.channel_side_splitter.setSizes([170, 420])
+        self.twitch_channel_splitter.addWidget(self.channel_side_splitter)
         self.twitch_channel_splitter.setStretchFactor(0, 4)
-        self.twitch_channel_splitter.setStretchFactor(1, 0)
-        self.twitch_channel_splitter.setStretchFactor(2, 2)
+        self.twitch_channel_splitter.setStretchFactor(1, 2)
         self.twitch_channel_splitter.setCollapsible(0, False)
         self.twitch_channel_splitter.setCollapsible(1, True)
-        self.twitch_channel_splitter.setCollapsible(2, True)
         activity_panel.setMinimumWidth(140)
 
         self.channel_tabs = QTabWidget(self.ui.twitchPage)
@@ -1309,6 +1510,7 @@ class MainWindow(QMainWindow):
             self.channel_tabs,
         )
         self.channel_tabs.addTab(self.twitch_channel_splitter, "Chat")
+        self.ui.twitchPageLayout.setStretchFactor(self.channel_tabs, 1)
         self.chatter_list.setContextMenuPolicy(
             Qt.ContextMenuPolicy.CustomContextMenu
         )
@@ -1780,6 +1982,45 @@ class MainWindow(QMainWindow):
         self.ai_remote_protocol_label.setText(str(status.protocol_version))
         self.twitch_channel_splitter.setSizes([1000, 170, 420])
 
+    def nativeEvent(self, event_type, message):
+        if _AI_COMPANION_PRESENCE_MESSAGE_ID:
+            native_message = ctypes.cast(
+                int(message),
+                ctypes.POINTER(wintypes.MSG),
+            ).contents
+            if native_message.message == _AI_COMPANION_PRESENCE_MESSAGE_ID:
+                self._handle_ai_companion_presence(
+                    int(native_message.wParam),
+                    int(native_message.lParam),
+                )
+                return True, 0
+        return super().nativeEvent(event_type, message)
+
+    def _handle_ai_companion_presence(
+        self,
+        protocol_version: int,
+        port: int,
+    ) -> None:
+        if port <= 0:
+            self.ai_remote_stack.setCurrentIndex(0)
+            self.ai_remote_connection_detail.setText(
+                "AI Companion is not running."
+            )
+            self.ai_remote_state_label.setText("Disconnected")
+            self.ai_remote_state_label.setStyleSheet("")
+            return
+        if protocol_version != PROTOCOL_VERSION:
+            self.ai_remote_stack.setCurrentIndex(0)
+            self.ai_remote_connection_detail.setText(
+                f"Companion protocol mismatch: {protocol_version}."
+            )
+            return
+        self.ai_remote_endpoint_edit.setText(f"http://127.0.0.1:{port}")
+        self.ai_remote_connection_detail.setText(
+            "Companion found; connecting..."
+        )
+        self._check_ai_companion()
+
     def _build_twitch_commands_tab(self) -> None:
         page = QWidget(self.channel_tabs)
         layout = QVBoxLayout(page)
@@ -1813,13 +2054,9 @@ class MainWindow(QMainWindow):
             QTableWidget.EditTrigger.NoEditTriggers
         )
         header = self.twitch_commands_table.horizontalHeader()
-        header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
-        header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(5, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(6, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        for column, width in enumerate((75, 150, 220, 110, 125, 125, 70)):
+            self.twitch_commands_table.setColumnWidth(column, width)
         layout.addWidget(self.twitch_commands_table, 1)
         actions = QHBoxLayout()
         self.add_twitch_command_button = QPushButton("Add Command")
@@ -2937,6 +3174,15 @@ class MainWindow(QMainWindow):
                 self._refresh_memory_viewer_list()
         if is_bot and chat_message.user_id:
             self.known_bot_user_ids.add(chat_message.user_id)
+        is_broadcaster = any(
+            badge.set_id == "broadcaster"
+            for badge in chat_message.badges
+        ) or (
+            bool(chat_message.broadcaster_user_id)
+            and chat_message.user_id == chat_message.broadcaster_user_id
+        )
+        if not is_bot and not is_broadcaster:
+            self._handle_twitch_first_message(chat_message)
         training_command = self._handle_sally_training_command(
             chat_message, is_bot
         )
@@ -3101,6 +3347,30 @@ class MainWindow(QMainWindow):
                 remaining_seconds=0,
             )
         return True
+
+    def _handle_twitch_first_message(
+        self,
+        chat_message: TwitchMessage,
+    ) -> None:
+        for trigger in self.twitch_event_trigger_store.evaluate_first_message(
+            chat_message,
+            stream_is_live=self.stream_is_live,
+        ):
+            execution = self.automation_service.publish_trigger(trigger)
+            self.automation_page.record_execution(
+                execution,
+                f"First message from {chat_message.username}",
+            )
+            if execution.succeeded:
+                Logger.info(
+                    f'Executed first-message welcome for "{chat_message.username}".',
+                    source="AUTOMATION",
+                )
+            elif execution.handled:
+                Logger.warning(
+                    f'First-message welcome failed for "{chat_message.username}".',
+                    source="AUTOMATION",
+                )
 
     def _handle_sally_memory_command(
         self,
@@ -5721,6 +5991,9 @@ class MainWindow(QMainWindow):
             self.last_memory_promo_at = 0.0
             self.training_notice_attempt_context = ""
         self._expire_daily_memory()
+        self.twitch_event_trigger_store.observe_stream(
+            stream if isinstance(stream, dict) else None
+        )
         if self.session_tracker.observe_stream(snapshot.get("stream")):
             self._refresh_session_history()
         current_warnings = set(result.warnings)

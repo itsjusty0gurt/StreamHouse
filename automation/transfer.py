@@ -177,6 +177,7 @@ def import_routine(
                 str(values.get("event_type", "")),
                 filters=dict(values.get("filters", {})),
                 enabled=bool(values.get("enabled", True)),
+                reset_minutes=int(values.get("reset_minutes", 15)),
             )
             event_ids.append(trigger.trigger_id)
         for values in trigger_values.get("core", []):

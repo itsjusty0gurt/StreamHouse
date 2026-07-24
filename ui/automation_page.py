@@ -98,6 +98,8 @@ from ui.twitch_command_dialog import TwitchCommandDialog, TwitchCommandManagerDi
 
 
 def _event_display_name(event_type: str) -> str:
+    if event_type == "channel.chat.first_message":
+        return "First Message Of Stream"
     return event_type.replace("channel.", "").replace("_", " ").replace(".", " › ").title()
 
 
@@ -139,7 +141,7 @@ class NewRoutineDialog(QDialog):
         self.trigger_combo = QComboBox()
         self.trigger_combo.addItem("Manual only", "manual")
         self.trigger_combo.addItem("Twitch chat command", "twitch.command")
-        self.trigger_combo.addItem("Twitch EventSub event", "twitch.eventsub")
+        self.trigger_combo.addItem("Twitch event", "twitch.eventsub")
         self.trigger_combo.addItem("Core program event", "core.lifecycle")
         self.trigger_combo.addItem("OBS WebSocket event", "obs.event")
         form.addRow("Name", self.name_edit)
@@ -196,8 +198,13 @@ class NewRoutineDialog(QDialog):
             "fields use dots, such as reward.id or reward.title."
         )
         event_help.setWordWrap(True)
+        self.event_reset_spin = QSpinBox()
+        self.event_reset_spin.setRange(1, 180)
+        self.event_reset_spin.setValue(15)
+        self.event_reset_spin.setSuffix(" minutes offline")
         event_form.addRow("Event", self.event_type_combo)
         event_form.addRow("Field filters", self.event_filters_edit)
+        event_form.addRow("Reset welcomes after", self.event_reset_spin)
         event_form.addRow("", event_help)
         layout.addWidget(self.event_group)
         self.event_group.hide()
@@ -231,6 +238,9 @@ class NewRoutineDialog(QDialog):
         self.trigger_combo.currentIndexChanged.connect(
             self._update_trigger_fields
         )
+        self.event_type_combo.currentIndexChanged.connect(
+            self._update_trigger_fields
+        )
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Save
@@ -247,6 +257,17 @@ class NewRoutineDialog(QDialog):
         self.event_group.setVisible(trigger_type == "twitch.eventsub")
         self.core_group.setVisible(trigger_type == "core.lifecycle")
         self.obs_group.setVisible(trigger_type == "obs.event")
+        reset_visible = (
+            trigger_type == "twitch.eventsub"
+            and self.event_type_combo.currentData()
+            == "channel.chat.first_message"
+        )
+        self.event_reset_spin.setVisible(reset_visible)
+        reset_label = self.event_group.layout().labelForField(
+            self.event_reset_spin
+        )
+        if reset_label is not None:
+            reset_label.setVisible(reset_visible)
 
     def values(self) -> dict[str, object]:
         aliases = [
@@ -269,6 +290,7 @@ class NewRoutineDialog(QDialog):
             "user_cooldown_seconds": self.user_cooldown_spin.value(),
             "event_type": str(self.event_type_combo.currentData()),
             "event_filters": _parse_event_filters(self.event_filters_edit.text()),
+            "event_reset_minutes": self.event_reset_spin.value(),
             "core_event_type": str(self.core_event_combo.currentData()),
             "obs_event_type": str(self.obs_event_combo.currentData()),
             "obs_filters": _parse_event_filters(self.obs_filters_edit.text()),
@@ -282,7 +304,7 @@ class TwitchEventTriggerDialog(QDialog):
         trigger: TwitchEventAutomationTrigger | None = None,
     ) -> None:
         super().__init__(parent)
-        self.setWindowTitle("Edit Twitch Event Trigger" if trigger else "Add Twitch Event Trigger")
+        self.setWindowTitle("Edit Twitch Trigger" if trigger else "Add Twitch Trigger")
         self.setMinimumWidth(560)
         layout = QVBoxLayout(self)
         form = QFormLayout()
@@ -301,8 +323,13 @@ class TwitchEventTriggerDialog(QDialog):
             )
         self.enabled_check = QCheckBox("Enabled")
         self.enabled_check.setChecked(trigger.enabled if trigger else True)
+        self.reset_spin = QSpinBox()
+        self.reset_spin.setRange(1, 180)
+        self.reset_spin.setValue(trigger.reset_minutes if trigger else 15)
+        self.reset_spin.setSuffix(" minutes offline")
         form.addRow("Event", self.event_type_combo)
         form.addRow("Optional field filters", self.filters_edit)
+        form.addRow("Reset welcomes after", self.reset_spin)
         form.addRow("", self.enabled_check)
         layout.addLayout(form)
         help_label = QLabel(
@@ -312,6 +339,10 @@ class TwitchEventTriggerDialog(QDialog):
         )
         help_label.setWordWrap(True)
         layout.addWidget(help_label)
+        self.event_type_combo.currentIndexChanged.connect(
+            self._update_reset_visibility
+        )
+        self._update_reset_visibility()
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Save
             | QDialogButtonBox.StandardButton.Cancel
@@ -325,7 +356,19 @@ class TwitchEventTriggerDialog(QDialog):
             "event_type": str(self.event_type_combo.currentData()),
             "filters": _parse_event_filters(self.filters_edit.text()),
             "enabled": self.enabled_check.isChecked(),
+            "reset_minutes": self.reset_spin.value(),
         }
+
+    def _update_reset_visibility(self) -> None:
+        visible = (
+            self.event_type_combo.currentData()
+            == "channel.chat.first_message"
+        )
+        self.reset_spin.setVisible(visible)
+        form = self.layout().itemAt(0).layout()
+        label = form.labelForField(self.reset_spin)
+        if label is not None:
+            label.setVisible(visible)
 
 
 class CoreTriggerDialog(QDialog):
@@ -1692,6 +1735,19 @@ class AutomationPage(QWidget):
         self.queue_timer.timeout.connect(self._poll_queues)
         self.queue_timer.start()
 
+    def set_responsive_orientation(self, portrait: bool) -> None:
+        orientation = (
+            Qt.Orientation.Vertical
+            if portrait
+            else Qt.Orientation.Horizontal
+        )
+        for splitter in self.findChildren(QSplitter):
+            splitter.setOrientation(orientation)
+            if splitter.count() == 2:
+                splitter.setStretchFactor(0, 1)
+                splitter.setStretchFactor(1, 1)
+                splitter.setSizes([1, 1])
+
     def _build_routines_tab(self) -> None:
         page = QWidget()
         layout = QVBoxLayout(page)
@@ -1776,8 +1832,8 @@ class AutomationPage(QWidget):
         self.editor_tabs.setCurrentIndex(1)
         self.routines_splitter.addWidget(editor)
         self.routines_splitter.setStretchFactor(0, 1)
-        self.routines_splitter.setStretchFactor(1, 3)
-        self.routines_splitter.setSizes([280, 900])
+        self.routines_splitter.setStretchFactor(1, 1)
+        self.routines_splitter.setSizes([600, 600])
         self.tabs.addTab(page, "Routines")
 
         self.new_routine_button.clicked.connect(self._new_routine)
@@ -2673,6 +2729,7 @@ class AutomationPage(QWidget):
                         str(values["event_type"]),
                         filters=values["event_filters"],
                         enabled=bool(values["enabled"]),
+                        reset_minutes=int(values["event_reset_minutes"]),
                     )
                 elif values["trigger_type"] == "core.lifecycle":
                     self.core_trigger_store.add(
@@ -3720,6 +3777,12 @@ class AutomationPage(QWidget):
                     keys.update(TEMPLATE_PATTERN.findall(value))
         context = sample_context(keys)
         context.update(self.automation_service.variable_store.values())
+        for task in routine.tasks:
+            for name in CustomVariableStore.generated_names(
+                task.task_type,
+                task.config,
+            ):
+                context.setdefault(name, "CustomValue")
         for definition in self.routine_store.routines:
             for task in definition.tasks:
                 if task.task_type not in {

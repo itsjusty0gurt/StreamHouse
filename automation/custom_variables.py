@@ -109,6 +109,8 @@ class CustomVariableStore:
     @classmethod
     def validate_name(cls, name: str) -> str:
         clean_name = name.strip().casefold()
+        if clean_name.startswith("{") and clean_name.endswith("}"):
+            clean_name = clean_name[1:-1].strip()
         if not cls.NAME_PATTERN.fullmatch(clean_name):
             raise ValueError(
                 "Variable names must start with a letter and contain only "
@@ -117,3 +119,33 @@ class CustomVariableStore:
         if clean_name in cls.RESERVED_NAMES:
             raise ValueError(f'Variable name "{clean_name}" is reserved by Sally.')
         return clean_name
+
+    @classmethod
+    def generated_names(
+        cls,
+        task_type: str,
+        config: Mapping[str, object],
+    ) -> tuple[str, ...]:
+        """Return the template names created by an automation task."""
+        normalized_type = task_type.strip().casefold()
+        key = {
+            "core.create_global_variable": "name",
+            "core.create_session_variable": "name",
+            "core.create_routine_variable": "name",
+            "core.logic_get_input": "name",
+            "core.logic_random_number": "name",
+            "core.file_read": "variable",
+            "core.file_random_line": "variable",
+            "core.file_specific_line": "variable",
+            "core.path_exists": "variable",
+            "core.file_count_lines": "variable",
+        }.get(normalized_type)
+        if key is None:
+            return ()
+        try:
+            name = cls.validate_name(str(config.get(key, "")))
+        except ValueError:
+            return ()
+        if normalized_type == "core.logic_get_input":
+            return name, f"{name}_accepted"
+        return (name,)

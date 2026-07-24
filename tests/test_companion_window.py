@@ -7,6 +7,7 @@ import unittest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QBoxLayout
 
 from sally_companion.app import CompanionWindow
 
@@ -48,6 +49,22 @@ class CompanionWindowTests(unittest.TestCase):
         self.assertEqual(
             self.window.reasoning_service.settings.personality,
             "Dry and concise.",
+        )
+
+    def test_portrait_mode_moves_navigation_to_the_top(self) -> None:
+        self.window._apply_responsive_layout(True)
+        self.assertEqual(
+            self.window.shell_layout.direction(),
+            QBoxLayout.Direction.TopToBottom,
+        )
+        self.assertEqual(
+            self.window.navigation_layout.direction(),
+            QBoxLayout.Direction.LeftToRight,
+        )
+        self.window._apply_responsive_layout(False)
+        self.assertEqual(
+            self.window.shell_layout.direction(),
+            QBoxLayout.Direction.LeftToRight,
         )
 
 

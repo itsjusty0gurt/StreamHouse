@@ -23,6 +23,7 @@ try {
         --version-file "packaging\windows-version-info.txt" `
         --exclude-module "ai" `
         --exclude-module "sally_companion.server" `
+        --add-binary ".venv\Lib\site-packages\PySide6\plugins\platforms\qoffscreen.dll;PySide6\plugins\platforms" `
         --add-data "assets;assets" `
         --add-data "twitch_extension;twitch_extension" `
         "main.py"
@@ -37,6 +38,7 @@ try {
         --name "SallyAICompanion" `
         --icon "assets\sally-icon.ico" `
         --version-file "packaging\windows-companion-version-info.txt" `
+        --add-binary ".venv\Lib\site-packages\PySide6\plugins\platforms\qoffscreen.dll;PySide6\plugins\platforms" `
         --add-data "assets;assets" `
         "companion_main.py"
     if ($LASTEXITCODE -ne 0) {

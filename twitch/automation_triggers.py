@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Mapping
 from uuid import uuid4
@@ -10,7 +11,7 @@ from automation.routines import RoutineStore
 from core.json_store import atomic_write_json, load_json_with_backup
 from core.paths import user_data_root
 from twitch.catalog import EVENTSUB_SUBSCRIPTIONS
-from twitch.models import TwitchEvent
+from twitch.models import TwitchEvent, TwitchMessage
 
 
 TWITCH_EVENT_TYPES = tuple(
@@ -26,6 +27,7 @@ TWITCH_AUTOMATION_EVENT_TYPES = (
     "channel.channel_points_custom_reward_redemption.add",
     "stream.online",
     "stream.offline",
+    "channel.chat.first_message",
 )
 
 
@@ -36,6 +38,7 @@ class TwitchEventAutomationTrigger:
     event_type: str
     filters: dict[str, str] = field(default_factory=dict)
     enabled: bool = True
+    reset_minutes: int = 15
 
     @classmethod
     def from_dict(
@@ -54,11 +57,15 @@ class TwitchEventAutomationTrigger:
             if isinstance(raw_filters, dict)
             else {},
             enabled=bool(values.get("enabled", True)),
+            reset_minutes=min(
+                max(int(values.get("reset_minutes", 15)), 1),
+                180,
+            ),
         )
 
 
 class TwitchEventTriggerStore:
-    VERSION = 1
+    VERSION = 2
 
     def __init__(
         self,
@@ -68,6 +75,9 @@ class TwitchEventTriggerStore:
         self.path = path or user_data_root() / "twitch" / "event_triggers.json"
         self.routine_store = routine_store or RoutineStore()
         self.triggers: list[TwitchEventAutomationTrigger] = []
+        self._first_message_seen: dict[str, set[str]] = {}
+        self._stream_key = ""
+        self._offline_since: datetime | None = None
 
     def load(self) -> list[TwitchEventAutomationTrigger]:
         if not self.routine_store.routines and self.routine_store.path.exists():
@@ -115,6 +125,7 @@ class TwitchEventTriggerStore:
         *,
         filters: Mapping[str, str] | None = None,
         enabled: bool = True,
+        reset_minutes: int = 15,
     ) -> TwitchEventAutomationTrigger:
         trigger = TwitchEventAutomationTrigger(
             trigger_id=uuid4().hex,
@@ -122,6 +133,7 @@ class TwitchEventTriggerStore:
             event_type=event_type.strip(),
             filters=self._clean_filters(filters or {}),
             enabled=bool(enabled),
+            reset_minutes=int(reset_minutes),
         )
         self._validate(trigger)
         if self.routine_store.get(routine_id) is None:
@@ -143,6 +155,7 @@ class TwitchEventTriggerStore:
         event_type: str,
         filters: Mapping[str, str] | None = None,
         enabled: bool | None = None,
+        reset_minutes: int | None = None,
     ) -> TwitchEventAutomationTrigger:
         trigger = self.get(trigger_id)
         if trigger is None:
@@ -153,6 +166,11 @@ class TwitchEventTriggerStore:
             event_type=event_type.strip(),
             filters=self._clean_filters(filters or {}),
             enabled=trigger.enabled if enabled is None else bool(enabled),
+            reset_minutes=(
+                trigger.reset_minutes
+                if reset_minutes is None
+                else int(reset_minutes)
+            ),
         )
         self._validate(candidate)
         index = self.triggers.index(trigger)
@@ -170,6 +188,7 @@ class TwitchEventTriggerStore:
             return False
         self.routine_store.unlink_trigger(trigger.routine_id, trigger.trigger_id)
         self.triggers.remove(trigger)
+        self._first_message_seen.pop(trigger.trigger_id, None)
         try:
             self.save()
         except OSError:
@@ -200,6 +219,16 @@ class TwitchEventTriggerStore:
         if not isinstance(event, dict):
             event = {}
         context = self.context_for(twitch_event, event)
+        if twitch_event.subscription_type == "stream.online":
+            self.observe_stream(
+                {
+                    "id": self._first(event, "id"),
+                    "started_at": self._first(event, "started_at"),
+                },
+                twitch_event.received_at,
+            )
+        elif twitch_event.subscription_type == "stream.offline":
+            self.observe_stream(None, twitch_event.received_at)
         return tuple(
             TriggerEvent(
                 trigger_id=trigger.trigger_id,
@@ -211,6 +240,129 @@ class TwitchEventTriggerStore:
             if trigger.enabled
             and trigger.event_type == twitch_event.subscription_type
             and self._matches(event, trigger.filters)
+        )
+
+    def observe_stream(
+        self,
+        stream: Mapping[str, Any] | None,
+        observed_at: datetime | None = None,
+    ) -> None:
+        now = self._aware(observed_at or datetime.now(timezone.utc))
+        if isinstance(stream, Mapping):
+            stream_key = self._first(stream, "id", "started_at")
+            if self._stream_key and stream_key and stream_key != self._stream_key:
+                self._first_message_seen.clear()
+            if self._offline_since is not None:
+                self._expire_first_message_state(now)
+            self._stream_key = stream_key or self._stream_key or now.isoformat()
+            self._offline_since = None
+            return
+        if self._stream_key and self._offline_since is None:
+            self._offline_since = now
+
+    def evaluate_first_message(
+        self,
+        message: TwitchMessage,
+        *,
+        stream_is_live: bool,
+        observed_at: datetime | None = None,
+    ) -> tuple[TriggerEvent, ...]:
+        now = self._aware(observed_at or message.received_at)
+        if self._offline_since is not None:
+            self._expire_first_message_state(now)
+        if not stream_is_live and not self._stream_key:
+            return ()
+        identity = (
+            message.user_id.strip()
+            or message.user_login.strip().casefold()
+            or message.username.strip().casefold()
+        )
+        if not identity:
+            return ()
+        event = {
+            "user_id": message.user_id,
+            "user_name": message.username,
+            "user_login": message.user_login,
+            "message": message.text,
+            "message_id": message.message_id,
+            "message_type": message.message_type,
+        }
+        context = {
+            "user": message.username or "--",
+            "user_id": message.user_id or "--",
+            "channel": (
+                message.broadcaster_user_name
+                or message.broadcaster_user_login
+                or "--"
+            ),
+            "event": "first message",
+            "event_type": "channel.chat.first_message",
+            "message": message.text or "--",
+            "message_id": message.message_id or "--",
+            "input": message.text or "--",
+            "amount": "--",
+            "bits": str(message.bits) if message.bits is not None else "--",
+            "viewers": "--",
+            "tier": "--",
+            "reward": "--",
+            "reward_id": "--",
+            "reward_cost": "--",
+            "target_user_id": "--",
+            "redemption_id": "--",
+            "title": "--",
+            "game": "--",
+            "uptime": "--",
+            "followers": "--",
+            "command": "--",
+            "args": "--",
+            "target": "--",
+            "uses": "--",
+        }
+        matches: list[TriggerEvent] = []
+        for trigger in self.triggers:
+            if (
+                not trigger.enabled
+                or trigger.event_type != "channel.chat.first_message"
+                or not self._matches(event, trigger.filters)
+            ):
+                continue
+            seen = self._first_message_seen.setdefault(trigger.trigger_id, set())
+            if identity in seen:
+                continue
+            seen.add(identity)
+            matches.append(
+                TriggerEvent(
+                    trigger_id=trigger.trigger_id,
+                    service="twitch",
+                    trigger_type="first_message",
+                    context=context,
+                )
+            )
+        return tuple(matches)
+
+    def _expire_first_message_state(self, now: datetime) -> None:
+        if self._offline_since is None:
+            return
+        elapsed = now - self._offline_since
+        for trigger in self.triggers:
+            if (
+                trigger.event_type == "channel.chat.first_message"
+                and elapsed >= timedelta(minutes=trigger.reset_minutes)
+            ):
+                self._first_message_seen.pop(trigger.trigger_id, None)
+        if not any(
+            trigger.event_type == "channel.chat.first_message"
+            and elapsed < timedelta(minutes=trigger.reset_minutes)
+            for trigger in self.triggers
+        ):
+            self._stream_key = ""
+
+    @staticmethod
+    def _aware(value: datetime) -> datetime:
+        return (
+            value.replace(tzinfo=timezone.utc)
+            if value.tzinfo is None
+            else value.astimezone(timezone.utc)
         )
 
     @classmethod
@@ -317,6 +469,8 @@ class TwitchEventTriggerStore:
             raise ValueError(
                 "That Twitch EventSub type is not connected for live automation yet."
             )
+        if not 1 <= trigger.reset_minutes <= 180:
+            raise ValueError("First-message reset must be between 1 and 180 minutes.")
         for path in trigger.filters:
             if any(not segment.strip() for segment in path.split(".")):
                 raise ValueError("Twitch event filter paths cannot be empty.")

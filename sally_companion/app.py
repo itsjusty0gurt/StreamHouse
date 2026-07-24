@@ -10,6 +10,7 @@ from PySide6.QtCore import QSettings, QSize, QTimer, Qt
 from PySide6.QtGui import QCloseEvent, QIcon
 from PySide6.QtWidgets import (
     QApplication,
+    QBoxLayout,
     QButtonGroup,
     QCheckBox,
     QComboBox,
@@ -23,6 +24,8 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPushButton,
+    QSizePolicy,
+    QSpacerItem,
     QStackedWidget,
     QTableWidget,
     QTableWidgetItem,
@@ -36,6 +39,14 @@ from core.resources import resource_path
 from sally_companion.protocol import PROTOCOL_VERSION
 from sally_companion.server import CompanionReasoningService, create_server
 from sally_companion.settings import CompanionSettings, CompanionSettingsStore
+from sally_companion.windows_presence import WindowsBotPresenceNotifier
+from ui.responsive import (
+    LAYOUT_MODE_AUTOMATIC,
+    LAYOUT_MODE_LANDSCAPE,
+    LAYOUT_MODE_PORTRAIT,
+    normalize_layout_mode,
+    resolve_orientation,
+)
 
 
 NAV_STYLE = """
@@ -75,6 +86,8 @@ class CompanionWindow(QMainWindow):
         self.setMinimumSize(620, 420)
         self.resize(1050, 680)
         self.window_settings = QSettings("Sally AI", "Sally AI Companion")
+        self._responsive_ready = False
+        self._active_layout_orientation = ""
         self.settings_store = CompanionSettingsStore()
         try:
             settings = self.settings_store.load()
@@ -92,6 +105,11 @@ class CompanionWindow(QMainWindow):
             daemon=True,
         )
         self._server_thread.start()
+        self._presence_notifier = WindowsBotPresenceNotifier(
+            self.port,
+            PROTOCOL_VERSION,
+        )
+        self._presence_notifier.refresh()
 
         self.pages: dict[str, QWidget] = {}
         self.navigation_buttons: dict[str, QPushButton] = {}
@@ -102,6 +120,8 @@ class CompanionWindow(QMainWindow):
         geometry = self.window_settings.value("geometry")
         if geometry is not None:
             self.restoreGeometry(geometry)
+        self._responsive_ready = True
+        self._update_responsive_layout(force=True)
         self.refresh_timer = QTimer(self)
         self.refresh_timer.setInterval(2_000)
         self.refresh_timer.timeout.connect(self._refresh_owned_data)
@@ -114,14 +134,17 @@ class CompanionWindow(QMainWindow):
     def _build_shell(self) -> None:
         central = QWidget(self)
         shell = QHBoxLayout(central)
+        self.shell_layout = shell
         shell.setContentsMargins(10, 10, 10, 10)
         shell.setSpacing(10)
         navigation = QFrame(central)
+        self.navigation_frame = navigation
         navigation.setMinimumWidth(150)
         navigation.setMaximumWidth(180)
         navigation.setFrameShape(QFrame.Shape.StyledPanel)
         navigation.setStyleSheet(NAV_STYLE)
         nav_layout = QVBoxLayout(navigation)
+        self.navigation_layout = nav_layout
         nav_layout.setContentsMargins(0, 0, 0, 0)
         nav_layout.setSpacing(0)
         self.navigation_group = QButtonGroup(self)
@@ -134,7 +157,13 @@ class CompanionWindow(QMainWindow):
             self.navigation_buttons[name] = button
             nav_layout.addWidget(button)
             if name == "Test Report":
-                nav_layout.addStretch()
+                self.navigation_spacer = QSpacerItem(
+                    20,
+                    40,
+                    QSizePolicy.Policy.Minimum,
+                    QSizePolicy.Policy.Expanding,
+                )
+                nav_layout.addItem(self.navigation_spacer)
         self.page_stack = QStackedWidget(central)
         shell.addWidget(navigation)
         shell.addWidget(self.page_stack, 1)
@@ -331,6 +360,26 @@ class CompanionWindow(QMainWindow):
         service_form.addRow("Listen address", QLabel(f"{self.host}:{self.port}"))
         service_form.addRow("Protocol", QLabel(str(PROTOCOL_VERSION)))
         layout.addWidget(service_group)
+        appearance_group = QGroupBox("Window Layout")
+        appearance_form = QFormLayout(appearance_group)
+        self.layout_mode_combo = QComboBox()
+        self.layout_mode_combo.addItem("Automatic", LAYOUT_MODE_AUTOMATIC)
+        self.layout_mode_combo.addItem("Landscape", LAYOUT_MODE_LANDSCAPE)
+        self.layout_mode_combo.addItem("Portrait", LAYOUT_MODE_PORTRAIT)
+        saved_mode = normalize_layout_mode(
+            self.window_settings.value(
+                "layout_mode",
+                LAYOUT_MODE_AUTOMATIC,
+            )
+        )
+        self.layout_mode_combo.setCurrentIndex(
+            max(self.layout_mode_combo.findData(saved_mode), 0)
+        )
+        self.layout_mode_combo.currentIndexChanged.connect(
+            self._layout_mode_changed
+        )
+        appearance_form.addRow("Orientation", self.layout_mode_combo)
+        layout.addWidget(appearance_group)
         self.settings_status_label = QLabel("")
         save = QPushButton("Save Settings")
         save.clicked.connect(self._save_companion_settings)
@@ -390,7 +439,8 @@ class CompanionWindow(QMainWindow):
             self.ollama_health_label.setText(f"Ollama unavailable: {status.error}")
 
     def _refresh_owned_data(self) -> None:
-        bot_connected = (
+        self._presence_notifier.refresh()
+        bot_connected = self._presence_notifier.connected or (
             self.reasoning_service.last_bot_contact > 0
             and monotonic() - self.reasoning_service.last_bot_contact <= 10.0
         )
@@ -413,6 +463,7 @@ class CompanionWindow(QMainWindow):
             str(len(self.reasoning_service.training_store.examples))
         )
         self._fill_memory_table()
+
         self._fill_reply_table()
         self._fill_training_table()
         self._fill_report_table()
@@ -546,9 +597,77 @@ class CompanionWindow(QMainWindow):
         self.reasoning_service.memory_history.clear()
         self._refresh_owned_data()
 
+    def _layout_mode_changed(self) -> None:
+        mode = normalize_layout_mode(self.layout_mode_combo.currentData())
+        self.window_settings.setValue("layout_mode", mode)
+        self.window_settings.sync()
+        self._update_responsive_layout(force=True)
+
+    def _update_responsive_layout(self, *, force: bool = False) -> None:
+        if not self._responsive_ready:
+            return
+        orientation = resolve_orientation(
+            self.width(),
+            self.height(),
+            str(self.layout_mode_combo.currentData()),
+            self._active_layout_orientation,
+        )
+        if not force and orientation == self._active_layout_orientation:
+            return
+        self._active_layout_orientation = orientation
+        self._apply_responsive_layout(
+            orientation == LAYOUT_MODE_PORTRAIT
+        )
+
+    def _apply_responsive_layout(self, portrait: bool) -> None:
+        maximum = 16_777_215
+        self.shell_layout.setDirection(
+            QBoxLayout.Direction.TopToBottom
+            if portrait
+            else QBoxLayout.Direction.LeftToRight
+        )
+        self.navigation_layout.setDirection(
+            QBoxLayout.Direction.LeftToRight
+            if portrait
+            else QBoxLayout.Direction.TopToBottom
+        )
+        if portrait:
+            self.setMinimumSize(420, 520)
+            self.navigation_frame.setMinimumSize(0, 40)
+            self.navigation_frame.setMaximumSize(maximum, 52)
+            self.navigation_spacer.changeSize(
+                0,
+                0,
+                QSizePolicy.Policy.Expanding,
+                QSizePolicy.Policy.Minimum,
+            )
+        else:
+            self.setMinimumSize(620, 420)
+            self.navigation_frame.setMinimumSize(150, 0)
+            self.navigation_frame.setMaximumSize(180, maximum)
+            self.navigation_spacer.changeSize(
+                20,
+                40,
+                QSizePolicy.Policy.Minimum,
+                QSizePolicy.Policy.Expanding,
+            )
+        for button in self.navigation_buttons.values():
+            button.setMinimumWidth(0)
+            button.setSizePolicy(
+                QSizePolicy.Policy.Expanding,
+                QSizePolicy.Policy.Fixed,
+            )
+        self.shell_layout.invalidate()
+        self.navigation_layout.invalidate()
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._update_responsive_layout()
+
     def closeEvent(self, event: QCloseEvent) -> None:
         self.refresh_timer.stop()
         self.window_settings.setValue("geometry", self.saveGeometry())
+        self._presence_notifier.disconnect()
         self._server.shutdown()
         self._server.server_close()
         self._server_thread.join(timeout=2.0)

@@ -196,6 +196,12 @@ class TaskEditorTests(unittest.TestCase):
         self.assertTrue(read_config["ignore_blank_lines"])
         self.assertTrue(read_config["stop_on_failure"])
 
+        read_fields["variable"].setText("{random_line}")
+        self.assertEqual(
+            read_dialog.values()["config"]["variable"],
+            "random_line",
+        )
+
         write_dialog = TaskEditorDialog("core.file_write")
         write_fields = write_dialog.field_widgets["core.file_write"]
         write_fields["path"].setText("C:/Sally/activity.txt")

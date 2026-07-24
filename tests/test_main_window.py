@@ -10,7 +10,13 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QPoint, Qt
 from PySide6.QtGui import QContextMenuEvent
-from PySide6.QtWidgets import QApplication, QLabel, QMenu
+from PySide6.QtWidgets import (
+    QApplication,
+    QBoxLayout,
+    QHeaderView,
+    QLabel,
+    QMenu,
+)
 from PySide6.QtTest import QSignalSpy, QTest
 
 from core.logger import Logger
@@ -44,6 +50,7 @@ from twitch.models import (
     TwitchReply,
 )
 from ui.main_window import MainWindow
+from sally_companion.protocol import PROTOCOL_VERSION
 from ui.companion_worker import CompanionRefreshResult
 from ui.memory_worker import MemoryExtractionResult
 from ui.response_worker import ResponseBatchResult
@@ -154,6 +161,66 @@ class MainWindowTests(unittest.TestCase):
                 1,
             )
             self.assertEqual(self.window.statusBar().currentMessage(), "")
+
+    def test_ai_companion_presence_is_event_driven(self) -> None:
+        self.assertFalse(hasattr(self.window, "ai_companion_health_timer"))
+        with patch.object(self.window, "_check_ai_companion") as connect:
+            self.window._handle_ai_companion_presence(
+                PROTOCOL_VERSION,
+                9123,
+            )
+        self.assertEqual(
+            self.window.ai_remote_endpoint_edit.text(),
+            "http://127.0.0.1:9123",
+        )
+        connect.assert_called_once_with()
+
+        self.window._handle_ai_companion_presence(PROTOCOL_VERSION, 0)
+        self.assertEqual(self.window.ai_remote_stack.currentIndex(), 0)
+        self.assertEqual(
+            self.window.ai_remote_connection_detail.text(),
+            "AI Companion is not running.",
+        )
+
+    def test_portrait_mode_reflows_navigation_and_major_splitters(self) -> None:
+        self.window._apply_responsive_layout(True)
+        self.assertEqual(
+            self.window.ui.horizontalLayout.direction(),
+            QBoxLayout.Direction.TopToBottom,
+        )
+        self.assertEqual(
+            self.window.ui.verticalLayout.direction(),
+            QBoxLayout.Direction.LeftToRight,
+        )
+        self.assertEqual(
+            self.window.twitch_channel_splitter.orientation(),
+            Qt.Orientation.Vertical,
+        )
+        self.assertEqual(
+            self.window.automation_page.routines_splitter.orientation(),
+            Qt.Orientation.Vertical,
+        )
+        self.assertEqual(
+            self.window.channel_side_splitter.orientation(),
+            Qt.Orientation.Horizontal,
+        )
+        self.assertIs(
+            self.window.stream_tools_layout.itemAt(0).widget(),
+            self.window.stream_overview_group,
+        )
+        self.assertIs(
+            self.window.stream_tools_layout.itemAt(1).widget(),
+            self.window.ad_manager_group,
+        )
+        preview_index = self.window.soundboard_page.editor_grid.indexOf(
+            self.window.soundboard_page.preview_panel
+        )
+        self.assertEqual(
+            self.window.soundboard_page.editor_grid.getItemPosition(
+                preview_index
+            ),
+            (0, 0, 1, 2),
+        )
 
     def test_automation_page_edits_grouped_routine_and_shows_tasks(self) -> None:
         store = self.twitch_command_trigger_store.routine_store
@@ -320,6 +387,7 @@ class MainWindowTests(unittest.TestCase):
                 "Channel Points Custom Reward Redemption › Add",
                 "Stream › Online",
                 "Stream › Offline",
+                "First Message Of Stream",
             ],
         )
 
@@ -389,6 +457,24 @@ class MainWindowTests(unittest.TestCase):
         self.assertEqual(context["scene"], "Gameplay")
         self.assertEqual(context["source"], "Camera")
         self.assertNotIn("reward_id", context)
+
+    def test_variable_help_includes_values_generated_by_routine_tasks(self) -> None:
+        routine = self.twitch_command_trigger_store.routine_store.add(
+            "Random greeting"
+        )
+        self.twitch_command_trigger_store.routine_store.add_task(
+            routine.routine_id,
+            task_type="core.file_random_line",
+            name="Choose greeting",
+            config={"path": "greetings.txt", "variable": "random_line"},
+        )
+        routine = self.twitch_command_trigger_store.routine_store.get(
+            routine.routine_id
+        )
+
+        context = self.window.automation_page._sample_context_for_routine(routine)
+
+        self.assertEqual(context["random_line"], "CustomValue")
 
     def test_twitch_command_manager_lists_existing_and_respects_routine_limit(self) -> None:
         existing = self.twitch_command_trigger_store.add("hello", "Hello!")
@@ -1488,8 +1574,24 @@ class MainWindowTests(unittest.TestCase):
         self.window.show_twitch()
         self.assertIs(
             self.window.twitch_channel_splitter.widget(1),
+            self.window.channel_side_splitter,
+        )
+        self.assertIs(
+            self.window.channel_side_splitter.widget(0),
             self.window.chatter_list.parentWidget(),
         )
+
+    def test_channel_points_and_commands_columns_are_user_resizable(self) -> None:
+        for table in (
+            self.window.channel_points_page.table,
+            self.window.twitch_commands_table,
+        ):
+            header = table.horizontalHeader()
+            for column in range(table.columnCount()):
+                self.assertEqual(
+                    header.sectionResizeMode(column),
+                    QHeaderView.ResizeMode.Interactive,
+                )
 
     def test_obs_connection_is_below_bot_and_saves_automatically(self) -> None:
         layout = self.window.connections_page.layout()
@@ -1829,6 +1931,46 @@ class MainWindowTests(unittest.TestCase):
         self.assertIn("width='20'", rendered_html)
         self.assertIn("data-user-id='viewer-1'", rendered_html)
         self.assertIn("data-message-id='message-1'", rendered_html)
+
+    def test_first_message_stream_trigger_runs_once_per_viewer(self) -> None:
+        routine = self.twitch_command_trigger_store.routine_store.add(
+            "Welcome viewers"
+        )
+        self.twitch_event_trigger_store.add(
+            routine.routine_id,
+            "channel.chat.first_message",
+        )
+        started = datetime.now(timezone.utc)
+        self.twitch_event_trigger_store.observe_stream(
+            {"id": "stream-1"},
+            started,
+        )
+        self.window.stream_is_live = True
+        execution = Mock(succeeded=True, handled=True)
+        self.window.automation_service.publish_trigger = Mock(
+            return_value=execution
+        )
+        self.window.automation_page.record_execution = Mock()
+        self.window.settings.ai_response_decisions_enabled = False
+        message = TwitchMessage(
+            username="Viewer",
+            text="hello",
+            received_at=started,
+            message_id="message-1",
+            user_id="viewer-1",
+            broadcaster_user_id="streamer-1",
+            broadcaster_user_name="Streamer",
+        )
+
+        self.window.handle_twitch_message(message)
+        self.window.handle_twitch_message(message)
+
+        self.window.automation_service.publish_trigger.assert_called_once()
+        trigger = (
+            self.window.automation_service.publish_trigger.call_args.args[0]
+        )
+        self.assertEqual(trigger.trigger_type, "first_message")
+        self.assertEqual(trigger.context["user"], "Viewer")
 
     def test_live_chat_starts_local_memory_reasoning_at_threshold(self) -> None:
         self.window.settings.ai_viewer_memory_enabled = True

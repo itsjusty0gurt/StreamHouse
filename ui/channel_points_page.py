@@ -100,12 +100,9 @@ class ChannelPointsPage(QWidget):
         )
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         header = self.table.horizontalHeader()
-        header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        for column in range(2, 8):
-            header.setSectionResizeMode(
-                column, QHeaderView.ResizeMode.ResizeToContents
-            )
+        header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        for column, width in enumerate((90, 230, 85, 110, 105, 105, 100, 100)):
+            self.table.setColumnWidth(column, width)
         layout.addWidget(self.table, 1)
 
         self.status_label = QLabel(
