@@ -10,6 +10,10 @@ closed or not installed. AI features use a
 versioned HTTP API bound to `127.0.0.1:8765` and never expose the service to the
 network.
 
+For implementation ownership, runtime flows, persistence, extension points, and
+change-routing guidance, see the canonical
+[architecture reference](docs/architecture.md).
+
 ## Development
 
 ```powershell
