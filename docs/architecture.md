@@ -1,4 +1,4 @@
-# Sally architecture reference
+# Streamhouse implementation architecture reference
 
 > Canonical implementation map for maintainers and coding agents.
 >
@@ -21,37 +21,46 @@ Read only the sections relevant to the task:
 This file describes the code that exists. The focused documents under `docs/`
 provide product behavior and policy detail:
 
+- `docs/product-family.md` (canonical product-facing names and boundaries)
 - `docs/twitch-architecture.md`
 - `docs/local-ai.md`
 - `docs/viewer-memories.md`
 - `docs/offline-design-checkpoint-2026-07-20.md`
 - `docs/release-checklist.md`
 
+Product-facing branding is defined in the
+[Streamhouse product-family reference](product-family.md). This implementation
+map deliberately retains actual code, executable, protocol, window-title, and
+storage identifiers.
+
 ## System at a glance
 
-Sally is a Windows-first Python/PySide6 streaming platform split into two
-independent desktop applications and one optional hosted service.
+The repository currently contains two independent Windows-first Python/PySide6
+desktop applications and one optional hosted service.
 
-| Process | Entry point | Owns | Must not own |
+| Product and current process | Entry point | Owns | Must not own |
 | --- | --- | --- | --- |
-| Sally Bot | `main.py` → `app/app.py` | Twitch, OBS, chat UI, stream companion, commands, automation, queues, variables, soundboard, consent enforcement | Ollama inference or heavyweight AI implementation |
-| Sally AI Companion | `companion_main.py` → `sally_companion/app.py` | Ollama provider, reply reasoning, memory extraction, AI settings, training data, AI test reports | Twitch sockets, OBS control, automation execution |
+| Streamhouse Hub, currently implemented and packaged as Sally Bot | `main.py` → `app/app.py` | Twitch, OBS, chat UI, stream companion, commands, automation, queues, variables, soundboard, consent enforcement | Ollama inference or heavyweight AI implementation |
+| Streamhouse AI, currently implemented and packaged as Sally AI Companion | `companion_main.py` → `sally_companion/app.py` | Ollama provider, reply reasoning, memory extraction, AI settings, training data, AI test reports | Twitch sockets, OBS control, automation execution |
 | Soundboard relay | `python -m twitch_extension.relay_server` | Twitch Extension JWT verification, public soundboard config, short-lived viewer requests | Local files, audio playback, routine execution |
 
-Sally Bot works by itself. AI Companion is optional and can be installed,
-started, stopped, and upgraded separately. The hosted relay is only required
-for the public Twitch Extension; local soundboard preview does not require it.
+Streamhouse Hub works by itself. Streamhouse AI is optional and can be
+installed, started, stopped, and upgraded separately. The hosted relay is only
+required for the public Twitch Extension; local soundboard preview does not
+require it. Streamhouse Studio, Streamhouse Deck, and Streamhouse Avatar are
+future products and have no implemented application, entry point, or package in
+this repository.
 
 ```mermaid
 flowchart LR
-    Twitch["Twitch Helix + EventSub"] --> Bot["Sally Bot"]
+    Twitch["Twitch Helix + EventSub"] --> Bot["Streamhouse Hub<br/>(Sally Bot)"]
     OBS["OBS WebSocket 5.x"] <--> Bot
     Bot --> Automation["AutomationService"]
     Automation --> Tasks["Task providers"]
     Bot <--> LocalPreview["Local soundboard preview"]
     Extension["Twitch Extension"] --> Relay["Hosted relay"]
     Bot -->|"outbound HTTPS polling"| Relay
-    Companion["Sally AI Companion"] -->|"Windows presence message"| Bot
+    Companion["Streamhouse AI<br/>(Sally AI Companion)"] -->|"Windows presence message"| Bot
     Bot -->|"versioned localhost HTTP"| Companion
     Companion --> Ollama["Ollama / Qwen"]
 ```
@@ -66,7 +75,7 @@ flowchart LR
 - **Routine**: an ordered, enabled/disabled workflow that can link one or more
   trigger IDs.
 - **Task definition**: persisted configuration for one step in a routine.
-- **Task handler/provider**: executable implementation registered for a task
+- **Task provider**: executable handler implementation registered for a task
   type in `TaskRegistry`.
 - **Queue**: optional serialized execution policy assigned to routines.
 - **Event bus event**: in-process notification sent through `core.events.Events`;
@@ -79,7 +88,7 @@ trigger and routine setup, but their stored records remain separate.
 
 | Path | Responsibility |
 | --- | --- |
-| `app/` | Sally Bot application startup and shutdown |
+| `app/` | Streamhouse Hub startup and shutdown (current Sally Bot implementation) |
 | `ai/` | Heavyweight Companion-only Ollama, reasoning, extraction, training, and report implementations |
 | `automation/` | Neutral trigger/routine/task/queue models, execution, variables, logic, import/export |
 | `config/` | Version, Twitch client/scopes, and Extension constants |
@@ -90,13 +99,13 @@ trigger and routine setup, but their stored records remain separate.
 | `soundboard/` | Local soundboard models/store/server and hosted relay client |
 | `twitch/` | OAuth, Helix, EventSub, normalized Twitch models, commands, event triggers, analytics/history |
 | `twitch_extension/` | Extension HTML/CSS/JS, hosted relay server, listing assets |
-| `ui/` | Sally Bot Qt shell, dynamic pages, workers, bridges, controllers, generated Designer code |
+| `ui/` | Streamhouse Hub Qt shell (current Sally Bot implementation), dynamic pages, workers, bridges, controllers, generated Designer code |
 | `tests/` | Unit, integration-style Qt, persistence, protocol, release, and smoke coverage |
 | `scripts/` | Windows builds, release packaging, Extension packaging, smoke tests, simulations |
 
 ## Startup, composition, and shutdown
 
-### Sally Bot
+### Streamhouse Hub (current Sally Bot implementation)
 
 `main.py` configures logging and calls `app.app.run()`.
 
@@ -134,7 +143,7 @@ Core `application.started` fires after the Qt loop begins. Core
 unsubscribe event handlers, close Twitch/OBS, stop soundboard threads/servers,
 save state, and only then let `app/app.py` clear the event bus.
 
-### AI Companion
+### Streamhouse AI (current Sally AI Companion implementation)
 
 `companion_main.py` configures logging and calls `sally_companion.app.run()`.
 
@@ -158,7 +167,7 @@ connection activity while Companion is not running.
 
 ## Ownership boundaries
 
-### Sally Bot owns
+### Streamhouse Hub owns
 
 - Twitch OAuth sessions and API/WebSocket connections
 - broadcaster versus bot-account identity selection
@@ -170,7 +179,7 @@ connection activity while Companion is not running.
 - soundboard configuration and local routine execution
 - deciding whether a draft may actually be sent
 
-### AI Companion owns
+### Streamhouse AI owns
 
 - Ollama endpoint/model selection used by inference
 - reply decision and memory-extraction implementation
@@ -192,10 +201,10 @@ transport, OBS, or the `ai/` provider implementation.
 
 ### Important current compromise
 
-Sally Bot still contains the AI remote/control pages and coordinates RAM queues,
-recent chat, consent, and send policy. Heavy model code lives only in
-AI Companion. The Bot PyInstaller command explicitly excludes `ai` and
-`sally_companion.server`.
+The current Sally Bot implementation still contains the AI remote/control pages
+and coordinates RAM queues, recent chat, consent, and send policy. Heavy model
+code lives only in the current Sally AI Companion implementation. The Bot
+PyInstaller command explicitly excludes `ai` and `sally_companion.server`.
 
 When moving an AI feature, separate:
 
@@ -467,7 +476,7 @@ live values; do not assume every value is present in the original trigger.
 Qt WebSocket callbacks already arrive in Qt context. Preserve asynchronous
 request IDs and callbacks rather than blocking the UI waiting for OBS.
 
-## AI Companion subsystem
+## Streamhouse AI subsystem (current Sally AI Companion)
 
 ### Local HTTP contract
 
@@ -590,7 +599,7 @@ is temporary, so Bot re-syncs config when reconnecting.
 
 ## UI architecture
 
-### Sally Bot shell
+### Streamhouse Hub shell (current Sally Bot UI)
 
 Primary left navigation:
 
@@ -609,6 +618,10 @@ Your Channel top tabs:
 - Soundboard
 - Commands
 - Channel Points
+
+These are the tabs currently implemented. The planned Hub workspace—including
+Stream Info, Engagement, Raids, and Moderation—is documented in
+[`product-family.md`](product-family.md) and must not be read as current UI.
 
 AI in Bot is a remote/control workspace. Companion has its own left navigation:
 
@@ -938,9 +951,11 @@ Near-term architecture should preserve:
 - separate lightweight Bot and optional Companion packages;
 - local-first privacy and explicit viewer consent.
 
-Future Voice, Vision, avatar, timers, and plugins should enter as services that
-publish normalized triggers and/or register tasks. They should not add direct
-special-case calls between unrelated UI pages.
+Future Voice, Vision, Streamhouse Avatar integrations, timers, and plugins
+should enter as services that publish normalized triggers and/or register
+tasks. Future Streamhouse products should use normalized service events,
+registered task providers, or documented versioned APIs. They should not add
+direct special-case calls between unrelated UI pages.
 
 Plugins remain a late-stage capability. Stable service, trigger, routine, task,
 protocol, security, and migration contracts should exist before exposing them

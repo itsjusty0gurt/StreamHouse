@@ -1,9 +1,13 @@
 # Viewer Memories
 
-Memories is the first internal tab in the primary AI workspace. This leaves the
-AI page free to grow with additional tools without adding a new left-navigation
-button for every feature. Memories currently reads the local chatter-history
-store and shows observed participation statistics and Twitch roles.
+Viewer memories support Sally, the default personality inside Streamhouse AI.
+In the current Sally Bot UI, Memories is the first internal tab in the AI
+remote/control workspace. This leaves the AI page free to grow with additional
+tools without adding a new left-navigation button for every feature. Memories
+currently reads the Hub-owned local chatter-history store and shows observed
+participation statistics and Twitch roles. Streamhouse AI, currently
+implemented and packaged as Sally AI Companion, may propose memories but does
+not approve or own live viewer authorization.
 
 ## Current data
 
@@ -60,15 +64,18 @@ non-archived memories and ranks them by prompt relevance, pinning, and confidenc
 
 ## Related channel tabs
 
-The Your Channel workspace owns the operational stream data. Its Stream
-Sessions tab records peak viewers, messages, follows,
-subscriptions, cheers, and raids. An active session is persisted and resumed
-after an application restart rather than being ended when Sally closes.
+Streamhouse Hub's **Your Channel** workspace owns operational stream data. In
+the current UI, Analytics contains session records for peak viewers, messages,
+follows, subscriptions, cheers, and raids. An active session is persisted and
+resumed after an application restart rather than being ended when the current
+Sally Bot process closes.
 
-Its Analytics tab aggregates sessions and viewer participation over all time or
-the last 7, 30, or 90 days. It includes stream and engagement totals, new and
+Analytics aggregates sessions and viewer participation over all time or the
+last 7, 30, or 90 days. It includes stream and engagement totals, new and
 returning viewers, regular counts, session comparison, top viewers, CSV/JSON
-export, and configurable local session retention.
+export, and configurable local session retention. Stream-session history stays
+inside Analytics rather than duplicating the same information in a separate
+Stream Sessions workspace.
 
 ## Viewer timeline
 

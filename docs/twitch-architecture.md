@@ -1,6 +1,9 @@
 # Twitch integration architecture
 
-Sally uses Twitch's current Helix and EventSub APIs rather than IRC.
+Streamhouse Hub, currently implemented and packaged as Sally Bot, uses Twitch's
+current Helix and EventSub APIs rather than IRC. Product-facing naming and
+dependencies are defined in the
+[Streamhouse product-family reference](product-family.md).
 
 ## Authentication
 
@@ -58,11 +61,12 @@ and event triggers can publish into the same routine and task layer.
 
 ## UI responsibilities
 
-- **Your Channel** is the stream companion: Chat, Stream Sessions, Analytics,
-  and Commands tabs plus the overview, grouped chatters, Activity Feed, and
-  eligible ad controls. The broadcaster is excluded from the grouped chatter
-  total. Chat and the chatter list share right-click local grouping and
-  permission-aware Twitch moderation actions.
+- **Your Channel** is the current stream companion. Its current top-level tabs
+  are Chat, Analytics, Soundboard, Commands, and Channel Points. Session data is
+  currently presented within Analytics. Chat includes the overview, grouped
+  chatters, Activity Feed, and eligible ad controls. The broadcaster is
+  excluded from the grouped chatter total. Chat and the chatter list share
+  right-click local grouping and permission-aware Twitch moderation actions.
 - **Connections** contains independent broadcaster and optional bot OAuth
   controls plus transport details.
 - **Logs > Twitch Events** contains searchable raw EventSub diagnostics and
@@ -80,11 +84,12 @@ used by live traffic.
 ## Health and persistence
 
 Connection health is modeled separately from page widgets. It tracks auth,
-EventSub, missing scopes, companion refresh success, and endpoint-specific
+EventSub, missing scopes, Streamhouse AI refresh success, and endpoint-specific
 failures. Local JSON histories use atomic replacement plus one last-known-good
 backup. Command triggers persist at `twitch/commands.json`; their managed
-routines persist at `automation/routines.json`. Both are included in Sally
-backups. Older chatter records migrate through defaulted version-three fields.
+routines persist at `automation/routines.json`. Both are included in current
+Sally Bot backups. Older chatter records migrate through defaulted
+version-three fields.
 
 The stream companion reads Twitch's ad schedule with `channel:read:ads` and
 shows the next break and duration, the last break, remaining pre-roll-free
@@ -112,3 +117,78 @@ case-insensitive. The normalized task context includes `{event_type}`, `{user}`,
 `{message}`, `{input}`, `{amount}`, `{bits}`, `{viewers}`, `{tier}`, `{reward}`,
 `{reward_id}`, and `{reward_cost}` in addition to the existing Twitch message
 variables. Live traffic and Developer Simulation enter the same routing path.
+
+## Planned Hub channel workspace
+
+The planned **Your Channel** structure is:
+
+- Overview
+- Stream Info
+- Chat
+- Analytics
+- Engagement
+  - Polls
+  - Predictions
+- Raids
+- Moderation
+- Soundboard
+- Commands
+- Channel Points
+
+Analytics contains stream-session history as well as aggregate reporting;
+Stream Sessions is not a separate workspace. This is a product plan, not the
+current tab list.
+
+### Stream Info and overview
+
+Use **Stream Info**, not “Twitch Controls.” Native Hub controls should use
+documented Twitch APIs for fields such as title, category, tags, language,
+content classification labels, and branded-content status. OBS's Stream Info
+dock embeds Twitch's web dashboard; Hub instead should prefer native controls.
+Unsupported advanced settings may open Twitch's dashboard. Do not depend on
+undocumented Twitch dashboard requests.
+
+Planned dashboard items include stream uptime, follower count, estimated hours
+watched, and a stream health summary. If Hub calculates hours watched locally
+from sampled viewer counts, the UI and exports must label it as an estimate
+rather than official Twitch analytics.
+
+### Engagement
+
+Polls and Predictions belong under Engagement. Manual controls and automation
+should eventually share the same Twitch Service and Routine/Task provider
+architecture. Potential future task types are:
+
+- `twitch.create_poll`
+- `twitch.end_poll`
+- `twitch.create_prediction`
+- `twitch.lock_prediction`
+- `twitch.resolve_prediction`
+- `twitch.cancel_prediction`
+
+Repository inspection confirms that these task types are not currently
+registered with a Task provider; they are plans, not current capability.
+
+### Raids
+
+Planned raid controls and normalized events must distinguish:
+
+- **Raid Initiated**: Hub successfully starts the Twitch raid countdown.
+- **Outgoing Raid Sent**: Twitch confirms that the outgoing raid occurred.
+- **Incoming Raid**: another broadcaster raids the channel.
+
+The `channel.raid` incoming-raid trigger is currently implemented. Outgoing
+raid controls, Raid Initiated, and Outgoing Raid Sent are planned.
+
+### Stream Health and Moderation
+
+Stream Health remains separate from Moderation. Stream Health may summarize
+Twitch authentication, EventSub health, missing scopes, OBS or broadcaster
+connection, broadcast state, Streamhouse AI availability, relay status, and
+recent API failures. Moderation remains its own workspace for channel and
+viewer moderation.
+
+New manual controls and product integrations should enter through Services,
+normalized trigger events, Routines, registered task providers, Queues, and
+documented versioned APIs. They should not create direct special-case calls
+between unrelated UI pages. Plugins remain a late-stage capability.

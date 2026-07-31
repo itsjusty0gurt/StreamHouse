@@ -1,4 +1,4 @@
-# Sally maintainer context
+# Streamhouse maintainer context
 
 Before broad investigation or architectural changes, use
 `docs/architecture.md` as the canonical implementation map.
@@ -12,5 +12,7 @@ Before broad investigation or architectural changes, use
 - Update `docs/architecture.md` when ownership, persistence, protocols,
   service/trigger/task contracts, or packaging boundaries change.
 
-Preserve the independent Sally Bot and Sally AI Companion packages. Keep
-heavyweight AI implementation out of the Bot bundle.
+Use `docs/product-family.md` for product-facing names and dependencies.
+Preserve the independent Sally Bot and Sally AI Companion implementation
+packages until an explicit code-and-packaging rename. Keep heavyweight AI
+implementation out of the Bot bundle.

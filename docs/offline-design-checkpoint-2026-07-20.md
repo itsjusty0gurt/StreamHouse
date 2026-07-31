@@ -1,12 +1,18 @@
 # Offline design checkpoint - 2026-07-20
 
 This checkpoint came from external planning and captures the current long-term
-shape for Sally as a local-first AI automation platform.
+shape for the local-first Streamhouse ecosystem. Product naming has since been
+normalized by the
+[Streamhouse product-family reference](product-family.md); implementation names
+from the checkpoint remain current where they refer to code or packaged output.
 
 ## Product identity
 
-Sally is not just a Twitch bot. Sally is a modular desktop AI platform where
-Twitch is the first service.
+Streamhouse is the umbrella brand and modular product ecosystem. Streamhouse
+Hub is the independent stream-management and automation application, and
+Twitch is its first service. Streamhouse AI is the separately installable local
+AI application. Sally is the default personality inside Streamhouse AI, not the
+name of the entire ecosystem.
 
 Core principles:
 
@@ -17,7 +23,14 @@ Core principles:
 - Model agnostic
 - Cloud optional
 
-Cloud AI should enhance Sally, not be required for Sally to exist.
+Cloud AI may enhance Streamhouse AI, but it must not be required for Hub to
+operate.
+
+Future Streamhouse Studio and Streamhouse Avatar applications must be
+independently useful. Streamhouse Deck is the exception: it depends on Hub for
+owner authorization and action execution. Product integrations should use
+Services, normalized events, registered Task providers, and versioned APIs.
+Plugins remain a late-stage capability.
 
 ## AI routing
 
@@ -189,12 +202,13 @@ This is more useful and safer than trying to retrain the language model early.
 
 ## Long-term differentiators
 
-Sally's strongest identity is:
+The Streamhouse family's strongest identity is:
 
-- local AI through Ollama/Qwen
+- an independent stream-management and automation Hub
+- local AI through Ollama/Qwen in Streamhouse AI
+- Sally as a distinct default AI personality
 - offline voice through Faster Whisper and Piper
 - privacy-first viewer memory
 - service-driven events for Twitch, OBS, Voice, Vision, and future integrations
 - adaptive learning through intents and preferences
 - deterministic automation before model reasoning
-

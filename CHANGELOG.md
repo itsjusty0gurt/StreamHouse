@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Established Streamhouse as the umbrella ecosystem, with Streamhouse Hub and
+  Streamhouse AI mapped to the current Sally Bot and Sally AI Companion
+  implementations, and documented future Studio, Deck, and Avatar boundaries.
 - Made Sally viewer memory explicitly opt-in through `!sallymemory` chat
   controls, with confirmed complete deletion and no persistent unconsented
   chatter profiles.
@@ -43,7 +46,8 @@
   controls through the broadcaster and chat reads/writes through the bot
 - AI Personality editor with persistent behavior guidance and explicit mild or
   strong profanity permissions backed by non-overridable abuse guardrails
-- Stream Sessions and Analytics moved into dedicated Your Channel tabs
+- stream-session history and aggregate reporting consolidated in the Your
+  Channel Analytics tab
 - right-click chatter menus in chat and the chatter list, with persistent local
   Regular/Bot/Viewer grouping and permission-aware timeout, ban, unban, and
   message deletion actions
