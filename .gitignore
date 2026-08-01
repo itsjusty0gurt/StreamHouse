@@ -3,19 +3,19 @@ __pycache__/
 *.pyc
 .env
 .vscode/
-config/settings.json
-logs/*.log
-logs/archive/
-memory/twitch_chatters.json
-memory/twitch_activity.json
-memory/stream_sessions.json
-memory/*.bak
-backups/
-dist/
-dist-next/
-build/
-release/
-exports/
+/config/settings.json
+/logs/*.log
+/logs/archive/
+/memory/twitch_chatters.json
+/memory/twitch_activity.json
+/memory/stream_sessions.json
+/memory/*.bak
+/backups/
+/dist/
+/dist-next/
+/build/
+/release/
+/exports/
 *.spec
 
 # Local planning notes

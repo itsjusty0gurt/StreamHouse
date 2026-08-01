@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: streamhouse-soundboard-relay
+    runtime: python
+    plan: free
+    buildCommand: python -m compileall extensions.twitch.app
+    startCommand: python -m extensions.twitch.app.relay_server
+    healthCheckPath: /health
+    autoDeployTrigger: commit
+    envVars:
+      - key: TWITCH_EXTENSION_SECRET
+        sync: false
+      - key: STREAMHOUSE_RELAY_KEYS
+        sync: false
+      - key: STREAMHOUSE_RELAY_DB
+        value: /tmp/streamhouse-soundboard-relay.sqlite3

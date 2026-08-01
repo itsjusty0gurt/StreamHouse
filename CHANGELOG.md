@@ -2,9 +2,16 @@
 
 ## Unreleased
 
-- Established Streamhouse as the umbrella ecosystem, with Streamhouse Hub and
-  Streamhouse AI mapped to the current Sally Bot and Sally AI Companion
-  implementations, and documented future Studio, Deck, and Avatar boundaries.
+- Separated the repository into product-owned `products/hub/` and
+  `products/ai/` trees, lightweight `shared/` contracts/runtime utilities,
+  `extensions/twitch/`, organized `tools/`, and owned test suites without
+  changing runtime data or compatibility contracts.
+- Rebranded the two applications as Streamhouse Hub and Streamhouse AI,
+  including entry points, Python packages, executable metadata, release
+  artifacts, localhost discovery, environment variables, and user-data paths.
+- Added non-destructive migration from `%LOCALAPPDATA%\SallyAI`, legacy
+  environment/protocol fallbacks, and QSettings migration while preserving
+  Sally as Streamhouse AI's default personality.
 - Made Sally viewer memory explicitly opt-in through `!sallymemory` chat
   controls, with confirmed complete deletion and no persistent unconsented
   chatter profiles.

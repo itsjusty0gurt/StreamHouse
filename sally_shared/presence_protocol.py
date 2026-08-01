@@ -1,2 +1,0 @@
-BOT_WINDOW_TITLE = "Sally Bot"
-COMPANION_PRESENCE_MESSAGE = "SallyAICompanionPresence.v1"
