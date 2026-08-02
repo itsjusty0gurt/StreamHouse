@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <title>streamhouse-b</title>
+  <rect x="700" y="192" width="64" height="164" fill="#F6F8FA"/>
+    <path d="M 190 420 L 512 165 L 834 420"
+          fill="none" stroke="#F6F8FA" stroke-width="60"
+          stroke-linecap="butt" stroke-linejoin="miter"/>
+  <path d="M 240 455 L 752 455 L 792 495 L 792 608 L 764 652 L 792 696 L 792 815 L 752 855 L 240 855 Z M 332 547 L 678 547 L 700 565 L 700 588.0 L 678 606.0 L 332 606.0 Z M 332 698.0 L 678 698.0 L 700 716.0 L 700 745 L 678 763 L 332 763 Z" fill="#8FE8B7" fill-rule="evenodd"/>
+</svg>

@@ -35,6 +35,7 @@ Replacing either application does not remove user data. Legacy environment
 variables, protocol headers, relay routes, and QSettings identifiers are
 temporary compatibility fallbacks; new builds always emit Streamhouse names.
 
-The current `shared/assets/sally-icon.*` artwork is retained temporarily because
-final Streamhouse product icons do not yet exist. Replace executable and
-listing artwork only when approved Streamhouse assets are available.
+Approved product icons live under `shared/assets/streamhouse-icons/`. Confirm
+Hub uses the `H` icon and Streamhouse AI uses the `AI` icon in both Qt and the
+Windows executable before publishing. The old `shared/assets/sally-icon.*`
+files are Sally character artwork, not application branding.

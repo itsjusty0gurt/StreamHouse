@@ -19,12 +19,12 @@ try {
         --clean `
         --windowed `
         --name "StreamhouseHub" `
-        --icon "shared\assets\sally-icon.ico" `
+        --icon "shared\assets\streamhouse-icons\windows\streamhouse-hub.ico" `
         --version-file "tools\packaging\windows-hub-version-info.txt" `
         --exclude-module "products.ai.engine" `
         --exclude-module "products.ai.streamhouse_ai" `
         --add-binary ".venv\Lib\site-packages\PySide6\plugins\platforms\qoffscreen.dll;PySide6\plugins\platforms" `
-        --add-data "shared\assets;assets" `
+        --add-data "shared\assets\streamhouse-icons\streamhouse-hub.png;assets\streamhouse-icons" `
         --add-data "extensions\twitch\app;extensions\twitch\app" `
         "products\hub\hub_main.py"
     if ($LASTEXITCODE -ne 0) {

@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <title>streamhouse-a</title>
+  <rect x="700" y="192" width="64" height="164" fill="#F6F8FA"/>
+    <path d="M 190 420 L 512 165 L 834 420"
+          fill="none" stroke="#F6F8FA" stroke-width="60"
+          stroke-linecap="butt" stroke-linejoin="miter"/>
+  <rect x="250" y="455" width="92" height="400" fill="#8FE8B7"/>
+<rect x="682" y="455" width="92" height="400" fill="#8FE8B7"/>
+<rect x="250" y="455" width="524" height="92" fill="#8FE8B7"/>
+<rect x="250" y="606.0" width="524" height="92" fill="#8FE8B7"/>
+</svg>

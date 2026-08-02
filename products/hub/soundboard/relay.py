@@ -10,6 +10,7 @@ from urllib.request import Request, urlopen
 from PySide6.QtCore import QObject, Signal
 
 from shared.streamhouse_runtime.json_store import atomic_write_json, load_json_with_backup
+from shared.streamhouse_runtime.logger import Logger
 from shared.streamhouse_runtime.paths import user_data_root
 from products.hub.core.secret_store import SecretStore
 from products.hub.soundboard.store import SoundboardStore
@@ -79,6 +80,7 @@ class SoundboardRelayClient(QObject):
         self._wake = Event()
         self._thread: Thread | None = None
         self._status = "Disconnected"
+        self._legacy_routes = False
 
     @property
     def running(self) -> bool:
@@ -95,6 +97,7 @@ class SoundboardRelayClient(QObject):
         self.disconnect_relay()
         self.config = config
         self.key = key.strip()
+        self._legacy_routes = False
         self._stop.clear()
         self._wake.clear()
         self._set_status("Connecting")
@@ -162,18 +165,60 @@ class SoundboardRelayClient(QObject):
         self,
         path: str,
         *,
+        legacy_path: str | None = None,
         method: str = "GET",
         payload: bytes | None = None,
     ) -> object:
+        if self._legacy_routes and legacy_path:
+            return self._request_once(
+                legacy_path,
+                method=method,
+                payload=payload,
+                include_legacy_headers=True,
+            )
+        try:
+            return self._request_once(path, method=method, payload=payload)
+        except HTTPError as error:
+            if error.code != 404 or not legacy_path:
+                raise
+            self._legacy_routes = True
+            Logger.warning(
+                "Hosted soundboard relay uses the legacy API; compatibility "
+                "mode is active until the relay is updated.",
+                source="TWITCH",
+            )
+            return self._request_once(
+                legacy_path,
+                method=method,
+                payload=payload,
+                include_legacy_headers=True,
+            )
+
+    def _request_once(
+        self,
+        path: str,
+        *,
+        method: str,
+        payload: bytes | None,
+        include_legacy_headers: bool = False,
+    ) -> object:
+        headers = {
+            "Content-Type": "application/json",
+            "X-Streamhouse-Channel": self.config.channel_id,
+            "X-Streamhouse-Key": self.key,
+        }
+        if include_legacy_headers:
+            headers.update(
+                {
+                    "X-Sally-Channel": self.config.channel_id,
+                    "X-Sally-Key": self.key,
+                }
+            )
         request = Request(
             self.config.url + path,
             data=payload,
             method=method,
-            headers={
-                "Content-Type": "application/json",
-                "X-Streamhouse-Channel": self.config.channel_id,
-                "X-Streamhouse-Key": self.key,
-            },
+            headers=headers,
         )
         with urlopen(request, timeout=10) as response:
             body = response.read()
@@ -182,12 +227,16 @@ class SoundboardRelayClient(QObject):
     def _put_config(self, payload: str) -> None:
         self._request(
             "/api/streamhouse/config",
+            legacy_path="/api/sally/config",
             method="PUT",
             payload=payload.encode("utf-8"),
         )
 
     def _poll(self) -> list[object]:
-        payload = self._request("/api/streamhouse/poll")
+        payload = self._request(
+            "/api/streamhouse/poll",
+            legacy_path="/api/sally/poll",
+        )
         if not isinstance(payload, dict):
             raise ValueError("Relay returned an invalid response.")
         events = payload.get("events", [])
@@ -198,6 +247,7 @@ class SoundboardRelayClient(QObject):
     def _ack(self, event_id: str) -> None:
         self._request(
             "/api/streamhouse/ack",
+            legacy_path="/api/sally/ack",
             method="POST",
             payload=json.dumps({"event_ids": [event_id]}).encode("utf-8"),
         )

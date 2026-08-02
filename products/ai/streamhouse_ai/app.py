@@ -35,6 +35,7 @@ from PySide6.QtWidgets import (
 
 from shared.streamhouse_runtime.version import VERSION
 from shared.streamhouse_runtime.logger import Logger
+from shared.streamhouse_ui import install_window_chrome
 from shared.streamhouse_runtime.paths import smoke_test_enabled
 from shared.streamhouse_runtime.qt_settings import (
     AI_APPLICATION_NAME,
@@ -138,6 +139,7 @@ class StreamhouseAIWindow(QMainWindow):
         self.pages: dict[str, QWidget] = {}
         self.navigation_buttons: dict[str, QPushButton] = {}
         self._build_shell()
+        self.window_chrome = install_window_chrome(self)
         self._build_pages()
         self._sync_settings_controls()
         self._refresh_owned_data()
@@ -715,4 +717,12 @@ def configure_application(application: QApplication) -> None:
     application.setApplicationName(AI_APPLICATION_NAME)
     application.setOrganizationName(ORGANIZATION_NAME)
     application.setApplicationVersion(VERSION)
-    application.setWindowIcon(QIcon(str(resource_path("assets/sally-icon.png"))))
+    application.setWindowIcon(
+        QIcon(
+            str(
+                resource_path(
+                    "assets/streamhouse-icons/streamhouse-ai.png"
+                )
+            )
+        )
+    )

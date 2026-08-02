@@ -19,11 +19,11 @@ try {
         --clean `
         --windowed `
         --name "StreamhouseAI" `
-        --icon "shared\assets\sally-icon.ico" `
+        --icon "shared\assets\streamhouse-icons\windows\streamhouse-ai.ico" `
         --version-file "tools\packaging\windows-ai-version-info.txt" `
         --exclude-module "products.hub" `
         --add-binary ".venv\Lib\site-packages\PySide6\plugins\platforms\qoffscreen.dll;PySide6\plugins\platforms" `
-        --add-data "shared\assets;assets" `
+        --add-data "shared\assets\streamhouse-icons\streamhouse-ai.png;assets\streamhouse-icons" `
         "products\ai\ai_main.py"
     if ($LASTEXITCODE -ne 0) {
         throw "Streamhouse AI PyInstaller failed with exit code $LASTEXITCODE."

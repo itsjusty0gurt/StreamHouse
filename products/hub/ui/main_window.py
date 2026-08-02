@@ -58,6 +58,7 @@ from PySide6.QtWidgets import (
 
 from products.hub.core.events import Events
 from shared.streamhouse_runtime.logger import Logger
+from shared.streamhouse_ui import install_window_chrome
 from products.hub.core.settings import AppSettings, SettingsStore
 from products.hub.automation.service import AutomationService
 from products.hub.automation.custom_variables import CustomVariableStore
@@ -620,6 +621,7 @@ class MainWindow(QMainWindow):
         self.ad_upcoming_duration = 0
         self.ui = Ui_MainWindow()
         self.ui.setupUi(self)
+        self.window_chrome = install_window_chrome(self)
         self._responsive_ready = False
         self._active_layout_orientation = ""
         for page_title in (

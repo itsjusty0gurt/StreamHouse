@@ -5,12 +5,14 @@ import json
 import os
 import tempfile
 import unittest
+from http import HTTPStatus
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 from threading import Thread
 from time import time
 from unittest.mock import patch
 from urllib.error import HTTPError
+from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -23,6 +25,34 @@ from products.hub.soundboard.relay import SoundboardRelayClient, SoundboardRelay
 from products.hub.soundboard.store import SoundboardStore
 from extensions.twitch.app.relay_server import RelayHandler, RelayState
 from products.hub.ui.soundboard_page import SoundboardPageWidget
+
+
+class LegacyOnlyRelayHandler(RelayHandler):
+    """Test double matching the relay deployed before Streamhouse routes."""
+
+    observed_headers: list[dict[str, str]] = []
+
+    def do_GET(self) -> None:  # noqa: N802
+        if urlparse(self.path).path == "/api/streamhouse/poll":
+            self._send_json({"error": "Not found."}, HTTPStatus.NOT_FOUND)
+            return
+        super().do_GET()
+
+    def do_PUT(self) -> None:  # noqa: N802
+        if urlparse(self.path).path == "/api/streamhouse/config":
+            self._send_json({"error": "Not found."}, HTTPStatus.NOT_FOUND)
+            return
+        super().do_PUT()
+
+    def do_POST(self) -> None:  # noqa: N802
+        if urlparse(self.path).path == "/api/streamhouse/ack":
+            self._send_json({"error": "Not found."}, HTTPStatus.NOT_FOUND)
+            return
+        super().do_POST()
+
+    def _verify_hub(self) -> str:
+        self.observed_headers.append(dict(self.headers.items()))
+        return super()._verify_hub()
 
 
 class SoundboardStoreTests(unittest.TestCase):
@@ -356,6 +386,46 @@ class SoundboardRelayClientTests(unittest.TestCase):
             event_id,
             [event["event_id"] for event in self.state.poll("123")],
         )
+
+    def test_client_falls_back_to_pre_rebrand_relay(self) -> None:
+        self.http_server.shutdown()
+        self.http_server.server_close()
+        self.http_thread.join(timeout=2)
+        LegacyOnlyRelayHandler.state = self.state
+        LegacyOnlyRelayHandler.observed_headers.clear()
+        self.http_server = ThreadingHTTPServer(
+            ("127.0.0.1", 0),
+            LegacyOnlyRelayHandler,
+        )
+        self.http_thread = Thread(
+            target=self.http_server.serve_forever,
+            daemon=True,
+        )
+        self.http_thread.start()
+
+        self.client.connect_relay(
+            SoundboardRelayConfig(
+                f"http://127.0.0.1:{self.http_server.server_port}",
+                "123",
+            ),
+            "relay-key",
+        )
+        deadline = time() + 3
+        while self.client.status != "Connected" and time() < deadline:
+            QTest.qWait(20)
+
+        self.assertEqual(self.client.status, "Connected")
+        self.assertTrue(self.client._legacy_routes)
+        self.assertEqual(
+            self.state.config("123")["pages"][0]["buttons"][0]["label"],
+            "Air Horn",
+        )
+        self.assertTrue(LegacyOnlyRelayHandler.observed_headers)
+        headers = LegacyOnlyRelayHandler.observed_headers[0]
+        self.assertEqual(headers["X-Streamhouse-Channel"], "123")
+        self.assertEqual(headers["X-Streamhouse-Key"], "relay-key")
+        self.assertEqual(headers["X-Sally-Channel"], "123")
+        self.assertEqual(headers["X-Sally-Key"], "relay-key")
 
     def test_relay_serves_public_legal_pages(self) -> None:
         base_url = f"http://127.0.0.1:{self.http_server.server_port}"

@@ -151,7 +151,12 @@ class ReleaseToolsTests(unittest.TestCase):
 
     def test_windows_release_assets_exist(self) -> None:
         root = Path(__file__).resolve().parents[2]
-        self.assertTrue((root / "shared" / "assets" / "sally-icon.ico").exists())
+        icon_root = root / "shared" / "assets" / "streamhouse-icons"
+        self.assertTrue((icon_root / "streamhouse-hub.png").exists())
+        self.assertTrue((icon_root / "streamhouse-ai.png").exists())
+        self.assertTrue((icon_root / "streamhouse-brand.png").exists())
+        self.assertTrue((icon_root / "windows" / "streamhouse-hub.ico").exists())
+        self.assertTrue((icon_root / "windows" / "streamhouse-ai.ico").exists())
         hub_metadata = root / "tools" / "packaging" / "windows-hub-version-info.txt"
         ai_metadata = root / "tools" / "packaging" / "windows-ai-version-info.txt"
         self.assertIn("StreamhouseHub.exe", hub_metadata.read_text(encoding="utf-8"))

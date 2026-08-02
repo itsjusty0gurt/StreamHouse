@@ -102,6 +102,7 @@ trigger and routine setup, but their stored records remain separate.
 | `products/ai/tests/` | AI-specific behavior and service coverage |
 | `shared/streamhouse_shared/` | Dependency-light protocol, presence, policy, and value contracts |
 | `shared/streamhouse_runtime/` | Small cross-product paths, logging, JSON, QSettings, and version utilities |
+| `shared/streamhouse_ui/` | Reusable PySide6 window chrome and cross-product UI components |
 | `shared/tests/` | Shared runtime and contract tests |
 | `extensions/twitch/app/` | Extension HTML/CSS/JS, hosted relay server, listing assets |
 | `extensions/twitch/tools/` | Twitch Extension asset and listing builders |
@@ -121,6 +122,9 @@ Dependency direction is enforced by ownership and package audits:
 - Hub may import `shared.*`, but never `products.ai.engine` or the AI server.
 - AI may import `shared.*`, but never `products.hub`.
 - Shared code imports neither product.
+- Shared Qt presentation components live in `shared/streamhouse_ui/`; both
+  desktop products install its frameless title bar while retaining independent
+  navigation, pages, window-state persistence, and product behavior.
 - The lightweight Hub AI client and remote-store adapters live in
   `products/hub/streamhouse_hub/`; the protocol DTOs live in
   `shared/streamhouse_shared/`.
@@ -657,7 +661,12 @@ fallback.
 Hub emits `/api/streamhouse/config`, `/api/streamhouse/poll`, and
 `/api/streamhouse/ack` with `X-Streamhouse-Channel` and `X-Streamhouse-Key`.
 The hosted relay temporarily accepts the former `/api/sally/*` routes and
-`X-Sally-*` headers for already deployed Hub builds; new code never emits them.
+`X-Sally-*` headers for already deployed Hub builds. Hub always tries the
+Streamhouse route and headers first. If that route returns HTTP 404, Hub treats
+the host as a pre-rebrand deployment and temporarily uses `/api/sally/*` while
+continuing to emit the Streamhouse headers alongside the legacy aliases. This
+compatibility path is isolated in `products/hub/soundboard/relay.py` and can be
+removed after hosted relay deployments have been upgraded.
 
 ## UI architecture
 
@@ -893,9 +902,12 @@ The script produces `StreamhouseHub-<version>-windows-x64.zip` and
 `StreamhouseAI-<version>-windows-x64.zip`, each with a matching `.sha256` file.
 Do not merge them: Hub-only users should not download the model/AI application.
 
-The build temporarily reuses `shared/assets/sally-icon.*`. Sally remains the default
-personality, but approved Streamhouse Hub and Streamhouse AI product icons are
-still required before final branded release artwork can be replaced.
+Approved Streamhouse artwork lives under `shared/assets/streamhouse-icons/`.
+Hub uses the `H` product icon and Streamhouse AI uses the `AI` product icon for
+both Qt window metadata and Windows executables. The `S` artwork is the umbrella
+brand icon. Transparent vector masters for the complete product family are kept
+alongside those runtime assets. `shared/assets/sally-icon.*` remains available
+only as Sally character artwork and is not used for application branding.
 
 ### Twitch Extension bundle
 

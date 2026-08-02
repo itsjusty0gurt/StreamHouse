@@ -76,7 +76,13 @@ def configure_application(application: QApplication) -> None:
     application.setOrganizationName(ORGANIZATION_NAME)
     application.setApplicationVersion(VERSION)
     application.setWindowIcon(
-        QIcon(str(resource_path("assets/sally-icon.png")))
+        QIcon(
+            str(
+                resource_path(
+                    "assets/streamhouse-icons/streamhouse-hub.png"
+                )
+            )
+        )
     )
 
 
