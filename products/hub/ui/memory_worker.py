@@ -14,11 +14,12 @@ class MemoryExtractionResult:
     user_name: str
     buffer_ids: tuple[str, ...]
     proposals: tuple[ExtractedMemory, ...]
+    generation: int = 0
 
 
 class MemoryExtractionSignals(QObject):
     completed = Signal(object)
-    failed = Signal(str, object, str)
+    failed = Signal(str, object, object)
 
 
 class MemoryExtractionWorker(QRunnable):
@@ -31,6 +32,7 @@ class MemoryExtractionWorker(QRunnable):
         companion_endpoint: str,
         endpoint: str,
         model: str,
+        generation: int = 0,
     ) -> None:
         super().__init__()
         self.user_id = user_id
@@ -40,6 +42,7 @@ class MemoryExtractionWorker(QRunnable):
         self.companion_endpoint = companion_endpoint
         self.endpoint = endpoint
         self.model = model
+        self.generation = generation
         self.signals = MemoryExtractionSignals()
 
     @Slot()
@@ -59,8 +62,8 @@ class MemoryExtractionWorker(QRunnable):
         except Exception as error:
             self.signals.failed.emit(
                 self.user_id,
-                buffer_ids,
-                str(error),
+                (buffer_ids, self.generation),
+                error,
             )
             return
         self.signals.completed.emit(
@@ -69,5 +72,6 @@ class MemoryExtractionWorker(QRunnable):
                 user_name=self.user_name,
                 buffer_ids=buffer_ids,
                 proposals=proposals,
+                generation=self.generation,
             )
         )

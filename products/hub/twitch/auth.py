@@ -217,11 +217,16 @@ class TwitchAuthService:
 
     def _maintain_token(self, token: TwitchToken) -> None:
         try:
-            if token.expires_at <= time.time() + 900:
+            refreshed = token.expires_at <= time.time() + 900
+            if refreshed:
                 token = self.client.refresh(token)
             self.token = self.client.validate(token)
             self.store.save(self.token)
-            self._set_state(TwitchAuthState.SIGNED_IN, self.token.login)
+            Events.emit(
+                "twitch_token_refreshed" if refreshed else "twitch_token_validated",
+                account=self.account_label,
+                token=self.token,
+            )
         except (HTTPError, URLError, OSError, ValueError) as error:
             self.token = None
             self.store.clear()
@@ -312,5 +317,7 @@ class TwitchAuthService:
         return reason, description
 
     def _set_state(self, state: TwitchAuthState, detail: str) -> None:
+        if state is self.state:
+            return
         self.state = state
         Events.emit(self.event_name, state=state, detail=detail)

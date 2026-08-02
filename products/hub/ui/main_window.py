@@ -92,6 +92,10 @@ from products.hub.streamhouse_hub.ai_remote_stores import (
     StreamhouseAITrainingStore as TrainingStore,
 )
 from products.hub.streamhouse_hub.ai_client import StreamhouseAIClient
+from products.hub.streamhouse_hub.ai_lifecycle import (
+    AIConnectionLifecycle,
+    AIConnectionState,
+)
 from shared.streamhouse_shared.protocol import PROTOCOL_VERSION
 from products.hub.core.window_state import WindowStateStore
 from products.hub.config.twitch import (
@@ -321,6 +325,10 @@ class MainWindow(QMainWindow):
     ) -> None:
         super().__init__()
 
+        self.ai_lifecycle = AIConnectionLifecycle(
+            self._handle_ai_lifecycle_disconnect
+        )
+
         self.twitch_service = twitch_service or TwitchService()
         self.twitch_auth = twitch_auth or TwitchAuthService()
         self.twitch_bot_auth = twitch_bot_auth or TwitchAuthService(
@@ -329,6 +337,8 @@ class MainWindow(QMainWindow):
             event_name="twitch_bot_auth_changed",
             account_label="Sally bot",
         )
+        self._last_twitch_auth_state = self.twitch_auth.state
+        self._last_twitch_bot_auth_state = self.twitch_bot_auth.state
         self.twitch_service.bot_auth = self.twitch_bot_auth
         self.window_state_store = window_state_store or WindowStateStore()
         self.chatter_history = (
@@ -343,6 +353,10 @@ class MainWindow(QMainWindow):
         self.release_controller = release_controller or ReleaseController()
         self.training_store = training_store or TrainingStore()
         self.test_report_store = test_report_store or AITestReportStore()
+        for remote_store in (self.training_store, self.test_report_store):
+            set_lifecycle = getattr(remote_store, "set_lifecycle", None)
+            if callable(set_lifecycle):
+                set_lifecycle(self.ai_lifecycle)
         self.twitch_command_trigger_store = (
             twitch_command_trigger_store or TwitchCommandTriggerStore()
         )
@@ -572,7 +586,6 @@ class MainWindow(QMainWindow):
             maxlen=100
         )
         self.response_decision_in_flight = False
-        self.companion_retry_after = 0.0
         self.auto_send_diagnostic_reasons: dict[str, str] = {}
         self.ai_test_report_flush_timer = QTimer(self)
         self.ai_test_report_flush_timer.setSingleShot(True)
@@ -653,11 +666,6 @@ class MainWindow(QMainWindow):
 
         self.settings_store = SettingsStore()
         self.settings = self._load_settings()
-        for remote_store in (self.training_store, self.test_report_store):
-            configure = getattr(remote_store, "configure", None)
-            if callable(configure):
-                configure(self.settings.ai_companion_endpoint)
-
         self.log_handler = QtLogHandler()
         self.log_handler.setLevel(logging.DEBUG)
         self.log_handler.setFormatter(
@@ -1945,30 +1953,55 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def _check_ai_companion(self) -> None:
-        if self.ai_companion_health_in_flight:
+        if (
+            self.ai_companion_health_in_flight
+            or self.ai_lifecycle.state is not AIConnectionState.VERIFYING
+        ):
+            self.ai_remote_connection_detail.setText(
+                "Waiting for Streamhouse AI to announce its presence."
+            )
             return
-        endpoint = self.ai_remote_endpoint_edit.text().strip().rstrip("/")
+        endpoint = self.ai_lifecycle.endpoint
         if not endpoint:
             return
         self.ai_companion_health_in_flight = True
         self.ai_remote_connection_detail.setText("Connecting…")
-        worker = StreamhouseAIHealthWorker(endpoint)
+        worker = StreamhouseAIHealthWorker(endpoint, self.ai_lifecycle.generation)
         worker.signals.completed.connect(self._apply_ai_companion_health)
         self.ai_companion_health_pool.start(worker)
 
     @Slot(object)
     def _apply_ai_companion_health(self, result: StreamhouseAIHealthResult) -> None:
         self.ai_companion_health_in_flight = False
+        if (
+            result.generation != self.ai_lifecycle.generation
+            or self.ai_lifecycle.state is not AIConnectionState.VERIFYING
+        ):
+            return
         status = result.status
-        connected = status.available and status.protocol_version > 0
+        connected = (
+            status.available and status.protocol_version == PROTOCOL_VERSION
+        )
         if not connected:
-            self.ai_remote_stack.setCurrentIndex(0)
-            self.ai_remote_connection_detail.setText(
-                status.error or "Streamhouse AI is not running."
+            self.ai_lifecycle.disconnect(
+                status.error or "Streamhouse AI health check failed."
             )
             return
+        if not self.ai_lifecycle.mark_ready(result.generation):
+            return
         self.ai_remote_stack.setCurrentIndex(1)
-        endpoint = self.ai_remote_endpoint_edit.text().strip().rstrip("/")
+        endpoint = self.ai_lifecycle.endpoint
+        for remote_store in (self.training_store, self.test_report_store):
+            configure = getattr(remote_store, "configure", None)
+            if callable(configure):
+                configure(endpoint)
+            connect = getattr(remote_store, "connect", None)
+            if callable(connect):
+                try:
+                    connect()
+                except OSError as error:
+                    self.ai_lifecycle.transport_failed(error)
+                    return
         if endpoint and endpoint != self.settings.ai_companion_endpoint:
             self.settings = replace(self.settings, ai_companion_endpoint=endpoint)
             try:
@@ -1977,12 +2010,19 @@ class MainWindow(QMainWindow):
                 pass
         self.ai_remote_state_label.setText("Connected")
         self.ai_remote_state_label.setStyleSheet("color:#00d084; font-weight:600;")
-        self.ai_remote_model_label.setText(str(result.settings.get("model", "--")))
+        self.ai_remote_model_label.setText(
+            str(result.settings.get("model", self.settings.local_ai_model))
+        )
         self.ai_remote_ollama_label.setText(
-            str(result.settings.get("ollama_endpoint", "--"))
+            str(
+                result.settings.get(
+                    "ollama_endpoint", self.settings.local_ai_endpoint
+                )
+            )
         )
         self.ai_remote_protocol_label.setText(str(status.protocol_version))
         self.twitch_channel_splitter.setSizes([1000, 170, 420])
+        self._start_next_response_batch()
 
     def nativeEvent(self, event_type, message):
         if _STREAMHOUSE_AI_PRESENCE_MESSAGE_ID:
@@ -2004,24 +2044,47 @@ class MainWindow(QMainWindow):
         port: int,
     ) -> None:
         if port <= 0:
-            self.ai_remote_stack.setCurrentIndex(0)
-            self.ai_remote_connection_detail.setText(
-                "Streamhouse AI is not running."
-            )
-            self.ai_remote_state_label.setText("Disconnected")
-            self.ai_remote_state_label.setStyleSheet("")
+            self.ai_lifecycle.disconnect("Streamhouse AI is not running.")
             return
         if protocol_version != PROTOCOL_VERSION:
-            self.ai_remote_stack.setCurrentIndex(0)
-            self.ai_remote_connection_detail.setText(
+            self.ai_lifecycle.disconnect(
                 f"Streamhouse AI protocol mismatch: {protocol_version}."
             )
             return
-        self.ai_remote_endpoint_edit.setText(f"http://127.0.0.1:{port}")
+        endpoint = f"http://127.0.0.1:{port}"
+        self.ai_lifecycle.begin_verification(endpoint)
+        self.ai_remote_endpoint_edit.setText(endpoint)
         self.ai_remote_connection_detail.setText(
             "Streamhouse AI found; connecting..."
         )
         self._check_ai_companion()
+
+    @property
+    def ai_connection_state(self) -> AIConnectionState:
+        return self.ai_lifecycle.state
+
+    @property
+    def ai_connection_generation(self) -> int:
+        return self.ai_lifecycle.generation
+
+    def _handle_ai_lifecycle_disconnect(self, reason: str) -> None:
+        self.response_decision_queue.clear()
+        self.memory_message_buffers.clear()
+        self.memory_extraction_retry_after.clear()
+        self.response_decision_in_flight = False
+        self.memory_extraction_in_flight.clear()
+        self.ai_test_report_flush_timer.stop()
+        if hasattr(self, "ai_remote_stack"):
+            self.ai_remote_stack.setCurrentIndex(0)
+            self.ai_remote_connection_detail.setText(
+                reason or "Streamhouse AI is not running."
+            )
+            self.ai_remote_state_label.setText("Disconnected")
+            self.ai_remote_state_label.setStyleSheet("")
+        if reason:
+            Logger.warning(
+                f"Streamhouse AI disconnected: {reason}", source="AI"
+            )
 
     def _build_twitch_commands_tab(self) -> None:
         page = QWidget(self.channel_tabs)
@@ -2332,7 +2395,7 @@ class MainWindow(QMainWindow):
             return
         self.obs_service.connect()
 
-    @Slot(object, str)
+    @Slot(object, object)
     def _handle_obs_status_changed(
         self, state: ObsConnectionState, detail: str
     ) -> None:
@@ -2924,6 +2987,8 @@ class MainWindow(QMainWindow):
         state: TwitchAuthState,
         detail: str,
     ) -> None:
+        previous_auth_state = self._last_twitch_auth_state
+        self._last_twitch_auth_state = state
         self.companion_refresh_request_id += 1
         self.companion_refresh_in_flight = False
         signed_in = state is TwitchAuthState.SIGNED_IN
@@ -2982,9 +3047,14 @@ class MainWindow(QMainWindow):
                 f"Send a message as @{detail}"
             )
             self.twitch_status_bar_label.setText(f"Twitch: @{detail}")
-            if self.twitch_service.state is not TwitchConnectionState.CONNECTED:
+            if (
+                previous_auth_state is not TwitchAuthState.SIGNED_IN
+                and self.twitch_service.state
+                is not TwitchConnectionState.CONNECTED
+            ):
                 self.connect_twitch()
-            self.refresh_stream_companion()
+            if previous_auth_state is not TwitchAuthState.SIGNED_IN:
+                self.refresh_stream_companion()
 
     @Slot(object, str)
     def handle_twitch_bot_auth_changed(
@@ -2992,6 +3062,8 @@ class MainWindow(QMainWindow):
         state: TwitchAuthState,
         detail: str,
     ) -> None:
+        previous_auth_state = self._last_twitch_bot_auth_state
+        self._last_twitch_bot_auth_state = state
         signed_in = state is TwitchAuthState.SIGNED_IN
         waiting = state is TwitchAuthState.WAITING
         missing = (
@@ -3030,12 +3102,14 @@ class MainWindow(QMainWindow):
         # the socket when that identity changes, while keeping channel controls
         # on the broadcaster token.
         if (
-            self.twitch_auth.token is not None
+            state is not previous_auth_state
+            and self.twitch_auth.token is not None
             and self.twitch_service.channel
             and state
             in {
                 TwitchAuthState.SIGNED_IN,
                 TwitchAuthState.SIGNED_OUT,
+                TwitchAuthState.ERROR,
             }
         ):
             channel = self.twitch_service.channel
@@ -3617,7 +3691,8 @@ class MainWindow(QMainWindow):
         is_bot: bool,
     ) -> None:
         if not (
-            self.settings.local_ai_enabled
+            self.ai_lifecycle.state is AIConnectionState.READY
+            and self.settings.local_ai_enabled
             and self.settings.ai_viewer_memory_enabled
             and self.settings.ai_memory_reasoning_enabled
         ):
@@ -3666,7 +3741,8 @@ class MainWindow(QMainWindow):
     def _start_memory_extraction_if_ready(self, user_id: str) -> None:
         buffer = self.memory_message_buffers.get(user_id)
         if (
-            buffer is None
+            self.ai_lifecycle.state is not AIConnectionState.READY
+            or buffer is None
             or len(buffer) < self.settings.ai_memory_message_threshold
             or user_id in self.memory_extraction_in_flight
             or monotonic()
@@ -3689,9 +3765,10 @@ class MainWindow(QMainWindow):
             record.user_name,
             messages,
             existing,
-            self.settings.ai_companion_endpoint,
+            self.ai_lifecycle.endpoint,
             self.settings.local_ai_endpoint,
             self.settings.local_ai_model,
+            self.ai_lifecycle.generation,
         )
         worker.signals.completed.connect(self._apply_memory_extraction)
         worker.signals.failed.connect(self._memory_extraction_failed)
@@ -3707,6 +3784,11 @@ class MainWindow(QMainWindow):
         result: MemoryExtractionResult,
     ) -> None:
         self.memory_extraction_in_flight.discard(result.user_id)
+        if (
+            result.generation != self.ai_lifecycle.generation
+            or self.ai_lifecycle.state is not AIConnectionState.READY
+        ):
+            return
         self.memory_extraction_retry_after.pop(result.user_id, None)
         self._remove_analyzed_memory_messages(
             result.user_id,
@@ -3752,14 +3834,27 @@ class MainWindow(QMainWindow):
         )
         self._start_memory_extraction_if_ready(result.user_id)
 
-    @Slot(str, object, str)
+    @Slot(str, object, object)
     def _memory_extraction_failed(
         self,
         user_id: str,
         _buffer_ids: object,
-        error: str,
+        error: object,
     ) -> None:
+        generation = -1
+        if isinstance(_buffer_ids, tuple) and len(_buffer_ids) == 2:
+            _buffer_ids, generation = _buffer_ids
         self.memory_extraction_in_flight.discard(user_id)
+        if (
+            generation != self.ai_lifecycle.generation
+            or self.ai_lifecycle.state is not AIConnectionState.READY
+        ):
+            return
+        if (
+            isinstance(error, BaseException)
+            and self.ai_lifecycle.transport_failed(error)
+        ):
+            return
         self.memory_extraction_retry_after[user_id] = monotonic() + 300
         self.memory_reasoning_status_label.setText(
             "Local memory reasoning could not run; it will retry after more chat."
@@ -3869,6 +3964,17 @@ class MainWindow(QMainWindow):
             third_person_reference=third_person_reference,
             addressed_to_other=addressed_to_other,
         )
+        if self.ai_lifecycle.state is not AIConnectionState.READY:
+            if ResponsePolicy.message_requires_reply(request):
+                recent_replies = [
+                    str(item.get("message", ""))
+                    for item in self.recent_ai_chat
+                    if str(item.get("speaker", "")).casefold() == "sally"
+                ]
+                decision = ResponsePolicy.fallback_reply(request, recent_replies)
+                sent = self._maybe_auto_send_reply(decision)
+                self._add_reply_decision(decision, sent=sent)
+            return
         if len(self.response_decision_queue) == self.response_decision_queue.maxlen:
             dropped = self.response_decision_queue.popleft()
             self._add_reply_decision(
@@ -4047,7 +4153,7 @@ class MainWindow(QMainWindow):
             or not self.response_decision_queue
             or not self.settings.local_ai_enabled
             or not self.settings.ai_response_decisions_enabled
-            or monotonic() < self.companion_retry_after
+            or self.ai_lifecycle.state is not AIConnectionState.READY
         ):
             return
         batch = tuple(
@@ -4057,12 +4163,13 @@ class MainWindow(QMainWindow):
         worker = ResponseDecisionWorker(
             batch,
             tuple(self.recent_ai_chat),
-            self.settings.ai_companion_endpoint,
+            self.ai_lifecycle.endpoint,
             self.settings.local_ai_endpoint,
             self.settings.local_ai_model,
             self.settings.ai_personality,
             self.settings.ai_allow_mild_profanity,
             self.settings.ai_allow_strong_profanity,
+            self.ai_lifecycle.generation,
         )
         worker.signals.completed.connect(self._apply_response_batch)
         worker.signals.failed.connect(self._response_batch_failed)
@@ -4075,7 +4182,11 @@ class MainWindow(QMainWindow):
     @Slot(object)
     def _apply_response_batch(self, result: ResponseBatchResult) -> None:
         self.response_decision_in_flight = False
-        self.companion_retry_after = 0.0
+        if (
+            result.generation != self.ai_lifecycle.generation
+            or self.ai_lifecycle.state is not AIConnectionState.READY
+        ):
+            return
         reply_count = 0
         sent_count = 0
         for decision in result.decisions:
@@ -4096,7 +4207,8 @@ class MainWindow(QMainWindow):
 
     def _capture_training_decision(self, decision: ResponseDecision) -> None:
         if not (
-            self.settings.ai_training_capture_enabled
+            self.ai_lifecycle.state is AIConnectionState.READY
+            and self.settings.ai_training_capture_enabled
             and decision.user_id in self.training_opted_in_users
         ):
             return
@@ -4141,14 +4253,26 @@ class MainWindow(QMainWindow):
             maxlen=100,
         )
 
-    @Slot(object, str)
+    @Slot(object, object)
     def _response_batch_failed(
         self,
         messages: object,
-        error: str,
+        error: object,
     ) -> None:
+        generation = -1
+        if isinstance(messages, tuple) and len(messages) == 2:
+            messages, generation = messages
         self.response_decision_in_flight = False
-        self.companion_retry_after = monotonic() + 30.0
+        if (
+            generation != self.ai_lifecycle.generation
+            or self.ai_lifecycle.state is not AIConnectionState.READY
+        ):
+            return
+        if (
+            isinstance(error, BaseException)
+            and self.ai_lifecycle.transport_failed(error)
+        ):
+            return
         for message in messages if isinstance(messages, tuple) else ():
             if not isinstance(message, ResponseMessage):
                 continue
@@ -4346,6 +4470,9 @@ class MainWindow(QMainWindow):
         sent: bool,
         latency_seconds: float,
     ) -> None:
+        if self.ai_lifecycle.state is not AIConnectionState.READY:
+            self.auto_send_diagnostic_reasons.pop(decision.request_id, None)
+            return
         response_expected = bool(
             ResponsePolicy.requires_reply(decision.source_text)
             or decision.response_expected
@@ -4395,6 +4522,8 @@ class MainWindow(QMainWindow):
         self.ai_test_report_flush_timer.start()
 
     def _flush_ai_test_report(self) -> None:
+        if self.ai_lifecycle.state is not AIConnectionState.READY:
+            return
         try:
             self.test_report_store.save()
         except OSError as error:
@@ -5040,8 +5169,13 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def _test_local_ai(self) -> None:
+        if self.ai_lifecycle.state is not AIConnectionState.READY:
+            self.local_ai_status_label.setText(
+                "Waiting for Streamhouse AI to announce its presence."
+            )
+            return
         client = StreamhouseAIClient(
-            self.ai_companion_endpoint_edit.text().strip(),
+            self.ai_lifecycle.endpoint,
             timeout=7.0,
         )
         try:
@@ -5059,6 +5193,7 @@ class MainWindow(QMainWindow):
                 }
             )
         except OSError as error:
+            self.ai_lifecycle.transport_failed(error)
             self.local_ai_status_label.setText(
                 f"Streamhouse AI unavailable: {error}"
             )
@@ -6892,8 +7027,10 @@ class MainWindow(QMainWindow):
         self.settings = settings
         self.last_companion_settings_saved = False
         try:
+            if self.ai_lifecycle.state is not AIConnectionState.READY:
+                raise RuntimeError("Streamhouse AI is not connected")
             StreamhouseAIClient(
-                settings.ai_companion_endpoint,
+                self.ai_lifecycle.endpoint,
                 timeout=7.0,
             ).update_settings(
                 {
@@ -6905,7 +7042,9 @@ class MainWindow(QMainWindow):
                 }
             )
             self.last_companion_settings_saved = True
-        except OSError as error:
+        except (OSError, RuntimeError) as error:
+            if isinstance(error, OSError):
+                self.ai_lifecycle.transport_failed(error)
             Logger.info(
                 f"Streamhouse AI settings will sync when it is available: {error}",
                 source="AI",

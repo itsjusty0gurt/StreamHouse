@@ -14,11 +14,12 @@ from products.hub.streamhouse_hub.ai_client import StreamhouseAIClient
 @dataclass(frozen=True, slots=True)
 class ResponseBatchResult:
     decisions: tuple[ResponseDecision, ...]
+    generation: int = 0
 
 
 class ResponseDecisionSignals(QObject):
     completed = Signal(object)
-    failed = Signal(object, str)
+    failed = Signal(object, object)
 
 
 class ResponseDecisionWorker(QRunnable):
@@ -32,6 +33,7 @@ class ResponseDecisionWorker(QRunnable):
         personality: str,
         allow_mild_profanity: bool,
         allow_strong_profanity: bool,
+        generation: int = 0,
     ) -> None:
         super().__init__()
         self.messages = messages
@@ -42,6 +44,7 @@ class ResponseDecisionWorker(QRunnable):
         self.personality = personality
         self.allow_mild_profanity = allow_mild_profanity
         self.allow_strong_profanity = allow_strong_profanity
+        self.generation = generation
         self.signals = ResponseDecisionSignals()
 
     @Slot()
@@ -60,6 +63,6 @@ class ResponseDecisionWorker(QRunnable):
                 self.allow_strong_profanity,
             )
         except Exception as error:
-            self.signals.failed.emit(self.messages, str(error))
+            self.signals.failed.emit((self.messages, self.generation), error)
             return
-        self.signals.completed.emit(ResponseBatchResult(decisions))
+        self.signals.completed.emit(ResponseBatchResult(decisions, self.generation))

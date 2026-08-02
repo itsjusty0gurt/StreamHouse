@@ -11,6 +11,7 @@ from products.hub.streamhouse_hub.ai_client import StreamhouseAIClient, Streamho
 class StreamhouseAIHealthResult:
     status: StreamhouseAIStatus
     settings: dict
+    generation: int = 0
 
 
 class StreamhouseAIHealthSignals(QObject):
@@ -18,19 +19,16 @@ class StreamhouseAIHealthSignals(QObject):
 
 
 class StreamhouseAIHealthWorker(QRunnable):
-    def __init__(self, endpoint: str) -> None:
+    def __init__(self, endpoint: str, generation: int = 0) -> None:
         super().__init__()
         self.endpoint = endpoint
+        self.generation = generation
         self.signals = StreamhouseAIHealthSignals()
 
     @Slot()
     def run(self) -> None:
         client = StreamhouseAIClient(self.endpoint, timeout=3.0)
         status = client.ping()
-        settings = {}
-        if status.protocol_version:
-            try:
-                settings = client.get_settings()
-            except OSError:
-                settings = {}
-        self.signals.completed.emit(StreamhouseAIHealthResult(status, settings))
+        self.signals.completed.emit(
+            StreamhouseAIHealthResult(status, {}, self.generation)
+        )

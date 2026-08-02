@@ -56,6 +56,9 @@ from shared.streamhouse_shared.protocol import PROTOCOL_VERSION
 from products.hub.ui.companion_worker import CompanionRefreshResult
 from products.hub.ui.memory_worker import MemoryExtractionResult
 from products.hub.ui.response_worker import ResponseBatchResult
+from products.hub.ui.streamhouse_ai_worker import StreamhouseAIHealthResult
+from products.hub.streamhouse_hub.ai_client import StreamhouseAIStatus
+from products.hub.streamhouse_hub.ai_lifecycle import AIConnectionState
 from products.hub.ui.twitch_command_dialog import TwitchCommandDialog, TwitchCommandManagerDialog
 
 
@@ -134,6 +137,11 @@ class MainWindowTests(unittest.TestCase):
             twitch_event_trigger_store=self.twitch_event_trigger_store,
             auto_upgrade_permissions=False,
         )
+        if self._testMethodName != "test_hub_starts_with_ai_disconnected":
+            generation = self.window.ai_lifecycle.begin_verification(
+                "http://127.0.0.1:8765"
+            )
+            self.window.ai_lifecycle.mark_ready(generation)
 
     def tearDown(self) -> None:
         self.window.close()
@@ -183,6 +191,52 @@ class MainWindowTests(unittest.TestCase):
         self.assertEqual(
             self.window.ai_remote_connection_detail.text(),
             "Streamhouse AI is not running.",
+        )
+
+    def test_hub_starts_with_ai_disconnected(self) -> None:
+        self.assertTrue(self.window.settings.local_ai_enabled)
+        self.assertTrue(self.window.settings.ai_companion_endpoint)
+        self.assertIs(
+            self.window.ai_connection_state,
+            AIConnectionState.DISCONNECTED,
+        )
+        self.training_store.connect.assert_not_called()
+        self.test_report_store.connect.assert_not_called()
+
+    def test_ai_presence_verifies_then_becomes_ready(self) -> None:
+        self.window.ai_lifecycle.disconnect()
+        with patch.object(self.window, "_check_ai_companion"):
+            self.window._handle_streamhouse_ai_presence(PROTOCOL_VERSION, 9123)
+        generation = self.window.ai_connection_generation
+        self.assertIs(self.window.ai_connection_state, AIConnectionState.VERIFYING)
+
+        self.window._apply_ai_companion_health(
+            StreamhouseAIHealthResult(
+                StreamhouseAIStatus(True, PROTOCOL_VERSION),
+                {},
+                generation,
+            )
+        )
+
+        self.assertIs(self.window.ai_connection_state, AIConnectionState.READY)
+
+    def test_stale_health_result_cannot_restore_ready(self) -> None:
+        self.window.ai_lifecycle.disconnect()
+        with patch.object(self.window, "_check_ai_companion"):
+            self.window._handle_streamhouse_ai_presence(PROTOCOL_VERSION, 9123)
+        stale_generation = self.window.ai_connection_generation
+        self.window._handle_streamhouse_ai_presence(PROTOCOL_VERSION, 0)
+
+        self.window._apply_ai_companion_health(
+            StreamhouseAIHealthResult(
+                StreamhouseAIStatus(True, PROTOCOL_VERSION),
+                {},
+                stale_generation,
+            )
+        )
+
+        self.assertIs(
+            self.window.ai_connection_state, AIConnectionState.DISCONNECTED
         )
 
     def test_portrait_mode_reflows_navigation_and_major_splitters(self) -> None:
@@ -2062,6 +2116,7 @@ class MainWindowTests(unittest.TestCase):
                     ),
                 ),
             ),
+            generation=self.window.ai_connection_generation,
         )
 
         self.window._apply_memory_extraction(result)
@@ -2350,7 +2405,9 @@ class MainWindowTests(unittest.TestCase):
             solicited=True,
         )
 
-        self.window._apply_response_batch(ResponseBatchResult((decision,)))
+        self.window._apply_response_batch(
+            ResponseBatchResult((decision,), self.window.ai_connection_generation)
+        )
 
         self.window.twitch_service.send_message.assert_called_once_with(
             "Hey Viewer!"
@@ -2543,7 +2600,10 @@ class MainWindowTests(unittest.TestCase):
             received_at=datetime.now(timezone.utc).isoformat(),
         )
 
-        self.window._response_batch_failed((message,), "model offline")
+        self.window._response_batch_failed(
+            ((message,), self.window.ai_connection_generation),
+            ValueError("model offline"),
+        )
 
         self.window.twitch_service.send_message.assert_called_once()
         self.assertEqual(
@@ -2843,6 +2903,136 @@ class MainWindowTests(unittest.TestCase):
             self.window.ui.twitchChatOutput.toPlainText().strip(),
             "viewer: hello",
         )
+
+
+    def test_disconnected_chat_never_launches_ai_and_only_direct_gets_fallback(self) -> None:
+        self.window.ai_lifecycle.disconnect()
+        self.window.response_decision_thread_pool.start = Mock()
+        self.window.twitch_service.state = TwitchConnectionState.CONNECTED
+        self.window.twitch_service.send_message = Mock(return_value=True)
+        self.window.settings.ai_auto_send_replies = True
+
+        self.window.handle_twitch_message(
+            TwitchMessage(
+                username="Viewer",
+                text="ordinary chat",
+                received_at=datetime.now(timezone.utc),
+                message_id="ordinary",
+                user_id="viewer-1",
+            )
+        )
+        self.window.handle_twitch_message(
+            TwitchMessage(
+                username="Viewer",
+                text="hey sally, are you there?",
+                received_at=datetime.now(timezone.utc),
+                message_id="direct",
+                user_id="viewer-1",
+            )
+        )
+
+        self.window.response_decision_thread_pool.start.assert_not_called()
+        self.window.twitch_service.send_message.assert_called_once()
+        self.test_report_store.record.assert_not_called()
+
+    def test_repeated_signed_in_events_do_not_restart_twitch(self) -> None:
+        self.window.twitch_auth.token = Mock(scopes=[], user_id="channel-1")
+        self.window.twitch_service.state = TwitchConnectionState.CONNECTED
+        self.window.twitch_service.channel = "channel"
+        self.window.twitch_service.connect = Mock()
+        self.window.twitch_service.disconnect = Mock()
+        self.window._last_twitch_auth_state = TwitchAuthState.SIGNED_IN
+        self.window._last_twitch_bot_auth_state = TwitchAuthState.SIGNED_IN
+
+        self.window.handle_twitch_auth_changed(TwitchAuthState.SIGNED_IN, "channel")
+        self.window.handle_twitch_bot_auth_changed(
+            TwitchAuthState.SIGNED_IN, "sallybot"
+        )
+
+        self.window.twitch_service.disconnect.assert_not_called()
+        self.window.twitch_service.connect.assert_not_called()
+
+    def test_initial_signed_in_transition_connects_when_disconnected(self) -> None:
+        self.window.twitch_auth.token = Mock(scopes=[], user_id="channel-1")
+        self.window.twitch_service.state = TwitchConnectionState.DISCONNECTED
+        self.window.twitch_service.connect = Mock(return_value=True)
+        self.window._last_twitch_auth_state = TwitchAuthState.SIGNED_OUT
+
+        self.window.handle_twitch_auth_changed(TwitchAuthState.SIGNED_IN, "channel")
+
+        self.window.twitch_service.connect.assert_called_once()
+
+    def test_transport_failure_disconnects_clears_queue_and_blocks_stale_result(self) -> None:
+        generation = self.window.ai_connection_generation
+        message = ResponseMessage(
+            request_id="request",
+            message_id="message",
+            user_id="viewer-1",
+            user_name="Viewer",
+            text="ordinary chat",
+            received_at=datetime.now(timezone.utc).isoformat(),
+        )
+        self.window.response_decision_queue.append(message)
+        self.window._response_batch_failed(
+            ((message,), generation), ConnectionRefusedError("refused")
+        )
+
+        self.assertIs(
+            self.window.ai_connection_state, AIConnectionState.DISCONNECTED
+        )
+        self.assertEqual(list(self.window.response_decision_queue), [])
+        self.window.twitch_service.send_message = Mock(return_value=True)
+        stale = ResponseDecision(
+            request_id="request",
+            message_id="message",
+            user_id="viewer-1",
+            user_name="Viewer",
+            source_text="hey sally",
+            received_at=datetime.now(timezone.utc).isoformat(),
+            decision="reply",
+            reply="stale reply",
+            reason="direct",
+            confidence=1.0,
+        )
+        self.window._apply_response_batch(ResponseBatchResult((stale,), generation))
+        self.window.twitch_service.send_message.assert_not_called()
+
+    def test_ai_reopens_only_after_new_presence_and_successful_health(self) -> None:
+        self.window.ai_lifecycle.disconnect()
+        self.window.response_decision_thread_pool.start = Mock()
+        self.window.response_decision_queue.append(
+            ResponseMessage(
+                request_id="request",
+                message_id="message",
+                user_id="viewer-1",
+                user_name="Viewer",
+                text="hello",
+                received_at=datetime.now(timezone.utc).isoformat(),
+            )
+        )
+        self.window._start_next_response_batch()
+        self.window.response_decision_thread_pool.start.assert_not_called()
+
+        with patch.object(self.window, "_check_ai_companion"):
+            self.window._handle_streamhouse_ai_presence(PROTOCOL_VERSION, 9123)
+        generation = self.window.ai_connection_generation
+        self.window._apply_ai_companion_health(
+            StreamhouseAIHealthResult(
+                StreamhouseAIStatus(True, PROTOCOL_VERSION), {}, generation
+            )
+        )
+        self.window.response_decision_queue.append(
+            ResponseMessage(
+                request_id="request-2",
+                message_id="message-2",
+                user_id="viewer-1",
+                user_name="Viewer",
+                text="hello again",
+                received_at=datetime.now(timezone.utc).isoformat(),
+            )
+        )
+        self.window._start_next_response_batch()
+        self.window.response_decision_thread_pool.start.assert_called_once()
 
 
 if __name__ == "__main__":

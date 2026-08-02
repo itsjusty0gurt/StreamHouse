@@ -8,6 +8,7 @@ from unittest.mock import Mock, call, patch
 
 from products.hub.twitch.auth import TwitchAuthService, TwitchAuthState, TwitchToken
 from products.hub.twitch.token_store import TwitchTokenStore
+from products.hub.core.events import Events
 
 
 class TwitchTokenStoreTests(unittest.TestCase):
@@ -131,6 +132,57 @@ class TwitchAuthServiceTests(unittest.TestCase):
         self.assertIs(service.token, new_token)
         store.save.assert_called_once_with(new_token)
         self.assertFalse(service.recover_unauthorized())
+
+    def test_maintenance_validation_is_not_an_auth_state_transition(self) -> None:
+        token = TwitchToken(
+            "access", "refresh", 9_999_999_999, [], user_id="42", login="channel"
+        )
+        client = Mock()
+        client.validate.return_value = token
+        store = Mock()
+        service = TwitchAuthService(client=client, store=store)
+        service.token = token
+        service.state = TwitchAuthState.SIGNED_IN
+
+        with patch.object(Events, "emit") as emit:
+            service._maintain_token(token)
+
+        store.save.assert_called_once_with(token)
+        emit.assert_called_once_with(
+            "twitch_token_validated", account="Twitch", token=token
+        )
+        self.assertIs(service.state, TwitchAuthState.SIGNED_IN)
+
+    def test_maintenance_refresh_saves_token_without_auth_transition(self) -> None:
+        old = TwitchToken("old", "refresh", 1, [], login="channel")
+        new = TwitchToken(
+            "new", "new-refresh", 9_999_999_999, [], user_id="42", login="channel"
+        )
+        client = Mock()
+        client.refresh.return_value = new
+        client.validate.return_value = new
+        store = Mock()
+        service = TwitchAuthService(client=client, store=store)
+        service.token = old
+        service.state = TwitchAuthState.SIGNED_IN
+
+        with patch.object(Events, "emit") as emit:
+            service._maintain_token(old)
+
+        self.assertIs(service.token, new)
+        store.save.assert_called_once_with(new)
+        emit.assert_called_once_with(
+            "twitch_token_refreshed", account="Twitch", token=new
+        )
+
+    def test_duplicate_signed_in_state_is_idempotent(self) -> None:
+        service = TwitchAuthService(client=Mock(), store=Mock())
+        service.state = TwitchAuthState.SIGNED_IN
+
+        with patch.object(Events, "emit") as emit:
+            service._set_state(TwitchAuthState.SIGNED_IN, "channel")
+
+        emit.assert_not_called()
 
     @patch("products.hub.twitch.auth.webbrowser.open")
     def test_device_flow_keeps_polling_while_authorization_is_pending(

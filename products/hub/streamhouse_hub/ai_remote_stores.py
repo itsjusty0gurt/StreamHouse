@@ -3,6 +3,7 @@ from __future__ import annotations
 from products.hub.streamhouse_hub.ai_client import StreamhouseAIClient
 from shared.streamhouse_shared.protocol import response_decision_to_dict
 from shared.streamhouse_shared.models import ResponseDecision
+from products.hub.streamhouse_hub.ai_lifecycle import AIConnectionLifecycle
 
 
 class StreamhouseAITrainingStore:
@@ -16,15 +17,29 @@ class StreamhouseAITrainingStore:
         "conversation_end",
     )
 
-    def __init__(self, endpoint: str = "http://127.0.0.1:8765") -> None:
+    def __init__(
+        self,
+        endpoint: str = "http://127.0.0.1:8765",
+        lifecycle: AIConnectionLifecycle | None = None,
+    ) -> None:
         self.client = StreamhouseAIClient(endpoint, timeout=10.0)
         self.examples: list[dict[str, object]] = []
+        self.lifecycle = lifecycle or AIConnectionLifecycle()
+
+    def set_lifecycle(self, lifecycle: AIConnectionLifecycle) -> None:
+        self.lifecycle = lifecycle
 
     def configure(self, endpoint: str) -> None:
         self.client = StreamhouseAIClient(endpoint, timeout=10.0)
 
     def _call(self, action: str, **values: object) -> dict:
-        result = self.client.request("/v1/training", {"action": action, **values})
+        if not self.lifecycle.ready:
+            return {}
+        try:
+            result = self.client.request("/v1/training", {"action": action, **values})
+        except Exception as error:
+            self.lifecycle.transport_failed(error)
+            raise
         examples = result.get("examples")
         if isinstance(examples, list):
             self.examples = [item for item in examples if isinstance(item, dict)]
@@ -60,18 +75,33 @@ class StreamhouseAITrainingStore:
 class StreamhouseAITestReportStore:
     """Remote-control facade for diagnostics owned by Streamhouse AI."""
 
-    def __init__(self, endpoint: str = "http://127.0.0.1:8765") -> None:
+    def __init__(
+        self,
+        endpoint: str = "http://127.0.0.1:8765",
+        lifecycle: AIConnectionLifecycle | None = None,
+    ) -> None:
         self.client = StreamhouseAIClient(endpoint, timeout=10.0)
         self.events: list[dict[str, object]] = []
-        self.connected = False
+        self.lifecycle = lifecycle or AIConnectionLifecycle()
+
+    @property
+    def connected(self) -> bool:
+        return self.lifecycle.ready
+
+    def set_lifecycle(self, lifecycle: AIConnectionLifecycle) -> None:
+        self.lifecycle = lifecycle
 
     def configure(self, endpoint: str) -> None:
         self.client = StreamhouseAIClient(endpoint, timeout=10.0)
-        self.connected = False
 
     def _call(self, action: str, **values: object) -> dict:
-        result = self.client.request("/v1/test-report", {"action": action, **values})
-        self.connected = True
+        if not self.lifecycle.ready:
+            return {}
+        try:
+            result = self.client.request("/v1/test-report", {"action": action, **values})
+        except Exception as error:
+            self.lifecycle.transport_failed(error)
+            raise
         events = result.get("events")
         if isinstance(events, list):
             self.events = [item for item in events if isinstance(item, dict)]
@@ -84,7 +114,7 @@ class StreamhouseAITestReportStore:
         self._call("load")
 
     def save(self) -> None:
-        if self.connected:
+        if self.lifecycle.ready:
             self._call("save")
 
     def record(self, **values: object) -> None:
@@ -94,7 +124,7 @@ class StreamhouseAITestReportStore:
         return int(self._call("clear").get("removed", 0))
 
     def start_new_session(self) -> None:
-        if not self.connected:
+        if not self.lifecycle.ready:
             return
         try:
             self._call("start_new_session")
@@ -102,7 +132,7 @@ class StreamhouseAITestReportStore:
             return
 
     def selected_events(self, current_session_only: bool) -> list[dict[str, object]]:
-        if not self.connected:
+        if not self.lifecycle.ready:
             return list(self.events)
         try:
             result = self._call("selected", current_session_only=current_session_only)
@@ -113,7 +143,7 @@ class StreamhouseAITestReportStore:
             return list(self.events)
 
     def summary(self, current_session_only: bool = True) -> dict[str, object]:
-        if not self.connected:
+        if not self.lifecycle.ready:
             return {
                 "total": 0,
                 "sent": 0,

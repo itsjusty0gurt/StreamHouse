@@ -186,8 +186,20 @@ when AI is absent. `WindowsHubPresenceNotifier` finds the window titled
 Windows message in `MainWindow.nativeEvent`, then performs HTTP health/ping work
 on a worker. A zero port is the disconnect notification.
 
+Hub owns one `AIConnectionLifecycle` shared by its AI workers and remote-store
+facades. It starts `DISCONNECTED`; a valid presence message moves it to
+`VERIFYING`, and only a successful health and protocol check moves it to
+`READY`. Only `READY` permits companion requests. Disconnect notifications and
+localhost transport failures increment the lifecycle generation, clear queued
+AI work, and make in-flight results stale. Hub waits for another presence
+announcement instead of retrying a saved endpoint.
+
 Do not replace this with a Hub-side retry timer: the explicit goal is zero AI
 connection activity while Streamhouse AI is not running.
+
+Twitch token maintenance is separate from authentication state transitions.
+Routine validation or refresh updates the stored token and emits a token event,
+but does not emit another signed-in transition or restart chat/EventSub.
 
 ## Ownership boundaries
 
