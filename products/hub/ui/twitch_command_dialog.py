@@ -174,7 +174,7 @@ class TwitchCommandManagerDialog(QDialog):
     def _refresh(self, selected_trigger_id: str = "") -> None:
         self.command_list.clear()
         selected_item: QListWidgetItem | None = None
-        for command in sorted(self.store.triggers, key=lambda value: value.name):
+        for command in self.store.ordered_triggers():
             routine = self.store.routine_store.get(command.routine_id)
             routine_name = routine.name if routine is not None else "Missing routine"
             state = "Enabled" if command.enabled else "Disabled"

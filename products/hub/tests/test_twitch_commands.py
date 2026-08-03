@@ -9,9 +9,15 @@ from pathlib import Path
 from products.hub.automation.routines import RoutineStore
 from products.hub.twitch.commands import (
     TwitchCommandPermission,
+    TwitchCommandSetupState,
     TwitchCommandTriggerDispatcher,
     TwitchCommandTriggerOutcome,
     TwitchCommandTriggerStore,
+)
+from products.hub.twitch.channel_information import (
+    ChannelInformation,
+    ChannelInformationStore,
+    SocialLink,
 )
 from products.hub.twitch.models import TwitchBadge, TwitchMessage
 from products.hub.twitch.tasks import SendTwitchChatMessageTask
@@ -325,7 +331,10 @@ class TwitchCommandTriggerStoreTests(unittest.TestCase):
         first = self.store.seed_default_commands()
         self.assertEqual(
             set(first.created),
-            {"uptime", "followage", "accountage", "title", "game", "commands"},
+            {
+                "uptime", "followage", "accountage", "title", "game", "commands",
+                "discord", "socials", "youtube", "schedule", "rules", "server",
+            },
         )
         uptime = self.store.resolve("uptime")
         self.store.update(
@@ -408,6 +417,99 @@ class TwitchCommandTriggerStoreTests(unittest.TestCase):
             [
                 "twitch.get_channel_information",
                 "core.select_text",
+                "twitch.send_chat_message",
+            ],
+        )
+
+    def test_configured_defaults_start_disabled_and_derive_setup_states(self) -> None:
+        self.store.seed_default_commands()
+        information_store = ChannelInformationStore(
+            Path(self.temporary.name) / "channel-information.json"
+        )
+        information_store.load()
+        for default_id in (
+            "discord", "socials", "youtube", "schedule", "rules", "server"
+        ):
+            command = self.store.default(default_id)
+            with self.subTest(default_id=default_id):
+                self.assertFalse(command.enabled)
+                self.assertEqual(
+                    self.store.setup_state(command, information_store),
+                    TwitchCommandSetupState.SETUP_REQUIRED,
+                )
+        discord = self.store.default("discord")
+        information = ChannelInformation()
+        information.social_links["discord"] = SocialLink(
+            False, "https://discord.gg/example"
+        )
+        information_store.save(information)
+        self.assertEqual(
+            self.store.setup_state(discord, information_store),
+            TwitchCommandSetupState.READY_DISABLED,
+        )
+        self.store.set_enabled(discord.trigger_id, True)
+        self.assertEqual(
+            self.store.setup_state(discord, information_store),
+            TwitchCommandSetupState.ENABLED,
+        )
+        information.social_links["discord"] = SocialLink(False, "")
+        information_store.save(information)
+        self.assertEqual(
+            self.store.setup_state(discord, information_store),
+            TwitchCommandSetupState.CONFIGURATION_ERROR,
+        )
+
+    def test_default_order_precedes_customs_even_after_rename_disable_and_filter(self) -> None:
+        self.store.add("zebra", "Z")
+        self.store.seed_default_commands()
+        self.store.add("alpha", "A")
+        discord = self.store.default("discord")
+        self.store.update(
+            discord.trigger_id,
+            name="community",
+            response=self.store.response_for(discord),
+            aliases=["discord"],
+            permission=discord.permission,
+            global_cooldown_seconds=discord.global_cooldown_seconds,
+            user_cooldown_seconds=discord.user_cooldown_seconds,
+        )
+
+        ordered = self.store.ordered_triggers()
+        self.assertEqual(
+            [command.default_id for command in ordered[:12]],
+            [
+                "uptime", "followage", "accountage", "title", "game", "commands",
+                "discord", "socials", "youtube", "schedule", "rules", "server",
+            ],
+        )
+        self.assertEqual([command.name for command in ordered[12:]], ["alpha", "zebra"])
+        filtered = self.store.ordered_triggers("a")
+        first_custom = next(
+            (index for index, command in enumerate(filtered) if not command.is_default),
+            len(filtered),
+        )
+        self.assertTrue(all(command.is_default for command in filtered[:first_custom]))
+        self.assertTrue(all(not command.is_default for command in filtered[first_custom:]))
+
+    def test_reset_configured_default_restores_disabled_two_task_routine(self) -> None:
+        self.store.seed_default_commands()
+        discord = self.store.default("discord")
+        self.store.set_enabled(discord.trigger_id, True)
+        self.routine_store.add_task(
+            discord.routine_id,
+            task_type="core.delay",
+            name="Extra task",
+            config={"seconds": 1},
+        )
+
+        reset = self.store.reset_default("discord")
+
+        self.assertFalse(reset.enabled)
+        self.assertEqual(reset.name, "discord")
+        self.assertEqual(
+            [task.task_type for task in self.routine_store.get(reset.routine_id).tasks],
+            [
+                "twitch.get_channel_information_field",
                 "twitch.send_chat_message",
             ],
         )
@@ -513,6 +615,33 @@ class TwitchCommandTriggerDispatcherTests(unittest.TestCase):
         )
         for text, outcome in cases:
             self.assertEqual(self.dispatcher.evaluate(message(text)).outcome, outcome)
+
+    def test_enabled_configured_default_is_rejected_before_tasks_when_data_is_missing(self) -> None:
+        self.store.seed_default_commands()
+        discord = self.store.default("discord")
+        self.store.set_enabled(discord.trigger_id, True)
+        information = ChannelInformationStore(
+            Path(self.temporary.name) / "channel-information.json"
+        )
+        information.load()
+        dispatcher = TwitchCommandTriggerDispatcher(
+            self.store,
+            channel_information=information,
+        )
+
+        self.assertEqual(
+            dispatcher.evaluate(message("!discord")).outcome,
+            TwitchCommandTriggerOutcome.CONFIGURATION_ERROR,
+        )
+        configured = ChannelInformation()
+        configured.social_links["discord"] = SocialLink(
+            False, "https://discord.gg/example"
+        )
+        information.save(configured)
+        self.assertEqual(
+            dispatcher.evaluate(message("!discord")).outcome,
+            TwitchCommandTriggerOutcome.READY,
+        )
 
 
 if __name__ == "__main__":

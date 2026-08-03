@@ -99,6 +99,30 @@ class AutomationVariableTests(unittest.TestCase):
             ),
             ("command_response",),
         )
+        self.assertEqual(
+            CustomVariableStore.generated_names(
+                "twitch.get_channel_information_field",
+                {"field": "discord_url"},
+            ),
+            (
+                "discord_url",
+                "discord_url_status",
+                "channel_information_available",
+                "channel_information_status",
+            ),
+        )
+        self.assertEqual(
+            CustomVariableStore.generated_names(
+                "twitch.build_social_links_message",
+                {},
+            ),
+            (
+                "social_links_message",
+                "social_links_message_status",
+                "channel_information_available",
+                "channel_information_status",
+            ),
+        )
 
     def test_nested_routine_shares_routine_variables_with_parent(self) -> None:
         child = self.routine_store.add("Child")

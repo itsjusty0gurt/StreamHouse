@@ -68,6 +68,20 @@ VARIABLE_INFO: dict[str, tuple[str, str]] = {
     "followage_status": ("available", "Follow-age formatting result"),
     "account_age": ("1 year 2 months", "Human-readable Twitch account age"),
     "account_age_status": ("available", "Account-age formatting result"),
+    "discord_url": ("https://discord.gg/example", "Discord URL"),
+    "discord_url_status": ("available", "Discord URL availability"),
+    "youtube_url": ("https://youtube.com/@example", "YouTube URL"),
+    "youtube_url_status": ("available", "YouTube URL availability"),
+    "schedule": ("Weekdays at 7 PM", "Channel schedule"),
+    "schedule_status": ("available", "Schedule availability"),
+    "rules": ("Be kind and have fun.", "Channel rules"),
+    "rules_status": ("available", "Channel rules availability"),
+    "server_info": ("play.example.com", "Server Information"),
+    "server_info_status": ("available", "Server Information availability"),
+    "social_links_message": ("Discord: discord.gg/example", "Social Links Message"),
+    "social_links_message_status": ("available", "Social Links Message availability"),
+    "channel_information_available": ("true", "Channel Information Available"),
+    "channel_information_status": ("available", "Channel Information lookup result"),
 }
 
 VARIABLE_SOURCE_INFO: dict[str, str] = {
@@ -134,6 +148,20 @@ VARIABLE_SOURCE_INFO: dict[str, str] = {
     "followage_status": "Format Duration task",
     "account_age": "Format Duration task",
     "account_age_status": "Format Duration task",
+    "discord_url": "Get Channel Information Field task",
+    "discord_url_status": "Get Channel Information Field task",
+    "youtube_url": "Get Channel Information Field task",
+    "youtube_url_status": "Get Channel Information Field task",
+    "schedule": "Get Channel Information Field task",
+    "schedule_status": "Get Channel Information Field task",
+    "rules": "Get Channel Information Field task",
+    "rules_status": "Get Channel Information Field task",
+    "server_info": "Get Channel Information Field task",
+    "server_info_status": "Get Channel Information Field task",
+    "social_links_message": "Build Social Links Message task",
+    "social_links_message_status": "Build Social Links Message task",
+    "channel_information_available": "Channel Information task",
+    "channel_information_status": "Channel Information task",
 }
 
 

@@ -24,6 +24,7 @@ class BackupManager:
         "memory/twitch_activity.json",
         "memory/stream_sessions.json",
         "twitch/commands.json",
+        "twitch/channel-information.json",
         "twitch/event_triggers.json",
         "automation/routines.json",
         "automation/core_triggers.json",

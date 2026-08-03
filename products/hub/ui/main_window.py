@@ -114,10 +114,15 @@ from products.hub.twitch.activity_history import (
 )
 from products.hub.twitch.chatter_history import ChatterHistoryStore
 from products.hub.twitch.commands import (
+    TwitchCommandSetupState,
     TwitchCommandTrigger,
     TwitchCommandTriggerDispatcher,
     TwitchCommandTriggerOutcome,
     TwitchCommandTriggerStore,
+)
+from products.hub.twitch.channel_information import (
+    ChannelInformation,
+    ChannelInformationStore,
 )
 from products.hub.twitch.tasks import (
     SendTwitchChatMessageTask,
@@ -162,6 +167,7 @@ from products.hub.ui.response_worker import ResponseBatchResult, ResponseDecisio
 from products.hub.ui.streamhouse_ai_worker import StreamhouseAIHealthResult, StreamhouseAIHealthWorker
 from products.hub.ui.automation_page import AutomationPage
 from products.hub.ui.channel_points_page import ChannelPointsPage
+from products.hub.ui.channel_information_page import ChannelInformationPage
 from products.hub.ui.soundboard_page import SoundboardPageWidget
 from shared.streamhouse_shared.responsive import (
     LAYOUT_MODE_AUTOMATIC,
@@ -322,6 +328,7 @@ class MainWindow(QMainWindow):
         training_store: TrainingStore | None = None,
         test_report_store: AITestReportStore | None = None,
         twitch_command_trigger_store: TwitchCommandTriggerStore | None = None,
+        channel_information_store: ChannelInformationStore | None = None,
         twitch_event_trigger_store: TwitchEventTriggerStore | None = None,
         core_trigger_store: CoreTriggerStore | None = None,
         obs_service: ObsWebSocketService | None = None,
@@ -373,9 +380,6 @@ class MainWindow(QMainWindow):
         self.twitch_command_trigger_store = (
             twitch_command_trigger_store or TwitchCommandTriggerStore()
         )
-        self.twitch_command_trigger_dispatcher = TwitchCommandTriggerDispatcher(
-            self.twitch_command_trigger_store
-        )
         self.twitch_event_trigger_store = (
             twitch_event_trigger_store
             or TwitchEventTriggerStore(
@@ -388,6 +392,22 @@ class MainWindow(QMainWindow):
             routine_store=routine_store,
         )
         data_root = routine_store.path.parent.parent
+        self.channel_information_store = (
+            channel_information_store
+            or ChannelInformationStore(data_root / "twitch" / "channel-information.json")
+        )
+        try:
+            self.channel_information_store.load()
+        except (OSError, ValueError, json.JSONDecodeError) as error:
+            self.channel_information_store.information = ChannelInformation()
+            Logger.warning(
+                f"Could not load Channel Information: {error}",
+                source="TWITCH",
+            )
+        self.twitch_command_trigger_dispatcher = TwitchCommandTriggerDispatcher(
+            self.twitch_command_trigger_store,
+            channel_information=self.channel_information_store,
+        )
         self.soundboard_store = soundboard_store or SoundboardStore(
             data_root / "twitch" / "soundboard.json"
         )
@@ -455,6 +475,7 @@ class MainWindow(QMainWindow):
             self.twitch_service,
             self._resolve_task_variables,
             lambda: self.twitch_command_trigger_store,
+            lambda: self.channel_information_store,
         )
         self.task_registry.register(LaunchApplicationTask())
         self.task_registry.register(CloseApplicationTask())
@@ -1868,6 +1889,7 @@ class MainWindow(QMainWindow):
         analytics_layout.addLayout(retention_layout)
         self.channel_tabs.addTab(analytics_page, "Analytics")
         self._build_soundboard_tab()
+        self._build_channel_information_tab()
         self._build_twitch_commands_tab()
         self._build_channel_points_tab()
         self.ui.mainStack.addWidget(self.ai_page)
@@ -2138,6 +2160,18 @@ class MainWindow(QMainWindow):
         )
         introduction.setWordWrap(True)
         layout.addWidget(introduction)
+        section_help = QLabel(
+            "DEFAULT COMMANDS appear first in their stable built-in order. "
+            "CUSTOM COMMANDS follow alphabetically."
+        )
+        section_help.setObjectName("twitchCommandSectionHelp")
+        section_help.setStyleSheet("font-weight: 600;")
+        layout.addWidget(section_help)
+        self.twitch_command_search_edit = QLineEdit()
+        self.twitch_command_search_edit.setObjectName("twitchCommandSearch")
+        self.twitch_command_search_edit.setPlaceholderText("Search commands…")
+        self.twitch_command_search_edit.setClearButtonEnabled(True)
+        layout.addWidget(self.twitch_command_search_edit)
         self.twitch_commands_table = QTableWidget(0, 8)
         self.twitch_commands_table.setObjectName("twitchCommandsTable")
         self.twitch_commands_table.setHorizontalHeaderLabels(
@@ -2174,6 +2208,9 @@ class MainWindow(QMainWindow):
         self.open_twitch_command_routine_button = QPushButton("Open Routine")
         self.reset_twitch_command_button = QPushButton("Reset to Default")
         self.restore_twitch_commands_button = QPushButton("Restore Default Commands")
+        self.configure_channel_information_button = QPushButton(
+            "Configure Channel Information"
+        )
         actions.addWidget(self.add_twitch_command_button)
         actions.addWidget(self.edit_twitch_command_button)
         actions.addWidget(self.toggle_twitch_command_button)
@@ -2181,6 +2218,7 @@ class MainWindow(QMainWindow):
         actions.addWidget(self.open_twitch_command_routine_button)
         actions.addWidget(self.reset_twitch_command_button)
         actions.addWidget(self.restore_twitch_commands_button)
+        actions.addWidget(self.configure_channel_information_button)
         actions.addStretch()
         layout.addLayout(actions)
         preview = QHBoxLayout()
@@ -2217,6 +2255,9 @@ class MainWindow(QMainWindow):
         self.restore_twitch_commands_button.clicked.connect(
             self._restore_twitch_commands
         )
+        self.configure_channel_information_button.clicked.connect(
+            self._configure_selected_command
+        )
         self.twitch_command_preview_button.clicked.connect(
             self._preview_twitch_command
         )
@@ -2226,7 +2267,24 @@ class MainWindow(QMainWindow):
         self.twitch_commands_table.itemSelectionChanged.connect(
             self._update_twitch_command_actions
         )
+        self.twitch_command_search_edit.textChanged.connect(
+            lambda _text: self._refresh_twitch_commands()
+        )
         self._refresh_twitch_commands()
+
+    def _build_channel_information_tab(self) -> None:
+        self.channel_information_page = ChannelInformationPage(
+            self.channel_information_store,
+            self.twitch_command_trigger_store,
+            self.channel_tabs,
+        )
+        self.channel_information_page.saved.connect(
+            self._refresh_twitch_commands
+        )
+        self.channel_tabs.addTab(
+            self.channel_information_page,
+            "Channel Information",
+        )
 
     def _build_channel_points_tab(self) -> None:
         self.channel_points_page = ChannelPointsPage(
@@ -2335,11 +2393,26 @@ class MainWindow(QMainWindow):
             selected = self._selected_twitch_command()
             selected_trigger_id = selected.trigger_id if selected else ""
         table = self.twitch_commands_table
-        table.setRowCount(len(self.twitch_command_trigger_store.triggers))
+        commands = self.twitch_command_trigger_store.ordered_triggers(
+            self.twitch_command_search_edit.text()
+            if hasattr(self, "twitch_command_search_edit")
+            else ""
+        )
+        table.setRowCount(len(commands))
         selected_row = -1
-        for row, command in enumerate(self.twitch_command_trigger_store.triggers):
+        for row, command in enumerate(commands):
+            requirement = self.twitch_command_trigger_store.setup_requirement(
+                command.default_id
+            )
+            state = (
+                self.twitch_command_trigger_store.setup_state(
+                    command, self.channel_information_store
+                ).value
+                if requirement
+                else "Enabled" if command.enabled else "Disabled"
+            )
             values = (
-                "Enabled" if command.enabled else "Disabled",
+                state,
                 f"!{command.name}",
                 ", ".join(f"!{alias}" for alias in command.aliases),
                 command.permission.title(),
@@ -2355,6 +2428,10 @@ class MainWindow(QMainWindow):
                         Qt.ItemDataRole.UserRole,
                         command.trigger_id,
                     )
+                    if state == TwitchCommandSetupState.SETUP_REQUIRED.value:
+                        item.setForeground(QColor("#d6a84b"))
+                    elif state == TwitchCommandSetupState.CONFIGURATION_ERROR.value:
+                        item.setForeground(QColor("#e06c75"))
                 table.setItem(row, column, item)
             if command.trigger_id == selected_trigger_id:
                 selected_row = row
@@ -2393,11 +2470,43 @@ class MainWindow(QMainWindow):
         self.reset_twitch_command_button.setEnabled(
             command is not None and command.is_default
         )
+        requirement = (
+            self.twitch_command_trigger_store.setup_requirement(command.default_id)
+            if command is not None
+            else ""
+        )
+        self.configure_channel_information_button.setEnabled(bool(requirement))
         self.toggle_twitch_command_button.setText(
             "Disable Selected"
             if command is None or command.enabled
             else "Enable Selected"
         )
+        if command is not None and requirement:
+            state = self.twitch_command_trigger_store.setup_state(
+                command, self.channel_information_store
+            )
+            if state in {
+                TwitchCommandSetupState.SETUP_REQUIRED,
+                TwitchCommandSetupState.CONFIGURATION_ERROR,
+            }:
+                missing = self.twitch_command_trigger_store.setup_requirement_label(
+                    command.default_id
+                )
+                self.twitch_command_status_label.setText(
+                    f"{state.value}: !{command.name} requires {missing}."
+                )
+
+    def _configure_selected_command(self) -> None:
+        command = self._selected_twitch_command()
+        if command is None:
+            return
+        requirement = self.twitch_command_trigger_store.setup_requirement(
+            command.default_id
+        )
+        if not requirement:
+            return
+        self.channel_tabs.setCurrentWidget(self.channel_information_page)
+        self.channel_information_page.focus_for_command(command.default_id)
 
     def _open_twitch_command_routine(self) -> None:
         command = self._selected_twitch_command()
@@ -2706,7 +2815,27 @@ class MainWindow(QMainWindow):
         elif result.outcome is TwitchCommandTriggerOutcome.NOT_FOUND:
             status = "No custom command matched."
         elif result.outcome is TwitchCommandTriggerOutcome.DISABLED:
-            status = "That command is disabled."
+            trigger = self.twitch_command_trigger_store.resolve(
+                text.removeprefix("!").split(maxsplit=1)[0]
+            )
+            if (
+                trigger is not None
+                and self.twitch_command_trigger_store.setup_requirement(
+                    trigger.default_id
+                )
+                and self.twitch_command_trigger_store.setup_state(
+                    trigger, self.channel_information_store
+                ) is TwitchCommandSetupState.SETUP_REQUIRED
+            ):
+                status = (
+                    "Setup Required: configure "
+                    + self.twitch_command_trigger_store.setup_requirement_label(
+                        trigger.default_id
+                    )
+                    + "."
+                )
+            else:
+                status = "That command is disabled."
         else:
             status = result.outcome.value.replace("_", " ").title()
         self.twitch_command_status_label.setText(status)

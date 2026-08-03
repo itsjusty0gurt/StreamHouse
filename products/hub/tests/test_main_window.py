@@ -41,6 +41,7 @@ from products.hub.automation.models import (
 from products.hub.obs_service.triggers import OBS_TRIGGER_TYPES
 from products.hub.obs_service.models import ObsEvent
 from products.hub.twitch.commands import TwitchCommandTriggerStore
+from products.hub.twitch.channel_information import ChannelInformationStore
 from products.hub.twitch.automation_triggers import TwitchEventTriggerStore
 from products.hub.twitch.service import TwitchConnectionState
 from products.hub.twitch.session_history import StreamSession
@@ -137,6 +138,9 @@ class MainWindowTests(unittest.TestCase):
             training_store=self.training_store,
             test_report_store=self.test_report_store,
             twitch_command_trigger_store=self.twitch_command_trigger_store,
+            channel_information_store=ChannelInformationStore(
+                command_root / "channel-information.json"
+            ),
             twitch_event_trigger_store=self.twitch_event_trigger_store,
             auto_upgrade_permissions=False,
         )
@@ -944,6 +948,7 @@ class MainWindowTests(unittest.TestCase):
                 "Chat",
                 "Analytics",
                 "Soundboard",
+                "Channel Information",
                 "Commands",
                 "Channel Points",
             ],
@@ -967,7 +972,7 @@ class MainWindowTests(unittest.TestCase):
         )
         self.assertTrue(all(page is not None for page in pages))
         self.assertEqual(self.window.ai_tabs.count(), 5)
-        self.assertEqual(self.window.channel_tabs.count(), 5)
+        self.assertEqual(self.window.channel_tabs.count(), 6)
         self.assertFalse(self.window.channel_points_page.create_button.isEnabled())
         self.assertEqual(
             [
@@ -1091,6 +1096,53 @@ class MainWindowTests(unittest.TestCase):
             self.window.restore_twitch_commands_button.click()
         restore.assert_called_once_with()
         self.assertIsNotNone(self.twitch_command_trigger_store.default("game"))
+
+    def test_configured_defaults_render_first_and_open_channel_information(self) -> None:
+        self.twitch_command_trigger_store.add("alpha", "Hello")
+        self.twitch_command_trigger_store.seed_default_commands()
+        self.window._refresh_twitch_commands()
+
+        names = [
+            self.window.twitch_commands_table.item(row, 1).text()
+            for row in range(self.window.twitch_commands_table.rowCount())
+        ]
+        self.assertEqual(
+            names[:12],
+            [
+                "!uptime", "!followage", "!accountage", "!title", "!game", "!commands",
+                "!discord", "!socials", "!youtube", "!schedule", "!rules", "!server",
+            ],
+        )
+        self.assertEqual(names[12:], ["!alpha"])
+        discord_row = names.index("!discord")
+        self.assertEqual(
+            self.window.twitch_commands_table.item(discord_row, 0).text(),
+            "Setup Required",
+        )
+        self.assertEqual(
+            self.window.twitch_commands_table.item(discord_row, 7).text(),
+            "Default",
+        )
+        self.window.twitch_commands_table.selectRow(discord_row)
+        self.window.configure_channel_information_button.click()
+        self.assertIs(
+            self.window.channel_tabs.currentWidget(),
+            self.window.channel_information_page,
+        )
+        self.assertFalse(
+            self.window.channel_information_page.enable_after_saving_check.isHidden()
+        )
+
+    def test_command_filter_keeps_matching_defaults_before_customs(self) -> None:
+        self.twitch_command_trigger_store.seed_default_commands()
+        self.twitch_command_trigger_store.add("socialparty", "Party")
+        self.window.twitch_command_search_edit.setText("social")
+
+        names = [
+            self.window.twitch_commands_table.item(row, 1).text()
+            for row in range(self.window.twitch_commands_table.rowCount())
+        ]
+        self.assertEqual(names, ["!socials", "!socialparty"])
 
     def test_network_backed_command_runs_off_the_qt_thread(self) -> None:
         self.twitch_command_trigger_store.seed_default_commands()

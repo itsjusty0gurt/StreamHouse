@@ -143,6 +143,33 @@ class CustomVariableStore:
     ) -> tuple[str, ...]:
         """Return the template names created by an automation task."""
         normalized_type = task_type.strip().casefold()
+        if normalized_type == "twitch.get_channel_information_field":
+            field_id = str(config.get("field", "")).strip().casefold()
+            requested = str(config.get("output_variable", "")).strip()
+            try:
+                name = cls.validate_generated_name(requested or field_id)
+            except ValueError:
+                return ()
+            return (
+                name,
+                f"{name}_status",
+                "channel_information_available",
+                "channel_information_status",
+            )
+        if normalized_type == "twitch.build_social_links_message":
+            requested = str(config.get("output_variable", "")).strip()
+            try:
+                name = cls.validate_generated_name(
+                    requested or "social_links_message"
+                )
+            except ValueError:
+                return ()
+            return (
+                name,
+                f"{name}_status",
+                "channel_information_available",
+                "channel_information_status",
+            )
         key = {
             "core.create_global_variable": "name",
             "core.create_session_variable": "name",

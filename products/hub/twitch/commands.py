@@ -17,8 +17,13 @@ from shared.streamhouse_runtime.json_store import atomic_write_json, load_json_w
 from shared.streamhouse_runtime.paths import user_data_root
 from products.hub.twitch.models import TwitchMessage
 from products.hub.twitch.tasks import SendTwitchChatMessageTask
+from products.hub.twitch.channel_information import (
+    CHANNEL_INFORMATION_FIELD_LABELS,
+    ChannelInformationStore,
+)
 from products.hub.twitch.default_commands import (
     DefaultCommandDefinition,
+    default_command_order,
     default_command_definitions,
 )
 
@@ -39,6 +44,14 @@ class TwitchCommandTriggerOutcome(StrEnum):
     COOLDOWN = "cooldown"
     READY = "ready"
     TASK_FAILED = "task_failed"
+    CONFIGURATION_ERROR = "configuration_error"
+
+
+class TwitchCommandSetupState(StrEnum):
+    SETUP_REQUIRED = "Setup Required"
+    READY_DISABLED = "Ready but Disabled"
+    ENABLED = "Enabled"
+    CONFIGURATION_ERROR = "Configuration Error"
 
 
 @dataclass(slots=True)
@@ -463,6 +476,7 @@ class TwitchCommandTriggerStore:
             permission=TwitchCommandPermission.EVERYONE.value,
             global_cooldown_seconds=definition.global_cooldown_seconds,
             user_cooldown_seconds=definition.user_cooldown_seconds,
+            enabled=definition.enabled,
             uses=uses,
             last_used_at=last_used_at,
             has_chat_response=True,
@@ -489,6 +503,75 @@ class TwitchCommandTriggerStore:
             (trigger for trigger in self.triggers if trigger.routine_id == routine_id),
             None,
         )
+
+    def ordered_triggers(self, filter_text: str = "") -> list[TwitchCommandTrigger]:
+        query = filter_text.strip().casefold().removeprefix("!")
+        matches = [
+            trigger
+            for trigger in self.triggers
+            if not query
+            or query in trigger.name.casefold()
+            or any(query in alias.casefold() for alias in trigger.aliases)
+            or query in ("default" if trigger.is_default else "custom")
+        ]
+        order = default_command_order()
+        defaults = sorted(
+            (trigger for trigger in matches if trigger.is_default),
+            key=lambda trigger: (order.get(trigger.default_id, 10_000), trigger.name),
+        )
+        customs = sorted(
+            (trigger for trigger in matches if not trigger.is_default),
+            key=lambda trigger: (trigger.name.casefold(), trigger.trigger_id),
+        )
+        return [*defaults, *customs]
+
+    def setup_state(
+        self,
+        trigger: TwitchCommandTrigger,
+        channel_information: ChannelInformationStore,
+    ) -> TwitchCommandSetupState:
+        requirement = self.setup_requirement(trigger.default_id)
+        if not requirement:
+            return (
+                TwitchCommandSetupState.ENABLED
+                if trigger.enabled
+                else TwitchCommandSetupState.READY_DISABLED
+            )
+        available = (
+            bool(channel_information.usable_social_links())
+            if requirement == "socials"
+            else channel_information.field_available(requirement)
+        )
+        if available:
+            return (
+                TwitchCommandSetupState.ENABLED
+                if trigger.enabled
+                else TwitchCommandSetupState.READY_DISABLED
+            )
+        return (
+            TwitchCommandSetupState.CONFIGURATION_ERROR
+            if trigger.enabled
+            else TwitchCommandSetupState.SETUP_REQUIRED
+        )
+
+    @staticmethod
+    def setup_requirement(default_id: str) -> str:
+        definition = next(
+            (
+                value
+                for value in default_command_definitions()
+                if value.default_id == default_id
+            ),
+            None,
+        )
+        return definition.setup_requirement if definition is not None else ""
+
+    @classmethod
+    def setup_requirement_label(cls, default_id: str) -> str:
+        requirement = cls.setup_requirement(default_id)
+        if requirement == "socials":
+            return "at least one checked, valid social link"
+        return CHANNEL_INFORMATION_FIELD_LABELS.get(requirement, "")
 
     def set_enabled(self, trigger_id: str, enabled: bool) -> bool:
         trigger = self.get(trigger_id)
@@ -647,9 +730,11 @@ class TwitchCommandTriggerDispatcher:
         store: TwitchCommandTriggerStore,
         *,
         clock: Callable[[], float] = monotonic,
+        channel_information: ChannelInformationStore | None = None,
     ) -> None:
         self.store = store
         self.clock = clock
+        self.channel_information = channel_information
         self._global_uses: dict[str, float] = {}
         self._viewer_uses: dict[tuple[str, str], float] = {}
 
@@ -686,6 +771,18 @@ class TwitchCommandTriggerDispatcher:
             return TwitchCommandTriggerResult(
                 TwitchCommandTriggerOutcome.DISABLED, **base
             )
+        requirement = self.store.setup_requirement(trigger.default_id)
+        if requirement and self.channel_information is not None:
+            available = (
+                bool(self.channel_information.usable_social_links())
+                if requirement == "socials"
+                else self.channel_information.field_available(requirement)
+            )
+            if not available:
+                return TwitchCommandTriggerResult(
+                    TwitchCommandTriggerOutcome.CONFIGURATION_ERROR,
+                    **base,
+                )
         if not self._has_permission(trigger.permission, message):
             return TwitchCommandTriggerResult(
                 TwitchCommandTriggerOutcome.DENIED, **base

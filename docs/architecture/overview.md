@@ -412,7 +412,7 @@ Handlers are registered in `MainWindow` with one stable lowercase task type.
 | Logic | `products/hub/automation/logic_tasks.py` | break, input, random number/choice, if/else, switch, while |
 | Files | `products/hub/automation/file_tasks.py` | read text/random/specific lines, write, existence, line count |
 | Control | `products/hub/automation/control_tasks.py` | enable/disable routines/tasks, pause/clear queues |
-| Twitch | `products/hub/twitch/tasks.py` | chat/pinned chat, ads, moderation, redemption results, user/stream/channel/follow lookups, enabled-command lists |
+| Twitch | `products/hub/twitch/tasks.py` | chat/pinned chat, ads, moderation, redemption results, user/stream/channel/follow lookups, enabled-command lists, Hub-owned Channel Information fields and social-message building |
 | OBS | `products/hub/obs_service/tasks.py` | scenes, sources, inputs, filters, media, outputs, hotkeys, raw request |
 
 Python-script tasks expose trigger context through `STREAMHOUSE_*` environment
@@ -798,6 +798,7 @@ legacy `sally.automation.*` identifiers and `.sally-routine.json` files.
 | `automation/queues.json` | Hub | queue definitions; pending items are not persisted |
 | `automation/variables.json` | Hub | global values only; session/routine are volatile |
 | `twitch/commands.json` | Hub | commands, permissions, aliases, cooldowns, stats, default IDs, removed-default tombstones |
+| `twitch/channel-information.json` | Hub | versioned social links, social inclusion choices, schedule, rules, and server information used by commands and automation tasks |
 | `twitch/event_triggers.json` | Hub | Twitch event/first-message trigger definitions |
 | `twitch/soundboard.json` | Hub | pages, buttons, routine IDs |
 | `twitch/soundboard-relay.json` | Hub | non-secret relay URL/channel/autoconnect |

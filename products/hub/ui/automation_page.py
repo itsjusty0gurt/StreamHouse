@@ -627,6 +627,14 @@ class TaskEditorDialog(QDialog):
         "twitch.build_command_list": (
             {"key": "maximum_characters", "label": "Maximum characters", "kind": "number", "default": 440, "minimum": 50, "maximum": 480},
         ),
+        "twitch.get_channel_information_field": (
+            {"key": "field", "label": "Field", "kind": "choice", "default": "discord_url", "choices": (("Discord URL", "discord_url"), ("YouTube URL", "youtube_url"), ("Schedule", "schedule"), ("Rules", "rules"), ("Server Information", "server_info"))},
+            {"key": "output_variable", "label": "Optional output name", "kind": "text", "default": "", "placeholder": "Blank uses the standard field name"},
+        ),
+        "twitch.build_social_links_message": (
+            {"key": "maximum_characters", "label": "Maximum characters", "kind": "number", "default": 480, "minimum": 50, "maximum": 480},
+            {"key": "output_variable", "label": "Optional output name", "kind": "text", "default": "", "placeholder": "Blank uses social_links_message"},
+        ),
         "twitch.run_commercial": (
             {"key": "length", "label": "Length", "kind": "choice", "default": 30, "choices": (("30 seconds", 30), ("60 seconds", 60), ("90 seconds", 90), ("120 seconds", 120), ("150 seconds", 150), ("180 seconds", 180))},
         ),
@@ -3934,6 +3942,8 @@ class AutomationPage(QWidget):
             "twitch.get_channel_information": "Reads the broadcaster's title and category",
             "twitch.get_follow_relationship": "Checks whether a user follows the broadcaster",
             "twitch.build_command_list": "Builds a concise list of enabled commands",
+            "twitch.get_channel_information_field": "Reads a reusable Hub-owned Channel Information value",
+            "twitch.build_social_links_message": "Builds a concise message from checked, valid social links",
             "core.format_duration": "Formats dates or seconds as a readable duration",
             "core.select_text": "Selects response text from a value-to-text map",
             "core.launch_application": "Launches an application",

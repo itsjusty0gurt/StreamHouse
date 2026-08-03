@@ -38,6 +38,10 @@ class ReleaseToolsTests(unittest.TestCase):
             commands.write_text(
                 '{"version":2,"triggers":[]}', encoding="utf-8"
             )
+            channel_information = root / "twitch" / "channel-information.json"
+            channel_information.write_text(
+                '{"version":1,"social_links":{}}', encoding="utf-8"
+            )
             event_triggers = root / "twitch" / "event_triggers.json"
             event_triggers.write_text(
                 '{"version":1,"triggers":[]}', encoding="utf-8"
@@ -55,6 +59,7 @@ class ReleaseToolsTests(unittest.TestCase):
 
             with ZipFile(archive) as source:
                 self.assertIn("twitch/commands.json", source.namelist())
+                self.assertIn("twitch/channel-information.json", source.namelist())
                 self.assertIn("twitch/event_triggers.json", source.namelist())
                 self.assertIn("automation/routines.json", source.namelist())
                 self.assertIn(

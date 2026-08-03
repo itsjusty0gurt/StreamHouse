@@ -15,6 +15,8 @@ class DefaultCommandDefinition:
     tasks: tuple[TaskDefinition, ...]
     global_cooldown_seconds: int = 10
     user_cooldown_seconds: int = 30
+    enabled: bool = True
+    setup_requirement: str = ""
 
     @property
     def trigger_id(self) -> str:
@@ -61,6 +63,37 @@ def _send(command: str):
         "twitch.send_chat_message",
         "Send Twitch chat response",
         {"message": "{command_response}", "as_bot": True},
+    )
+
+
+def _channel_information_command(
+    command: str,
+    field: str,
+    response: str,
+) -> DefaultCommandDefinition:
+    return DefaultCommandDefinition(
+        command,
+        command,
+        (
+            _task(
+                command,
+                "channel-information",
+                "twitch.get_channel_information_field",
+                f"Get {field.replace('_', ' ').title()}",
+                {"field": field},
+            ),
+            _task(
+                command,
+                "send",
+                "twitch.send_chat_message",
+                "Send Twitch chat response",
+                {"message": response, "as_bot": True},
+            ),
+        ),
+        global_cooldown_seconds=15,
+        user_cooldown_seconds=30,
+        enabled=False,
+        setup_requirement=field,
     )
 
 
@@ -207,4 +240,63 @@ def default_command_definitions() -> tuple[DefaultCommandDefinition, ...]:
         global_cooldown_seconds=10,
         user_cooldown_seconds=30,
     )
-    return uptime, followage, accountage, title, game, commands
+    discord = _channel_information_command(
+        "discord", "discord_url", "Join the Discord: {discord_url}"
+    )
+    socials = DefaultCommandDefinition(
+        "socials",
+        "socials",
+        (
+            _task(
+                "socials",
+                "social-links",
+                "twitch.build_social_links_message",
+                "Build social links message",
+                {"maximum_characters": 480},
+            ),
+            _task(
+                "socials",
+                "send",
+                "twitch.send_chat_message",
+                "Send Twitch chat response",
+                {"message": "{social_links_message}", "as_bot": True},
+            ),
+        ),
+        global_cooldown_seconds=15,
+        user_cooldown_seconds=30,
+        enabled=False,
+        setup_requirement="socials",
+    )
+    youtube = _channel_information_command(
+        "youtube", "youtube_url", "YouTube: {youtube_url}"
+    )
+    schedule = _channel_information_command(
+        "schedule", "schedule", "Schedule: {schedule}"
+    )
+    rules = _channel_information_command(
+        "rules", "rules", "Channel rules: {rules}"
+    )
+    server = _channel_information_command(
+        "server", "server_info", "Server information: {server_info}"
+    )
+    return (
+        uptime,
+        followage,
+        accountage,
+        title,
+        game,
+        commands,
+        discord,
+        socials,
+        youtube,
+        schedule,
+        rules,
+        server,
+    )
+
+
+def default_command_order() -> dict[str, int]:
+    return {
+        definition.default_id: index
+        for index, definition in enumerate(default_command_definitions())
+    }

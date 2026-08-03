@@ -1,11 +1,18 @@
 from __future__ import annotations
 
 import unittest
+import tempfile
+from pathlib import Path
 
 from products.hub.automation.models import TaskDefinition, TriggerEvent
 from products.hub.automation.tasks import TaskRegistry
 from products.hub.twitch.tasks import TWITCH_TASK_LABELS, register_twitch_tasks
 from products.hub.twitch.tasks import SendTwitchChatMessageTask
+from products.hub.twitch.channel_information import (
+    ChannelInformation,
+    ChannelInformationStore,
+    SocialLink,
+)
 
 
 class FakeTwitchService:
@@ -50,9 +57,18 @@ class FakeTwitchService:
 
 class TwitchTaskTests(unittest.TestCase):
     def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
         self.service = FakeTwitchService()
+        self.channel_information = ChannelInformationStore(
+            Path(self.temporary.name) / "channel-information.json"
+        )
+        self.channel_information.load()
         self.registry = TaskRegistry()
-        register_twitch_tasks(self.registry, self.service)
+        register_twitch_tasks(
+            self.registry,
+            self.service,
+            channel_information_provider=lambda: self.channel_information,
+        )
         self.trigger = TriggerEvent(
             "event",
             "twitch",
@@ -65,6 +81,9 @@ class TwitchTaskTests(unittest.TestCase):
                 "redemption_id": "redeem-1",
             },
         )
+
+    def tearDown(self) -> None:
+        self.temporary.cleanup()
 
     def execute(self, task_type: str, config: dict) -> bool:
         task = TaskDefinition("task", task_type, task_type, config)
@@ -132,6 +151,74 @@ class TwitchTaskTests(unittest.TestCase):
 
         self.assertIn(("title", "Playing Portal 2 with Viewer"), self.service.calls)
         self.assertIn(("category", "Portal 2"), self.service.calls)
+
+    def test_channel_information_tasks_generate_values_and_status(self) -> None:
+        information = ChannelInformation(schedule="Friday at 8 PM")
+        information.social_links["discord"] = SocialLink(
+            True, "https://discord.gg/example"
+        )
+        information.social_links["youtube"] = SocialLink(
+            False, "https://youtube.com/@example"
+        )
+        self.channel_information.save(information)
+
+        self.assertTrue(
+            self.execute(
+                "twitch.get_channel_information_field",
+                {"field": "schedule"},
+            )
+        )
+        self.assertEqual(self.trigger.context["schedule"], "Friday at 8 PM")
+        self.assertEqual(self.trigger.context["schedule_status"], "available")
+        self.assertEqual(self.trigger.context["channel_information_available"], "true")
+        self.assertTrue(
+            self.execute(
+                "twitch.get_channel_information_field",
+                {"field": "schedule", "output_variable": "next_stream"},
+            )
+        )
+        self.assertEqual(self.trigger.context["next_stream"], "Friday at 8 PM")
+        self.assertEqual(self.trigger.context["next_stream_status"], "available")
+        self.assertTrue(
+            self.execute(
+                "twitch.build_social_links_message",
+                {"maximum_characters": 480},
+            )
+        )
+        self.assertEqual(
+            self.trigger.context["social_links_message"],
+            "Discord: https://discord.gg/example",
+        )
+        self.assertNotIn("YouTube", self.trigger.context["social_links_message"])
+
+    def test_unavailable_channel_information_and_missing_templates_never_send(self) -> None:
+        self.assertFalse(
+            self.execute(
+                "twitch.get_channel_information_field",
+                {"field": "discord_url"},
+            )
+        )
+        self.assertEqual(self.trigger.context["discord_url_status"], "unavailable")
+        self.assertFalse(
+            self.execute(
+                "twitch.send_chat_message",
+                {"message": "Join: {discord_url}", "as_bot": True},
+            )
+        )
+        self.assertEqual(self.service.calls, [])
+        checked_blank = ChannelInformation()
+        checked_blank.social_links["discord"] = SocialLink(True, "")
+        self.channel_information.save(checked_blank)
+        self.assertFalse(
+            self.execute(
+                "twitch.build_social_links_message",
+                {"maximum_characters": 480},
+            )
+        )
+        self.assertEqual(
+            self.trigger.context["social_links_message_status"],
+            "unavailable",
+        )
 
 if __name__ == "__main__":
     unittest.main()
