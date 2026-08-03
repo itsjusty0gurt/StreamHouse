@@ -658,7 +658,10 @@ class MainWindow(QMainWindow):
         self.ad_upcoming_duration = 0
         self.ui = Ui_MainWindow()
         self.ui.setupUi(self)
-        self.window_chrome = install_window_chrome(self)
+        self.window_chrome = install_window_chrome(
+            self,
+            native_windows_frame=True,
+        )
         self._responsive_ready = False
         self._active_layout_orientation = ""
         for page_title in (

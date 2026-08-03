@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import sys
+
 from PySide6.QtCore import QEvent, QObject, QPoint, QRect, QSize, Qt
 from PySide6.QtGui import QCursor, QMouseEvent
 from PySide6.QtWidgets import (
@@ -214,10 +216,17 @@ def _resize_cursor_for_edges(edges: Qt.Edges) -> QCursor:
 class WindowChrome(QObject):
     """Owns the title bar and invisible native resize handles for one window."""
 
-    def __init__(self, window: QMainWindow, title_bar: StreamhouseTitleBar) -> None:
+    def __init__(
+        self,
+        window: QMainWindow,
+        title_bar: StreamhouseTitleBar,
+        *,
+        native_frame: bool = False,
+    ) -> None:
         super().__init__(window)
         self._window = window
         self.title_bar = title_bar
+        self._native_frame = native_frame
         left = Qt.Edge.LeftEdge
         right = Qt.Edge.RightEdge
         top = Qt.Edge.TopEdge
@@ -263,12 +272,15 @@ class WindowChrome(QObject):
             "bottom_right": QRect(width - corner, height - corner, corner, corner),
         }
         for name, handle in self._handles.items():
-            handle.setVisible(not maximized)
+            handle.setVisible(not self._native_frame and not maximized)
             handle.setGeometry(geometries[name])
             handle.raise_()
 
-
-def install_window_chrome(window: QMainWindow) -> WindowChrome:
+def install_window_chrome(
+    window: QMainWindow,
+    *,
+    native_windows_frame: bool = False,
+) -> WindowChrome:
     """Install the standard Streamhouse title bar on a main window once."""
 
     existing = getattr(window, "_streamhouse_window_chrome", None)
@@ -290,8 +302,17 @@ def install_window_chrome(window: QMainWindow) -> WindowChrome:
     menu_bar = window.menuBar()
     if menu_bar is not None and not menu_bar.actions():
         menu_bar.hide()
-    window.setWindowFlag(Qt.WindowType.FramelessWindowHint, True)
+    use_native_frame = native_windows_frame and sys.platform == "win32"
+    if use_native_frame:
+        title_bar.hide()
+        window.setWindowFlag(Qt.WindowType.FramelessWindowHint, False)
+        window.setWindowFlag(Qt.WindowType.WindowSystemMenuHint, True)
+        window.setWindowFlag(Qt.WindowType.WindowMinimizeButtonHint, True)
+        window.setWindowFlag(Qt.WindowType.WindowMaximizeButtonHint, True)
+        window.setWindowFlag(Qt.WindowType.WindowCloseButtonHint, True)
+    else:
+        window.setWindowFlag(Qt.WindowType.FramelessWindowHint, True)
 
-    chrome = WindowChrome(window, title_bar)
+    chrome = WindowChrome(window, title_bar, native_frame=use_native_frame)
     window._streamhouse_window_chrome = chrome
     return chrome

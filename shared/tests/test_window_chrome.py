@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import sys
 import unittest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -103,6 +104,22 @@ class WindowChromeTests(unittest.TestCase):
         self.assertEqual(handles["bottom_right"], Qt.CursorShape.SizeFDiagCursor)
         self.assertEqual(handles["top_right"], Qt.CursorShape.SizeBDiagCursor)
         self.assertEqual(handles["bottom_left"], Qt.CursorShape.SizeBDiagCursor)
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows native frame only")
+    def test_native_windows_frame_preserves_system_snap_capabilities(self) -> None:
+        chrome = install_window_chrome(
+            self.window,
+            native_windows_frame=True,
+        )
+        flags = self.window.windowFlags()
+
+        self.assertFalse(flags & Qt.WindowType.FramelessWindowHint)
+        self.assertTrue(flags & Qt.WindowType.WindowSystemMenuHint)
+        self.assertTrue(flags & Qt.WindowType.WindowMinimizeButtonHint)
+        self.assertTrue(flags & Qt.WindowType.WindowMaximizeButtonHint)
+        self.assertTrue(flags & Qt.WindowType.WindowCloseButtonHint)
+        self.assertTrue(chrome.title_bar.isHidden())
+        self.assertTrue(chrome._native_frame)
 
 
 if __name__ == "__main__":
