@@ -28,6 +28,14 @@ class ReleaseToolsTests(unittest.TestCase):
         )
         self.assertFalse((root / "extensions" / "twitch" / "render.yaml").exists())
 
+    def test_legacy_render_entry_point_forwards_to_current_relay(self) -> None:
+        from extensions.twitch.app import relay_server as current
+        from twitch_extension import relay_server as legacy
+
+        self.assertIs(legacy.RelayHandler, current.RelayHandler)
+        self.assertIs(legacy.RelayState, current.RelayState)
+        self.assertIs(legacy.main, current.main)
+
     def test_backup_create_and_restore(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

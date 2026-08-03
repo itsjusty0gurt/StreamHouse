@@ -670,6 +670,13 @@ Viewer assets emit
 `STREAMHOUSE_RELAY_BASE` and only read `SALLY_RELAY_BASE` as a compatibility
 fallback.
 
+The existing Render service also retains dashboard-stored build/start commands
+that import `twitch_extension.relay_server`. The root `twitch_extension/`
+package is a deliberately thin compatibility entry point forwarding to
+`extensions/twitch/app/relay_server.py`. Keep it dependency-free and remove it
+only after the production service commands have been migrated to the paths in
+root `render.yaml`.
+
 Hub emits `/api/streamhouse/config`, `/api/streamhouse/poll`, and
 `/api/streamhouse/ack` with `X-Streamhouse-Channel` and `X-Streamhouse-Key`.
 The hosted relay temporarily accepts the former `/api/sally/*` routes and
