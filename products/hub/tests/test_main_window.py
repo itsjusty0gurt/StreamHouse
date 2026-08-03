@@ -351,10 +351,14 @@ class MainWindowTests(unittest.TestCase):
     def test_task_add_menu_is_grouped_by_service(self) -> None:
         menu = QMenu()
         add_menu = self.window.automation_page._add_task_submenu(menu)
-        self.assertEqual([action.text() for action in add_menu.actions()], ["Core", "OBS", "Twitch"])
+        self.assertEqual(
+            [action.text() for action in add_menu.actions()],
+            ["Core", "Counters", "OBS", "Twitch"],
+        )
         core_menu = add_menu.actions()[0].menu()
-        obs_menu = add_menu.actions()[1].menu()
-        twitch_menu = add_menu.actions()[2].menu()
+        counters_menu = add_menu.actions()[1].menu()
+        obs_menu = add_menu.actions()[2].menu()
+        twitch_menu = add_menu.actions()[3].menu()
         self.assertIn("Launch application", [action.text() for action in core_menu.actions()])
         scripts_menu = next(
             action.menu()
@@ -366,6 +370,7 @@ class MainWindowTests(unittest.TestCase):
             ["Run Python script"],
         )
         self.assertIn("Change scene", [action.text() for action in obs_menu.actions()])
+        self.assertIn("Update", [action.text() for action in counters_menu.actions()])
         twitch_tasks = [action.text() for action in twitch_menu.actions()]
         self.assertIn("Send chat message", twitch_tasks)
         self.assertIn("Run commercial", twitch_tasks)
@@ -399,7 +404,7 @@ class MainWindowTests(unittest.TestCase):
         page.select_routine(routine.routine_id)
         menu = QMenu()
         add_menu = page._add_task_submenu(menu)
-        twitch_menu = add_menu.actions()[2].menu()
+        twitch_menu = add_menu.actions()[3].menu()
         commercial_menu = next(
             action.menu()
             for action in twitch_menu.actions()

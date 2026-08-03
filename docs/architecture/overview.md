@@ -413,7 +413,14 @@ Handlers are registered in `MainWindow` with one stable lowercase task type.
 | Files | `products/hub/automation/file_tasks.py` | read text/random/specific lines, write, existence, line count |
 | Control | `products/hub/automation/control_tasks.py` | enable/disable routines/tasks, pause/clear queues |
 | Twitch | `products/hub/twitch/tasks.py` | chat/pinned chat, ads, moderation, redemption results, user/stream/channel/follow lookups, enabled-command lists, Hub-owned Channel Information fields and social-message building |
+| Counters | `products/hub/counters/tasks.py` | transactional update/get/set/reset/leaderboard tasks; routine-scoped generated values are prefixed by the stable counter ID or an explicit output prefix |
 | OBS | `products/hub/obs_service/tasks.py` | scenes, sources, inputs, filters, media, outputs, hotkeys, raw request |
+
+Counter definitions and values remain Hub implementation. `CounterService`
+uses the real stream ID cached by the Twitch companion refresh; it never
+creates a process-lifetime or offline stand-in stream. Each named counter has
+an independent read-modify-write lock and atomic JSON replacement, so selected
+scopes commit as one task transaction without serializing unrelated counters.
 
 Python-script tasks expose trigger context through `STREAMHOUSE_*` environment
 variables. Temporary `SALLY_*` aliases are also emitted so existing trusted
@@ -799,6 +806,8 @@ legacy `sally.automation.*` identifiers and `.sally-routine.json` files.
 | `automation/variables.json` | Hub | global values only; session/routine are volatile |
 | `twitch/commands.json` | Hub | commands, permissions, aliases, cooldowns, stats, default IDs, removed-default tombstones |
 | `twitch/channel-information.json` | Hub | versioned social links, social inclusion choices, schedule, rules, and server information used by commands and automation tasks |
+| `counters/index.json` | Hub | versioned custom-counter definitions and lightweight tracking metadata |
+| `counters/<counter_id>.json` | Hub | one atomic value document per custom counter; shared/current-stream and Twitch-user-ID keyed values |
 | `twitch/event_triggers.json` | Hub | Twitch event/first-message trigger definitions |
 | `twitch/soundboard.json` | Hub | pages, buttons, routine IDs |
 | `twitch/soundboard-relay.json` | Hub | non-secret relay URL/channel/autoconnect |

@@ -143,6 +143,10 @@ class CustomVariableStore:
     ) -> tuple[str, ...]:
         """Return the template names created by an automation task."""
         normalized_type = task_type.strip().casefold()
+        if normalized_type.startswith("counter."):
+            from products.hub.counters.tasks import generated_names
+
+            return generated_names(dict(config))
         if normalized_type == "twitch.get_channel_information_field":
             field_id = str(config.get("field", "")).strip().casefold()
             requested = str(config.get("output_variable", "")).strip()

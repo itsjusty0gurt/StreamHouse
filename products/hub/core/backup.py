@@ -31,6 +31,7 @@ class BackupManager:
         "obs/connection.json",
         "obs/triggers.json",
     )
+    DIRECTORIES = ("counters",)
 
     def __init__(
         self,
@@ -51,6 +52,14 @@ class BackupManager:
             for relative in self.FILES:
                 source = self.project_root / relative
                 if source.exists():
+                    destination.write(source, relative)
+                    included.append(relative)
+            for directory in self.DIRECTORIES:
+                root = self.project_root / directory
+                if not root.is_dir():
+                    continue
+                for source in sorted(root.glob("*.json")):
+                    relative = source.relative_to(self.project_root).as_posix()
                     destination.write(source, relative)
                     included.append(relative)
             destination.writestr(
@@ -82,7 +91,12 @@ class BackupManager:
         with ZipFile(archive) as source:
             for member in source.infolist():
                 relative = member.filename.replace("\\", "/")
-                if relative not in allowed:
+                if relative not in allowed and not any(
+                    relative.startswith(f"{directory}/")
+                    and Path(relative).suffix == ".json"
+                    and len(Path(relative).parts) == 2
+                    for directory in self.DIRECTORIES
+                ):
                     continue
                 destination = (self.project_root / relative).resolve()
                 if self.project_root.resolve() not in destination.parents:

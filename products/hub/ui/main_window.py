@@ -81,6 +81,9 @@ from products.hub.automation.logic_tasks import register_logic_tasks
 from products.hub.automation.file_tasks import register_file_tasks
 from products.hub.automation.value_tasks import register_value_tasks
 from products.hub.automation.queues import AutomationQueueManager, AutomationQueueStore
+from products.hub.counters.service import CounterService
+from products.hub.counters.store import CounterStore
+from products.hub.counters.tasks import register_counter_tasks
 from shared.streamhouse_shared.models import (
     BufferedChatMessage,
     ResponseDecision,
@@ -148,6 +151,7 @@ from products.hub.twitch.health import TwitchHealth
 from products.hub.twitch.analytics import AnalyticsSnapshot, build_analytics
 from products.hub.twitch.simulator import create_eventsub_notification
 from products.hub.ui.generated.ui_mainwindow import Ui_MainWindow
+from products.hub.ui.counters_page import CountersPage
 from products.hub.ui.log_handler import QtLogHandler
 from products.hub.ui.twitch_bridge import TwitchEventBridge
 from products.hub.ui.twitch_assets import twitch_emote_url
@@ -469,6 +473,11 @@ class MainWindow(QMainWindow):
             data_root / "obs" / "triggers.json",
             routine_store,
         )
+        self.counter_store = CounterStore(data_root / "counters")
+        self.counter_service = CounterService(
+            self.counter_store,
+            bot_checker=lambda user_id: user_id in getattr(self, "known_bot_user_ids", set()),
+        )
         self.task_registry = TaskRegistry()
         register_twitch_tasks(
             self.task_registry,
@@ -494,6 +503,15 @@ class MainWindow(QMainWindow):
         )
         register_file_tasks(self.task_registry)
         register_value_tasks(self.task_registry)
+        register_counter_tasks(
+            self.task_registry,
+            self.counter_service,
+            lambda: (
+                getattr(self, "current_memory_stream_id", "")
+                if getattr(self, "stream_is_live", False)
+                else ""
+            ),
+        )
         self.task_registry.register(
             WaitForServiceTask(
                 lambda service: (
@@ -706,6 +724,7 @@ class MainWindow(QMainWindow):
         self._build_stream_companion()
         self._build_ai_page()
         self._build_automation_page()
+        self._build_counters_page()
         self._build_release_tools()
         self._build_ai_settings()
         self._build_responsive_settings()
@@ -721,6 +740,7 @@ class MainWindow(QMainWindow):
             self.ui.twitchButton,
             self.ai_button,
             self.automation_button,
+            self.counters_button,
             self.connections_button,
             self.ui.logsButton,
             self.ui.settingsButton,
@@ -798,6 +818,7 @@ class MainWindow(QMainWindow):
         self.ui.twitchButton.clicked.connect(self.show_twitch)
         self.ai_button.clicked.connect(self.show_ai)
         self.automation_button.clicked.connect(self.show_automation)
+        self.counters_button.clicked.connect(self.show_counters)
         self.connections_button.clicked.connect(self.show_connections)
         self.ui.logsButton.clicked.connect(self.show_logs)
         self.ui.settingsButton.clicked.connect(self.show_settings)
@@ -1110,6 +1131,7 @@ class MainWindow(QMainWindow):
             self.ui.twitchButton,
             self.ai_button,
             self.automation_button,
+            self.counters_button,
             self.connections_button,
             self.ui.logsButton,
             self.ui.settingsButton,
@@ -2570,8 +2592,22 @@ class MainWindow(QMainWindow):
             commands_changed=self._refresh_twitch_commands,
             queue_store=self.automation_queue_store,
             queue_manager=self.automation_queue_manager,
+            counter_service=self.counter_service,
         )
         self.ui.mainStack.addWidget(self.automation_page)
+
+    def _build_counters_page(self) -> None:
+        self.counters_button = QPushButton("Counters")
+        self.counters_button.setCheckable(True)
+        self.ui.verticalLayout.insertWidget(4, self.counters_button)
+        self.counters_page = CountersPage(
+            self.counter_service,
+            lambda: self.current_memory_stream_id if self.stream_is_live else "",
+            self.twitch_command_trigger_store.routine_store,
+            self,
+        )
+        self.counters_page.counters_changed.connect(self.automation_page.refresh)
+        self.ui.mainStack.addWidget(self.counters_page)
 
     def auto_connect_obs(self) -> None:
         """Connect to OBS after the real application event loop has started."""
@@ -5731,6 +5767,7 @@ class MainWindow(QMainWindow):
             "Twitch": self.show_twitch,
             "AI": self.show_ai,
             "Automation": self.show_automation,
+            "Counters": self.show_counters,
             "Logs": self.show_logs,
             "Settings": self.show_settings,
         }
@@ -5757,6 +5794,12 @@ class MainWindow(QMainWindow):
         self.automation_page.refresh()
         self.ui.mainStack.setCurrentWidget(self.automation_page)
         self.automation_button.setChecked(True)
+
+    @Slot()
+    def show_counters(self) -> None:
+        self.counters_page.refresh()
+        self.ui.mainStack.setCurrentWidget(self.counters_page)
+        self.counters_button.setChecked(True)
 
     def show_memories(self) -> None:
         self.show_ai()
