@@ -81,6 +81,13 @@ class TwitchCommandDialog(QDialog):
         form.addRow("Global cooldown", self.global_cooldown_spin)
         form.addRow("Viewer cooldown", self.user_cooldown_spin)
         layout.addLayout(form)
+        if command is not None and command.is_default:
+            source = QLabel(
+                "Streamhouse default command. Its routine and conditional response "
+                "steps remain fully editable; Reset to Default restores the current built-in definition."
+            )
+            source.setWordWrap(True)
+            layout.addWidget(source)
         variables = QLabel(
             "Optional response variables: {user}, {channel}, {uptime}, {followers}, {game}, "
             "{title}, {command}, {args}, {target}, {uses}"
@@ -171,7 +178,10 @@ class TwitchCommandManagerDialog(QDialog):
             routine = self.store.routine_store.get(command.routine_id)
             routine_name = routine.name if routine is not None else "Missing routine"
             state = "Enabled" if command.enabled else "Disabled"
-            item = QListWidgetItem(f"!{command.name}  —  {routine_name}  [{state}]")
+            source = "Default" if command.is_default else "Custom"
+            item = QListWidgetItem(
+                f"!{command.name}  —  {routine_name}  [{state}; {source}]"
+            )
             item.setData(Qt.ItemDataRole.UserRole, command.trigger_id)
             self.command_list.addItem(item)
             if command.trigger_id == selected_trigger_id:

@@ -85,6 +85,20 @@ class AutomationVariableTests(unittest.TestCase):
             ),
             ("answer", "answer_accepted"),
         )
+        self.assertEqual(
+            CustomVariableStore.generated_names(
+                "core.format_duration",
+                {"output_variable": "followage"},
+            ),
+            ("followage", "followage_status"),
+        )
+        self.assertEqual(
+            CustomVariableStore.generated_names(
+                "core.select_text",
+                {"output_variable": "command_response"},
+            ),
+            ("command_response",),
+        )
 
     def test_nested_routine_shares_routine_variables_with_parent(self) -> None:
         child = self.routine_store.add("Child")

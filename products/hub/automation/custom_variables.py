@@ -123,6 +123,19 @@ class CustomVariableStore:
         return clean_name
 
     @classmethod
+    def validate_generated_name(cls, name: str) -> str:
+        """Validate a routine-scoped generated output, including reserved names."""
+        clean_name = name.strip().casefold()
+        if clean_name.startswith("{") and clean_name.endswith("}"):
+            clean_name = clean_name[1:-1].strip()
+        if not cls.NAME_PATTERN.fullmatch(clean_name):
+            raise ValueError(
+                "Generated variable names must start with a letter and contain only "
+                "lowercase letters, numbers, and underscores."
+            )
+        return clean_name
+
+    @classmethod
     def generated_names(
         cls,
         task_type: str,
@@ -141,13 +154,22 @@ class CustomVariableStore:
             "core.file_specific_line": "variable",
             "core.path_exists": "variable",
             "core.file_count_lines": "variable",
+            "core.format_duration": "output_variable",
+            "core.select_text": "output_variable",
         }.get(normalized_type)
         if key is None:
             return ()
         try:
-            name = cls.validate_name(str(config.get(key, "")))
+            validator = (
+                cls.validate_generated_name
+                if normalized_type in {"core.format_duration", "core.select_text"}
+                else cls.validate_name
+            )
+            name = validator(str(config.get(key, "")))
         except ValueError:
             return ()
         if normalized_type == "core.logic_get_input":
             return name, f"{name}_accepted"
+        if normalized_type == "core.format_duration":
+            return name, f"{name}_status"
         return (name,)

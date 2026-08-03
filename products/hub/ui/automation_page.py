@@ -616,6 +616,17 @@ class TaskEditorDialog(QDialog):
         "twitch.send_pinned_message": (
             {"key": "message", "label": "Message", "kind": "multiline", "default": "", "required": True, "placeholder": "Important message for {user}"},
         ),
+        "twitch.resolve_user": (
+            {"key": "reference", "label": "User ID or login", "kind": "text", "default": "{target}", "required": True, "placeholder": "{target}, {user_id}, @username, or a Twitch ID"},
+        ),
+        "twitch.get_stream_information": (),
+        "twitch.get_channel_information": (),
+        "twitch.get_follow_relationship": (
+            {"key": "user_id", "label": "Target user ID", "kind": "text", "default": "{target_user_id}", "required": True},
+        ),
+        "twitch.build_command_list": (
+            {"key": "maximum_characters", "label": "Maximum characters", "kind": "number", "default": 440, "minimum": 50, "maximum": 480},
+        ),
         "twitch.run_commercial": (
             {"key": "length", "label": "Length", "kind": "choice", "default": 30, "choices": (("30 seconds", 30), ("60 seconds", 60), ("90 seconds", 90), ("120 seconds", 120), ("150 seconds", 150), ("180 seconds", 180))},
         ),
@@ -700,6 +711,18 @@ class TaskEditorDialog(QDialog):
         "core.run_routine": (
             {"key": "routine_id", "label": "Routine", "kind": "routine", "default": "", "required": True},
             {"key": "stop_on_failure", "label": "", "kind": "bool", "default": True, "text": "Stop this routine if the nested routine fails"},
+        ),
+        "core.format_duration": (
+            {"key": "start", "label": "Start date/time", "kind": "text", "default": "", "placeholder": "{stream_started_at} or {followed_at}"},
+            {"key": "end", "label": "End date/time", "kind": "text", "default": "", "placeholder": "Optional; blank uses the current time"},
+            {"key": "seconds", "label": "Duration in seconds", "kind": "text", "default": "", "placeholder": "Optional alternative to start/end dates"},
+            {"key": "output_variable", "label": "Output variable", "kind": "text", "default": "formatted_duration", "required": True},
+        ),
+        "core.select_text": (
+            {"key": "selector", "label": "Value to match", "kind": "text", "default": "", "required": True, "placeholder": "{stream_status}"},
+            {"key": "cases", "label": "Text for each value", "kind": "json", "default": {}, "placeholder": "{\"live\": \"Live for {uptime}.\", \"offline\": \"Offline.\"}"},
+            {"key": "default", "label": "Default text", "kind": "multiline", "default": "", "required": True},
+            {"key": "output_variable", "label": "Output variable", "kind": "text", "default": "selected_text", "required": True},
         ),
         "core.set_routine_state": (
             {"key": "routine_id", "label": "Routine", "kind": "routine", "default": "", "required": True},
@@ -872,9 +895,13 @@ class TaskEditorDialog(QDialog):
         "twitch.update_stream_category": ("category",),
         "twitch.moderate_user": ("user", "reason", "message_id"),
         "twitch.update_redemption": ("reward_id", "redemption_id"),
+        "twitch.resolve_user": ("reference",),
+        "twitch.get_follow_relationship": ("user_id",),
         "core.create_global_variable": ("value",),
         "core.create_session_variable": ("value",),
         "core.create_routine_variable": ("value",),
+        "core.format_duration": ("start", "end", "seconds"),
+        "core.select_text": ("selector", "cases", "default"),
         "core.logic_get_input": ("title", "prompt", "default"),
         "core.logic_if_else": ("left", "right"),
         "core.logic_switch": ("input",),
@@ -3902,6 +3929,13 @@ class AutomationPage(QWidget):
             "twitch.update_stream_category": "Changes the Twitch stream category",
             "twitch.moderate_user": "Performs a Twitch moderation action",
             "twitch.update_redemption": "Fulfills or refunds a redemption",
+            "twitch.resolve_user": "Retrieves a Twitch user's public account information",
+            "twitch.get_stream_information": "Reads the broadcaster's current live-stream information",
+            "twitch.get_channel_information": "Reads the broadcaster's title and category",
+            "twitch.get_follow_relationship": "Checks whether a user follows the broadcaster",
+            "twitch.build_command_list": "Builds a concise list of enabled commands",
+            "core.format_duration": "Formats dates or seconds as a readable duration",
+            "core.select_text": "Selects response text from a value-to-text map",
             "core.launch_application": "Launches an application",
             "core.close_application": "Closes an application",
             "core.open_target": "Opens a file, folder, or URL",

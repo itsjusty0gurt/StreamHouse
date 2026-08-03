@@ -255,6 +255,33 @@ class TaskEditorTests(unittest.TestCase):
             dialog.variable_preview_label.text(),
         )
 
+    def test_twitch_information_outputs_have_friendly_insertable_labels(self) -> None:
+        dialog = TaskEditorDialog(
+            "twitch.send_chat_message",
+            variables={
+                "stream_title": "Building Streamhouse",
+                "target_display_name": "TargetViewer",
+                "followed_at": "2024-01-02T03:04:05Z",
+                "formatted_duration": "2 hours 18 minutes",
+            },
+        )
+        rows = {
+            dialog.variable_table.item(row, 0).text(): row
+            for row in range(dialog.variable_table.rowCount())
+        }
+        expected_sources = {
+            "{stream_title}": "Twitch information task",
+            "{target_display_name}": "Resolve User task",
+            "{followed_at}": "Get Follow Relationship task",
+            "{formatted_duration}": "Format Duration task",
+        }
+        for variable, source in expected_sources.items():
+            self.assertIn(variable, rows)
+            self.assertEqual(
+                dialog.variable_table.item(rows[variable], 1).text(),
+                source,
+            )
+
     def test_python_script_form_exposes_safe_execution_options(self) -> None:
         dialog = TaskEditorDialog(
             "core.run_python_script",

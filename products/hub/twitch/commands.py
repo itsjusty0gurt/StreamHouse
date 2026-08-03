@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from copy import deepcopy
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from enum import StrEnum
@@ -10,12 +11,16 @@ from typing import Any, Callable, Mapping
 from uuid import uuid4
 
 from products.hub.automation.custom_variables import CustomVariableStore
-from products.hub.automation.models import TriggerEvent
+from products.hub.automation.models import RoutineDefinition, TriggerEvent
 from products.hub.automation.routines import RoutineStore
 from shared.streamhouse_runtime.json_store import atomic_write_json, load_json_with_backup
 from shared.streamhouse_runtime.paths import user_data_root
 from products.hub.twitch.models import TwitchMessage
 from products.hub.twitch.tasks import SendTwitchChatMessageTask
+from products.hub.twitch.default_commands import (
+    DefaultCommandDefinition,
+    default_command_definitions,
+)
 
 
 class TwitchCommandPermission(StrEnum):
@@ -49,6 +54,7 @@ class TwitchCommandTrigger:
     uses: int = 0
     last_used_at: str = ""
     has_chat_response: bool = True
+    default_id: str = ""
 
     @classmethod
     def from_dict(cls, values: Mapping[str, Any]) -> TwitchCommandTrigger:
@@ -77,7 +83,18 @@ class TwitchCommandTrigger:
             uses=max(int(values.get("uses", 0)), 0),
             last_used_at=str(values.get("last_used_at", "")),
             has_chat_response=bool(values.get("has_chat_response", True)),
+            default_id=str(values.get("default_id", "")),
         )
+
+    @property
+    def is_default(self) -> bool:
+        return bool(self.default_id)
+
+
+@dataclass(frozen=True, slots=True)
+class DefaultCommandSeedResult:
+    created: tuple[str, ...] = ()
+    conflicts: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -108,7 +125,7 @@ class TwitchCommandTriggerResult:
 
 
 class TwitchCommandTriggerStore:
-    VERSION = 3
+    VERSION = 4
     MANAGED_BY = "twitch.command"
     NAME_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]{0,24}$")
     RESERVED_NAMES = frozenset({"sallymemory", "sallytrain"})
@@ -121,11 +138,14 @@ class TwitchCommandTriggerStore:
         self.path = path or user_data_root() / "twitch" / "commands.json"
         self.routine_store = routine_store or RoutineStore()
         self.triggers: list[TwitchCommandTrigger] = []
+        self.removed_default_ids: set[str] = set()
+        self.default_seed_conflicts: tuple[str, ...] = ()
 
     def load(self) -> list[TwitchCommandTrigger]:
         self.routine_store.load()
         if not self.path.exists():
             self.triggers = []
+            self.removed_default_ids = set()
             return []
         payload = load_json_with_backup(self.path)
         if not isinstance(payload, dict):
@@ -138,6 +158,10 @@ class TwitchCommandTriggerStore:
             raise ValueError("Twitch command triggers must contain a trigger list.")
         loaded: list[TwitchCommandTrigger] = []
         self.triggers = loaded
+        removed = payload.get("removed_default_ids", [])
+        self.removed_default_ids = {
+            str(value) for value in removed if str(value).strip()
+        } if isinstance(removed, list) else set()
         migrated = False
         for value in values:
             if not isinstance(value, dict):
@@ -165,6 +189,7 @@ class TwitchCommandTriggerStore:
             {
                 "version": self.VERSION,
                 "triggers": [asdict(trigger) for trigger in self.triggers],
+                "removed_default_ids": sorted(self.removed_default_ids),
             },
         )
 
@@ -188,6 +213,7 @@ class TwitchCommandTriggerStore:
             global_cooldown_seconds=int(global_cooldown_seconds),
             user_cooldown_seconds=int(user_cooldown_seconds),
             has_chat_response=bool(response),
+            default_id="",
         )
         self._validate_trigger(trigger)
         routine = self._create_routine(trigger, response)
@@ -224,6 +250,7 @@ class TwitchCommandTriggerStore:
             global_cooldown_seconds=int(global_cooldown_seconds),
             user_cooldown_seconds=int(user_cooldown_seconds),
             has_chat_response=bool(response),
+            default_id="",
         )
         self._validate_trigger(trigger)
         self.routine_store.attach_managed(
@@ -274,6 +301,7 @@ class TwitchCommandTriggerStore:
             uses=trigger.uses,
             last_used_at=trigger.last_used_at,
             has_chat_response=bool(response),
+            default_id=trigger.default_id,
         )
         self._validate_trigger(candidate, excluding_id=trigger_id)
         routine = self.routine_store.get(trigger.routine_id)
@@ -305,12 +333,156 @@ class TwitchCommandTriggerStore:
         if trigger is None:
             return False
         self.triggers.remove(trigger)
+        if trigger.default_id:
+            self.removed_default_ids.add(trigger.default_id)
         if delete_routine:
             self.routine_store.delete_managed(trigger.routine_id, self.MANAGED_BY)
         else:
             self.routine_store.detach_managed(trigger.routine_id, self.MANAGED_BY)
         self.save()
         return True
+
+    def seed_default_commands(
+        self,
+        *,
+        restore_removed: bool = False,
+    ) -> DefaultCommandSeedResult:
+        created: list[str] = []
+        conflicts: list[str] = []
+        for definition in default_command_definitions():
+            if self.default(definition.default_id) is not None:
+                continue
+            if definition.default_id in self.removed_default_ids and not restore_removed:
+                continue
+            conflict = self._default_conflict(definition)
+            if conflict:
+                conflicts.append(conflict)
+                continue
+            self._install_default(definition)
+            self.removed_default_ids.discard(definition.default_id)
+            created.append(definition.name)
+        if created:
+            self.save()
+        self.default_seed_conflicts = tuple(conflicts)
+        return DefaultCommandSeedResult(tuple(created), tuple(conflicts))
+
+    def restore_default_commands(self) -> DefaultCommandSeedResult:
+        return self.seed_default_commands(restore_removed=True)
+
+    def reset_default(self, default_id: str) -> TwitchCommandTrigger:
+        definition = self._default_definition(default_id)
+        existing = self.default(default_id)
+        if existing is None:
+            conflict = self._default_conflict(definition)
+            if conflict:
+                raise ValueError(conflict)
+            self._install_default(definition)
+            self.removed_default_ids.discard(default_id)
+            self.save()
+            return self.default(default_id)  # type: ignore[return-value]
+        occupied = {
+            name
+            for trigger in self.triggers
+            if trigger.trigger_id != existing.trigger_id
+            for name in (trigger.name, *trigger.aliases)
+        }
+        if definition.name in occupied:
+            raise ValueError(
+                f"Could not reset !{definition.name}: that name is used by another command."
+            )
+        routine = self.routine_store.get(existing.routine_id)
+        group_id = routine.group_id if routine is not None else ""
+        replacement = self._routine_for(definition, group_id=group_id)
+        routines = [
+            replacement if value.routine_id == existing.routine_id else value
+            for value in self.routine_store.routines
+        ]
+        if routine is None:
+            routines.append(replacement)
+        self.routine_store.routines = routines
+        self.routine_store.save()
+        replacement_trigger = self._trigger_for(
+            definition,
+            uses=existing.uses,
+            last_used_at=existing.last_used_at,
+        )
+        self.triggers[self.triggers.index(existing)] = replacement_trigger
+        self.removed_default_ids.discard(default_id)
+        self.save()
+        return replacement_trigger
+
+    def default(self, default_id: str) -> TwitchCommandTrigger | None:
+        return next(
+            (trigger for trigger in self.triggers if trigger.default_id == default_id),
+            None,
+        )
+
+    @staticmethod
+    def _default_definition(default_id: str) -> DefaultCommandDefinition:
+        definition = next(
+            (value for value in default_command_definitions() if value.default_id == default_id),
+            None,
+        )
+        if definition is None:
+            raise ValueError("Unknown Streamhouse default command.")
+        return definition
+
+    def _default_conflict(self, definition: DefaultCommandDefinition) -> str:
+        if self.resolve(definition.name) is not None:
+            return f"Could not restore !{definition.name}: that name is used by a custom command."
+        if self.get(definition.trigger_id) is not None:
+            return f"Could not restore !{definition.name}: its trigger ID is already in use."
+        if self.routine_store.get(definition.routine_id) is not None:
+            return f"Could not restore !{definition.name}: its routine ID is already in use."
+        return ""
+
+    def _install_default(self, definition: DefaultCommandDefinition) -> None:
+        trigger = self._trigger_for(definition)
+        routine = self._routine_for(definition)
+        self._validate_trigger(trigger)
+        self.routine_store.routines.append(routine)
+        self.triggers.append(trigger)
+        try:
+            self.routine_store.save()
+        except Exception:
+            self.routine_store.routines.remove(routine)
+            self.triggers.remove(trigger)
+            raise
+
+    def _trigger_for(
+        self,
+        definition: DefaultCommandDefinition,
+        *,
+        uses: int = 0,
+        last_used_at: str = "",
+    ) -> TwitchCommandTrigger:
+        return TwitchCommandTrigger(
+            trigger_id=definition.trigger_id,
+            routine_id=definition.routine_id,
+            name=definition.name,
+            permission=TwitchCommandPermission.EVERYONE.value,
+            global_cooldown_seconds=definition.global_cooldown_seconds,
+            user_cooldown_seconds=definition.user_cooldown_seconds,
+            uses=uses,
+            last_used_at=last_used_at,
+            has_chat_response=True,
+            default_id=definition.default_id,
+        )
+
+    def _routine_for(
+        self,
+        definition: DefaultCommandDefinition,
+        *,
+        group_id: str = "",
+    ) -> RoutineDefinition:
+        return RoutineDefinition(
+            routine_id=definition.routine_id,
+            name=f"Command !{definition.name}",
+            trigger_id=definition.trigger_id,
+            tasks=deepcopy(list(definition.tasks)),
+            managed_by=self.MANAGED_BY,
+            group_id=group_id,
+        )
 
     def for_routine(self, routine_id: str) -> TwitchCommandTrigger | None:
         return next(
@@ -542,6 +714,8 @@ class TwitchCommandTriggerDispatcher:
             {
                 "user": message.username,
                 "user_id": message.user_id or "--",
+                "user_login": message.user_login or "--",
+                "viewer_permission": self._permission_level(message),
                 "target_user_id": "--",
                 "message_id": message.message_id or "--",
                 "redemption_id": "--",
@@ -593,3 +767,20 @@ class TwitchCommandTriggerDispatcher:
             TwitchCommandPermission.MODERATOR.value: moderator,
             TwitchCommandPermission.BROADCASTER.value: broadcaster,
         }.get(permission, False)
+
+    @staticmethod
+    def _permission_level(message: TwitchMessage) -> str:
+        badges = {badge.set_id for badge in message.badges}
+        broadcaster = "broadcaster" in badges or (
+            bool(message.broadcaster_user_id)
+            and message.user_id == message.broadcaster_user_id
+        )
+        if broadcaster:
+            return TwitchCommandPermission.BROADCASTER.value
+        if "moderator" in badges:
+            return TwitchCommandPermission.MODERATOR.value
+        if "vip" in badges:
+            return TwitchCommandPermission.VIP.value
+        if "subscriber" in badges or "founder" in badges:
+            return TwitchCommandPermission.SUBSCRIBER.value
+        return TwitchCommandPermission.EVERYONE.value

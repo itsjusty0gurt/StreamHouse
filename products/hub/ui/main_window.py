@@ -79,6 +79,7 @@ from products.hub.automation.variable_tasks import RunRoutineTask, register_vari
 from products.hub.automation.control_tasks import register_control_tasks
 from products.hub.automation.logic_tasks import register_logic_tasks
 from products.hub.automation.file_tasks import register_file_tasks
+from products.hub.automation.value_tasks import register_value_tasks
 from products.hub.automation.queues import AutomationQueueManager, AutomationQueueStore
 from shared.streamhouse_shared.models import (
     BufferedChatMessage,
@@ -118,7 +119,11 @@ from products.hub.twitch.commands import (
     TwitchCommandTriggerOutcome,
     TwitchCommandTriggerStore,
 )
-from products.hub.twitch.tasks import SendTwitchChatMessageTask, register_twitch_tasks
+from products.hub.twitch.tasks import (
+    SendTwitchChatMessageTask,
+    TWITCH_INFORMATION_TASK_TYPES,
+    register_twitch_tasks,
+)
 from products.hub.obs_service.config import ObsConfigStore, ObsConnectionConfig
 from products.hub.obs_service.models import ObsConnectionState, ObsEvent
 from products.hub.obs_service.service import ObsWebSocketService
@@ -146,6 +151,10 @@ from products.hub.ui.twitch_command_dialog import TwitchCommandDialog
 from products.hub.ui.companion_worker import (
     CompanionRefreshResult,
     CompanionRefreshWorker,
+)
+from products.hub.ui.command_worker import (
+    CommandExecutionWorker,
+    CommandExecutionWorkerResult,
 )
 from products.hub.ui.controllers.release_controller import ReleaseController
 from products.hub.ui.memory_worker import MemoryExtractionResult, MemoryExtractionWorker
@@ -358,6 +367,9 @@ class MainWindow(QMainWindow):
             set_lifecycle = getattr(remote_store, "set_lifecycle", None)
             if callable(set_lifecycle):
                 set_lifecycle(self.ai_lifecycle)
+        self._owns_twitch_command_trigger_store = (
+            twitch_command_trigger_store is None
+        )
         self.twitch_command_trigger_store = (
             twitch_command_trigger_store or TwitchCommandTriggerStore()
         )
@@ -442,6 +454,7 @@ class MainWindow(QMainWindow):
             self.task_registry,
             self.twitch_service,
             self._resolve_task_variables,
+            lambda: self.twitch_command_trigger_store,
         )
         self.task_registry.register(LaunchApplicationTask())
         self.task_registry.register(CloseApplicationTask())
@@ -459,6 +472,7 @@ class MainWindow(QMainWindow):
             self.automation_queue_manager,
         )
         register_file_tasks(self.task_registry)
+        register_value_tasks(self.task_registry)
         self.task_registry.register(
             WaitForServiceTask(
                 lambda service: (
@@ -474,6 +488,11 @@ class MainWindow(QMainWindow):
             self.task_registry,
             self.custom_variable_store,
             self.automation_queue_manager,
+        )
+        self.command_automation_service = AutomationService(
+            self.twitch_command_trigger_store.routine_store,
+            self.task_registry,
+            self.custom_variable_store,
         )
         self.soundboard_server = soundboard_server or SoundboardLocalServer(
             self.soundboard_store,
@@ -520,6 +539,21 @@ class MainWindow(QMainWindow):
                 f"Could not load custom Twitch commands: {error}",
                 source="TWITCH",
             )
+        if self._owns_twitch_command_trigger_store:
+            try:
+                default_result = self.twitch_command_trigger_store.seed_default_commands()
+                if default_result.created:
+                    Logger.info(
+                        f"Installed {len(default_result.created)} default Twitch commands.",
+                        source="TWITCH",
+                    )
+                for conflict in default_result.conflicts:
+                    Logger.warning(conflict, source="TWITCH")
+            except (OSError, ValueError) as error:
+                Logger.warning(
+                    f"Could not install default Twitch commands: {error}",
+                    source="TWITCH",
+                )
         try:
             self.twitch_event_trigger_store.load()
         except (OSError, ValueError, json.JSONDecodeError) as error:
@@ -570,6 +604,9 @@ class MainWindow(QMainWindow):
         self.permission_upgrade_started = False
         self.companion_thread_pool = QThreadPool(self)
         self.companion_thread_pool.setMaxThreadCount(1)
+        self.command_thread_pool = QThreadPool(self)
+        self.command_thread_pool.setMaxThreadCount(1)
+        self._command_workers: set[CommandExecutionWorker] = set()
         self.companion_refresh_request_id = 0
         self.companion_refresh_in_flight = False
         self.companion_warning_cache: set[str] = set()
@@ -2092,13 +2129,13 @@ class MainWindow(QMainWindow):
         page = QWidget(self.channel_tabs)
         layout = QVBoxLayout(page)
         introduction = QLabel(
-            "Custom chat commands trigger automation routines locally. A command "
+            "Chat commands trigger editable automation routines locally. A command "
             "can optionally send a response through the configured bot account; "
             "it does not invoke Sally's AI reasoning."
         )
         introduction.setWordWrap(True)
         layout.addWidget(introduction)
-        self.twitch_commands_table = QTableWidget(0, 7)
+        self.twitch_commands_table = QTableWidget(0, 8)
         self.twitch_commands_table.setObjectName("twitchCommandsTable")
         self.twitch_commands_table.setHorizontalHeaderLabels(
             (
@@ -2109,6 +2146,7 @@ class MainWindow(QMainWindow):
                 "Global cooldown",
                 "Viewer cooldown",
                 "Uses",
+                "Source",
             )
         )
         self.twitch_commands_table.setSelectionBehavior(
@@ -2122,7 +2160,7 @@ class MainWindow(QMainWindow):
         )
         header = self.twitch_commands_table.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
-        for column, width in enumerate((75, 150, 220, 110, 125, 125, 70)):
+        for column, width in enumerate((75, 150, 220, 110, 125, 125, 70, 90)):
             self.twitch_commands_table.setColumnWidth(column, width)
         layout.addWidget(self.twitch_commands_table, 1)
         actions = QHBoxLayout()
@@ -2131,11 +2169,15 @@ class MainWindow(QMainWindow):
         self.toggle_twitch_command_button = QPushButton("Disable Selected")
         self.delete_twitch_command_button = QPushButton("Delete Selected")
         self.open_twitch_command_routine_button = QPushButton("Open Routine")
+        self.reset_twitch_command_button = QPushButton("Reset to Default")
+        self.restore_twitch_commands_button = QPushButton("Restore Default Commands")
         actions.addWidget(self.add_twitch_command_button)
         actions.addWidget(self.edit_twitch_command_button)
         actions.addWidget(self.toggle_twitch_command_button)
         actions.addWidget(self.delete_twitch_command_button)
         actions.addWidget(self.open_twitch_command_routine_button)
+        actions.addWidget(self.reset_twitch_command_button)
+        actions.addWidget(self.restore_twitch_commands_button)
         actions.addStretch()
         layout.addLayout(actions)
         preview = QHBoxLayout()
@@ -2165,6 +2207,12 @@ class MainWindow(QMainWindow):
         )
         self.open_twitch_command_routine_button.clicked.connect(
             self._open_twitch_command_routine
+        )
+        self.reset_twitch_command_button.clicked.connect(
+            self._reset_twitch_command
+        )
+        self.restore_twitch_commands_button.clicked.connect(
+            self._restore_twitch_commands
         )
         self.twitch_command_preview_button.clicked.connect(
             self._preview_twitch_command
@@ -2295,6 +2343,7 @@ class MainWindow(QMainWindow):
                 f"{command.global_cooldown_seconds}s",
                 f"{command.user_cooldown_seconds}s",
                 str(command.uses),
+                "Default" if command.is_default else "Custom",
             )
             for column, value in enumerate(values):
                 item = QTableWidgetItem(value)
@@ -2308,9 +2357,17 @@ class MainWindow(QMainWindow):
                 selected_row = row
         if selected_row >= 0:
             table.selectRow(selected_row)
-        self.twitch_command_status_label.setText(
-            f"{len(self.twitch_command_trigger_store.triggers)} custom command(s)."
+        default_count = sum(
+            command.is_default
+            for command in self.twitch_command_trigger_store.triggers
         )
+        custom_count = len(self.twitch_command_trigger_store.triggers) - default_count
+        status = f"{default_count} default and {custom_count} custom command(s)."
+        if self.twitch_command_trigger_store.default_seed_conflicts:
+            status += " " + " ".join(
+                self.twitch_command_trigger_store.default_seed_conflicts
+            )
+        self.twitch_command_status_label.setText(status)
         self._update_twitch_command_actions()
 
     def _selected_twitch_command(self) -> TwitchCommandTrigger | None:
@@ -2330,6 +2387,9 @@ class MainWindow(QMainWindow):
         self.toggle_twitch_command_button.setEnabled(selected)
         self.delete_twitch_command_button.setEnabled(selected)
         self.open_twitch_command_routine_button.setEnabled(selected)
+        self.reset_twitch_command_button.setEnabled(
+            command is not None and command.is_default
+        )
         self.toggle_twitch_command_button.setText(
             "Disable Selected"
             if command is None or command.enabled
@@ -2342,6 +2402,45 @@ class MainWindow(QMainWindow):
             return
         self.show_automation()
         self.automation_page.select_routine(command.routine_id)
+
+    def _reset_twitch_command(self) -> None:
+        command = self._selected_twitch_command()
+        if command is None or not command.default_id:
+            return
+        answer = QMessageBox.question(
+            self,
+            "Reset Default Command",
+            f"Reset !{command.name} and its routine to the current Streamhouse default?",
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            reset = self.twitch_command_trigger_store.reset_default(command.default_id)
+        except (OSError, ValueError) as error:
+            self.twitch_command_status_label.setText(f"Could not reset command: {error}")
+            return
+        self._refresh_twitch_commands(reset.trigger_id)
+        self.automation_page.refresh()
+        self.twitch_command_status_label.setText(f"!{reset.name} reset to default.")
+
+    def _restore_twitch_commands(self) -> None:
+        try:
+            result = self.twitch_command_trigger_store.restore_default_commands()
+        except (OSError, ValueError) as error:
+            self.twitch_command_status_label.setText(
+                f"Could not restore default commands: {error}"
+            )
+            return
+        self._refresh_twitch_commands()
+        self.automation_page.refresh()
+        parts = []
+        if result.created:
+            parts.append("Restored " + ", ".join(f"!{name}" for name in result.created) + ".")
+        if result.conflicts:
+            parts.extend(result.conflicts)
+        self.twitch_command_status_label.setText(
+            " ".join(parts) if parts else "All default commands are already present."
+        )
 
     def _build_automation_page(self) -> None:
         self.automation_button = QPushButton("Automation")
@@ -3391,7 +3490,73 @@ class MainWindow(QMainWindow):
                 remaining_seconds=result.remaining_seconds,
             )
             return True
+        routine = self.twitch_command_trigger_store.routine_store.get(
+            result.routine_id
+        )
+        if routine is not None and any(
+            task.enabled and task.task_type in TWITCH_INFORMATION_TASK_TYPES
+            for task in routine.tasks
+        ):
+            worker = CommandExecutionWorker(
+                self.command_automation_service,
+                result,
+                chat_message,
+            )
+            self._command_workers.add(worker)
+            worker.signals.completed.connect(
+                lambda outcome, current=worker: self._command_worker_completed(
+                    current, outcome
+                )
+            )
+            worker.signals.failed.connect(
+                lambda command, message, error, current=worker: self._command_worker_failed(
+                    current, command, message, error
+                )
+            )
+            self.command_thread_pool.start(worker)
+            return True
         execution = self.automation_service.publish_trigger(result.to_event())
+        self._complete_twitch_command_execution(result, chat_message, execution)
+        return True
+
+    def _command_worker_completed(
+        self,
+        worker: CommandExecutionWorker,
+        outcome: CommandExecutionWorkerResult,
+    ) -> None:
+        self._command_workers.discard(worker)
+        self._complete_twitch_command_execution(
+            outcome.command,
+            outcome.message,
+            outcome.execution,
+        )
+
+    def _command_worker_failed(
+        self,
+        worker: CommandExecutionWorker,
+        result,
+        _message: TwitchMessage,
+        error: str,
+    ) -> None:
+        self._command_workers.discard(worker)
+        Logger.warning(
+            f"Twitch command !{result.invocation} failed: {error}",
+            source="TWITCH",
+        )
+        Events.emit(
+            "twitch_command_trigger_rejected",
+            trigger_id=result.trigger_id,
+            invocation=result.invocation,
+            outcome=TwitchCommandTriggerOutcome.TASK_FAILED.value,
+            remaining_seconds=0,
+        )
+
+    def _complete_twitch_command_execution(
+        self,
+        result,
+        chat_message: TwitchMessage,
+        execution,
+    ) -> None:
         self.automation_page.record_execution(
             execution,
             f"Twitch command !{result.invocation}",
@@ -3424,7 +3589,6 @@ class MainWindow(QMainWindow):
                 outcome=TwitchCommandTriggerOutcome.TASK_FAILED.value,
                 remaining_seconds=0,
             )
-        return True
 
     def _handle_twitch_first_message(
         self,
@@ -7160,6 +7324,9 @@ class MainWindow(QMainWindow):
         self.companion_refresh_request_id += 1
         self.companion_thread_pool.clear()
         self.companion_thread_pool.waitForDone(2_000)
+        self.command_thread_pool.clear()
+        self.command_thread_pool.waitForDone(2_000)
+        self._command_workers.clear()
         self.ai_companion_health_pool.clear()
         self.ai_companion_health_pool.waitForDone(2_000)
         self.channel_points_page.shutdown()

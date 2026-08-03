@@ -2,6 +2,8 @@ import logging
 import os
 import tempfile
 import unittest
+from threading import Event
+from time import monotonic
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -16,6 +18,7 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QLabel,
     QMenu,
+    QMessageBox,
 )
 from PySide6.QtTest import QSignalSpy, QTest
 
@@ -1052,6 +1055,76 @@ class MainWindowTests(unittest.TestCase):
         self.assertFalse(self.window.edit_twitch_command_button.isEnabled())
         self.assertFalse(self.window.toggle_twitch_command_button.isEnabled())
         self.assertFalse(self.window.delete_twitch_command_button.isEnabled())
+        self.assertFalse(self.window.reset_twitch_command_button.isEnabled())
+
+    def test_default_command_reset_and_restore_buttons_call_store_behaviour(self) -> None:
+        self.twitch_command_trigger_store.seed_default_commands()
+        self.window._refresh_twitch_commands()
+        command = self.twitch_command_trigger_store.default("uptime")
+        row = next(
+            row
+            for row in range(self.window.twitch_commands_table.rowCount())
+            if self.window.twitch_commands_table.item(row, 1).text() == "!uptime"
+        )
+        self.window.twitch_commands_table.selectRow(row)
+        self.assertTrue(self.window.reset_twitch_command_button.isEnabled())
+
+        with patch.object(
+            QMessageBox,
+            "question",
+            return_value=QMessageBox.StandardButton.Yes,
+        ), patch.object(
+            self.twitch_command_trigger_store,
+            "reset_default",
+            wraps=self.twitch_command_trigger_store.reset_default,
+        ) as reset:
+            self.window.reset_twitch_command_button.click()
+        reset.assert_called_once_with(command.default_id)
+
+        game = self.twitch_command_trigger_store.default("game")
+        self.twitch_command_trigger_store.delete(game.trigger_id)
+        with patch.object(
+            self.twitch_command_trigger_store,
+            "restore_default_commands",
+            wraps=self.twitch_command_trigger_store.restore_default_commands,
+        ) as restore:
+            self.window.restore_twitch_commands_button.click()
+        restore.assert_called_once_with()
+        self.assertIsNotNone(self.twitch_command_trigger_store.default("game"))
+
+    def test_network_backed_command_runs_off_the_qt_thread(self) -> None:
+        self.twitch_command_trigger_store.seed_default_commands()
+        started = Event()
+        release = Event()
+
+        def slow_stream_lookup():
+            started.set()
+            release.wait(2)
+            return None
+
+        self.window.twitch_service.get_stream_information = slow_stream_lookup
+        self.window.twitch_service.send_message = Mock(return_value=True)
+        incoming = TwitchMessage(
+            username="Viewer",
+            text="!uptime",
+            received_at=datetime.now(timezone.utc),
+            user_id="42",
+            user_login="viewer",
+            broadcaster_user_id="1",
+        )
+
+        before = monotonic()
+        self.assertTrue(self.window._handle_twitch_custom_command(incoming, False))
+        self.assertLess(monotonic() - before, 0.5)
+        self.assertTrue(started.wait(1))
+        release.set()
+        self.window.command_thread_pool.waitForDone(2_000)
+        self.application.processEvents()
+
+        self.window.twitch_service.send_message.assert_called_once_with(
+            "The channel is currently offline.",
+            as_bot=True,
+        )
 
     def test_settings_groups_are_separated_into_top_tabs(self) -> None:
         self.assertEqual(

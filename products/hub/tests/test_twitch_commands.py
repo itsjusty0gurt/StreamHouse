@@ -119,7 +119,7 @@ class TwitchCommandTriggerStoreTests(unittest.TestCase):
         self.assertTrue(trigger.routine_id)
         self.assertEqual(self.store.response_for(trigger), "Hello {user}")
         saved = json.loads(self.path.read_text(encoding="utf-8"))
-        self.assertEqual(saved["version"], 3)
+        self.assertEqual(saved["version"], 4)
         self.assertIn("triggers", saved)
 
     def test_validation_rejects_collisions_reserved_names_and_bad_variables(self) -> None:
@@ -319,6 +319,97 @@ class TwitchCommandTriggerStoreTests(unittest.TestCase):
         self.assertEqual(
             self.routine_store.get(trigger.routine_id).name,
             "Friendly Greeting",
+        )
+
+    def test_defaults_seed_once_without_overwriting_customizations(self) -> None:
+        first = self.store.seed_default_commands()
+        self.assertEqual(
+            set(first.created),
+            {"uptime", "followage", "accountage", "title", "game", "commands"},
+        )
+        uptime = self.store.resolve("uptime")
+        self.store.update(
+            uptime.trigger_id,
+            name="up",
+            response="My custom response",
+            aliases=["uptime"],
+            permission="subscriber",
+            global_cooldown_seconds=42,
+            user_cooldown_seconds=84,
+        )
+
+        loaded = TwitchCommandTriggerStore(
+            self.path,
+            RoutineStore(self.routine_store.path),
+        )
+        loaded.load()
+        second = loaded.seed_default_commands()
+
+        self.assertEqual(second.created, ())
+        customized = loaded.default("uptime")
+        self.assertEqual(customized.name, "up")
+        self.assertEqual(customized.aliases, ["uptime"])
+        self.assertEqual(customized.permission, "subscriber")
+        self.assertEqual(customized.global_cooldown_seconds, 42)
+        self.assertEqual(loaded.response_for(customized), "My custom response")
+
+    def test_deleted_default_stays_deleted_until_explicit_restore(self) -> None:
+        self.store.seed_default_commands()
+        command = self.store.default("game")
+        self.assertTrue(self.store.delete(command.trigger_id))
+
+        loaded = TwitchCommandTriggerStore(
+            self.path,
+            RoutineStore(self.routine_store.path),
+        )
+        loaded.load()
+        self.assertEqual(loaded.seed_default_commands().created, ())
+        self.assertIsNone(loaded.default("game"))
+
+        restored = loaded.restore_default_commands()
+        self.assertEqual(restored.created, ("game",))
+        self.assertIsNotNone(loaded.default("game"))
+
+    def test_default_name_conflict_is_reported_and_not_overwritten(self) -> None:
+        custom = self.store.add("uptime", "Custom uptime")
+
+        result = self.store.seed_default_commands()
+
+        self.assertTrue(any("!uptime" in conflict for conflict in result.conflicts))
+        self.assertIs(self.store.resolve("uptime"), custom)
+        self.assertIsNone(self.store.default("uptime"))
+
+    def test_reset_default_restores_current_trigger_and_routine_definition(self) -> None:
+        self.store.seed_default_commands()
+        command = self.store.default("title")
+        self.store.update(
+            command.trigger_id,
+            name="headline",
+            response="Customized",
+            aliases=["title"],
+            permission="moderator",
+            global_cooldown_seconds=99,
+            user_cooldown_seconds=100,
+        )
+        self.routine_store.add_task(
+            command.routine_id,
+            task_type="core.delay",
+            name="Extra task",
+            config={"seconds": 1},
+        )
+
+        reset = self.store.reset_default("title")
+
+        self.assertEqual(reset.name, "title")
+        self.assertEqual(reset.aliases, [])
+        self.assertEqual(reset.permission, "everyone")
+        self.assertEqual(
+            [task.task_type for task in self.routine_store.get(reset.routine_id).tasks],
+            [
+                "twitch.get_channel_information",
+                "core.select_text",
+                "twitch.send_chat_message",
+            ],
         )
 
 

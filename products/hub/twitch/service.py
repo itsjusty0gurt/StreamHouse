@@ -57,6 +57,7 @@ class TwitchService:
         self.live_socket: TwitchEventSubSocket | None = None
         self.activity_socket: TwitchEventSubSocket | None = None
         self.broadcaster_user_id = ""
+        self.broadcaster_display_name = ""
         self.badge_urls: dict[tuple[str, str], str] = {}
 
     @property
@@ -118,6 +119,9 @@ class TwitchService:
         try:
             broadcaster = self.helix.get_user(channel, token)
             self.broadcaster_user_id = str(broadcaster["id"])
+            self.broadcaster_display_name = str(
+                broadcaster.get("display_name", broadcaster.get("login", channel))
+            ).strip()
             bot_token = (
                 self.bot_auth.token
                 if self.bot_auth is not None
@@ -480,6 +484,38 @@ class TwitchService:
             raise ValueError(f'Twitch user "{clean}" was not found.')
         return user_id
 
+    def resolve_user(self, reference: str) -> dict:
+        clean = reference.strip().lstrip("@")
+        if not clean or clean == "--":
+            raise ValueError("A Twitch user is required.")
+        _broadcaster_id, token = self._broadcaster_credentials()
+        return (
+            self.helix.get_user_by_id(clean, token)
+            if clean.isdigit()
+            else self.helix.get_user(clean, token)
+        )
+
+    def get_stream_information(self) -> dict | None:
+        broadcaster_id, token = self._broadcaster_credentials()
+        return self.helix.get_stream_information(broadcaster_id, token)
+
+    def get_channel_information(self) -> dict | None:
+        broadcaster_id, token = self._broadcaster_credentials()
+        return self.helix.get_channel_information(broadcaster_id, token)
+
+    def get_follow_relationship(self, user_id: str) -> dict | None:
+        broadcaster_id, token = self._broadcaster_credentials()
+        if "moderator:read:followers" not in set(token.scopes):
+            raise PermissionError(
+                "Follow information requires the moderator:read:followers permission."
+            )
+        return self.helix.get_follow_relationship(
+            broadcaster_id, user_id, token
+        )
+
+    def channel_display_name(self) -> str:
+        return self.broadcaster_display_name or self.channel or "the channel"
+
     def moderate_user(
         self,
         action: str,
@@ -551,6 +587,7 @@ class TwitchService:
         self.local_listener.stop()
         self.channel = ""
         self.broadcaster_user_id = ""
+        self.broadcaster_display_name = ""
         self.badge_urls.clear()
         self._set_state(TwitchConnectionState.DISCONNECTED)
         Logger.info(

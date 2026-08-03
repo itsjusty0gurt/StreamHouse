@@ -29,6 +29,31 @@ class _JsonResponse:
 
 class TwitchHelixClientTests(unittest.TestCase):
     @patch("products.hub.twitch.live.urlopen")
+    def test_user_stream_channel_and_follow_queries_use_helix_contract(
+        self, open_url
+    ) -> None:
+        open_url.side_effect = (
+            _JsonResponse({"data": [{"id": "42", "login": "viewer", "created_at": "2020-01-01T00:00:00Z"}]}),
+            _JsonResponse({"data": [{"id": "stream-1", "started_at": "2026-08-02T00:00:00Z"}]}),
+            _JsonResponse({"data": [{"title": "Offline title", "game_name": "Games"}]}),
+            _JsonResponse({"data": [{"user_id": "42", "followed_at": "2024-01-01T00:00:00Z"}]}),
+        )
+        token = TwitchToken("access", "refresh", 999, ["moderator:read:followers"])
+        client = TwitchHelixClient()
+
+        self.assertEqual(client.get_user_by_id("42", token)["created_at"], "2020-01-01T00:00:00Z")
+        self.assertEqual(client.get_stream_information("1", token)["id"], "stream-1")
+        self.assertEqual(client.get_channel_information("1", token)["title"], "Offline title")
+        self.assertEqual(client.get_follow_relationship("1", "42", token)["user_id"], "42")
+
+        urls = [call.args[0].full_url for call in open_url.call_args_list]
+        self.assertIn("id=42", urls[0])
+        self.assertIn("user_id=1", urls[1])
+        self.assertIn("broadcaster_id=1", urls[2])
+        self.assertIn("broadcaster_id=1", urls[3])
+        self.assertIn("user_id=42", urls[3])
+
+    @patch("products.hub.twitch.live.urlopen")
     def test_channel_updates_use_category_search_and_patch_contract(
         self,
         open_url,

@@ -6,49 +6,15 @@ from typing import Mapping
 from urllib.error import HTTPError, URLError
 
 from products.hub.automation.models import TaskDefinition, TaskExecutionResult, TriggerEvent
+from products.hub.automation.variables import VARIABLE_INFO
 from products.hub.twitch.service import TwitchService
+from shared.streamhouse_runtime.logger import Logger
 
 
 class SendTwitchChatMessageTask:
     task_type = "twitch.send_chat_message"
     TEMPLATE_PATTERN = re.compile(r"\{([a-z][a-z0-9_]*)\}")
-    TEMPLATE_VARIABLES = frozenset(
-        {
-            "args",
-            "channel",
-            "command",
-            "followers",
-            "game",
-            "target",
-            "title",
-            "uptime",
-            "user",
-            "uses",
-            "event",
-            "event_type",
-            "message",
-            "input",
-            "amount",
-            "bits",
-            "viewers",
-            "tier",
-            "reward",
-            "reward_id",
-            "reward_cost",
-            "user_id",
-            "target_user_id",
-            "message_id",
-            "redemption_id",
-            "scene",
-            "source",
-            "output_state",
-            "enabled",
-            "mute",
-            "muted",
-            "volume_db",
-            "media",
-        }
-    )
+    TEMPLATE_VARIABLES = frozenset(VARIABLE_INFO)
 
     def __init__(
         self,
@@ -117,6 +83,11 @@ class SendTwitchChatMessageTask:
 
 TWITCH_TASK_LABELS = {
     SendTwitchChatMessageTask.task_type: "Twitch — Send chat message",
+    "twitch.resolve_user": "Twitch — Resolve user",
+    "twitch.get_stream_information": "Twitch — Get stream information",
+    "twitch.get_channel_information": "Twitch — Get channel information",
+    "twitch.get_follow_relationship": "Twitch — Get follow relationship",
+    "twitch.build_command_list": "Twitch — Build command list",
     "twitch.send_pinned_message": "Twitch — Send and pin chat message",
     "twitch.run_commercial": "Twitch — Run commercial",
     "twitch.snooze_ad": "Twitch — Snooze next ad",
@@ -125,6 +96,263 @@ TWITCH_TASK_LABELS = {
     "twitch.moderate_user": "Twitch — Moderate user",
     "twitch.update_redemption": "Twitch — Fulfill or refund redemption",
 }
+
+TWITCH_INFORMATION_TASK_TYPES = frozenset(
+    {
+        "twitch.resolve_user",
+        "twitch.get_stream_information",
+        "twitch.get_channel_information",
+        "twitch.get_follow_relationship",
+    }
+)
+
+
+def _mutable_context(trigger: TriggerEvent) -> dict[str, str]:
+    if not isinstance(trigger.context, dict):
+        raise ValueError("Twitch task output requires a mutable routine context.")
+    return trigger.context
+
+
+def _task_result(task: TaskDefinition, detail: str, succeeded: bool = True):
+    return TaskExecutionResult(task.task_id, task.task_type, succeeded, detail)
+
+
+class ResolveTwitchUserTask:
+    task_type = "twitch.resolve_user"
+
+    def __init__(self, service: TwitchService) -> None:
+        self.service = service
+
+    def execute(self, task: TaskDefinition, trigger: TriggerEvent) -> TaskExecutionResult:
+        context = _mutable_context(trigger)
+        reference = SendTwitchChatMessageTask.render(
+            str(task.config.get("reference", "{target}")), context
+        ).strip().lstrip("@")
+        if not reference or reference == "--":
+            reference = str(context.get("user_id", "")).strip()
+        context.update(
+            {
+                "target_user_id": "",
+                "target_login": "",
+                "target_display_name": "",
+                "account_created_at": "",
+                "user_lookup_status": "error",
+            }
+        )
+        try:
+            user = self.service.resolve_user(reference)
+        except ValueError as error:
+            if "not found" in str(error).casefold():
+                context["user_lookup_status"] = "not_found"
+                return _task_result(task, "Twitch user was not found.")
+            Logger.warning(f"Could not resolve Twitch user: {error}", source="TWITCH")
+            return _task_result(task, "Twitch user lookup is unavailable.")
+        except (HTTPError, URLError, OSError) as error:
+            Logger.warning(f"Could not resolve Twitch user: {error}", source="TWITCH")
+            return _task_result(task, "Twitch user lookup is unavailable.")
+        context.update(
+            {
+                "target_user_id": str(user.get("id", "")),
+                "target_login": str(user.get("login", "")),
+                "target_display_name": str(
+                    user.get("display_name", user.get("login", reference))
+                ),
+                "account_created_at": str(user.get("created_at", "")),
+                "user_lookup_status": "found",
+            }
+        )
+        return _task_result(task, "Resolved Twitch user.")
+
+
+class GetStreamInformationTask:
+    task_type = "twitch.get_stream_information"
+
+    def __init__(self, service: TwitchService) -> None:
+        self.service = service
+
+    def execute(self, task: TaskDefinition, trigger: TriggerEvent) -> TaskExecutionResult:
+        context = _mutable_context(trigger)
+        context.update(
+            {
+                "stream_status": "error",
+                "is_live": "false",
+                "stream_started_at": "",
+                "stream_title": "",
+                "stream_category": "",
+                "stream_id": "",
+                "stream_viewers": "0",
+                "stream_game_id": "",
+            }
+        )
+        try:
+            stream = self.service.get_stream_information()
+        except (HTTPError, URLError, OSError, ValueError) as error:
+            Logger.warning(f"Could not retrieve Twitch stream information: {error}", source="TWITCH")
+            return _task_result(task, "Twitch stream information is unavailable.")
+        if not stream:
+            context["stream_status"] = "offline"
+            return _task_result(task, "The Twitch channel is offline.")
+        context.update(
+            {
+                "stream_status": "live",
+                "is_live": "true",
+                "stream_started_at": str(stream.get("started_at", "")),
+                "stream_title": str(stream.get("title", "")),
+                "stream_category": str(stream.get("game_name", "")),
+                "stream_id": str(stream.get("id", "")),
+                "stream_viewers": str(stream.get("viewer_count", 0)),
+                "stream_game_id": str(stream.get("game_id", "")),
+            }
+        )
+        return _task_result(task, "Retrieved live Twitch stream information.")
+
+
+class GetChannelInformationTask:
+    task_type = "twitch.get_channel_information"
+
+    def __init__(self, service: TwitchService) -> None:
+        self.service = service
+
+    def execute(self, task: TaskDefinition, trigger: TriggerEvent) -> TaskExecutionResult:
+        context = _mutable_context(trigger)
+        context.update(
+            {
+                "channel_info_status": "error",
+                "title_status": "error",
+                "category_status": "error",
+                "stream_title": "",
+                "stream_category": "",
+                "stream_game_id": "",
+            }
+        )
+        try:
+            channel = self.service.get_channel_information()
+        except (HTTPError, URLError, OSError, ValueError) as error:
+            Logger.warning(f"Could not retrieve Twitch channel information: {error}", source="TWITCH")
+            return _task_result(task, "Twitch channel information is unavailable.")
+        if not channel:
+            context.update(
+                {
+                    "channel_info_status": "unavailable",
+                    "title_status": "unavailable",
+                    "category_status": "unset",
+                }
+            )
+            return _task_result(task, "Twitch channel information was empty.")
+        title = str(channel.get("title", "")).strip()
+        category = str(channel.get("game_name", "")).strip()
+        context.update(
+            {
+                "channel_info_status": "available",
+                "title_status": "available" if title else "unavailable",
+                "category_status": "set" if category else "unset",
+                "stream_title": title,
+                "stream_category": category,
+                "stream_game_id": str(channel.get("game_id", "")),
+            }
+        )
+        return _task_result(task, "Retrieved Twitch channel information.")
+
+
+class GetFollowRelationshipTask:
+    task_type = "twitch.get_follow_relationship"
+
+    def __init__(self, service: TwitchService) -> None:
+        self.service = service
+
+    def execute(self, task: TaskDefinition, trigger: TriggerEvent) -> TaskExecutionResult:
+        context = _mutable_context(trigger)
+        user_id = SendTwitchChatMessageTask.render(
+            str(task.config.get("user_id", "{target_user_id}")), context
+        ).strip()
+        context.update(
+            {
+                "is_following": "false",
+                "followed_at": "",
+                "follow_status": "error",
+                "channel_display_name": self.service.channel_display_name(),
+            }
+        )
+        if not user_id:
+            if context.get("user_lookup_status") == "not_found":
+                context["follow_status"] = "user_not_found"
+                return _task_result(task, "Follow lookup skipped because the user was not found.")
+            return _task_result(task, "Follow lookup skipped because user lookup failed.")
+        if user_id == getattr(self.service, "broadcaster_user_id", ""):
+            context["follow_status"] = "broadcaster"
+            return _task_result(task, "The selected user is the broadcaster.")
+        try:
+            relationship = self.service.get_follow_relationship(user_id)
+        except PermissionError:
+            context["follow_status"] = "missing_scope"
+            return _task_result(task, "Follow information permission has not been granted.")
+        except HTTPError as error:
+            context["follow_status"] = "missing_scope" if error.code in {401, 403} else "error"
+            Logger.warning(f"Could not retrieve Twitch follow information: HTTP {error.code}", source="TWITCH")
+            return _task_result(task, "Twitch follow information is unavailable.")
+        except (URLError, OSError, ValueError) as error:
+            Logger.warning(f"Could not retrieve Twitch follow information: {error}", source="TWITCH")
+            return _task_result(task, "Twitch follow information is unavailable.")
+        if not relationship:
+            context["follow_status"] = "not_following"
+            return _task_result(task, "The selected user is not following the channel.")
+        context.update(
+            {
+                "is_following": "true",
+                "followed_at": str(relationship.get("followed_at", "")),
+                "follow_status": "following",
+            }
+        )
+        return _task_result(task, "Retrieved Twitch follow relationship.")
+
+
+class BuildCommandListTask:
+    task_type = "twitch.build_command_list"
+    PERMISSION_RANK = {
+        "everyone": 0,
+        "subscriber": 1,
+        "vip": 2,
+        "moderator": 3,
+        "broadcaster": 4,
+    }
+
+    def __init__(self, command_provider: Callable[[], object]) -> None:
+        self.command_provider = command_provider
+
+    def execute(self, task: TaskDefinition, trigger: TriggerEvent) -> TaskExecutionResult:
+        context = _mutable_context(trigger)
+        context.update({"command_list": "", "command_list_status": "empty"})
+        role = str(context.get("viewer_permission", "everyone")).casefold()
+        rank = self.PERMISSION_RANK.get(role, 0)
+        try:
+            store = self.command_provider()
+            commands = getattr(store, "triggers", ())
+            names = sorted(
+                {
+                    f"!{command.name}"
+                    for command in commands
+                    if command.enabled
+                    and self.PERMISSION_RANK.get(command.permission, 99) <= rank
+                }
+            )
+        except Exception as error:
+            Logger.warning(f"Could not build Twitch command list: {error}", source="TWITCH")
+            context["command_list_status"] = "error"
+            return _task_result(task, "Command list is unavailable.")
+        try:
+            requested_limit = int(task.config.get("maximum_characters", 450))
+        except (TypeError, ValueError):
+            requested_limit = 450
+        limit = min(max(requested_limit, 50), 480)
+        selected: list[str] = []
+        for name in names:
+            candidate = ", ".join((*selected, name))
+            if len(candidate) > limit:
+                break
+            selected.append(name)
+        context["command_list"] = ", ".join(selected)
+        context["command_list_status"] = "available" if selected else "empty"
+        return _task_result(task, f"Listed {len(selected)} enabled Twitch commands.")
 
 
 class TwitchAutomationTask:
@@ -223,10 +451,23 @@ def register_twitch_tasks(
     variable_resolver: Callable[
         [str, Mapping[str, str]], Mapping[str, str]
     ] | None = None,
+    command_provider: Callable[[], object] | None = None,
 ) -> None:
     registry.register(SendTwitchChatMessageTask(service, variable_resolver))
+    registry.register(ResolveTwitchUserTask(service))
+    registry.register(GetStreamInformationTask(service))
+    registry.register(GetChannelInformationTask(service))
+    registry.register(GetFollowRelationshipTask(service))
+    registry.register(BuildCommandListTask(command_provider or (lambda: None)))
     for task_type in TWITCH_TASK_LABELS:
-        if task_type != SendTwitchChatMessageTask.task_type:
+        if task_type not in {
+            SendTwitchChatMessageTask.task_type,
+            ResolveTwitchUserTask.task_type,
+            GetStreamInformationTask.task_type,
+            GetChannelInformationTask.task_type,
+            GetFollowRelationshipTask.task_type,
+            BuildCommandListTask.task_type,
+        }:
             registry.register(
                 TwitchAutomationTask(service, task_type, variable_resolver)
             )

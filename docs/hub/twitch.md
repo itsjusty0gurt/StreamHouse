@@ -56,8 +56,36 @@ content:
 The command domain uses `TwitchCommandTrigger`,
 `TwitchCommandTriggerStore`, `TwitchCommandTriggerDispatcher`, and
 `TwitchCommandTriggerResult`. Each trigger points to a managed routine whose
-first task is currently `twitch.send_chat_message`. Later redemption, follow,
-and event triggers can publish into the same routine and task layer.
+ordered tasks are ordinary registered automation providers. The built-in
+`!uptime`, `!followage`, `!accountage`, `!title`, `!game`, and `!commands`
+definitions use the same editable routines as custom commands rather than
+dispatcher branches.
+
+Built-in commands have stable default IDs. Startup seeds only missing defaults,
+never overwrites an existing default, and records deletion tombstones so a
+streamer's removed default stays removed. The Commands page can reset one
+existing default to its current definition or explicitly restore missing
+defaults. A custom command or alias occupying a default name is reported as a
+conflict and is never overwritten.
+
+Reusable information providers live in `products/hub/twitch/tasks.py`:
+
+- Resolve User produces the target ID, login, display name, account creation
+  time, and a controlled lookup status.
+- Get Stream Information produces live/offline/error status, start time, title,
+  category, stream ID, and viewer count.
+- Get Channel Information produces title and category even while offline.
+- Get Follow Relationship distinguishes following, not following, missing
+  permission, broadcaster-self, missing-user, and API-failure outcomes.
+- Build Command List returns enabled commands visible to the invoking viewer and
+  stays within the configured Twitch message budget.
+
+`core.format_duration` and `core.select_text` provide reusable formatting and
+conditional response selection. Every output is routine-scoped and registered
+with the generated-variable catalog so later task editors show friendly,
+insertable values. Network-backed command routines run on a single Qt worker;
+the completion signal performs command statistics and UI updates on the main
+thread.
 
 ## UI responsibilities
 
@@ -102,6 +130,12 @@ as a local UI preference.
 Editing a Twitch command updates its managed chat-response task in place. Any
 additional tasks attached in Automation remain ordered and intact, even when
 the response task has been moved away from the first position.
+
+`!followage` uses Helix Get Channel Followers with `user_id`. Twitch requires
+the broadcaster user token to include `moderator:read:followers`, and the token
+identity must be the broadcaster or a moderator for that channel. Hub requests
+that scope in its existing broadcaster permission set and reports missing or
+rejected authorization distinctly from a genuine not-following result.
 
 ## Automation event triggers
 

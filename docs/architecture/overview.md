@@ -407,12 +407,12 @@ Handlers are registered in `MainWindow` with one stable lowercase task type.
 
 | Provider | Files | Current capability groups |
 | --- | --- | --- |
-| Core | `products/hub/automation/core_tasks.py` | applications, delays, service waits, paths/URLs, notifications, audio, Python scripts |
+| Core | `products/hub/automation/core_tasks.py`, `products/hub/automation/value_tasks.py` | applications, delays, service waits, paths/URLs, notifications, audio, Python scripts, duration formatting, conditional text selection |
 | Variables | `products/hub/automation/variable_tasks.py` | create/delete/adjust/toggle variables, nested routines |
 | Logic | `products/hub/automation/logic_tasks.py` | break, input, random number/choice, if/else, switch, while |
 | Files | `products/hub/automation/file_tasks.py` | read text/random/specific lines, write, existence, line count |
 | Control | `products/hub/automation/control_tasks.py` | enable/disable routines/tasks, pause/clear queues |
-| Twitch | `products/hub/twitch/tasks.py` | chat/pinned chat, ads, moderation, redemption results |
+| Twitch | `products/hub/twitch/tasks.py` | chat/pinned chat, ads, moderation, redemption results, user/stream/channel/follow lookups, enabled-command lists |
 | OBS | `products/hub/obs_service/tasks.py` | scenes, sources, inputs, filters, media, outputs, hotkeys, raw request |
 
 Python-script tasks expose trigger context through `STREAMHOUSE_*` environment
@@ -425,7 +425,7 @@ Adding a task requires more than a handler. See **Adding an automation task**.
 
 | Provider | Store | Persisted file | Examples |
 | --- | --- | --- | --- |
-| Twitch commands | `TwitchCommandTriggerStore` | `twitch/commands.json` | `!command`, aliases, permissions, cooldowns |
+| Twitch commands | `TwitchCommandTriggerStore` | `twitch/commands.json` | `!command`, aliases, permissions, cooldowns, editable default provenance and removed-default tombstones |
 | Twitch activity | `TwitchEventTriggerStore` | `twitch/event_triggers.json` | follow, sub, gift, cheer, raid, reward, online/offline |
 | Twitch first message | same as above | same | once per viewer per stream with offline grace reset |
 | Core | `CoreTriggerStore` | `automation/core_triggers.json` | application started/closing |
@@ -749,7 +749,11 @@ Use these rules:
 7. Automation execution currently occurs on the Qt thread because several task
    handlers use Qt APIs; do not move it wholesale to a Python thread without
    separating Qt-dependent handlers.
-8. Avoid blocking waits. Core delay tasks use a nested Qt event loop so the UI
+8. Twitch command routines containing Helix information tasks run through the
+   single-worker `CommandExecutionWorker`; completion and UI updates return by
+   Qt signal. Other automation remains on the Qt thread because its task set may
+   include Qt-affine providers.
+9. Avoid blocking waits. Core delay tasks use a nested Qt event loop so the UI
    continues processing events.
 
 ## Persistence and secrets
@@ -793,7 +797,7 @@ legacy `sally.automation.*` identifiers and `.sally-routine.json` files.
 | `automation/core_triggers.json` | Hub | application lifecycle bindings |
 | `automation/queues.json` | Hub | queue definitions; pending items are not persisted |
 | `automation/variables.json` | Hub | global values only; session/routine are volatile |
-| `twitch/commands.json` | Hub | commands, permissions, aliases, cooldowns, stats |
+| `twitch/commands.json` | Hub | commands, permissions, aliases, cooldowns, stats, default IDs, removed-default tombstones |
 | `twitch/event_triggers.json` | Hub | Twitch event/first-message trigger definitions |
 | `twitch/soundboard.json` | Hub | pages, buttons, routine IDs |
 | `twitch/soundboard-relay.json` | Hub | non-secret relay URL/channel/autoconnect |

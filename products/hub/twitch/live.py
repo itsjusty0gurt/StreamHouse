@@ -125,14 +125,72 @@ class TwitchHelixClient:
 
     def get_user(self, login: str, token: TwitchToken) -> dict[str, Any]:
         url = f"{self.USERS_URL}?{urlencode({'login': login})}"
+        return self._get_single_user(url, login, token)
+
+    def get_user_by_id(self, user_id: str, token: TwitchToken) -> dict[str, Any]:
+        url = f"{self.USERS_URL}?{urlencode({'id': user_id})}"
+        return self._get_single_user(url, user_id, token)
+
+    def _get_single_user(
+        self,
+        url: str,
+        reference: str,
+        token: TwitchToken,
+    ) -> dict[str, Any]:
         payload = self._read_json(Request(url, headers=self._headers(token)))
         users = payload.get("data")
         if not isinstance(users, list) or not users:
-            raise ValueError(f'Twitch channel "{login}" was not found.')
+            raise ValueError(f'Twitch user "{reference}" was not found.')
         user = users[0]
         if not isinstance(user, dict) or not user.get("id"):
-            raise ValueError("Twitch returned invalid channel information.")
+            raise ValueError("Twitch returned invalid user information.")
         return user
+
+    def get_stream_information(
+        self, broadcaster_id: str, token: TwitchToken
+    ) -> dict[str, Any] | None:
+        payload = self._read_json(
+            Request(
+                f"{self.STREAMS_URL}?{urlencode({'user_id': broadcaster_id})}",
+                headers=self._headers(token),
+            )
+        )
+        values = payload.get("data")
+        if not isinstance(values, list) or not values:
+            return None
+        return values[0] if isinstance(values[0], dict) else None
+
+    def get_channel_information(
+        self, broadcaster_id: str, token: TwitchToken
+    ) -> dict[str, Any] | None:
+        payload = self._read_json(
+            Request(
+                f"{self.CHANNELS_URL}?{urlencode({'broadcaster_id': broadcaster_id})}",
+                headers=self._headers(token),
+            )
+        )
+        values = payload.get("data")
+        if not isinstance(values, list) or not values:
+            return None
+        return values[0] if isinstance(values[0], dict) else None
+
+    def get_follow_relationship(
+        self,
+        broadcaster_id: str,
+        user_id: str,
+        token: TwitchToken,
+    ) -> dict[str, Any] | None:
+        payload = self._read_json(
+            Request(
+                f"{self.FOLLOWERS_URL}?"
+                f"{urlencode({'broadcaster_id': broadcaster_id, 'user_id': user_id, 'first': 1})}",
+                headers=self._headers(token),
+            )
+        )
+        values = payload.get("data")
+        if not isinstance(values, list) or not values:
+            return None
+        return values[0] if isinstance(values[0], dict) else None
 
     def create_chat_subscriptions(
         self,

@@ -27,6 +27,7 @@ from products.hub.automation.variable_tasks import VARIABLE_TASK_LABELS
 from products.hub.automation.logic_tasks import LOGIC_TASK_LABELS
 from products.hub.automation.file_tasks import FILE_TASK_LABELS
 from products.hub.automation.control_tasks import CONTROL_TASK_LABELS
+from products.hub.automation.value_tasks import VALUE_TASK_LABELS
 
 
 CORE_TASK_LABELS = {
@@ -44,6 +45,7 @@ CORE_TASK_LABELS.update(VARIABLE_TASK_LABELS)
 CORE_TASK_LABELS.update(LOGIC_TASK_LABELS)
 CORE_TASK_LABELS.update(FILE_TASK_LABELS)
 CORE_TASK_LABELS.update(CONTROL_TASK_LABELS)
+CORE_TASK_LABELS.update(VALUE_TASK_LABELS)
 
 
 def _result(task: TaskDefinition, succeeded: bool, detail: str) -> TaskExecutionResult:
