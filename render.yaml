@@ -1,0 +1,21 @@
+services:
+  - type: web
+    # Keep the existing Render service identity. Renaming this creates a second
+    # service instead of updating the relay that Hub and the Twitch Extension use.
+    name: sally-soundboard-relay
+    runtime: python
+    plan: free
+    buildCommand: python -m compileall extensions/twitch/app
+    startCommand: python -m extensions.twitch.app.relay_server
+    healthCheckPath: /health
+    autoDeployTrigger: commit
+    envVars:
+      - key: TWITCH_EXTENSION_SECRET
+        sync: false
+      # Existing production secrets still use these legacy names. The relay
+      # accepts them while logging a migration warning; changing the blueprint
+      # key before Render's secret is migrated would make every Hub request fail.
+      - key: SALLY_RELAY_KEYS
+        sync: false
+      - key: SALLY_RELAY_DB
+        value: /tmp/sally-soundboard-relay.sqlite3

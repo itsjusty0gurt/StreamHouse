@@ -658,10 +658,15 @@ Security boundaries:
 - Pending events expire after five minutes and are removed on acknowledgement.
 - Hub only makes outbound HTTPS requests; no router port forwarding is needed.
 
-`render.yaml` describes the current Render deployment. Render's free filesystem
+Root `render.yaml` describes the existing `sally-soundboard-relay` Render
+deployment. It intentionally retains that service identity so blueprint updates
+modify the live endpoint used by Hub and the Twitch Extension instead of
+creating a disconnected replacement service. Render's free filesystem
 is temporary, so Hub re-syncs config when reconnecting. Relay deployment uses
-`STREAMHOUSE_RELAY_KEYS` and `STREAMHOUSE_RELAY_DB`; the legacy `SALLY_*`
-variants remain temporary fallbacks with warnings. Viewer assets emit
+the existing `SALLY_RELAY_KEYS` and `SALLY_RELAY_DB` production secret names
+until those Render values are migrated; the server reads them as temporary
+fallbacks with warnings. New deployments should use the `STREAMHOUSE_*` names.
+Viewer assets emit
 `STREAMHOUSE_RELAY_BASE` and only read `SALLY_RELAY_BASE` as a compatibility
 fallback.
 

@@ -11,6 +11,23 @@ from products.hub.ui.controllers.release_controller import ReleaseController
 
 
 class ReleaseToolsTests(unittest.TestCase):
+    def test_render_blueprint_updates_the_existing_relay_service(self) -> None:
+        root = Path(__file__).resolve().parents[2]
+        blueprint = root / "render.yaml"
+        contents = blueprint.read_text(encoding="utf-8")
+
+        self.assertTrue(blueprint.is_file())
+        self.assertIn("name: sally-soundboard-relay", contents)
+        self.assertIn(
+            "buildCommand: python -m compileall extensions/twitch/app",
+            contents,
+        )
+        self.assertIn(
+            "startCommand: python -m extensions.twitch.app.relay_server",
+            contents,
+        )
+        self.assertFalse((root / "extensions" / "twitch" / "render.yaml").exists())
+
     def test_backup_create_and_restore(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
