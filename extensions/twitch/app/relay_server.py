@@ -4,10 +4,11 @@ Run behind an HTTPS reverse proxy. Required environment variables:
 
 TWITCH_EXTENSION_SECRET  Base64 Extension secret from the Twitch console.
 STREAMHOUSE_RELAY_KEYS   JSON object mapping channel IDs to relay keys.
-STREAMHOUSE_RELAY_DB     Optional SQLite path (defaults to relay.sqlite3).
+STREAMHOUSE_RELAY_DB     Required SQLite database file path.
 PORT                     Optional listening port (defaults to 8080).
 
-Legacy SALLY_RELAY_KEYS and SALLY_RELAY_DB values remain temporary fallbacks.
+Legacy SALLY_RELAY_KEYS and SALLY_RELAY_DB values remain temporary fallbacks
+under relay-compat-v1, scheduled for removal no earlier than version 0.3.0.
 """
 
 from __future__ import annotations
@@ -28,22 +29,65 @@ from secrets import token_hex
 from threading import RLock
 from urllib.parse import urlparse
 
+from shared.streamhouse_runtime.relay_config import (
+    RELAY_COMPATIBILITY_REMOVE_AFTER,
+    RELAY_COMPATIBILITY_VERSION,
+    ResolvedEnvironmentValue,
+    load_relay_environment,
+)
+
 
 SUPPORT_EMAIL = "xxitsjusty0gurtxx@gmail.com"
 LOGGER = logging.getLogger("streamhouse.relay")
+_WARNED_COMPATIBILITY_EVENTS: set[str] = set()
+_WARNING_LOCK = RLock()
+
+LEGACY_ROUTE_ALIASES = {
+    "/api/sally/config": "/api/streamhouse/config",
+    "/api/sally/poll": "/api/streamhouse/poll",
+    "/api/sally/ack": "/api/streamhouse/ack",
+    "/api/config": "/api/streamhouse/config",
+    "/api/trigger": "/api/streamhouse/trigger",
+}
 
 
-def _environment_value(
-    name: str,
-    legacy_name: str,
-    default: str,
-) -> str:
-    if name in os.environ:
-        return os.environ[name]
-    if legacy_name in os.environ:
-        LOGGER.warning("%s is deprecated; use %s instead.", legacy_name, name)
-        return os.environ[legacy_name]
-    return default
+def _warn_compatibility_once(event: str, deprecated: str, replacement: str) -> None:
+    """Log compatibility use once without including credentials or values."""
+
+    with _WARNING_LOCK:
+        if event in _WARNED_COMPATIBILITY_EVENTS:
+            return
+        _WARNED_COMPATIBILITY_EVENTS.add(event)
+    LOGGER.warning(
+        "event=relay_compatibility_used compatibility=%s deprecated=%s "
+        "replacement=%s remove_after=%s",
+        RELAY_COMPATIBILITY_VERSION,
+        deprecated,
+        replacement,
+        RELAY_COMPATIBILITY_REMOVE_AFTER,
+    )
+
+
+def _warn_environment_selection(selection: ResolvedEnvironmentValue) -> None:
+    if selection.used_legacy:
+        _warn_compatibility_once(
+            f"environment:{selection.legacy_name}",
+            selection.legacy_name,
+            selection.name,
+        )
+    elif selection.conflict:
+        _warn_compatibility_once(
+            f"environment-conflict:{selection.name}",
+            f"{selection.name}+{selection.legacy_name}:conflict",
+            f"{selection.name}:authoritative",
+        )
+
+
+def _canonical_route(path: str) -> str:
+    canonical = LEGACY_ROUTE_ALIASES.get(path, path)
+    if canonical != path:
+        _warn_compatibility_once(f"route:{path}", path, canonical)
+    return canonical
 
 
 def _legal_page(title: str, body: str) -> str:
@@ -139,14 +183,18 @@ class RelayState:
             )
         except (ValueError, binascii.Error) as error:
             raise RuntimeError("TWITCH_EXTENSION_SECRET is not valid base64.") from error
-        try:
-            keys = json.loads(
-                _environment_value(
-                    "STREAMHOUSE_RELAY_KEYS",
-                    "SALLY_RELAY_KEYS",
-                    "{}",
-                )
+        relay_environment = load_relay_environment(os.environ)
+        _warn_environment_selection(relay_environment.keys)
+        _warn_environment_selection(relay_environment.database)
+        if not relay_environment.keys.value:
+            raise RuntimeError("STREAMHOUSE_RELAY_KEYS is required.")
+        if not relay_environment.database.value:
+            raise RuntimeError(
+                "STREAMHOUSE_RELAY_DB is required; point it at the existing "
+                "SQLite database during migration."
             )
+        try:
+            keys = json.loads(relay_environment.keys.value)
         except json.JSONDecodeError as error:
             raise RuntimeError(
                 "STREAMHOUSE_RELAY_KEYS must be a JSON object."
@@ -154,13 +202,9 @@ class RelayState:
         if not isinstance(keys, dict):
             raise RuntimeError("STREAMHOUSE_RELAY_KEYS must be a JSON object.")
         self.relay_keys = {str(channel): str(key) for channel, key in keys.items()}
-        database_path = Path(
-            _environment_value(
-                "STREAMHOUSE_RELAY_DB",
-                "SALLY_RELAY_DB",
-                "relay.sqlite3",
-            )
-        )
+        database_path = Path(relay_environment.database.value)
+        if database_path.exists() and database_path.is_dir():
+            raise RuntimeError("STREAMHOUSE_RELAY_DB must be a SQLite file path.")
         database_path.parent.mkdir(parents=True, exist_ok=True)
         self.database = sqlite3.connect(database_path, check_same_thread=False)
         self.database.row_factory = sqlite3.Row
@@ -342,7 +386,7 @@ class RelayHandler(BaseHTTPRequestHandler):
         self._send_json({}, HTTPStatus.NO_CONTENT)
 
     def do_GET(self) -> None:  # noqa: N802
-        path = urlparse(self.path).path
+        path = _canonical_route(urlparse(self.path).path)
         try:
             if path == "/health":
                 self._send_json({"status": "ok"})
@@ -353,13 +397,13 @@ class RelayHandler(BaseHTTPRequestHandler):
             if path == "/terms":
                 self._send_html(TERMS_PAGE)
                 return
-            if path == "/api/config":
+            if path == "/api/streamhouse/config":
                 claims = self.state.verify_twitch_jwt(
                     self.headers.get("Authorization", "")
                 )
                 self._send_json(self.state.config(str(claims["channel_id"])))
                 return
-            if path in {"/api/streamhouse/poll", "/api/sally/poll"}:
+            if path == "/api/streamhouse/poll":
                 channel_id = self._verify_hub()
                 self._send_json({"events": self.state.poll(channel_id)})
                 return
@@ -369,10 +413,8 @@ class RelayHandler(BaseHTTPRequestHandler):
 
     def do_PUT(self) -> None:  # noqa: N802
         try:
-            if urlparse(self.path).path not in {
-                "/api/streamhouse/config",
-                "/api/sally/config",
-            }:
+            path = _canonical_route(urlparse(self.path).path)
+            if path != "/api/streamhouse/config":
                 self._send_json({"error": "Not found."}, HTTPStatus.NOT_FOUND)
                 return
             channel_id = self._verify_hub()
@@ -384,9 +426,9 @@ class RelayHandler(BaseHTTPRequestHandler):
             self._send_json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
 
     def do_POST(self) -> None:  # noqa: N802
-        path = urlparse(self.path).path
+        path = _canonical_route(urlparse(self.path).path)
         try:
-            if path == "/api/trigger":
+            if path == "/api/streamhouse/trigger":
                 claims = self.state.verify_twitch_jwt(
                     self.headers.get("Authorization", "")
                 )
@@ -394,7 +436,7 @@ class RelayHandler(BaseHTTPRequestHandler):
                 event_id = self.state.enqueue(claims, str(payload.get("button_id", "")))
                 self._send_json({"accepted": True, "event_id": event_id}, HTTPStatus.ACCEPTED)
                 return
-            if path in {"/api/streamhouse/ack", "/api/sally/ack"}:
+            if path == "/api/streamhouse/ack":
                 channel_id = self._verify_hub()
                 payload = self._read_json()
                 event_ids = payload.get("event_ids", [])
@@ -412,15 +454,28 @@ class RelayHandler(BaseHTTPRequestHandler):
             self._send_json({"error": str(error)}, HTTPStatus.BAD_REQUEST)
 
     def _verify_hub(self) -> str:
-        channel_id = (
-            self.headers.get("X-Streamhouse-Channel", "")
-            or self.headers.get("X-Sally-Channel", "")
+        channel_id = self._compatible_header(
+            "X-Streamhouse-Channel", "X-Sally-Channel"
         ).strip()
-        supplied_key = self.headers.get(
-            "X-Streamhouse-Key", self.headers.get("X-Sally-Key", "")
-        )
+        supplied_key = self._compatible_header("X-Streamhouse-Key", "X-Sally-Key")
         self.state.verify_hub(channel_id, supplied_key)
         return channel_id
+
+    def _compatible_header(self, modern: str, legacy: str) -> str:
+        modern_value = self.headers.get(modern)
+        legacy_value = self.headers.get(legacy)
+        if modern_value is not None:
+            if legacy_value is not None and modern_value != legacy_value:
+                _warn_compatibility_once(
+                    f"header-conflict:{modern}",
+                    f"{modern}+{legacy}:conflict",
+                    f"{modern}:authoritative",
+                )
+            return modern_value
+        if legacy_value is not None:
+            _warn_compatibility_once(f"header:{legacy}", legacy, modern)
+            return legacy_value
+        return ""
 
     def _read_json(self) -> dict[str, object]:
         length = max(0, min(int(self.headers.get("Content-Length", "0")), 65_536))

@@ -11,13 +11,16 @@ from products.hub.ui.controllers.release_controller import ReleaseController
 
 
 class ReleaseToolsTests(unittest.TestCase):
-    def test_render_blueprint_updates_the_existing_relay_service(self) -> None:
+    def test_render_blueprint_defines_the_modern_relay_service(self) -> None:
         root = Path(__file__).resolve().parents[2]
         blueprint = root / "render.yaml"
         contents = blueprint.read_text(encoding="utf-8")
 
         self.assertTrue(blueprint.is_file())
-        self.assertIn("name: sally-soundboard-relay", contents)
+        self.assertIn("name: streamhouse-soundboard-relay", contents)
+        self.assertIn("key: STREAMHOUSE_RELAY_KEYS", contents)
+        self.assertIn("key: STREAMHOUSE_RELAY_DB", contents)
+        self.assertNotIn("key: SALLY_RELAY", contents)
         self.assertIn(
             "buildCommand: python -m compileall extensions/twitch/app",
             contents,

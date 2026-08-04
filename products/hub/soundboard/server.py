@@ -12,6 +12,10 @@ from urllib.parse import parse_qs, urlparse
 from PySide6.QtCore import QObject, Signal
 
 from shared.streamhouse_runtime.logger import Logger
+from shared.streamhouse_runtime.relay_config import (
+    RELAY_COMPATIBILITY_REMOVE_AFTER,
+    RELAY_COMPATIBILITY_VERSION,
+)
 from products.hub.core.resources import repository_resource_path
 from products.hub.soundboard.store import SoundboardStore
 
@@ -36,6 +40,7 @@ class SoundboardLocalServer(QObject):
         self._server: ThreadingHTTPServer | None = None
         self._thread: Thread | None = None
         self._last_trigger: dict[str, float] = {}
+        self._legacy_viewer_routes_warned = False
         self.asset_root = repository_resource_path("extensions/twitch/app")
 
     @property
@@ -57,6 +62,23 @@ class SoundboardLocalServer(QObject):
         self._validate_assets()
         owner = self
 
+        def canonical_viewer_path(path: str) -> str:
+            aliases = {
+                "/api/config": "/api/streamhouse/config",
+                "/api/trigger": "/api/streamhouse/trigger",
+            }
+            canonical = aliases.get(path, path)
+            if canonical != path and not owner._legacy_viewer_routes_warned:
+                owner._legacy_viewer_routes_warned = True
+                Logger.warning(
+                    "event=relay_compatibility_used "
+                    f"compatibility={RELAY_COMPATIBILITY_VERSION} "
+                    f"deprecated={path} replacement={canonical} "
+                    f"remove_after={RELAY_COMPATIBILITY_REMOVE_AFTER}",
+                    source="TWITCH",
+                )
+            return canonical
+
         class RequestHandler(BaseHTTPRequestHandler):
             def do_GET(self) -> None:  # noqa: N802
                 parsed = urlparse(self.path)
@@ -68,7 +90,7 @@ class SoundboardLocalServer(QObject):
                         content_type,
                     )
                     return
-                if parsed.path == "/api/config":
+                if canonical_viewer_path(parsed.path) == "/api/streamhouse/config":
                     token = parse_qs(parsed.query).get("token", [""])[0]
                     if not secrets.compare_digest(token, owner.token):
                         self._send_json(
@@ -80,7 +102,10 @@ class SoundboardLocalServer(QObject):
                 self._send_json({"error": "Not found."}, HTTPStatus.NOT_FOUND)
 
             def do_POST(self) -> None:  # noqa: N802
-                if urlparse(self.path).path != "/api/trigger":
+                if (
+                    canonical_viewer_path(urlparse(self.path).path)
+                    != "/api/streamhouse/trigger"
+                ):
                     self._send_json({"error": "Not found."}, HTTPStatus.NOT_FOUND)
                     return
                 try:

@@ -2,9 +2,29 @@
   "use strict";
 
   const localToken = new URLSearchParams(location.search).get("token") || "";
-  const relayBase = String(
-    window.STREAMHOUSE_RELAY_BASE || window.SALLY_RELAY_BASE || ""
-  ).replace(/\/$/, "");
+  function resolveRelayBase() {
+    const modern = String(window.STREAMHOUSE_RELAY_BASE || "").trim();
+    const legacy = String(window.SALLY_RELAY_BASE || "").trim();
+    if (modern) {
+      if (legacy && modern !== legacy) {
+        console.warn(
+          "Streamhouse relay compatibility conflict: " +
+          "STREAMHOUSE_RELAY_BASE is authoritative (relay-compat-v1)."
+        );
+      }
+      return modern.replace(/\/$/, "");
+    }
+    if (legacy) {
+      console.warn(
+        "SALLY_RELAY_BASE is deprecated; use STREAMHOUSE_RELAY_BASE " +
+        "(relay-compat-v1, removal no earlier than 0.3.0)."
+      );
+      return legacy.replace(/\/$/, "");
+    }
+    return "";
+  }
+
+  const relayBase = resolveRelayBase();
   const state = {
     authToken: "",
     channelId: "",
@@ -46,7 +66,7 @@
   async function trigger(button, element) {
     element.disabled = true;
     try {
-      const response = await fetch(endpoint("/api/trigger"), {
+      const response = await fetch(endpoint("/api/streamhouse/trigger"), {
         method: "POST",
         headers: requestHeaders(),
         body: JSON.stringify({
@@ -103,7 +123,7 @@
   async function loadConfig() {
     const query = localToken ? `?token=${encodeURIComponent(localToken)}` : "";
     try {
-      const response = await fetch(endpoint(`/api/config${query}`), {
+      const response = await fetch(endpoint(`/api/streamhouse/config${query}`), {
         headers: requestHeaders(),
       });
       if (!response.ok) throw new Error("Soundboard access was denied.");

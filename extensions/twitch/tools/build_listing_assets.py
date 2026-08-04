@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 import sys
 
@@ -9,6 +10,7 @@ from PySide6.QtCore import QRect, QRectF, Qt
 from PySide6.QtGui import (
     QColor,
     QFont,
+    QFontDatabase,
     QGuiApplication,
     QImage,
     QPainter,
@@ -20,14 +22,27 @@ from PySide6.QtSvg import QSvgRenderer
 
 EXTENSION_ROOT = Path(__file__).resolve().parents[1]
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
-OUTPUT = EXTENSION_ROOT / "app" / "listing"
-ICON = REPOSITORY_ROOT / "shared" / "assets" / "sally-icon.svg"
+OUTPUT = Path(
+    os.environ.get(
+        "STREAMHOUSE_LISTING_OUTPUT",
+        str(EXTENSION_ROOT / "app" / "listing"),
+    )
+)
+ICON = (
+    REPOSITORY_ROOT
+    / "shared"
+    / "assets"
+    / "streamhouse-icons"
+    / "svg-transparent"
+    / "streamhouse-brand-s.svg"
+)
 GREEN = QColor("#00d47b")
 DARK = QColor("#18181b")
 PANEL = QColor("#242428")
 BUTTON = QColor("#303035")
 TEXT = QColor("#f4f4f5")
 MUTED = QColor("#b8b8c0")
+FONT_FILE = Path(os.environ.get("WINDIR", r"C:\Windows")) / "Fonts" / "segoeui.ttf"
 
 
 def rounded_rect(
@@ -67,6 +82,14 @@ def draw_icon(painter: QPainter, rect: QRectF) -> None:
     QSvgRenderer(str(ICON)).render(painter, rect)
 
 
+def save_image(image: QImage, name: str) -> None:
+    destination = OUTPUT / name
+    temporary = destination.with_suffix(".tmp.png")
+    if not image.save(str(temporary), "PNG"):
+        raise RuntimeError(f"Could not render Twitch listing asset: {destination}")
+    temporary.replace(destination)
+
+
 def save_logo() -> None:
     image = QImage(100, 100, QImage.Format_ARGB32)
     image.fill(DARK)
@@ -74,7 +97,7 @@ def save_logo() -> None:
     painter.setRenderHint(QPainter.Antialiasing)
     draw_icon(painter, QRectF(0, 0, 100, 100))
     painter.end()
-    image.save(str(OUTPUT / "logo-100x100.png"))
+    save_image(image, "logo-100x100.png")
 
 
 def save_discovery() -> None:
@@ -101,7 +124,7 @@ def save_discovery() -> None:
         color=MUTED,
     )
     painter.end()
-    image.save(str(OUTPUT / "discovery-300x200.png"))
+    save_image(image, "discovery-300x200.png")
 
 
 def save_screenshot() -> None:
@@ -170,11 +193,14 @@ def save_screenshot() -> None:
         alignment=Qt.AlignCenter,
     )
     painter.end()
-    image.save(str(OUTPUT / "screenshot-1024x768.png"))
+    save_image(image, "screenshot-1024x768.png")
 
 
 def main() -> None:
     application = QGuiApplication.instance() or QGuiApplication(sys.argv[:1])
+    font_id = QFontDatabase.addApplicationFont(str(FONT_FILE))
+    if font_id < 0:
+        raise RuntimeError(f"Could not load the listing asset font: {FONT_FILE}")
     OUTPUT.mkdir(parents=True, exist_ok=True)
     save_logo()
     save_discovery()

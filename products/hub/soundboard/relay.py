@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from threading import Event, Thread
@@ -12,13 +13,30 @@ from PySide6.QtCore import QObject, Signal
 from shared.streamhouse_runtime.json_store import atomic_write_json, load_json_with_backup
 from shared.streamhouse_runtime.logger import Logger
 from shared.streamhouse_runtime.paths import user_data_root
+from shared.streamhouse_runtime.relay_config import (
+    LEGACY_RELAY_BASE_DEFAULT,
+    RELAY_COMPATIBILITY_REMOVE_AFTER,
+    RELAY_COMPATIBILITY_VERSION,
+    STREAMHOUSE_RELAY_BASE_DEFAULT,
+    load_relay_environment,
+)
 from products.hub.core.secret_store import SecretStore
 from products.hub.soundboard.store import SoundboardStore
 
 
+_WARNED_RELAY_CONFIG_EVENTS: set[str] = set()
+
+
+def _warn_relay_config_once(event: str, message: str) -> None:
+    if event in _WARNED_RELAY_CONFIG_EVENTS:
+        return
+    _WARNED_RELAY_CONFIG_EVENTS.add(event)
+    Logger.warning(message, source="TWITCH")
+
+
 @dataclass(slots=True)
 class SoundboardRelayConfig:
-    url: str = ""
+    url: str = STREAMHOUSE_RELAY_BASE_DEFAULT
     channel_id: str = ""
     auto_connect: bool = False
 
@@ -54,6 +72,29 @@ class SoundboardRelayConfigStore:
             if not isinstance(payload, dict):
                 raise ValueError("Soundboard relay settings must be a JSON object.")
             config = SoundboardRelayConfig.from_dict(payload)
+        selection = load_relay_environment(
+            os.environ,
+            base_default=config.url,
+        ).base
+        if selection.used_legacy:
+            _warn_relay_config_once(
+                "legacy-base-environment",
+                "event=relay_compatibility_used "
+                f"compatibility={RELAY_COMPATIBILITY_VERSION} "
+                "deprecated=SALLY_RELAY_BASE "
+                "replacement=STREAMHOUSE_RELAY_BASE "
+                f"remove_after={RELAY_COMPATIBILITY_REMOVE_AFTER}",
+            )
+        elif selection.conflict:
+            _warn_relay_config_once(
+                "conflicting-base-environment",
+                "event=relay_compatibility_conflict "
+                f"compatibility={RELAY_COMPATIBILITY_VERSION} "
+                "deprecated=STREAMHOUSE_RELAY_BASE+SALLY_RELAY_BASE:conflict "
+                "replacement=STREAMHOUSE_RELAY_BASE:authoritative "
+                f"remove_after={RELAY_COMPATIBILITY_REMOVE_AFTER}",
+            )
+        config.url = selection.value.rstrip("/")[:500]
         return config, self.secret_store.load()
 
     def save(self, config: SoundboardRelayConfig, key: str) -> None:
@@ -81,6 +122,8 @@ class SoundboardRelayClient(QObject):
         self._thread: Thread | None = None
         self._status = "Disconnected"
         self._legacy_routes = False
+        self._active_base_url = STREAMHOUSE_RELAY_BASE_DEFAULT
+        self._legacy_host_fallback = False
 
     @property
     def running(self) -> bool:
@@ -98,6 +141,8 @@ class SoundboardRelayClient(QObject):
         self.config = config
         self.key = key.strip()
         self._legacy_routes = False
+        self._active_base_url = config.url
+        self._legacy_host_fallback = False
         self._stop.clear()
         self._wake.clear()
         self._set_status("Connecting")
@@ -179,12 +224,24 @@ class SoundboardRelayClient(QObject):
         try:
             return self._request_once(path, method=method, payload=payload)
         except HTTPError as error:
-            if error.code != 404 or not legacy_path:
+            if error.code != 404:
+                raise
+            if self._activate_legacy_host():
+                return self._request(
+                    path,
+                    legacy_path=legacy_path,
+                    method=method,
+                    payload=payload,
+                )
+            if not legacy_path:
                 raise
             self._legacy_routes = True
             Logger.warning(
-                "Hosted soundboard relay uses the legacy API; compatibility "
-                "mode is active until the relay is updated.",
+                "event=relay_compatibility_used "
+                f"compatibility={RELAY_COMPATIBILITY_VERSION} "
+                "deprecated=legacy_route_and_header_mode "
+                "replacement=/api/streamhouse/*+X-Streamhouse-* "
+                f"remove_after={RELAY_COMPATIBILITY_REMOVE_AFTER}",
                 source="TWITCH",
             )
             return self._request_once(
@@ -193,6 +250,33 @@ class SoundboardRelayClient(QObject):
                 payload=payload,
                 include_legacy_headers=True,
             )
+        except (URLError, OSError):
+            if self._activate_legacy_host():
+                return self._request(
+                    path,
+                    legacy_path=legacy_path,
+                    method=method,
+                    payload=payload,
+                )
+            raise
+
+    def _activate_legacy_host(self) -> bool:
+        if (
+            self._active_base_url != STREAMHOUSE_RELAY_BASE_DEFAULT
+            or self._legacy_host_fallback
+        ):
+            return False
+        self._legacy_host_fallback = True
+        self._active_base_url = LEGACY_RELAY_BASE_DEFAULT
+        Logger.warning(
+            "event=relay_compatibility_used "
+            f"compatibility={RELAY_COMPATIBILITY_VERSION} "
+            "deprecated=legacy_relay_hostname_fallback "
+            f"replacement={STREAMHOUSE_RELAY_BASE_DEFAULT} "
+            f"remove_after={RELAY_COMPATIBILITY_REMOVE_AFTER}",
+            source="TWITCH",
+        )
+        return True
 
     def _request_once(
         self,
@@ -215,7 +299,7 @@ class SoundboardRelayClient(QObject):
                 }
             )
         request = Request(
-            self.config.url + path,
+            self._active_base_url + path,
             data=payload,
             method=method,
             headers=headers,

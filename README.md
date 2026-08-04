@@ -31,7 +31,10 @@ bound only to `127.0.0.1:8765`.
 
 See [architecture](docs/architecture/overview.md) for ownership and change
 routing, and [product family](docs/architecture/product-family.md) for canonical
-product names and dependency rules.
+product names and dependency rules. Relay operators should use the
+[production migration runbook](docs/deployment/relay-brand-migration.md), which
+keeps the old service available until Render, Hub, Twitch Extension, and
+database verification are complete.
 
 ## Development
 

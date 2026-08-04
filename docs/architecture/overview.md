@@ -421,6 +421,13 @@ uses the real stream ID cached by the Twitch companion refresh; it never
 creates a process-lifetime or offline stand-in stream. Each named counter has
 an independent read-modify-write lock and atomic JSON replacement, so selected
 scopes commit as one task transaction without serializing unrelated counters.
+Fresh stores remain absent/empty until explicit counter creation. Value-task
+results use structured statuses (`success`, `partial_success`,
+`skipped_known_bot`, `missing_counter`, `disabled_counter`, `missing_viewer`,
+`stream_unavailable`, `invalid_configuration`, `invalid_value`,
+`minimum_reached`, or `persistence_failed`). Reads also expose viewer rank;
+offline multi-scope updates and resets commit valid lifetime scopes while
+reporting skipped stream scopes.
 
 Python-script tasks expose trigger context through `STREAMHOUSE_*` environment
 variables. Temporary `SALLY_*` aliases are also emitted so existing trusted
@@ -658,17 +665,18 @@ Security boundaries:
 - Pending events expire after five minutes and are removed on acknowledgement.
 - Hub only makes outbound HTTPS requests; no router port forwarding is needed.
 
-Root `render.yaml` describes the existing `sally-soundboard-relay` Render
-deployment. It intentionally retains that service identity so blueprint updates
-modify the live endpoint used by Hub and the Twitch Extension instead of
-creating a disconnected replacement service. Render's free filesystem
-is temporary, so Hub re-syncs config when reconnecting. Relay deployment uses
-the existing `SALLY_RELAY_KEYS` and `SALLY_RELAY_DB` production secret names
-until those Render values are migrated; the server reads them as temporary
-fallbacks with warnings. New deployments should use the `STREAMHOUSE_*` names.
-Viewer assets emit
-`STREAMHOUSE_RELAY_BASE` and only read `SALLY_RELAY_BASE` as a compatibility
-fallback.
+Root `render.yaml` describes the parallel `streamhouse-soundboard-relay` target.
+It is not evidence that production has been renamed. The relay requires
+`STREAMHOUSE_RELAY_KEYS` and an explicit `STREAMHOUSE_RELAY_DB` SQLite file
+path; this prevents a replacement service from silently creating an empty
+database. Hub and generated viewer assets use `STREAMHOUSE_RELAY_BASE`, whose
+default target is `https://streamhouse-soundboard-relay.onrender.com`.
+Centralized `relay-compat-v1` resolution temporarily permits old environment,
+route, header, and hostname forms with value-free warnings and modern-first
+precedence. See `docs/deployment/relay-brand-migration.md` for backup, Render,
+Twitch Extension, rollback, and removal procedures, and
+`docs/deployment/relay-brand-inventory.md` for the Sally-reference
+classification.
 
 The existing Render service also retains dashboard-stored build/start commands
 that import `twitch_extension.relay_server`. The root `twitch_extension/`
@@ -679,6 +687,8 @@ root `render.yaml`.
 
 Hub emits `/api/streamhouse/config`, `/api/streamhouse/poll`, and
 `/api/streamhouse/ack` with `X-Streamhouse-Channel` and `X-Streamhouse-Key`.
+Viewer assets use `/api/streamhouse/config` and
+`/api/streamhouse/trigger` with Twitch Extension JWT authentication.
 The hosted relay temporarily accepts the former `/api/sally/*` routes and
 `X-Sally-*` headers for already deployed Hub builds. Hub always tries the
 Streamhouse route and headers first. If that route returns HTTP 404, Hub treats
