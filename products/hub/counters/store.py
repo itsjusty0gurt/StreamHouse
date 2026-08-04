@@ -36,26 +36,42 @@ class CounterStore:
         if payload.get("version") != expected:
             raise ValueError(f"Unsupported {label} version {payload.get('version')!r}; expected {expected}.")
 
+    @classmethod
+    def _definitions_from_payload(cls, payload: Any) -> list[CounterDefinition]:
+        if not isinstance(payload, dict):
+            raise ValueError("Counter index must be a JSON object.")
+        cls._check_version(payload, INDEX_VERSION, "counter index")
+        raw = payload.get("counters", [])
+        if not isinstance(raw, list):
+            raise ValueError("Counter index counters must be a list.")
+        if any(not isinstance(item, dict) for item in raw):
+            raise ValueError("Every counter definition must be a JSON object.")
+        definitions = [CounterDefinition.from_dict(item) for item in raw]
+        ids = [item.counter_id for item in definitions]
+        if len(ids) != len(set(ids)):
+            raise ValueError("Counter index contains duplicate IDs.")
+        return sorted(definitions, key=lambda item: item.counter_id)
+
     def list_definitions(self) -> list[CounterDefinition]:
         with self._index_lock:
             if not self.index_path.exists() and not self.index_path.with_suffix(".json.bak").exists():
                 return []
             payload = load_json_with_backup(self.index_path)
-            if not isinstance(payload, dict):
-                raise ValueError("Counter index must be a JSON object.")
-            self._check_version(payload, INDEX_VERSION, "counter index")
-            raw = payload.get("counters", [])
-            if not isinstance(raw, list):
-                raise ValueError("Counter index counters must be a list.")
-            definitions = [CounterDefinition.from_dict(item) for item in raw if isinstance(item, dict)]
-            ids = [item.counter_id for item in definitions]
-            if len(ids) != len(set(ids)):
-                raise ValueError("Counter index contains duplicate IDs.")
-            return definitions
+            try:
+                return self._definitions_from_payload(payload)
+            except (TypeError, ValueError):
+                backup = self.index_path.with_suffix(".json.bak")
+                if not backup.exists():
+                    raise
+                return self._definitions_from_payload(load_json_with_backup(backup))
 
     def save_definitions(self, definitions: list[CounterDefinition]) -> None:
         with self._index_lock:
-            atomic_write_json(self.index_path, {"version": INDEX_VERSION, "counters": [item.to_dict() for item in definitions]})
+            ordered = sorted(definitions, key=lambda item: item.counter_id)
+            ids = [item.counter_id for item in ordered]
+            if len(ids) != len(set(ids)):
+                raise ValueError("Counter definitions contain duplicate IDs.")
+            atomic_write_json(self.index_path, {"version": INDEX_VERSION, "counters": [item.to_dict() for item in ordered]})
 
     def create(self, definition: CounterDefinition, starting_total: int = 0) -> None:
         with self._index_lock:
@@ -85,11 +101,33 @@ class CounterStore:
         if not path.exists() and not path.with_suffix(".json.bak").exists():
             return empty_counter_payload(counter_id)
         payload = load_json_with_backup(path)
+        try:
+            return self._validate_counter_payload(payload, counter_id)
+        except (TypeError, ValueError):
+            backup = path.with_suffix(".json.bak")
+            if not backup.exists():
+                raise
+            return self._validate_counter_payload(load_json_with_backup(backup), counter_id)
+
+    @classmethod
+    def _validate_counter_payload(cls, payload: Any, counter_id: str) -> dict[str, Any]:
         if not isinstance(payload, dict):
             raise ValueError(f"Counter {counter_id} data must be a JSON object.")
-        self._check_version(payload, COUNTER_VERSION, f"counter {counter_id}")
-        if payload.get("counter_id") != counter_id or not isinstance(payload.get("viewers", {}), dict):
+        cls._check_version(payload, COUNTER_VERSION, f"counter {counter_id}")
+        viewers = payload.get("viewers", {})
+        current_stream = payload.get("current_stream", {})
+        if payload.get("counter_id") != counter_id or not isinstance(viewers, dict) or not isinstance(current_stream, dict):
             raise ValueError(f"Counter {counter_id} data is invalid.")
+        try:
+            int(payload.get("channel_total", 0))
+            int(current_stream.get("value", 0))
+            for user_id, viewer in viewers.items():
+                if not str(user_id).strip() or not isinstance(viewer, dict) or not isinstance(viewer.get("current_stream", {}), dict):
+                    raise ValueError
+                int(viewer.get("total", 0))
+                int(viewer.get("current_stream", {}).get("value", 0))
+        except (TypeError, ValueError) as error:
+            raise ValueError(f"Counter {counter_id} data is invalid.") from error
         return payload
 
     def read_data(self, counter_id: str) -> dict[str, Any]:
@@ -110,7 +148,26 @@ class CounterStore:
             definitions = self.list_definitions()
             if not any(item.counter_id == counter_id for item in definitions):
                 raise KeyError(counter_id)
-            self.save_definitions([item for item in definitions if item.counter_id != counter_id])
             path = self._counter_path(counter_id)
-            path.unlink(missing_ok=True)
-            path.with_suffix(".json.bak").unlink(missing_ok=True)
+            backup = path.with_suffix(".json.bak")
+            staged: list[tuple[Path, Path]] = []
+            try:
+                for source in (path, backup):
+                    if source.exists():
+                        destination = source.with_suffix(source.suffix + ".deleting")
+                        source.replace(destination)
+                        staged.append((source, destination))
+            except OSError:
+                for source, destination in reversed(staged):
+                    if destination.exists():
+                        destination.replace(source)
+                raise
+            try:
+                self.save_definitions([item for item in definitions if item.counter_id != counter_id])
+            except Exception:
+                for source, destination in reversed(staged):
+                    if destination.exists():
+                        destination.replace(source)
+                raise
+            for _source, destination in staged:
+                destination.unlink(missing_ok=True)

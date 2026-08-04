@@ -20,7 +20,7 @@ OUTPUT_SUFFIXES = (
     "amount_changed", "channel_total", "stream_total", "viewer_total",
     "viewer_stream_total", "viewer_rank", "viewer_display_name", "leaderboard",
     "leaderboard_entries", "top_viewer_id", "top_viewer_display_name",
-    "top_viewer_value", "updated_scopes", "status", "formatted_value",
+    "top_viewer_login", "top_viewer_value", "updated_scopes", "skipped_scopes", "status", "formatted_value",
     "channel_total_status", "stream_total_status", "viewer_total_status",
     "viewer_stream_total_status",
 )
@@ -58,8 +58,10 @@ class CounterTask:
         if source == "none":
             return "", "", ""
         if source == "target":
-            return (str(context.get("target_user_id", "")).strip(), str(context.get("target_login", "")).strip(), str(context.get("target_display_name", "")).strip())
-        return (str(context.get("user_id", "")).strip(), str(context.get("user_login", context.get("user", ""))).strip(), str(context.get("user", "")).strip())
+            values = (context.get("target_user_id", ""), context.get("target_login", ""), context.get("target_display_name", ""))
+        else:
+            values = (context.get("user_id", ""), context.get("user_login", context.get("user", "")), context.get("user", ""))
+        return tuple("" if str(value).strip() in {"", "--"} else str(value).strip() for value in values)
 
     @staticmethod
     def _integer(value: Any, context: dict[str, str]) -> int:
@@ -74,7 +76,15 @@ class CounterTask:
         values = operation.values
         top = top or {}
         definition = self.service.get_counter(str(task.config.get("counter_id", "")))
-        formatted = self.service.format_value(definition.counter_id, values.viewer_total if values.viewer_display_name else values.channel_total) if definition else ""
+        selected_scope = str(task.config.get("scope", ""))
+        selected_value = {
+            "channel_total": values.channel_total,
+            "stream_total": values.stream_total,
+            "viewer_total": values.viewer_total,
+            "viewer_stream_total": values.viewer_stream_total,
+            "viewer_rank": values.viewer_rank,
+        }.get(selected_scope, values.viewer_total if values.viewer_display_name else values.channel_total)
+        formatted = self.service.format_value(definition.counter_id, selected_value) if definition else ""
         context.update({
             f"{prefix}_amount_changed": str(operation.amount_changed), f"{prefix}_channel_total": str(values.channel_total),
             f"{prefix}_stream_total": str(values.stream_total), f"{prefix}_viewer_total": str(values.viewer_total),
@@ -82,7 +92,8 @@ class CounterTask:
             f"{prefix}_viewer_display_name": values.viewer_display_name, f"{prefix}_leaderboard": leaderboard,
             f"{prefix}_leaderboard_entries": str(len([part for part in leaderboard.split(" | ") if part])),
             f"{prefix}_top_viewer_id": str(top.get("user_id", "")), f"{prefix}_top_viewer_display_name": str(top.get("display_name", top.get("login", ""))),
-            f"{prefix}_top_viewer_value": str(top.get("value", "")), f"{prefix}_updated_scopes": ", ".join(operation.updated_scopes),
+            f"{prefix}_top_viewer_login": str(top.get("login", "")), f"{prefix}_top_viewer_value": str(top.get("value", "")), f"{prefix}_updated_scopes": ", ".join(operation.updated_scopes),
+            f"{prefix}_skipped_scopes": ", ".join(operation.skipped_scopes),
             f"{prefix}_status": operation.status, f"{prefix}_formatted_value": formatted,
             f"{prefix}_channel_total_status": "unavailable" if "channel_total" in operation.skipped_scopes else "available",
             f"{prefix}_stream_total_status": "unavailable" if "stream_total" in operation.skipped_scopes else "available",
@@ -98,12 +109,12 @@ class CounterTask:
             operation = self._run(task, trigger)
             context = self._context(trigger)
             self._publish(task, context, operation)
-            succeeded = operation.status not in {"disabled", "skipped", "skipped_bot", "error"}
+            succeeded = operation.status in {"success", "partial_success", "minimum_reached", "skipped_known_bot"}
             return TaskExecutionResult(task.task_id, task.task_type, succeeded, operation.detail or operation.status.replace("_", " ").title())
         except (KeyError, OSError, TypeError, ValueError) as error:
             try:
                 prefix = output_prefix(task.config)
-                self._context(trigger)[f"{prefix}_status"] = "error"
+                self._context(trigger)[f"{prefix}_status"] = "invalid_configuration"
             except ValueError:
                 pass
             return TaskExecutionResult(task.task_id, task.task_type, False, str(error))
@@ -115,7 +126,11 @@ class UpdateCounterTask(CounterTask):
         context = self._context(trigger)
         user_id, login, display = self._viewer(task.config, context)
         scopes = [scope for scope in SCOPES if bool(task.config.get(scope, False))]
-        return self.service.update_values(str(task.config.get("counter_id", "")), self._integer(task.config.get("amount", "1"), context), scopes, user_id=user_id, login=login, display_name=display, stream_id=self.stream_id_provider())
+        amount = self._integer(task.config.get("amount", "1"), context)
+        operation = str(task.config.get("operation", "")).casefold()
+        if operation == "increase": amount = abs(amount)
+        elif operation == "decrease": amount = -abs(amount)
+        return self.service.update_values(str(task.config.get("counter_id", "")), amount, scopes, user_id=user_id, login=login, display_name=display, stream_id=self.stream_id_provider())
 
 
 class GetCounterValueTask(CounterTask):
@@ -123,10 +138,12 @@ class GetCounterValueTask(CounterTask):
     def _run(self, task: TaskDefinition, trigger: TriggerEvent) -> CounterOperation:
         context = self._context(trigger)
         user_id, _, _ = self._viewer(task.config, context)
-        stream_id = self.stream_id_provider()
-        values = self.service.get_values(str(task.config.get("counter_id", "")), user_id=user_id, stream_id=stream_id)
-        skipped = ("stream_total", "viewer_stream_total") if not stream_id else ()
-        return CounterOperation("available" if stream_id else "partial", values, skipped_scopes=skipped)
+        return self.service.read_value(
+            str(task.config.get("counter_id", "")),
+            str(task.config.get("scope", "channel_total")),
+            user_id=user_id,
+            stream_id=self.stream_id_provider(),
+        )
 
 
 class SetCounterValueTask(CounterTask):
@@ -143,7 +160,10 @@ class ResetCounterTask(CounterTask):
         context = self._context(trigger)
         user_id, _, _ = self._viewer(task.config, context)
         scopes = [scope for scope in SCOPES if bool(task.config.get(scope, False))]
-        return self.service.reset(str(task.config.get("counter_id", "")), scopes, user_id=user_id, stream_id=self.stream_id_provider(), all_viewers=bool(task.config.get("all_viewers", False)))
+        broad = []
+        if bool(task.config.get("all_viewer_totals", False)): broad.append("viewer_total")
+        if bool(task.config.get("all_viewer_stream_totals", False)): broad.append("viewer_stream_total")
+        return self.service.reset(str(task.config.get("counter_id", "")), scopes, user_id=user_id, stream_id=self.stream_id_provider(), all_viewers=bool(task.config.get("all_viewers", False)), all_viewer_scopes=broad)
 
 
 class GetCounterLeaderboardTask(CounterTask):
@@ -151,25 +171,34 @@ class GetCounterLeaderboardTask(CounterTask):
     def execute(self, task: TaskDefinition, trigger: TriggerEvent) -> TaskExecutionResult:
         try:
             counter_id = str(task.config.get("counter_id", ""))
+            definition = self.service.get_counter(counter_id)
+            if definition is None:
+                operation = CounterOperation("missing_counter", detail=f'Counter "{counter_id}" does not exist.')
+                self._publish(task, self._context(trigger), operation)
+                return TaskExecutionResult(task.task_id, task.task_type, False, operation.detail)
+            if not definition.enabled:
+                operation = CounterOperation("disabled_counter", self.service.get_values(counter_id), detail="Counter is disabled.")
+                self._publish(task, self._context(trigger), operation)
+                return TaskExecutionResult(task.task_id, task.task_type, False, operation.detail)
             current = str(task.config.get("viewer_scope", "lifetime")) == "current_stream"
             stream_id = self.stream_id_provider()
             if current and not stream_id:
                 prefix = output_prefix(task.config)
-                self._context(trigger)[f"{prefix}_status"] = "unavailable"
+                self._context(trigger)[f"{prefix}_status"] = "stream_unavailable"
                 return TaskExecutionResult(task.task_id, task.task_type, False, "A live Twitch stream is required for a current-stream leaderboard.")
             rows = self.service.leaderboard(counter_id, stream_id=stream_id, current_stream=current, limit=int(task.config.get("limit", 5)), include_zero=bool(task.config.get("include_zero", False)))
             key = "stream_total" if current else "total"
-            parts = [f"{index}. {row['display_name'] or row['login'] or row['user_id']}: {row[key]:,}" for index, row in enumerate(rows, 1)]
+            parts = [f"{index}. {row['display_name'] or row['login'] or row['user_id']}: {self.service.format_value(counter_id, row[key])}" for index, row in enumerate(rows, 1)]
             message = " | ".join(parts)[:480]
             top = dict(rows[0]) if rows else {}
             if top: top["value"] = top[key]
             values = self.service.get_values(counter_id, stream_id=self.stream_id_provider())
-            operation = CounterOperation("available" if rows else "empty", values)
+            operation = CounterOperation("success", values, stream_id=stream_id)
             self._publish(task, self._context(trigger), operation, leaderboard=message, top=top)
             return TaskExecutionResult(task.task_id, task.task_type, True, f"Built {len(rows)} leaderboard entries.")
         except (KeyError, OSError, TypeError, ValueError) as error:
             try:
-                self._context(trigger)[f"{output_prefix(task.config)}_status"] = "error"
+                self._context(trigger)[f"{output_prefix(task.config)}_status"] = "missing_counter" if isinstance(error, KeyError) else "invalid_configuration"
             except ValueError:
                 pass
             return TaskExecutionResult(task.task_id, task.task_type, False, str(error))

@@ -6,6 +6,7 @@ from typing import Any, Mapping
 
 COUNTER_ID_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 SCOPES = ("channel_total", "stream_total", "viewer_total", "viewer_stream_total")
+READ_SCOPES = (*SCOPES, "viewer_rank")
 
 
 def validate_counter_id(value: str) -> str:
@@ -46,6 +47,8 @@ class CounterDefinition:
         object.__setattr__(self, "singular", self.singular.strip() or name)
         object.__setattr__(self, "plural", self.plural.strip() or name)
         object.__setattr__(self, "minimum", int(self.minimum))
+        if not any(self.tracks(scope) for scope in SCOPES):
+            raise ValueError("Select at least one tracked counter scope.")
         if not self.allow_negative and self.minimum < 0:
             raise ValueError("Minimum cannot be negative unless negative values are allowed.")
 
@@ -79,3 +82,4 @@ class CounterValues:
     viewer_stream_total: int = 0
     viewer_rank: int = 0
     viewer_display_name: str = ""
+    viewer_login: str = ""

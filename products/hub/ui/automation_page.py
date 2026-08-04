@@ -663,8 +663,9 @@ class TaskEditorDialog(QDialog):
         ),
         "counter.update": (
             {"key": "counter_id", "label": "Counter", "kind": "counter", "default": "", "required": True},
+            {"key": "operation", "label": "Operation", "kind": "choice", "default": "increase", "choices": (("Increase", "increase"), ("Decrease", "decrease"))},
             {"key": "amount", "label": "Amount", "kind": "text", "default": "1", "required": True, "placeholder": "1, -1, or {amount}"},
-            {"key": "viewer_source", "label": "Viewer", "kind": "choice", "default": "trigger", "choices": (("Viewer who triggered this routine", "trigger"), ("Resolved command target", "target"), ("No viewer / shared only", "none"))},
+            {"key": "viewer_source", "label": "Viewer", "kind": "choice", "default": "trigger", "choices": (("Viewer who triggered this routine", "trigger"), ("No viewer / shared only", "none"))},
             {"key": "channel_total", "label": "Update values", "kind": "bool", "default": True, "text": "Channel all-time total"},
             {"key": "stream_total", "label": "", "kind": "bool", "default": True, "text": "Current stream total"},
             {"key": "viewer_total", "label": "", "kind": "bool", "default": True, "text": "Viewer all-time total"},
@@ -673,24 +674,26 @@ class TaskEditorDialog(QDialog):
         ),
         "counter.get_value": (
             {"key": "counter_id", "label": "Counter", "kind": "counter", "default": "", "required": True},
-            {"key": "viewer_source", "label": "Viewer", "kind": "choice", "default": "trigger", "choices": (("Viewer who triggered this routine", "trigger"), ("Resolved command target", "target"), ("No viewer / shared only", "none"))},
+            {"key": "scope", "label": "Value to read", "kind": "choice", "default": "channel_total", "choices": (("Channel lifetime", "channel_total"), ("Current stream", "stream_total"), ("Viewer lifetime", "viewer_total"), ("Viewer current stream", "viewer_stream_total"), ("Viewer rank", "viewer_rank"))},
+            {"key": "viewer_source", "label": "Viewer", "kind": "choice", "default": "trigger", "choices": (("Viewer who triggered this routine", "trigger"), ("No viewer / shared only", "none"))},
             {"key": "output_prefix", "label": "Output prefix", "kind": "text", "default": "", "placeholder": "Blank uses stable counter ID"},
         ),
         "counter.set_value": (
             {"key": "counter_id", "label": "Counter", "kind": "counter", "default": "", "required": True},
             {"key": "scope", "label": "Value to set", "kind": "choice", "default": "channel_total", "choices": (("Channel all-time", "channel_total"), ("Current stream", "stream_total"), ("Viewer all-time", "viewer_total"), ("Viewer current stream", "viewer_stream_total"))},
             {"key": "value", "label": "Exact value", "kind": "text", "default": "0", "required": True},
-            {"key": "viewer_source", "label": "Viewer", "kind": "choice", "default": "trigger", "choices": (("Viewer who triggered this routine", "trigger"), ("Resolved command target", "target"), ("No viewer / shared only", "none"))},
+            {"key": "viewer_source", "label": "Viewer", "kind": "choice", "default": "trigger", "choices": (("Viewer who triggered this routine", "trigger"), ("No viewer / shared only", "none"))},
             {"key": "output_prefix", "label": "Output prefix", "kind": "text", "default": "", "placeholder": "Blank uses stable counter ID"},
         ),
         "counter.reset": (
             {"key": "counter_id", "label": "Counter", "kind": "counter", "default": "", "required": True},
-            {"key": "viewer_source", "label": "Viewer", "kind": "choice", "default": "trigger", "choices": (("Viewer who triggered this routine", "trigger"), ("Resolved command target", "target"), ("No viewer / shared only", "none"))},
+            {"key": "viewer_source", "label": "Viewer", "kind": "choice", "default": "trigger", "choices": (("Viewer who triggered this routine", "trigger"), ("No viewer / shared only", "none"))},
             {"key": "channel_total", "label": "Reset values", "kind": "bool", "default": True, "text": "Channel all-time total"},
             {"key": "stream_total", "label": "", "kind": "bool", "default": False, "text": "Current stream total"},
             {"key": "viewer_total", "label": "", "kind": "bool", "default": False, "text": "One viewer's all-time total"},
             {"key": "viewer_stream_total", "label": "", "kind": "bool", "default": False, "text": "One viewer's current-stream total"},
-            {"key": "all_viewers", "label": "Danger zone", "kind": "bool", "default": False, "text": "Reset every viewer value for this counter"},
+            {"key": "all_viewer_totals", "label": "Danger zone", "kind": "bool", "default": False, "text": "Reset every viewer lifetime value for this counter"},
+            {"key": "all_viewer_stream_totals", "label": "", "kind": "bool", "default": False, "text": "Reset every viewer current-stream value for this counter"},
             {"key": "output_prefix", "label": "Output prefix", "kind": "text", "default": "", "placeholder": "Blank uses stable counter ID"},
         ),
         "counter.get_leaderboard": (
@@ -1088,6 +1091,16 @@ class TaskEditorDialog(QDialog):
             **sample_context(ordered_keys),
             **self.variables,
         }
+        counter_prefixes: dict[str, str] = {}
+        if self.routine_store is not None and self.counter_service is not None:
+            for routine in self.routine_store.routines:
+                for task in routine.tasks:
+                    if not task.task_type.startswith("counter."):
+                        continue
+                    definition = self.counter_service.get_counter(str(task.config.get("counter_id", "")))
+                    if definition is not None:
+                        prefix = str(task.config.get("output_prefix") or definition.counter_id)
+                        counter_prefixes[prefix] = definition.display_name
         for row, key in enumerate(ordered_keys):
             value = self.variable_preview_context.get(key, "")
             self.variable_table.insertRow(row)
@@ -1101,12 +1114,14 @@ class TaskEditorDialog(QDialog):
                 "stream_total": "Stream Total", "viewer_total": "Viewer Total",
                 "viewer_stream_total": "Viewer Stream Total", "viewer_rank": "Viewer Rank",
                 "viewer_display_name": "Viewer Display Name", "leaderboard": "Leaderboard",
-                "updated_scopes": "Updated Scopes", "status": "Status", "formatted_value": "Formatted Value",
+                "updated_scopes": "Updated Scopes", "skipped_scopes": "Skipped Scopes",
+                "top_viewer_login": "Top Viewer Login", "status": "Status", "formatted_value": "Formatted Value",
             }
             for suffix, friendly in counter_suffixes.items():
                 marker = f"_{suffix}"
                 if key.endswith(marker):
-                    prefix = key[:-len(marker)].replace("_", " ").title()
+                    raw_prefix = key[:-len(marker)]
+                    prefix = counter_prefixes.get(raw_prefix, raw_prefix.replace("_", " ").title())
                     description = f"{prefix} — {friendly}"
                     source = "Earlier counter task"
                     break
@@ -1267,6 +1282,8 @@ class TaskEditorDialog(QDialog):
         if kind == "choice":
             combo = QComboBox()
             for label, data in spec.get("choices", ()):
+                if spec.get("key") == "viewer_source" and data == "trigger" and "user_id" not in self.variables and self.task is None:
+                    continue
                 combo.addItem(str(label), data)
             index = combo.findData(value)
             combo.setCurrentIndex(max(index, 0))
@@ -1277,6 +1294,9 @@ class TaskEditorDialog(QDialog):
             if self.counter_service is not None:
                 for definition in self.counter_service.list_counters():
                     combo.addItem(definition.display_name, definition.counter_id)
+                current_id = str(value or "")
+                if current_id and combo.findData(current_id) < 0:
+                    combo.addItem(f"Missing Counter — {current_id}", current_id)
                 combo.addItem("+ Create New Counter…", "__create__")
                 combo.activated.connect(lambda _index, field=combo: self._create_inline_counter(field))
             index = combo.findData(str(value or ""))
@@ -1596,6 +1616,8 @@ class TaskEditorDialog(QDialog):
             if (
                 task_type in {"counter.update", "counter.reset"}
                 and not config.get("all_viewers")
+                and not config.get("all_viewer_totals")
+                and not config.get("all_viewer_stream_totals")
                 and not any(
                     bool(config.get(scope))
                     for scope in (
@@ -1606,6 +1628,21 @@ class TaskEditorDialog(QDialog):
                 raise ValueError("Select at least one counter scope.")
             prefix = str(config.get("output_prefix", "")).strip() or str(config.get("counter_id", ""))
             config["output_prefix"] = CustomVariableStore.validate_generated_name(prefix)
+            definition = self.counter_service.get_counter(str(config.get("counter_id", ""))) if self.counter_service is not None else None
+            if definition is None:
+                raise ValueError("Missing Counter: choose an existing counter.")
+            selected_scopes: set[str] = set()
+            if task_type in {"counter.get_value", "counter.set_value"}:
+                selected_scopes.add(str(config.get("scope", "")))
+            elif task_type in {"counter.update", "counter.reset"}:
+                selected_scopes.update(scope for scope in ("channel_total", "stream_total", "viewer_total", "viewer_stream_total") if bool(config.get(scope)))
+                if bool(config.get("all_viewer_totals")): selected_scopes.add("viewer_total")
+                if bool(config.get("all_viewer_stream_totals")): selected_scopes.add("viewer_stream_total")
+            unavailable = sorted(scope for scope in selected_scopes if not definition.tracks("viewer_total" if scope == "viewer_rank" else scope))
+            if unavailable:
+                raise ValueError("The counter does not track: " + ", ".join(unavailable) + ".")
+            if any(scope.startswith("viewer_") or scope == "viewer_rank" for scope in selected_scopes) and config.get("viewer_source") == "none":
+                raise ValueError("Viewer scopes require a viewer source.")
         if task_type in {
             "core.create_global_variable",
             "core.create_session_variable",
@@ -2676,6 +2713,25 @@ class AutomationPage(QWidget):
                         issues.append(f"Random choice {index} has an invalid weight")
         return issues
 
+    def _counter_task_summary(self, task: TaskDefinition) -> str:
+        if not task.task_type.startswith("counter.") or self.counter_service is None:
+            return ""
+        definition = self.counter_service.get_counter(str(task.config.get("counter_id", "")))
+        if definition is None:
+            return "Missing Counter"
+        if task.task_type == "counter.update":
+            amount = str(task.config.get("amount", "1"))
+            operation = str(task.config.get("operation", "increase"))
+            sign = "+" if operation != "decrease" else "−"
+            viewer = {"trigger": "Triggering viewer", "none": "Shared values"}.get(str(task.config.get("viewer_source", "trigger")), "Viewer")
+            scopes = [label for scope, label in (("channel_total", "Channel lifetime"), ("stream_total", "Current stream"), ("viewer_total", "Viewer lifetime"), ("viewer_stream_total", "Viewer stream")) if task.config.get(scope)]
+            return f"{definition.display_name} · {sign}{amount.lstrip('+-')} · {viewer}" + (f" · {' / '.join(scopes)}" if scopes else "")
+        labels = {
+            "counter.get_value": "Read value", "counter.set_value": "Set value",
+            "counter.reset": "Reset", "counter.get_leaderboard": "Leaderboard",
+        }
+        return f"{definition.display_name} · {labels.get(task.task_type, 'Counter')}"
+
     def _routine_issues(self, routine, trigger_count: int | None = None) -> list[str]:
         issues: list[str] = []
         if routine.queue_id and self.queue_store.get(routine.queue_id) is None:
@@ -2797,9 +2853,9 @@ class AutomationPage(QWidget):
             managed = " • trigger task" if task.managed_key else ""
             issues = self._task_issues(task)
             warning = " • needs attention" if issues else ""
-            item = QListWidgetItem(
-                f"{index}   {provider} — {task.name}   [{state}{managed}{warning}]"
-            )
+            summary = self._counter_task_summary(task)
+            description = f"{task.name} · {summary}" if summary else task.name
+            item = QListWidgetItem(f"{index}   {provider} — {description}   [{state}{managed}{warning}]")
             item.setData(Qt.ItemDataRole.UserRole, task.task_id)
             item.setToolTip("\n".join(issues) if issues else "Ready")
             self.task_list.addItem(item)

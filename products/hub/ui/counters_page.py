@@ -23,10 +23,13 @@ class CounterDefinitionDialog(QDialog):
         layout = QVBoxLayout(self)
         form = QFormLayout()
         self.name = QLineEdit(definition.display_name if definition else "")
+        self.name.setPlaceholderText("Counter name")
         self.counter_id = QLineEdit(definition.counter_id if definition else "")
         self.counter_id.setReadOnly(definition is not None)
         self.singular = QLineEdit(definition.singular if definition else "")
+        self.singular.setPlaceholderText("Singular label")
         self.plural = QLineEdit(definition.plural if definition else "")
+        self.plural.setPlaceholderText("Plural label")
         self.starting_total = QSpinBox(); self.starting_total.setRange(-1_000_000_000, 1_000_000_000)
         self.starting_total.setVisible(definition is None)
         self.enabled = QCheckBox("Enabled"); self.enabled.setChecked(definition.enabled if definition else True)
@@ -49,10 +52,22 @@ class CounterDefinitionDialog(QDialog):
         buttons.accepted.connect(self._accept); buttons.rejected.connect(self.reject); layout.addWidget(buttons)
         if definition is None:
             self.name.textChanged.connect(self._suggest_id)
+            self.counter_id_status = QLabel(""); layout.insertWidget(layout.count() - 1, self.counter_id_status)
+            self.counter_id.textChanged.connect(self._validate_id_live)
 
     def _suggest_id(self, text: str) -> None:
         if not self.counter_id.isModified():
             self.counter_id.setText(counter_id_from_name(text))
+
+    def _validate_id_live(self, value: str) -> None:
+        try:
+            definition = CounterDefinition(value, self.name.text() or "Counter name", self.singular.text(), self.plural.text())
+            if self.service.get_counter(definition.counter_id) is not None:
+                raise ValueError("That stable counter ID is already in use.")
+        except (OSError, ValueError) as error:
+            self.counter_id_status.setText(str(error))
+        else:
+            self.counter_id_status.setText("Stable counter ID is available.")
 
     def _accept(self) -> None:
         try:
@@ -82,22 +97,31 @@ class CountersPage(QWidget):
         self.service = service; self.stream_id_provider = stream_id_provider; self.routine_store = routine_store
         root = QVBoxLayout(self); header = QHBoxLayout(); self.search = QLineEdit(); self.search.setPlaceholderText("Search counters…")
         self.new_button = QPushButton("+ New Counter"); header.addWidget(QLabel("COUNTERS")); header.addWidget(self.search, 1); header.addWidget(self.new_button); root.addLayout(header)
-        split = QSplitter(); self.list = QListWidget(); split.addWidget(self.list)
+        self.empty_state = QWidget(); empty_layout = QVBoxLayout(self.empty_state)
+        empty_message = QLabel("No counters yet.\nCreate a counter to use it in commands and automation routines.")
+        empty_message.setAlignment(Qt.AlignmentFlag.AlignCenter); self.empty_create_button = QPushButton("Create Counter")
+        empty_layout.addStretch(); empty_layout.addWidget(empty_message); empty_layout.addWidget(self.empty_create_button, alignment=Qt.AlignmentFlag.AlignCenter); empty_layout.addStretch()
+        root.addWidget(self.empty_state)
+        self.split = QSplitter(); self.list = QListWidget(); self.split.addWidget(self.list)
         detail = QWidget(); detail_layout = QVBoxLayout(detail); self.title = QLabel("Select or create a counter")
         detail_layout.addWidget(self.title); self.tabs = QTabWidget(); detail_layout.addWidget(self.tabs)
-        self._build_overview(); self._build_viewers(); self._build_settings(); split.addWidget(detail); split.setStretchFactor(1, 1); root.addWidget(split)
-        self.search.textChanged.connect(self.refresh); self.new_button.clicked.connect(self._create); self.list.currentItemChanged.connect(lambda *_: self._refresh_detail())
+        self._build_overview(); self._build_viewers(); self._build_settings(); self.split.addWidget(detail); self.split.setStretchFactor(1, 1); root.addWidget(self.split)
+        self.search.textChanged.connect(self.refresh); self.new_button.clicked.connect(self._create); self.empty_create_button.clicked.connect(self._create); self.list.currentItemChanged.connect(lambda *_: self._refresh_detail())
         self.refresh()
 
     def _build_overview(self) -> None:
         page = QWidget(); layout = QVBoxLayout(page); self.summary = QLabel(); self.summary.setWordWrap(True); layout.addWidget(self.summary)
         row = QHBoxLayout(); self.plus = QPushButton("Manual +1"); self.minus = QPushButton("Manual -1"); self.set_channel = QPushButton("Set channel total"); self.reset_channel = QPushButton("Reset channel total")
         for button in (self.plus, self.minus, self.set_channel, self.reset_channel): row.addWidget(button)
-        stream_row = QHBoxLayout(); self.set_stream = QPushButton("Set current-stream total"); self.reset_stream = QPushButton("Reset current-stream total"); self.reset_all_viewers = QPushButton("Danger: Reset all viewer values")
-        for button in (self.set_stream, self.reset_stream, self.reset_all_viewers): stream_row.addWidget(button)
+        stream_row = QHBoxLayout(); self.set_stream = QPushButton("Set current-stream total"); self.reset_stream = QPushButton("Reset current-stream total")
+        self.reset_all_viewer_totals = QPushButton("Danger: Reset all viewer lifetime values")
+        self.reset_all_viewer_stream_totals = QPushButton("Danger: Reset all viewer stream values")
+        for button in (self.set_stream, self.reset_stream, self.reset_all_viewer_totals, self.reset_all_viewer_stream_totals): stream_row.addWidget(button)
         layout.addLayout(row); layout.addLayout(stream_row); layout.addStretch(); self.tabs.addTab(page, "Overview")
         self.plus.clicked.connect(lambda: self._adjust(1)); self.minus.clicked.connect(lambda: self._adjust(-1)); self.set_channel.clicked.connect(self._set_channel); self.reset_channel.clicked.connect(self._reset_channel)
-        self.set_stream.clicked.connect(self._set_stream); self.reset_stream.clicked.connect(self._reset_stream); self.reset_all_viewers.clicked.connect(self._reset_all_viewers)
+        self.set_stream.clicked.connect(self._set_stream); self.reset_stream.clicked.connect(self._reset_stream)
+        self.reset_all_viewer_totals.clicked.connect(lambda: self._reset_all_viewers("viewer_total"))
+        self.reset_all_viewer_stream_totals.clicked.connect(lambda: self._reset_all_viewers("viewer_stream_total"))
 
     def _build_viewers(self) -> None:
         page = QWidget(); layout = QVBoxLayout(page); self.viewer_search = QLineEdit(); self.viewer_search.setPlaceholderText("Search viewer name or login…"); layout.addWidget(self.viewer_search)
@@ -114,11 +138,21 @@ class CountersPage(QWidget):
 
     def refresh(self) -> None:
         selected = self.selected_id(); query = self.search.text().strip().casefold(); self.list.clear()
-        for definition in self.service.list_counters():
+        try:
+            definitions = self.service.list_counters()
+        except (OSError, TypeError, ValueError) as error:
+            self.empty_state.setVisible(False); self.split.setVisible(True); self.search.setEnabled(False)
+            self.title.setText("Counter configuration error"); self.summary.setText(str(error)); self.viewer_table.setRowCount(0)
+            return
+        self.empty_state.setVisible(not definitions)
+        self.split.setVisible(bool(definitions))
+        self.search.setEnabled(bool(definitions))
+        for definition in definitions:
             if query and query not in definition.display_name.casefold() and query not in definition.counter_id: continue
             values = self.service.get_values(definition.counter_id, stream_id=self.stream_id_provider())
             state = "" if definition.enabled else " · Disabled"
-            item = QListWidgetItem(f"{definition.display_name}    {values.channel_total:,} total · {values.stream_total:,} this stream{state}"); item.setData(Qt.ItemDataRole.UserRole, definition.counter_id); self.list.addItem(item)
+            stream_text = f"{values.stream_total:,} this stream" if self.stream_id_provider() else "Stream offline"
+            item = QListWidgetItem(f"{definition.display_name}    {values.channel_total:,} total · {stream_text}{state}"); item.setData(Qt.ItemDataRole.UserRole, definition.counter_id); self.list.addItem(item)
             if definition.counter_id == selected: self.list.setCurrentItem(item)
         if self.list.currentItem() is None and self.list.count(): self.list.setCurrentRow(0)
         self._refresh_detail()
@@ -128,14 +162,21 @@ class CountersPage(QWidget):
     def _refresh_detail(self) -> None:
         definition = self._definition()
         if not definition: self.title.setText("Select or create a counter"); self.summary.clear(); self.viewer_table.setRowCount(0); return
-        values = self.service.get_values(definition.counter_id, stream_id=self.stream_id_provider()); rows = self.service.viewer_rows(definition.counter_id, stream_id=self.stream_id_provider()); leaders = self.service.leaderboard(definition.counter_id, stream_id=self.stream_id_provider(), limit=1)
+        stream_id = self.stream_id_provider()
+        values = self.service.get_values(definition.counter_id, stream_id=stream_id); rows = self.service.viewer_rows(definition.counter_id, stream_id=stream_id); leaders = self.service.leaderboard(definition.counter_id, stream_id=stream_id, limit=1)
         referenced = 0
         if self.routine_store is not None: referenced = sum(1 for routine in self.routine_store.routines for task in routine.tasks if task.task_type.startswith("counter.") and task.config.get("counter_id") == definition.counter_id)
         top = (leaders[0].get("display_name") or leaders[0].get("login")) if leaders else "None"
-        self.title.setText(definition.display_name); self.summary.setText(f"Channel all-time: {values.channel_total:,}\nCurrent Twitch stream: {values.stream_total:,}\nViewers with a value: {len(rows):,}\nTop viewer: {top}\nReferenced by {referenced} routine task(s).")
-        active_stream = bool(self.stream_id_provider())
-        self.set_stream.setEnabled(active_stream)
-        self.reset_stream.setEnabled(active_stream)
+        channel_text = f"{values.channel_total:,}" if definition.track_channel_total else "Not tracked"
+        stream_text = f"{values.stream_total:,}" if definition.track_stream_total and stream_id else "Offline / unavailable" if definition.track_stream_total else "Not tracked"
+        self.title.setText(definition.display_name); self.summary.setText(f"Channel lifetime: {channel_text}\nCurrent Twitch stream: {stream_text}\nViewers with a value: {len(rows):,}\nTop viewer: {top}\nReferenced by {referenced} routine task(s).")
+        active_stream = bool(stream_id) and definition.track_stream_total
+        self.set_stream.setEnabled(active_stream and definition.enabled)
+        self.reset_stream.setEnabled(active_stream and definition.enabled)
+        self.reset_all_viewer_stream_totals.setEnabled(bool(stream_id) and definition.enabled and definition.track_viewer_stream_total)
+        self.reset_all_viewer_totals.setEnabled(definition.enabled and definition.track_viewer_total)
+        channel_enabled = definition.enabled and definition.track_channel_total
+        for button in (self.plus, self.minus, self.set_channel, self.reset_channel): button.setEnabled(channel_enabled)
         self._refresh_viewers()
 
     def _refresh_viewers(self) -> None:
@@ -154,27 +195,41 @@ class CountersPage(QWidget):
     def _create(self) -> None:
         dialog = CounterDefinitionDialog(self.service, self)
         if dialog.exec() == QDialog.DialogCode.Accepted:
-            try: self.service.create_counter(dialog.values(), dialog.starting_total.value())
+            try: definition = self.service.create_counter(dialog.values(), dialog.starting_total.value())
             except (OSError, ValueError) as error: QMessageBox.critical(self, "Could Not Create Counter", str(error)); return
-            self.counters_changed.emit(); self.refresh()
+            self.counters_changed.emit(); self.refresh(); self._select_counter(definition.counter_id)
+
+    def _select_counter(self, counter_id: str) -> None:
+        for index in range(self.list.count()):
+            item = self.list.item(index)
+            if item.data(Qt.ItemDataRole.UserRole) == counter_id:
+                self.list.setCurrentItem(item)
+                break
+
+    def _accept_operation(self, operation) -> bool:
+        if operation.status in {"success", "partial_success", "minimum_reached"}:
+            return True
+        QMessageBox.warning(self, "Counter Operation", operation.detail or operation.status.replace("_", " ").title())
+        return False
 
     def _adjust(self, amount: int) -> None:
         definition = self._definition()
         if not definition: return
-        self.service.update_values(definition.counter_id, amount, ("channel_total",), stream_id=self.stream_id_provider()); self.refresh()
+        operation = self.service.update_values(definition.counter_id, amount, ("channel_total",), stream_id=self.stream_id_provider())
+        if self._accept_operation(operation): self.refresh()
 
     def _set_channel(self) -> None:
         definition = self._definition()
         if not definition: return
         value, ok = QInputDialog.getInt(self, "Set Channel Total", "Exact value", self.service.get_values(definition.counter_id).channel_total, -1_000_000_000, 1_000_000_000)
         if ok:
-            try: self.service.set_value(definition.counter_id, "channel_total", value)
-            except ValueError as error: QMessageBox.warning(self, "Invalid Value", str(error)); return
-            self.refresh()
+            operation = self.service.set_value(definition.counter_id, "channel_total", value)
+            if self._accept_operation(operation): self.refresh()
 
     def _reset_channel(self) -> None:
         definition = self._definition()
-        if definition and QMessageBox.question(self, "Reset Counter", "Reset this counter's channel all-time total?") == QMessageBox.StandardButton.Yes: self.service.reset(definition.counter_id, ("channel_total",)); self.refresh()
+        if definition and QMessageBox.question(self, "Reset Counter", "Reset this counter's channel lifetime total?") == QMessageBox.StandardButton.Yes:
+            if self._accept_operation(self.service.reset(definition.counter_id, ("channel_total",))): self.refresh()
 
     def _set_stream(self) -> None:
         definition = self._definition(); stream_id = self.stream_id_provider()
@@ -182,32 +237,32 @@ class CountersPage(QWidget):
         current = self.service.get_values(definition.counter_id, stream_id=stream_id).stream_total
         value, ok = QInputDialog.getInt(self, "Set Current-Stream Total", "Exact value", current, -1_000_000_000, 1_000_000_000)
         if ok:
-            try: self.service.set_value(definition.counter_id, "stream_total", value, stream_id=stream_id)
-            except ValueError as error: QMessageBox.warning(self, "Invalid Value", str(error)); return
-            self.refresh()
+            operation = self.service.set_value(definition.counter_id, "stream_total", value, stream_id=stream_id)
+            if self._accept_operation(operation): self.refresh()
 
     def _reset_stream(self) -> None:
         definition = self._definition(); stream_id = self.stream_id_provider()
         if definition and stream_id and QMessageBox.question(self, "Reset Current Stream", "Reset this counter's value for the active Twitch broadcast?") == QMessageBox.StandardButton.Yes:
-            self.service.reset(definition.counter_id, ("stream_total",), stream_id=stream_id); self.refresh()
+            if self._accept_operation(self.service.reset(definition.counter_id, ("stream_total",), stream_id=stream_id)): self.refresh()
 
-    def _reset_all_viewers(self) -> None:
+    def _reset_all_viewers(self, scope: str) -> None:
         definition = self._definition()
         if not definition: return
-        prompt = "Reset every viewer lifetime and current-stream value for this counter? This does not remove general viewer profiles or values in other counters."
+        label = "lifetime" if scope == "viewer_total" else "current-stream"
+        prompt = f"Reset every viewer {label} value for this counter? This does not remove general viewer profiles or values in other counters."
         if QMessageBox.warning(self, "Danger: Reset All Viewer Values", prompt, QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel, QMessageBox.StandardButton.Cancel) == QMessageBox.StandardButton.Yes:
-            self.service.reset(definition.counter_id, (), stream_id=self.stream_id_provider(), all_viewers=True); self.refresh()
+            if self._accept_operation(self.service.reset(definition.counter_id, (), stream_id=self.stream_id_provider(), all_viewer_scopes=(scope,))): self.refresh()
 
     def _edit_viewer(self) -> None:
         definition = self._definition(); row = self.viewer_table.currentRow()
         if not definition or row < 0: return
         user_id = self.viewer_table.item(row, 3).text(); lifetime = int(self.viewer_table.item(row, 1).text()); stream = int(self.viewer_table.item(row, 2).text())
         value, ok = QInputDialog.getInt(self, "Edit Viewer Lifetime", "Lifetime value", lifetime, -1_000_000_000, 1_000_000_000)
-        if ok: self.service.set_value(definition.counter_id, "viewer_total", value, user_id=user_id)
+        if ok and not self._accept_operation(self.service.set_value(definition.counter_id, "viewer_total", value, user_id=user_id)): return
         stream_id = self.stream_id_provider()
         if ok and stream_id:
             stream_value, accepted = QInputDialog.getInt(self, "Edit Viewer Current Stream", "Current-stream value", stream, -1_000_000_000, 1_000_000_000)
-            if accepted: self.service.set_value(definition.counter_id, "viewer_stream_total", stream_value, user_id=user_id, stream_id=stream_id)
+            if accepted: self._accept_operation(self.service.set_value(definition.counter_id, "viewer_stream_total", stream_value, user_id=user_id, stream_id=stream_id))
         self.refresh()
 
     def _remove_viewer(self) -> None:
