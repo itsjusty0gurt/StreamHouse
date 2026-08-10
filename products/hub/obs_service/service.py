@@ -36,6 +36,7 @@ class ObsWebSocketService(QObject):
         self._callbacks: dict[str, Callable[[ObsRequestResult], None]] = {}
         self._input_mute_states: dict[str, bool] = {}
         self._primary_audio_input = ""
+        self._current_program_scene = ""
         self.reconnect_timer = QTimer(self)
         self.reconnect_timer.setSingleShot(True)
         self.reconnect_timer.setInterval(2_000)
@@ -84,6 +85,10 @@ class ObsWebSocketService(QObject):
     @property
     def connected(self) -> bool:
         return self.state is ObsConnectionState.CONNECTED and self._identified
+
+    @property
+    def current_program_scene(self) -> str:
+        return self._current_program_scene
 
     def send_request(
         self,
@@ -287,6 +292,10 @@ class ObsWebSocketService(QObject):
                 self._identified = True
                 self._set_state(ObsConnectionState.CONNECTED, f"{self.host}:{self.port}")
                 self._publish_event("ConnectionOpened", {})
+                self.send_request(
+                    "GetCurrentProgramScene",
+                    callback=self._capture_current_program_scene,
+                )
             elif operation == 5:
                 event_data = data.get("eventData", {})
                 self._publish_event(
@@ -348,9 +357,19 @@ class ObsWebSocketService(QObject):
                     event_data["inputMuted"]
                 )
                 self._primary_audio_input = input_name
+        elif event_type == "CurrentProgramSceneChanged":
+            self._current_program_scene = str(
+                event_data.get("sceneName", "")
+            ).strip()
         event = ObsEvent(event_type, dict(event_data))
         Events.emit("obs_event", obs_event=event)
         Events.emit(f"obs_event.{event_type}", obs_event=event)
+
+    def _capture_current_program_scene(self, result: ObsRequestResult) -> None:
+        if result.succeeded:
+            self._current_program_scene = str(
+                result.response_data.get("currentProgramSceneName", "")
+            ).strip()
 
     def _disconnected(self) -> None:
         was_connected = self._identified

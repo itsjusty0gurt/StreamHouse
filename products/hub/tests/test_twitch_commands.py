@@ -539,7 +539,13 @@ class TwitchCommandTriggerDispatcherTests(unittest.TestCase):
             global_cooldown_seconds=10,
             user_cooldown_seconds=30,
         )
-        incoming = message("!uptime @Someone extra words")
+        incoming = message(
+            "!uptime @Someone extra words",
+            badges=(
+                TwitchBadge("moderator", "1", ""),
+                TwitchBadge("subscriber", "12", ""),
+            ),
+        )
         result = self.dispatcher.evaluate(
             incoming,
             {"channel": "sally", "uptime": "01:02:03"},
@@ -552,6 +558,8 @@ class TwitchCommandTriggerDispatcherTests(unittest.TestCase):
         self.assertEqual(event.trigger_id, trigger.trigger_id)
         self.assertEqual(event.context["target"], "Someone")
         self.assertEqual(event.context["args"], "@Someone extra words")
+        self.assertEqual(event.context["user_is_mod"], "true")
+        self.assertEqual(event.context["user_is_subscriber"], "true")
         self.assertEqual(trigger.uses, 0)
         self.dispatcher.record_executed(result, incoming)
         self.assertEqual(trigger.uses, 1)

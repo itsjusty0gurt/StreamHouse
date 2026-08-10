@@ -390,9 +390,43 @@ Qt-based tasks remain thread-safe.
 - **routine** variables: context-only, shared with nested routines during one
   execution.
 
-The UI hides scope syntax from template users. A variable named `random_line`
-is referenced as `{random_line}`. Variable-name fields accept either form and
-normalize to the bare internal key.
+`products/hub/automation/variable_registry.py` is the canonical typed lookup
+layer above those execution scopes. `VariableDefinition` records the dotted
+name, display name, description, type, source, category, availability, default,
+and whether the owning provider supports writes. Providers are registered by
+`MainWindow`; duplicate canonical names are rejected. Current providers expose:
+
+- cached Twitch stream values: `stream.title`, `stream.category`,
+  `stream.viewer_count`, and `stream.game_id`;
+- contextual `user.*` and `chat.*` values from the current trigger;
+- stable counter totals as `counter.<counter_id>`;
+- the observed OBS program scene as `obs.current_scene`;
+- Hub uptime and Twitch/OBS connection booleans as `hub.*`;
+- persisted/session custom values as `custom.<name>`.
+
+Global providers resolve without an event. Contextual providers report
+unavailable when their required trigger values are absent; they never invent a
+global viewer or message. Registry text rendering uses `{namespace.name}`.
+Unavailable values retain the original placeholder by default and emit a
+debug diagnostic; callers may explicitly supply a fallback. This avoids both
+crashes and silently plausible output.
+
+Provider writes are opt-in. `custom.*` writes use `CustomVariableStore`, and a
+writable `counter.*` channel total uses `CounterService.set_value()`. Twitch and
+OBS state remains read-only; the variable layer is not a backdoor around their
+service actions.
+
+The Automation **Variables** tab provides search/source filtering, metadata,
+copy actions, and custom-variable creation/edit/delete. Custom records persist
+in `automation/variables.json` using atomic replacement and now include `text`,
+`integer`, `number`, `boolean`, or ISO-8601 `datetime` metadata plus an optional
+description. The reusable picker in `products/hub/ui/variable_picker.py` is
+also available from templated task editors.
+
+Legacy flat automation outputs remain supported. A variable named
+`random_line` is still referenced as `{random_line}`. New shared/domain values
+use dotted canonical names, and custom `game_mode` is displayed as
+`{custom.game_mode}`. This compatibility avoids breaking existing routines.
 
 Generated outputs are discoverable through
 `CustomVariableStore.generated_names()`. Add every new output-producing task
@@ -404,7 +438,8 @@ Variable precedence when preparing a trigger is:
 2. source trigger context (wins on name collision);
 3. task-created values as the routine executes.
 
-Built-in names in `products/hub/automation/variables.py` are reserved from custom creation.
+Built-in flat names in `products/hub/automation/variables.py` and all non-
+`custom` namespaces are reserved from custom creation.
 
 ### Task providers
 
@@ -1113,6 +1148,10 @@ Keep public config free of local paths and routine internals.
   character. `SALLY_*` environment aliases, old QSettings application names,
   the legacy Hub window title, and the historical `companion/settings.json`
   path are intentionally retained for data/script migration compatibility.
+- The registry intentionally exposes only already-cached Twitch and OBS state.
+  Follow/subscription profile state, OBS recording/profile/scene-collection
+  values, mathematical expressions, and bulk migration of every legacy flat
+  task output are deferred provider work.
 
 ## Non-goals and future extension points
 

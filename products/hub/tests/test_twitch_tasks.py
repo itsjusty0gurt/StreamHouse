@@ -101,6 +101,18 @@ class TwitchTaskTests(unittest.TestCase):
             "hey TestViewer!",
         )
 
+    def test_canonical_dotted_variables_are_valid_templates(self) -> None:
+        SendTwitchChatMessageTask.validate_template(
+            "{user.name}: {custom.game_mode} / {counter.deaths}"
+        )
+        self.assertEqual(
+            SendTwitchChatMessageTask.render(
+                "{user.name}: {custom.game_mode}",
+                {"user.name": "Viewer", "custom.game_mode": "Hardcore"},
+            ),
+            "Viewer: Hardcore",
+        )
+
     def test_moderation_uses_trigger_user_and_message_ids(self) -> None:
         self.assertTrue(
             self.execute(

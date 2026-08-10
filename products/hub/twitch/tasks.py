@@ -18,8 +18,11 @@ from shared.streamhouse_runtime.logger import Logger
 
 class SendTwitchChatMessageTask:
     task_type = "twitch.send_chat_message"
-    TEMPLATE_PATTERN = re.compile(r"\{([a-z][a-z0-9_]*)\}")
+    TEMPLATE_PATTERN = re.compile(r"\{([a-z][a-z0-9_.]*)\}")
     TEMPLATE_VARIABLES = frozenset(VARIABLE_INFO)
+    CANONICAL_NAMESPACES = frozenset(
+        {"stream", "user", "chat", "counter", "obs", "hub", "custom"}
+    )
 
     def __init__(
         self,
@@ -97,9 +100,11 @@ class SendTwitchChatMessageTask:
             raise ValueError("Twitch messages must contain 1-500 characters.")
         allowed = set(allowed_variables)
         unknown = sorted(
-            set(cls.TEMPLATE_PATTERN.findall(template))
-            - cls.TEMPLATE_VARIABLES
-            - allowed
+            name
+            for name in set(cls.TEMPLATE_PATTERN.findall(template))
+            if name not in cls.TEMPLATE_VARIABLES
+            and name not in allowed
+            and name.split(".", 1)[0] not in cls.CANONICAL_NAMESPACES
         )
         if unknown:
             raise ValueError(f"Unknown command variable: {{{unknown[0]}}}")

@@ -55,6 +55,10 @@ capabilities and is not a claim that every feature is implemented:
 Hub must work independently. It must not require Streamhouse Studio,
 Streamhouse AI, Streamhouse Avatar, or Streamhouse Deck.
 
+Hub variables use provider-owned dotted namespaces such as `stream.*`,
+`chat.*`, `counter.*`, `obs.*`, and `custom.*`. They are Hub automation
+infrastructure; Streamhouse AI does not read Hub's variable or counter files.
+
 Implementation mapping:
 
 | Concept | Current value |

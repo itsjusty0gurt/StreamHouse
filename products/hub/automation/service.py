@@ -13,6 +13,7 @@ from products.hub.automation.routines import RoutineStore
 from products.hub.automation.tasks import TaskRegistry
 from products.hub.automation.custom_variables import CustomVariableStore
 from products.hub.automation.queues import AutomationQueueManager, QueuedRoutine
+from products.hub.automation.variable_registry import VariableRegistry
 from products.hub.core.events import Events
 from shared.streamhouse_runtime.logger import Logger
 
@@ -26,11 +27,13 @@ class AutomationService:
         task_registry: TaskRegistry,
         variable_store: CustomVariableStore | None = None,
         queue_manager: AutomationQueueManager | None = None,
+        variable_registry: VariableRegistry | None = None,
     ) -> None:
         self.routine_store = routine_store
         self.task_registry = task_registry
         self.variable_store = variable_store or CustomVariableStore()
         self.queue_manager = queue_manager
+        self.variable_registry = variable_registry
         self._routine_stack: list[str] = []
         self.max_routine_depth = 10
 
@@ -227,6 +230,8 @@ class AutomationService:
             **self.variable_store.values(),
             **{str(key): str(value) for key, value in trigger.context.items()},
         }
+        if self.variable_registry is not None:
+            context.update(self.variable_registry.context_values(context))
         return replace(trigger, context=context)
 
     def _execute_routine(self, routine, trigger: TriggerEvent) -> RoutineExecutionResult:

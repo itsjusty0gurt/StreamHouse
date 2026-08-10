@@ -812,6 +812,15 @@ class TwitchCommandTriggerDispatcher:
                 "user": message.username,
                 "user_id": message.user_id or "--",
                 "user_login": message.user_login or "--",
+                "user_is_mod": str(
+                    any(
+                        badge.set_id in {"moderator", "broadcaster"}
+                        for badge in message.badges
+                    )
+                ).lower(),
+                "user_is_subscriber": str(
+                    any(badge.set_id == "subscriber" for badge in message.badges)
+                ).lower(),
                 "viewer_permission": self._permission_level(message),
                 "target_user_id": "--",
                 "message_id": message.message_id or "--",

@@ -61,6 +61,13 @@ from shared.streamhouse_ui import install_window_chrome
 from products.hub.core.settings import AppSettings, SettingsStore
 from products.hub.automation.service import AutomationService
 from products.hub.automation.custom_variables import CustomVariableStore
+from products.hub.automation.variable_providers import (
+    CounterVariableProvider,
+    CustomVariableProvider,
+    context_provider,
+    runtime_provider,
+)
+from products.hub.automation.variable_registry import VariableRegistry
 from products.hub.automation.core_triggers import CoreTriggerStore
 from products.hub.automation.core_tasks import (
     CloseApplicationTask,
@@ -344,6 +351,7 @@ class MainWindow(QMainWindow):
         auto_upgrade_permissions: bool = True,
     ) -> None:
         super().__init__()
+        self._hub_started_monotonic = monotonic()
 
         self.ai_lifecycle = AIConnectionLifecycle(
             self._handle_ai_lifecycle_disconnect
@@ -477,6 +485,29 @@ class MainWindow(QMainWindow):
             self.counter_store,
             bot_checker=lambda user_id: user_id in getattr(self, "known_bot_user_ids", set()),
         )
+        self.variable_registry = VariableRegistry()
+        self.variable_registry.register(context_provider())
+        self.variable_registry.register(
+            runtime_provider(
+                self._variable_twitch_values,
+                obs_connected=lambda: self.obs_service.connected,
+                obs_scene=lambda: self.obs_service.current_program_scene,
+                hub_uptime=self._hub_uptime_text,
+            )
+        )
+        self.variable_registry.register(
+            CustomVariableProvider(self.custom_variable_store)
+        )
+        self.variable_registry.register(
+            CounterVariableProvider(
+                self.counter_service,
+                lambda: (
+                    getattr(self, "current_memory_stream_id", "")
+                    if getattr(self, "stream_is_live", False)
+                    else ""
+                ),
+            )
+        )
         self.task_registry = TaskRegistry()
         register_twitch_tasks(
             self.task_registry,
@@ -526,11 +557,13 @@ class MainWindow(QMainWindow):
             self.task_registry,
             self.custom_variable_store,
             self.automation_queue_manager,
+            self.variable_registry,
         )
         self.command_automation_service = AutomationService(
             self.twitch_command_trigger_store.routine_store,
             self.task_registry,
             self.custom_variable_store,
+            variable_registry=self.variable_registry,
         )
         self.soundboard_server = soundboard_server or SoundboardLocalServer(
             self.soundboard_store,
@@ -2589,6 +2622,7 @@ class MainWindow(QMainWindow):
             queue_store=self.automation_queue_store,
             queue_manager=self.automation_queue_manager,
             counter_service=self.counter_service,
+            variable_registry=self.variable_registry,
         )
         self.ui.mainStack.addWidget(self.automation_page)
 
@@ -2910,6 +2944,30 @@ class MainWindow(QMainWindow):
             status = result.outcome.value.replace("_", " ").title()
         self.twitch_command_status_label.setText(status)
 
+    def _variable_twitch_values(self) -> dict[str, object]:
+        snapshot = (
+            self.last_companion_result.snapshot
+            if getattr(self, "last_companion_result", None) is not None
+            else {}
+        )
+        stream = snapshot.get("stream")
+        stream = stream if isinstance(stream, dict) else {}
+        channel = snapshot.get("channel")
+        channel = channel if isinstance(channel, dict) else {}
+        return {
+            "title": stream.get("title") or channel.get("title") or "",
+            "category": stream.get("game_name") or channel.get("game_name") or "",
+            "viewer_count": stream.get("viewer_count"),
+            "game_id": stream.get("game_id") or channel.get("game_id") or "",
+            "connected": self.twitch_service.state is TwitchConnectionState.CONNECTED,
+        }
+
+    def _hub_uptime_text(self) -> str:
+        seconds = max(0, int(monotonic() - self._hub_started_monotonic))
+        hours, remainder = divmod(seconds, 3600)
+        minutes, seconds = divmod(remainder, 60)
+        return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+
     def _twitch_command_context(self) -> dict[str, str]:
         snapshot = (
             self.last_companion_result.snapshot
@@ -2938,6 +2996,16 @@ class MainWindow(QMainWindow):
     ) -> dict[str, str]:
         requested = set(SendTwitchChatMessageTask.TEMPLATE_PATTERN.findall(template))
         resolved: dict[str, str] = {}
+        for key in requested:
+            if context.get(key, "--") not in {"", "--"}:
+                continue
+            snapshot = self.variable_registry.resolve(key, context)
+            if snapshot is not None:
+                if snapshot.available:
+                    resolved[key] = snapshot.display_value
+                else:
+                    resolved[key] = "--"
+                    resolved[f"{key}_status"] = "unavailable"
         live_twitch = self._twitch_command_context()
         for key in requested.intersection(live_twitch):
             if context.get(key, "--") in {"", "--"}:

@@ -50,6 +50,7 @@ from products.hub.automation.core_triggers import (
 from products.hub.automation.routines import RoutineStore
 from products.hub.automation.service import AutomationService
 from products.hub.automation.tasks import TaskRegistry
+from products.hub.automation.variable_registry import VariableRegistry
 from products.hub.automation.core_tasks import CORE_TASK_LABELS, PlayAudioTask
 from products.hub.automation.variable_tasks import (
     VARIABLE_MANAGEMENT_TASK_TYPES,
@@ -98,6 +99,8 @@ from products.hub.twitch.automation_triggers import (
 )
 from products.hub.ui.twitch_command_dialog import TwitchCommandDialog, TwitchCommandManagerDialog
 from products.hub.ui.counters_page import CounterDefinitionDialog
+from products.hub.ui.variables_page import VariablesPage
+from products.hub.ui.variable_picker import VariablePickerDialog
 
 
 def _event_display_name(event_type: str) -> str:
@@ -984,6 +987,7 @@ class TaskEditorDialog(QDialog):
         routine_store: RoutineStore | None = None,
         queue_store: AutomationQueueStore | None = None,
         counter_service: CounterService | None = None,
+        variable_registry: VariableRegistry | None = None,
     ) -> None:
         super().__init__(parent)
         self.task = task
@@ -993,6 +997,7 @@ class TaskEditorDialog(QDialog):
         self.routine_store = routine_store
         self.queue_store = queue_store
         self.counter_service = counter_service
+        self.variable_registry = variable_registry
         self.field_widgets: dict[str, dict[str, QWidget]] = {}
         self.setWindowTitle("Edit Task" if task else "Add Task")
         self.setMinimumWidth(620)
@@ -1087,10 +1092,20 @@ class TaskEditorDialog(QDialog):
         self.variable_table.setMaximumHeight(190)
         ordered_keys = list(self.variables)
         ordered_keys.extend(key for key in VARIABLE_INFO if key not in self.variables)
+        registry_definitions = {
+            item.name: item for item in self.variable_registry.definitions()
+        } if self.variable_registry is not None else {}
+        ordered_keys.extend(
+            key for key in registry_definitions if key not in ordered_keys
+        )
         self.variable_preview_context = {
             **sample_context(ordered_keys),
             **self.variables,
         }
+        if self.variable_registry is not None:
+            self.variable_preview_context.update(
+                self.variable_registry.context_values(self.variables)
+            )
         counter_prefixes: dict[str, str] = {}
         if self.routine_store is not None and self.counter_service is not None:
             for routine in self.routine_store.routines:
@@ -1109,6 +1124,9 @@ class TaskEditorDialog(QDialog):
                 key,
                 "Trigger context" if key in VARIABLE_INFO else "Custom variable",
             )
+            if key in registry_definitions:
+                description = registry_definitions[key].description
+                source = registry_definitions[key].source
             counter_suffixes = {
                 "amount_changed": "Amount Changed", "channel_total": "Channel Total",
                 "stream_total": "Stream Total", "viewer_total": "Viewer Total",
@@ -1149,14 +1167,18 @@ class TaskEditorDialog(QDialog):
             if key in self.field_widgets.get(self.task_type, {}):
                 self.variable_field_combo.addItem(schema_by_key.get(key, key), key)
         self.insert_variable_button = QPushButton("Insert Selected Variable")
+        self.browse_variables_button = QPushButton("{x} Browse Variables")
         controls.addWidget(self.variable_field_combo)
         controls.addWidget(self.insert_variable_button)
+        controls.addWidget(self.browse_variables_button)
         controls.addStretch()
         group_layout.addLayout(controls)
         self.variable_preview_label = QLabel()
         self.variable_preview_label.setWordWrap(True)
         group_layout.addWidget(self.variable_preview_label)
         self.insert_variable_button.clicked.connect(self._insert_selected_variable)
+        self.browse_variables_button.setEnabled(self.variable_registry is not None)
+        self.browse_variables_button.clicked.connect(self._browse_registry_variable)
         self.variable_field_combo.currentIndexChanged.connect(
             lambda _index: self._update_variable_preview()
         )
@@ -1173,6 +1195,26 @@ class TaskEditorDialog(QDialog):
         row = self.variable_table.currentRow() if hasattr(self, "variable_table") else -1
         item = self.variable_table.item(row, 0) if row >= 0 else None
         return item.text() if item is not None else ""
+
+    def _browse_registry_variable(self) -> None:
+        if self.variable_registry is None:
+            return
+        dialog = VariablePickerDialog(
+            self.variable_registry,
+            self.variables,
+            self,
+        )
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        variable = dialog.selected_placeholder()
+        widget = self._template_widget()
+        if not variable or widget is None:
+            return
+        if isinstance(widget, QLineEdit):
+            widget.insert(variable)
+        elif isinstance(widget, QTextEdit):
+            widget.insertPlainText(variable)
+        self._update_variable_preview()
 
     def _template_widget(self) -> QWidget | None:
         key = str(self.variable_field_combo.currentData() or "")
@@ -1879,6 +1921,7 @@ class AutomationPage(QWidget):
         queue_store: AutomationQueueStore | None = None,
         queue_manager: AutomationQueueManager | None = None,
         counter_service: CounterService | None = None,
+        variable_registry: VariableRegistry | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -1896,6 +1939,7 @@ class AutomationPage(QWidget):
         )
         self.queue_manager = queue_manager or AutomationQueueManager(self.queue_store)
         self.counter_service = counter_service
+        self.variable_registry = variable_registry or VariableRegistry()
         self.history: list[dict[str, object]] = []
         self._selected_routine_id = ""
         self.setObjectName("automationPage")
@@ -1911,6 +1955,7 @@ class AutomationPage(QWidget):
         self._build_routines_tab()
         self._build_queues_tab()
         self._build_task_library_tab()
+        self._build_variables_tab()
         self._build_history_tab()
         self.queue_timer = QTimer(self)
         self.queue_timer.setInterval(100)
@@ -2538,7 +2583,18 @@ class AutomationPage(QWidget):
         )
         self.tabs.addTab(page, "Run History")
 
+    def _build_variables_tab(self) -> None:
+        self.variables_page = VariablesPage(
+            self.variable_registry,
+            self.automation_service.variable_store,
+            self.tabs,
+        )
+        self.variables_page.variables_changed.connect(self.refresh)
+        self.tabs.addTab(self.variables_page, "Variables")
+
     def refresh(self, selected_routine_id: str = "") -> None:
+        if hasattr(self, "variables_page"):
+            self.variables_page.refresh()
         selected_routine_id = selected_routine_id or self._selected_routine_id
         query = self.search_edit.text().strip().casefold()
         alphabetical = self.sort_routines_button.isChecked()
@@ -3613,6 +3669,7 @@ class AutomationPage(QWidget):
             routine_store=self.routine_store,
             queue_store=self.queue_store,
             counter_service=self.counter_service,
+            variable_registry=self.variable_registry,
         )
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
@@ -3660,6 +3717,7 @@ class AutomationPage(QWidget):
             self.routine_store,
             self.queue_store,
             self.counter_service,
+            self.variable_registry,
         )
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return

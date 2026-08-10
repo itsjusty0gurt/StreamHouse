@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from datetime import datetime
 from pathlib import Path
 from typing import Mapping
 
@@ -16,19 +17,24 @@ class CustomVariableStore:
     memory and are discarded when Streamhouse Hub closes.
     """
 
-    VERSION = 1
+    VERSION = 2
     NAME_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
     RESERVED_NAMES = frozenset(VARIABLE_INFO)
+    DATA_TYPES = frozenset({"text", "integer", "number", "boolean", "datetime"})
 
     def __init__(self, path: Path | None = None) -> None:
         self.path = path or user_data_root() / "automation" / "variables.json"
         self.global_values: dict[str, str] = {}
         self.session_values: dict[str, str] = {}
+        self.global_metadata: dict[str, dict[str, str]] = {}
+        self.session_metadata: dict[str, dict[str, str]] = {}
 
     def load(self) -> Mapping[str, str]:
         self.session_values = {}
+        self.session_metadata = {}
         if not self.path.exists():
             self.global_values = {}
+            self.global_metadata = {}
             return self.values()
         payload = load_json_with_backup(self.path)
         if not isinstance(payload, dict):
@@ -44,6 +50,19 @@ class CustomVariableStore:
             clean_name = self.validate_name(str(name))
             loaded[clean_name] = str(value)
         self.global_values = loaded
+        raw_metadata = payload.get("metadata", {})
+        if not isinstance(raw_metadata, dict):
+            raise ValueError("Automation variable metadata must be an object.")
+        self.global_metadata = {}
+        for name, metadata in raw_metadata.items():
+            clean_name = self.validate_name(str(name))
+            if clean_name not in loaded or not isinstance(metadata, dict):
+                continue
+            data_type = str(metadata.get("type", "text")).strip().casefold()
+            self.global_metadata[clean_name] = {
+                "type": data_type if data_type in self.DATA_TYPES else "text",
+                "description": str(metadata.get("description", "")).strip()[:500],
+            }
         return self.values()
 
     def values(self) -> dict[str, str]:
@@ -57,7 +76,15 @@ class CustomVariableStore:
             return "session"
         return ""
 
-    def set(self, scope: str, name: str, value: object) -> str:
+    def set(
+        self,
+        scope: str,
+        name: str,
+        value: object,
+        *,
+        data_type: str | None = None,
+        description: str | None = None,
+    ) -> str:
         clean_scope = scope.strip().casefold()
         if clean_scope not in {"global", "session"}:
             raise ValueError("Stored variables must be global or session variables.")
@@ -70,9 +97,31 @@ class CustomVariableStore:
         target = (
             self.global_values if clean_scope == "global" else self.session_values
         )
+        metadata_target = (
+            self.global_metadata
+            if clean_scope == "global"
+            else self.session_metadata
+        )
         had_previous = clean_name in target
         previous = target.get(clean_name, "")
-        target[clean_name] = str(value)
+        previous_metadata = dict(metadata_target.get(clean_name, {}))
+        existing_type = str(metadata_target.get(clean_name, {}).get("type", "text"))
+        effective_type = str(data_type or existing_type).strip().casefold()
+        target[clean_name] = self.normalize_value(effective_type, value)
+        if data_type is not None or description is not None:
+            current = metadata_target.setdefault(
+                clean_name, {"type": "text", "description": ""}
+            )
+            if data_type is not None:
+                normalized_type = str(data_type).strip().casefold()
+                if normalized_type not in self.DATA_TYPES:
+                    target[clean_name] = previous if had_previous else ""
+                    if not had_previous:
+                        target.pop(clean_name, None)
+                    raise ValueError(f"Unsupported variable type: {data_type}.")
+                current["type"] = normalized_type
+            if description is not None:
+                current["description"] = str(description).strip()[:500]
         if clean_scope == "global":
             try:
                 self.save()
@@ -81,6 +130,10 @@ class CustomVariableStore:
                     target[clean_name] = previous
                 else:
                     target.pop(clean_name, None)
+                if previous_metadata:
+                    metadata_target[clean_name] = previous_metadata
+                else:
+                    metadata_target.pop(clean_name, None)
                 raise
         return clean_name
 
@@ -88,13 +141,17 @@ class CustomVariableStore:
         clean_name = self.validate_name(name)
         if clean_name in self.global_values:
             previous = self.global_values[clean_name]
+            previous_metadata = self.global_metadata.pop(clean_name, None)
             del self.global_values[clean_name]
             try:
                 self.save()
             except OSError:
                 self.global_values[clean_name] = previous
+                if previous_metadata is not None:
+                    self.global_metadata[clean_name] = previous_metadata
                 raise
             return True
+        self.session_metadata.pop(clean_name, None)
         return self.session_values.pop(clean_name, None) is not None
 
     def save(self) -> None:
@@ -103,6 +160,7 @@ class CustomVariableStore:
             {
                 "version": self.VERSION,
                 "global": dict(sorted(self.global_values.items())),
+                "metadata": dict(sorted(self.global_metadata.items())),
             },
         )
 
@@ -111,6 +169,8 @@ class CustomVariableStore:
         clean_name = name.strip().casefold()
         if clean_name.startswith("{") and clean_name.endswith("}"):
             clean_name = clean_name[1:-1].strip()
+        if clean_name.startswith("custom."):
+            clean_name = clean_name.removeprefix("custom.")
         if not cls.NAME_PATTERN.fullmatch(clean_name):
             raise ValueError(
                 "Variable names must start with a letter and contain only "
@@ -121,6 +181,57 @@ class CustomVariableStore:
                 f'Variable name "{clean_name}" is reserved by Streamhouse Hub.'
             )
         return clean_name
+
+    @classmethod
+    def validate_custom_name(cls, name: str) -> str:
+        clean = name.strip().casefold()
+        if clean.startswith("{") and clean.endswith("}"):
+            clean = clean[1:-1].strip()
+        if "." in clean and not clean.startswith("custom."):
+            raise ValueError("Custom variables must use the custom namespace.")
+        return cls.validate_name(clean)
+
+    def type_of(self, name: str) -> str:
+        clean = self.validate_custom_name(name)
+        metadata = self.global_metadata.get(clean) or self.session_metadata.get(clean) or {}
+        return str(metadata.get("type", "text"))
+
+    def description_of(self, name: str) -> str:
+        clean = self.validate_custom_name(name)
+        metadata = self.global_metadata.get(clean) or self.session_metadata.get(clean) or {}
+        return str(metadata.get("description", ""))
+
+    @classmethod
+    def normalize_value(cls, data_type: str, value: object) -> str:
+        clean_type = str(data_type).strip().casefold()
+        if clean_type not in cls.DATA_TYPES:
+            raise ValueError(f"Unsupported variable type: {data_type}.")
+        if clean_type == "text":
+            return str(value)
+        if clean_type == "integer":
+            if isinstance(value, bool):
+                raise ValueError("Boolean values are not integers.")
+            numeric = float(str(value).strip())
+            if not numeric.is_integer():
+                raise ValueError("Integer variables require a whole number.")
+            return str(int(numeric))
+        if clean_type == "number":
+            if isinstance(value, bool):
+                raise ValueError("Boolean values are not numbers.")
+            return f"{float(str(value).strip()):g}"
+        if clean_type == "boolean":
+            clean = str(value).strip().casefold()
+            if clean in {"1", "true", "yes", "on"}:
+                return "true"
+            if clean in {"0", "false", "no", "off"}:
+                return "false"
+            raise ValueError("Boolean values must be true/false, yes/no, on/off, or 1/0.")
+        clean = str(value).strip()
+        try:
+            datetime.fromisoformat(clean.replace("Z", "+00:00"))
+        except ValueError as error:
+            raise ValueError("Datetime values must use ISO 8601 format.") from error
+        return clean
 
     @classmethod
     def validate_generated_name(cls, name: str) -> str:
