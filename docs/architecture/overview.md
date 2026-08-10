@@ -40,7 +40,7 @@ desktop applications and one optional hosted service.
 
 | Product and current process | Entry point | Owns | Must not own |
 | --- | --- | --- | --- |
-| Streamhouse Hub | `products/hub/hub_main.py` -> `products/hub/streamhouse_hub/app.py` | Twitch, OBS, chat UI, stream companion, commands, automation, queues, variables, soundboard, consent enforcement | Ollama inference or heavyweight AI implementation |
+| Streamhouse Hub | `products/hub/hub_main.py` -> `products/hub/streamhouse_hub/app.py` | Twitch, OBS, structured chat UI, moderation, commands, automation, counters, queues, variables, soundboard, consent enforcement | Ollama inference or heavyweight AI implementation |
 | Streamhouse AI | `products/ai/ai_main.py` -> `products/ai/streamhouse_ai/app.py` | Ollama provider, reply reasoning, memory extraction, AI settings, training data, AI test reports | Twitch sockets, OBS control, automation execution |
 | Soundboard relay | `python -m extensions.twitch.app.relay_server` | Twitch Extension JWT verification, public soundboard config, short-lived viewer requests | Local files, audio playback, routine execution |
 
@@ -363,6 +363,11 @@ sequenceDiagram
 
 A routine with no enabled/executed tasks is not considered successful.
 
+Counter tasks use this same pipeline. A command, EventSub subscription, OBS
+event, Core event, or manual routine execution can invoke any routine that
+contains a registered Counter task. Counters do not own a parallel trigger
+engine or call Twitch directly.
+
 ### Queues
 
 Routines may reference an `AutomationQueueDefinition`. Queue policy supports:
@@ -428,6 +433,29 @@ results use structured statuses (`success`, `partial_success`,
 `minimum_reached`, or `persistence_failed`). Reads also expose viewer rank;
 offline multi-scope updates and resets commit valid lifetime scopes while
 reporting skipped stream scopes.
+
+The Counters management page is presented inside Hub's Twitch workspace. This
+is a navigation ownership choice only: definitions, named value files,
+transactional updates, and automation providers remain in
+`products/hub/counters/`.
+
+### Twitch chat timeline
+
+`products/hub/twitch/models.py` preserves Twitch's message, fragment, badge,
+reply, reward, source-channel, and broadcaster metadata. The presentation-
+independent session timeline in `products/hub/twitch/chat_entries.py` wraps
+those immutable messages as normal, Twitch-event, moderation, or Hub-system
+entries. It retains at most 1,000 entries by default and supports per-user
+recent-message lookup and message deletion state.
+
+`products/hub/ui/structured_twitch_chat_view.py` renders the bounded model in a
+single Chromium surface rather than allocating one Qt widget per message.
+Normal messages remain compact and borderless. Special entries alone receive
+an accent/background. DOM rows are pruned with model history; new content
+scrolls only when the viewer was already near the bottom. The view emits the
+selected structured entry, while reply/copy/user details and moderation are
+coordinated by `MainWindow`. Twitch calls continue through
+`TwitchService.moderate_user()` and its Helix client.
 
 Python-script tasks expose trigger context through `STREAMHOUSE_*` environment
 variables. Temporary `SALLY_*` aliases are also emitted so existing trusted
@@ -1076,6 +1104,15 @@ Keep public config free of local paths and routine internals.
   changes span multiple files.
 - Version remains `0.1.0`; persisted store versions and Streamhouse AI protocol
   version are independent of the product version.
+- Twitch ban state and historical moderation records are not currently cached,
+  so Hub cannot reliably suppress the unban action or show moderation history.
+  Moderation API requests are service-owned, but the current coordinator call
+  is synchronous and should move to a focused worker before adding bulk tools.
+- `Companion` remains in several internal Twitch snapshot/health identifiers.
+  In that context it means the stream-companion refresh, not the Sally
+  character. `SALLY_*` environment aliases, old QSettings application names,
+  the legacy Hub window title, and the historical `companion/settings.json`
+  path are intentionally retained for data/script migration compatibility.
 
 ## Non-goals and future extension points
 

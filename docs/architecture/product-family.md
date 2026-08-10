@@ -42,6 +42,7 @@ capabilities and is not a claim that every feature is implemented:
 - OBS and future broadcaster integration
 - chat and moderation
 - commands
+- counters and per-viewer counter values
 - triggers, routines, tasks, queues, and variables
 - stream information
 - stream sessions and analytics
@@ -79,6 +80,8 @@ The intended future structure of Hub's **Your Channel** workspace is:
 - Soundboard
 - Commands
 - Channel Points
+- Counters
+- User details / moderation
 
 Analytics includes stream-session history and aggregate reporting; Stream
 Sessions is not a separate workspace. This is a plan, not a statement that

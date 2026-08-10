@@ -5,7 +5,6 @@ import re
 import sys
 from collections import deque
 from time import monotonic
-from urllib.parse import urlencode
 from uuid import uuid4
 from dataclasses import asdict, replace
 from datetime import datetime, time, timedelta, timezone
@@ -154,8 +153,8 @@ from products.hub.ui.generated.ui_mainwindow import Ui_MainWindow
 from products.hub.ui.counters_page import CountersPage
 from products.hub.ui.log_handler import QtLogHandler
 from products.hub.ui.twitch_bridge import TwitchEventBridge
-from products.hub.ui.twitch_assets import twitch_emote_url
-from products.hub.ui.twitch_chat_view import TwitchChatView
+from products.hub.twitch.chat_entries import TwitchChatEntry
+from products.hub.ui.structured_twitch_chat_view import TwitchChatView
 from products.hub.ui.twitch_command_dialog import TwitchCommandDialog
 from products.hub.ui.companion_worker import (
     CompanionRefreshResult,
@@ -356,7 +355,7 @@ class MainWindow(QMainWindow):
             store=TwitchTokenStore.bot_account(),
             scopes=TWITCH_BOT_SCOPES,
             event_name="twitch_bot_auth_changed",
-            account_label="Sally bot",
+            account_label="Bot account",
         )
         self._last_twitch_auth_state = self.twitch_auth.state
         self._last_twitch_bot_auth_state = self.twitch_bot_auth.state
@@ -740,7 +739,6 @@ class MainWindow(QMainWindow):
             self.ui.twitchButton,
             self.ai_button,
             self.automation_button,
-            self.counters_button,
             self.connections_button,
             self.ui.logsButton,
             self.ui.settingsButton,
@@ -818,7 +816,6 @@ class MainWindow(QMainWindow):
         self.ui.twitchButton.clicked.connect(self.show_twitch)
         self.ai_button.clicked.connect(self.show_ai)
         self.automation_button.clicked.connect(self.show_automation)
-        self.counters_button.clicked.connect(self.show_counters)
         self.connections_button.clicked.connect(self.show_connections)
         self.ui.logsButton.clicked.connect(self.show_logs)
         self.ui.settingsButton.clicked.connect(self.show_settings)
@@ -1131,7 +1128,6 @@ class MainWindow(QMainWindow):
             self.ui.twitchButton,
             self.ai_button,
             self.automation_button,
-            self.counters_button,
             self.connections_button,
             self.ui.logsButton,
             self.ui.settingsButton,
@@ -1612,8 +1608,8 @@ class MainWindow(QMainWindow):
         self.chatter_list.customContextMenuRequested.connect(
             self._show_chatter_tree_context_menu
         )
-        self.ui.twitchChatOutput.chatter_context_requested.connect(
-            self._show_chatter_context_menu
+        self.ui.twitchChatOutput.entry_context_requested.connect(
+            self._show_chat_entry_context_menu
         )
 
     def _build_ai_page(self) -> None:
@@ -2597,9 +2593,6 @@ class MainWindow(QMainWindow):
         self.ui.mainStack.addWidget(self.automation_page)
 
     def _build_counters_page(self) -> None:
-        self.counters_button = QPushButton("Counters")
-        self.counters_button.setCheckable(True)
-        self.ui.verticalLayout.insertWidget(4, self.counters_button)
         self.counters_page = CountersPage(
             self.counter_service,
             lambda: self.current_memory_stream_id if self.stream_is_live else "",
@@ -2607,7 +2600,48 @@ class MainWindow(QMainWindow):
             self,
         )
         self.counters_page.counters_changed.connect(self.automation_page.refresh)
-        self.ui.mainStack.addWidget(self.counters_page)
+        self.channel_tabs.addTab(self.counters_page, "Counters")
+        self._build_chat_user_page()
+
+    def _build_chat_user_page(self) -> None:
+        self.chat_user_page = QWidget(self.channel_tabs)
+        layout = QVBoxLayout(self.chat_user_page)
+        self.chat_user_title = QLabel("Select a chat message to view its user")
+        self.chat_user_title.setStyleSheet("font-size: 18px; font-weight: 600;")
+        self.chat_user_details = QLabel(
+            "Right-click a message and choose View user information."
+        )
+        self.chat_user_details.setWordWrap(True)
+        self.chat_user_recent = QListWidget(self.chat_user_page)
+        self.chat_user_recent.setAlternatingRowColors(True)
+        actions = QHBoxLayout()
+        self.chat_user_reply_button = QPushButton("Reply")
+        self.chat_user_timeout_button = QPushButton("Timeout 10 minutes")
+        self.chat_user_ban_button = QPushButton("Ban")
+        for button in (
+            self.chat_user_reply_button,
+            self.chat_user_timeout_button,
+            self.chat_user_ban_button,
+        ):
+            button.setEnabled(False)
+            actions.addWidget(button)
+        actions.addStretch()
+        layout.addWidget(self.chat_user_title)
+        layout.addWidget(self.chat_user_details)
+        layout.addWidget(QLabel("Recent messages in this Hub session"))
+        layout.addWidget(self.chat_user_recent, 1)
+        layout.addLayout(actions)
+        self.chat_user_reply_button.clicked.connect(self._reply_to_selected_chat_user)
+        self.chat_user_timeout_button.clicked.connect(
+            lambda: self._moderate_selected_chat_user("timeout", duration=600)
+        )
+        self.chat_user_ban_button.clicked.connect(
+            lambda: self._moderate_selected_chat_user("ban")
+        )
+        self._selected_chat_entry: TwitchChatEntry | None = None
+        self._selected_chat_user_id = ""
+        self._selected_chat_user_name = ""
+        self.channel_tabs.addTab(self.chat_user_page, "User")
 
     def auto_connect_obs(self) -> None:
         """Connect to OBS after the real application event loop has started."""
@@ -3564,68 +3598,24 @@ class MainWindow(QMainWindow):
                 self.viewer_messages_since_sally_reply += 1
             self._buffer_message_for_memory_reasoning(chat_message, is_bot)
             self._queue_response_decision(chat_message, is_bot)
-        received_time = chat_message.received_at.astimezone().strftime(
-            "%H:%M:%S"
-        )
-        username = escape(chat_message.username)
-        message_parts: list[str] = []
         emote_size = max(20, round(self.settings.twitch_chat_font_size * 1.8))
-        for fragment in chat_message.fragments:
-            if fragment.emote is None:
-                message_parts.append(self._linkify(fragment.text))
-                continue
-            animated = "animated" in fragment.emote.formats
-            url = twitch_emote_url(fragment.emote.id, animated)
-            message_parts.append(
-                f"<img src='{escape(url)}' width='{emote_size}' height='{emote_size}' "
-                f"alt='{escape(fragment.text)}' />"
-            )
-        message = "".join(message_parts) or escape(chat_message.text).replace("\n", "<br>")
-        badge_parts: list[str] = []
+        badge_urls: list[str] = []
         for badge in chat_message.badges:
             url = self.twitch_service.badge_url(badge.set_id, badge.id)
-            if not url:
-                continue
-            badge_parts.append(
-                f"<img src='{escape(url)}' width='18' height='18' "
-                f"alt='{escape(badge.set_id)}' /> "
-            )
-        badges_html = "".join(badge_parts)
-        username_color = self._twitch_username_color(chat_message.username)
-
-        timestamp_html = ""
-        if self.settings.twitch_chat_show_timestamps:
-            timestamp_html = (
-                "<span style='color: #adadb8;'>"
-                f"{received_time}</span> "
-            )
+            if url:
+                badge_urls.append(url)
 
         if not self.twitch_chat_has_content:
             self.ui.twitchChatOutput.clear()
-
-        context_url = "streamhouse-chat-context://message?" + urlencode(
-            {
-                "user_id": chat_message.user_id,
-                "user_name": chat_message.username,
-                "message_id": chat_message.message_id,
-            }
-        )
-
-        self.ui.twitchChatOutput.append(
-            "<div class='chat-message' "
-            f"data-user-id='{escape(chat_message.user_id)}' "
-            f"data-user-name='{escape(chat_message.username)}' "
-            f"data-message-id='{escape(chat_message.message_id)}' "
-            "style='margin: 4px 2px 7px 2px;'>"
-            f"<a class='chat-context-target' href='{escape(context_url)}'></a>"
-            "<span class='chat-content'>"
-            f"{timestamp_html}"
-            f"{badges_html}"
-            f"<span style='color: {username_color}; font-weight: 600;'>"
-            f"{username}:</span>"
-            f" <span style='color: #efeff1;'>{message}</span>"
-            "</span>"
-            "</div>"
+        self.ui.twitchChatOutput.append_message(
+            chat_message,
+            badge_urls=tuple(badge_urls),
+            username_color=(
+                chat_message.color
+                or self._twitch_username_color(chat_message.username)
+            ),
+            show_timestamp=self.settings.twitch_chat_show_timestamps,
+            emote_size=emote_size,
         )
         self.twitch_message_count += 1
         if self.session_tracker.observe_message():
@@ -3633,8 +3623,6 @@ class MainWindow(QMainWindow):
         self.twitch_chat_has_content = True
         self._update_twitch_chat_count()
 
-        scroll_bar = self.ui.twitchChatOutput.verticalScrollBar()
-        scroll_bar.setValue(scroll_bar.maximum())
 
     def _handle_twitch_custom_command(
         self,
@@ -5059,16 +5047,12 @@ class MainWindow(QMainWindow):
     def handle_twitch_notice(self, notice: TwitchChatNotice) -> None:
         if notice.kind == "clear":
             self.clear_twitch_chat()
+        elif notice.target_message_id:
+            self.ui.twitchChatOutput.mark_deleted(notice.target_message_id)
         if not self.twitch_chat_has_content:
             self.ui.twitchChatOutput.clear()
-        timestamp = notice.received_at.astimezone().strftime("%H:%M:%S")
-        self.ui.twitchChatOutput.append(
-            "<div style='color:#adadb8; margin:4px 2px;'>"
-            f"[{timestamp}] {escape(notice.text)}</div>"
-        )
+        self.ui.twitchChatOutput.append_notice(notice)
         self.twitch_chat_has_content = True
-        scroll_bar = self.ui.twitchChatOutput.verticalScrollBar()
-        scroll_bar.setValue(scroll_bar.maximum())
 
     @Slot(object)
     def handle_twitch_activity(self, twitch_event: TwitchEvent) -> None:
@@ -5353,6 +5337,10 @@ class MainWindow(QMainWindow):
     @Slot(str)
     def handle_twitch_error(self, message: str) -> None:
         self.ui.twitchErrorLabel.setText(message)
+        if self.twitch_chat_has_content:
+            self.ui.twitchChatOutput.append_system(
+                f"Twitch error: {message}", datetime.now(timezone.utc)
+            )
 
     def _load_settings(self) -> AppSettings:
         try:
@@ -5798,8 +5786,8 @@ class MainWindow(QMainWindow):
     @Slot()
     def show_counters(self) -> None:
         self.counters_page.refresh()
-        self.ui.mainStack.setCurrentWidget(self.counters_page)
-        self.counters_button.setChecked(True)
+        self.show_twitch()
+        self.channel_tabs.setCurrentWidget(self.counters_page)
 
     def show_memories(self) -> None:
         self.show_ai()
@@ -6886,18 +6874,50 @@ class MainWindow(QMainWindow):
             "",
         )
 
-    @Slot(str, str, str)
+    @Slot(object)
+    def _show_chat_entry_context_menu(self, entry: TwitchChatEntry) -> None:
+        if entry.message is None:
+            return
+        self._show_chatter_context_menu(
+            entry.user_id,
+            entry.username,
+            entry.message_id,
+            message_text=entry.text,
+            entry=entry,
+        )
+
     def _show_chatter_context_menu(
         self,
         user_id: str,
         user_name: str,
         message_id: str,
+        *,
+        message_text: str = "",
+        entry: TwitchChatEntry | None = None,
     ) -> None:
         if not user_id:
             return
         menu = QMenu(self)
         heading = menu.addAction(user_name or user_id)
         heading.setEnabled(False)
+        if message_text:
+            reply_action = menu.addAction("Reply")
+            reply_action.triggered.connect(
+                lambda: self._reply_to_chat_user(user_name)
+            )
+            copy_message = menu.addAction("Copy message")
+            copy_message.triggered.connect(
+                lambda: QApplication.clipboard().setText(message_text)
+            )
+        copy_username = menu.addAction("Copy username")
+        copy_username.triggered.connect(
+            lambda: QApplication.clipboard().setText(user_name)
+        )
+        user_info = menu.addAction("View user information")
+        user_info.triggered.connect(
+            lambda: self._open_chat_user(entry, user_id, user_name)
+        )
+        menu.addSeparator()
         move_menu = menu.addMenu("Move to local group")
         record = self.chatter_history.records.get(user_id)
         current_group = record.manual_group if record else ""
@@ -6919,23 +6939,47 @@ class MainWindow(QMainWindow):
         menu.addSeparator()
         token = self.twitch_auth.token
         scopes = set(token.scopes) if token is not None else set()
+        moderation_target = user_id not in {
+            self.twitch_service.broadcaster_user_id,
+            token.user_id if token is not None else "",
+        }
         can_ban = (
             "moderator:manage:banned_users" in scopes
             and bool(self.twitch_service.broadcaster_user_id)
+            and moderation_target
         )
         can_delete = (
             "moderator:manage:chat_messages" in scopes
             and bool(self.twitch_service.broadcaster_user_id)
             and bool(message_id)
         )
+        timeout_menu = menu.addMenu("Timeout user")
+        timeout_menu.setEnabled(can_ban)
+        timeout_menu.menuAction().setVisible(can_ban)
+        for timeout_title, timeout_seconds in (
+            ("10 seconds", 10),
+            ("1 minute", 60),
+            ("10 minutes", 600),
+            ("1 hour", 3600),
+            ("24 hours", 86400),
+        ):
+            timeout_action = timeout_menu.addAction(timeout_title)
+            timeout_action.triggered.connect(
+                lambda _checked=False, seconds=timeout_seconds: self._run_moderation_action(
+                    "timeout", user_id, user_name, duration=seconds
+                )
+            )
+        custom_timeout = timeout_menu.addAction("Custom...")
+        custom_timeout.triggered.connect(
+            lambda: self._run_custom_timeout(user_id, user_name)
+        )
         for title, action_name, duration in (
-            ("Timeout 10 minutes", "timeout", 600),
-            ("Timeout 1 hour", "timeout", 3600),
             ("Ban…", "ban", None),
             ("Remove ban / timeout", "unban", None),
         ):
             action = menu.addAction(title)
             action.setEnabled(can_ban)
+            action.setVisible(can_ban)
             action.triggered.connect(
                 lambda _checked=False, name=action_name, seconds=duration: self._run_moderation_action(
                     name,
@@ -6946,6 +6990,7 @@ class MainWindow(QMainWindow):
             )
         delete_action = menu.addAction("Delete this message")
         delete_action.setEnabled(can_delete)
+        delete_action.setVisible(can_delete)
         delete_action.triggered.connect(
             lambda _checked=False: self._run_moderation_action(
                 "delete_message",
@@ -6959,6 +7004,69 @@ class MainWindow(QMainWindow):
             permissions = menu.addAction("Enable moderation permissions…")
             permissions.triggered.connect(self.twitch_auth.sign_in)
         menu.exec(QCursor.pos())
+
+    def _reply_to_chat_user(self, user_name: str) -> None:
+        self.ui.twitchSendEdit.setText(f"@{user_name} ")
+        self.ui.twitchSendEdit.setFocus()
+
+    def _open_chat_user(
+        self,
+        entry: TwitchChatEntry | None,
+        user_id: str,
+        user_name: str,
+    ) -> None:
+        self._selected_chat_entry = entry
+        self._selected_chat_user_id = user_id
+        self._selected_chat_user_name = user_name
+        badges = []
+        if entry is not None and entry.message is not None:
+            badges = [badge.set_id for badge in entry.message.badges]
+        self.chat_user_title.setText(user_name or user_id)
+        details = f"Twitch user ID: {user_id or 'Unavailable'}"
+        if badges:
+            details += f"  -  Roles: {', '.join(badges)}"
+        self.chat_user_details.setText(details)
+        self.chat_user_recent.clear()
+        for recent in self.ui.twitchChatOutput.history.recent_for_user(user_id):
+            stamp = recent.received_at.astimezone().strftime("%H:%M:%S")
+            self.chat_user_recent.addItem(f"{stamp}  {recent.text}")
+        self.chat_user_reply_button.setEnabled(bool(user_name))
+        token = self.twitch_auth.token
+        scopes = set(token.scopes) if token is not None else set()
+        can_ban = "moderator:manage:banned_users" in scopes
+        can_ban = can_ban and user_id != self.twitch_service.broadcaster_user_id
+        self.chat_user_timeout_button.setEnabled(can_ban and bool(user_id))
+        self.chat_user_ban_button.setEnabled(can_ban and bool(user_id))
+        self.channel_tabs.setCurrentWidget(self.chat_user_page)
+
+    def _reply_to_selected_chat_user(self) -> None:
+        if self._selected_chat_user_name:
+            self._reply_to_chat_user(self._selected_chat_user_name)
+
+    def _moderate_selected_chat_user(
+        self, action: str, *, duration: int | None = None
+    ) -> None:
+        if self._selected_chat_user_id:
+            self._run_moderation_action(
+                action,
+                self._selected_chat_user_id,
+                self._selected_chat_user_name,
+                duration=duration,
+            )
+
+    def _run_custom_timeout(self, user_id: str, user_name: str) -> None:
+        duration, accepted = QInputDialog.getInt(
+            self,
+            f"Timeout {user_name}",
+            "Duration in seconds:",
+            600,
+            1,
+            1_209_600,
+        )
+        if accepted:
+            self._run_moderation_action(
+                "timeout", user_id, user_name, duration=duration
+            )
 
     def _set_local_chatter_group(self, user_id: str, group: str) -> None:
         if user_id not in self.chatter_history.records:
@@ -7007,6 +7115,8 @@ class MainWindow(QMainWindow):
             duration=duration,
             reason=reason,
         ):
+            if action == "delete_message" and message_id:
+                self.ui.twitchChatOutput.mark_deleted(message_id)
             self.statusBar().showMessage(
                 f"Twitch moderation completed for {user_name}.",
                 5000,

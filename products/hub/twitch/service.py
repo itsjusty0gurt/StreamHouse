@@ -133,7 +133,7 @@ class TwitchService:
                 and bot_token.user_id == token.user_id
             ):
                 raise ValueError(
-                    "Your channel and Sally bot are signed into the same "
+                    "Your channel and bot account are signed into the same "
                     "Twitch account. Sign the channel account in as the "
                     "streamer and keep the separate bot account in the bot slot."
                 )

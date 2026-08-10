@@ -10,7 +10,7 @@ dependencies are defined in the
 - `products/hub/twitch/auth.py` implements the public-client Device Code flow.
 - Access and refresh tokens are encrypted with Windows DPAPI by
   `products/hub/twitch/token_store.py`.
-- The broadcaster and optional Sally bot identities use separate encrypted
+- The broadcaster and optional bot identities use separate encrypted
   token files. The broadcaster token owns channel analytics and moderation;
   the bot token reads and sends chat as the bot account.
 - The broadcaster grants `channel:bot`. The bot login requests
@@ -90,11 +90,20 @@ thread.
 ## UI responsibilities
 
 - **Your Channel** is the current stream companion. Its current top-level tabs
-  are Chat, Analytics, Soundboard, Commands, and Channel Points. Session data is
+  are Chat, Analytics, Soundboard, Channel Information, Commands, Channel
+  Points, Counters, and User. Session data is
   currently presented within Analytics. Chat includes the overview, grouped
   chatters, Activity Feed, and eligible ad controls. The broadcaster is
   excluded from the grouped chatter total. Chat and the chatter list share
   right-click local grouping and permission-aware Twitch moderation actions.
+  Chat is a bounded structured timeline: normal rows remain compact and
+  borderless, while Twitch, moderation, and Hub-system notices may use an
+  accent. It follows new messages only while the viewer is already at the
+  bottom. Message menus provide reply/copy/user details plus service-backed
+  delete, timeout, ban, and unban controls when OAuth scopes permit them. The
+  User tab shows roles and recent messages from the current in-memory session.
+  Counters lives here because it is Twitch/stream interaction, while its store,
+  service, and task providers remain under `products/hub/counters/`.
 - **Connections** contains independent broadcaster and optional bot OAuth
   controls plus transport details.
 - **Logs > Twitch Events** contains searchable raw EventSub diagnostics and
@@ -151,6 +160,10 @@ case-insensitive. The normalized task context includes `{event_type}`, `{user}`,
 `{message}`, `{input}`, `{amount}`, `{bits}`, `{viewers}`, `{tier}`, `{reward}`,
 `{reward_id}`, and `{reward_cost}` in addition to the existing Twitch message
 variables. Live traffic and Developer Simulation enter the same routing path.
+
+Counter actions do not require a counter-specific trigger system. The five
+registered Counter tasks may be placed in any routine reached by a Twitch chat
+command, supported EventSub trigger, OBS/Core trigger, or manual execution.
 
 ## Planned Hub channel workspace
 

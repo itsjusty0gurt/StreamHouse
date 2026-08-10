@@ -111,7 +111,7 @@ def run() -> None:
         store=TwitchTokenStore.bot_account(),
         scopes=TWITCH_BOT_SCOPES,
         event_name="twitch_bot_auth_changed",
-        account_label="Sally bot",
+        account_label="Bot account",
     )
     twitch_service = TwitchService(
         auth=twitch_auth,
