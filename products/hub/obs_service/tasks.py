@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 
 from products.hub.automation.models import TaskDefinition, TaskExecutionResult, TriggerEvent
-from products.hub.automation.variables import render_preview
+from products.hub.automation.variable_registry import render_placeholders
 from products.hub.obs_service.service import ObsWebSocketService
 
 
@@ -99,14 +99,14 @@ class ObsTask:
         if self.task_type == "obs.set_input_volume":
             return "SetInputVolume", {"inputName": self._required(c, "input"), "inputVolumeDb": float(c.get("volume_db", 0))}
         if self.task_type == "obs.set_text_source":
-            text = render_preview(str(c.get("text", "")), trigger.context)
+            text = render_placeholders(str(c.get("text", "")), trigger.context, strip_values=True)
             return "SetInputSettings", {
                 "inputName": self._required(c, "input"),
                 "inputSettings": {"text": text},
                 "overlay": True,
             }
         if self.task_type == "obs.set_image_source":
-            image_file = render_preview(
+            image_file = render_placeholders(
                 self._required(c, "file"),
                 trigger.context,
             ).strip()

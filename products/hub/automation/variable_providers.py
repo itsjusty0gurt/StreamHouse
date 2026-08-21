@@ -91,17 +91,6 @@ class CounterVariableProvider:
                         writable=False,
                         required_context=("user.id",),
                     ),
-                    VariableDefinition(
-                        name=f"counter.{counter.counter_id}",
-                        display_name=f"{counter.display_name} - Legacy Alias",
-                        description=f"Legacy alias for {stream_name}.",
-                        data_type=VariableDataType.INTEGER,
-                        source=self.source,
-                        category="Counters",
-                        writable=counter.enabled and counter.track_channel_total,
-                        alias_of=stream_name,
-                        legacy=True,
-                    ),
                 )
             )
         return tuple(definitions)
@@ -157,11 +146,50 @@ CONTEXT_DEFINITIONS = (
     ("user.name", "User Name", "Triggering user's readable name.", VariableDataType.TEXT, ("user",)),
     ("user.display_name", "User Display Name", "Triggering user's Twitch display name.", VariableDataType.TEXT, ("user",)),
     ("user.id", "User ID", "Triggering user's Twitch ID.", VariableDataType.TEXT, ("user_id",)),
+    ("user.login", "User Login", "Triggering viewer's Twitch login.", VariableDataType.TEXT, ("user_login",)),
+    ("user.permission", "User Permission", "Triggering viewer's command permission.", VariableDataType.TEXT, ("viewer_permission",)),
     ("user.is_mod", "User Is Moderator", "Whether the triggering user is a moderator.", VariableDataType.BOOLEAN, ("user_is_mod", "is_mod")),
     ("user.is_subscriber", "User Is Subscriber", "Whether the triggering user is subscribed.", VariableDataType.BOOLEAN, ("user_is_subscriber", "is_subscriber")),
     ("chat.message", "Chat Message", "Triggering Twitch chat message.", VariableDataType.TEXT, ("message",)),
     ("chat.message_id", "Chat Message ID", "Triggering Twitch message ID.", VariableDataType.TEXT, ("message_id",)),
+    ("command.name", "Command Name", "Command name without the exclamation mark.", VariableDataType.TEXT, ("command",)),
+    ("command.args", "Command Arguments", "Text following the command name.", VariableDataType.TEXT, ("args",)),
+    ("command.target", "Command Target", "First command argument without the at sign.", VariableDataType.TEXT, ("target",)),
+    ("command.uses", "Command Uses", "Number of times the command has run.", VariableDataType.INTEGER, ("uses",)),
+    ("event.name", "Event Name", "Readable trigger event name.", VariableDataType.TEXT, ("event",)),
+    ("event.type", "Event Type", "Owning service event type.", VariableDataType.TEXT, ("event_type",)),
+    ("event.input", "Event Input", "Viewer input or event input name.", VariableDataType.TEXT, ("input",)),
+    ("event.amount", "Event Amount", "Event amount, cost, bits, or viewers.", VariableDataType.NUMBER, ("amount",)),
+    ("event.bits", "Cheered Bits", "Number of cheered bits.", VariableDataType.INTEGER, ("bits",)),
+    ("event.viewers", "Event Viewers", "Viewer or raid count.", VariableDataType.INTEGER, ("viewers",)),
+    ("event.tier", "Subscription Tier", "Twitch subscription tier.", VariableDataType.TEXT, ("tier",)),
+    ("event.reward", "Reward Title", "Channel-point reward title.", VariableDataType.TEXT, ("reward",)),
+    ("event.reward_id", "Reward ID", "Channel-point reward ID.", VariableDataType.TEXT, ("reward_id",)),
+    ("event.reward_cost", "Reward Cost", "Channel-point reward cost.", VariableDataType.INTEGER, ("reward_cost",)),
+    ("event.redemption_id", "Redemption ID", "Channel-point redemption ID.", VariableDataType.TEXT, ("redemption_id",)),
+    ("obs.scene", "OBS Scene", "Scene supplied by an OBS event.", VariableDataType.TEXT, ("scene",)),
+    ("obs.source", "OBS Source", "Source supplied by an OBS event.", VariableDataType.TEXT, ("source",)),
+    ("obs.input", "OBS Input", "Input supplied by an OBS event.", VariableDataType.TEXT, ("input",)),
+    ("obs.output_state", "OBS Output State", "Output state supplied by OBS.", VariableDataType.TEXT, ("output_state",)),
+    ("obs.enabled", "OBS Enabled", "Whether the OBS source or mode is enabled.", VariableDataType.BOOLEAN, ("enabled",)),
+    ("obs.muted", "OBS Muted", "Whether the OBS input is muted.", VariableDataType.BOOLEAN, ("muted", "mute")),
+    ("obs.volume_db", "OBS Volume", "OBS input volume in decibels.", VariableDataType.NUMBER, ("volume_db",)),
+    ("obs.media", "OBS Media", "Media input supplied by OBS.", VariableDataType.TEXT, ("media",)),
 )
+
+CONTEXT_PREVIEW = {
+    "user.name": "TestViewer", "user.display_name": "TestViewer",
+    "user.id": "123456", "user.login": "testviewer", "user.permission": "everyone",
+    "user.is_mod": False, "user.is_subscriber": False,
+    "chat.message": "Hello Streamhouse!", "chat.message_id": "message-123",
+    "command.name": "hello", "command.args": "friend", "command.target": "friend", "command.uses": 3,
+    "event.name": "Follow", "event.type": "channel.follow", "event.input": "Viewer input",
+    "event.amount": 100, "event.bits": 100, "event.viewers": 12, "event.tier": "1000",
+    "event.reward": "Hydrate", "event.reward_id": "reward-123", "event.reward_cost": 500,
+    "event.redemption_id": "redemption-123", "obs.scene": "Gameplay", "obs.source": "Camera",
+    "obs.input": "Microphone", "obs.output_state": "OBS_WEBSOCKET_OUTPUT_STARTED",
+    "obs.enabled": True, "obs.muted": False, "obs.volume_db": -8.0, "obs.media": "Intro Video",
+}
 
 
 def context_provider() -> CallbackVariableProvider:
@@ -175,6 +203,7 @@ def context_provider() -> CallbackVariableProvider:
             category=name.split(".", 1)[0].title(),
             availability=VariableAvailability.CONTEXTUAL,
             required_context=tuple(_aliases),
+            preview_value=CONTEXT_PREVIEW.get(name),
         )
         for name, display, description, data_type, _aliases in CONTEXT_DEFINITIONS
     )
@@ -184,7 +213,7 @@ def context_provider() -> CallbackVariableProvider:
         for key in (name, *aliases[name]):
             if key in context and str(context[key]).strip() not in {"", "--"}:
                 value: object = context[key]
-                if name in {"user.is_mod", "user.is_subscriber"}:
+                if name in {"user.is_mod", "user.is_subscriber", "obs.enabled", "obs.muted"}:
                     value = str(value).strip().casefold() in {"1", "true", "yes", "on"}
                 return True, value, ""
         return False, None, "Only available during a matching trigger event."
@@ -201,6 +230,7 @@ def runtime_provider(
 ) -> CallbackVariableProvider:
     definitions = (
         VariableDefinition("stream.title", "Stream Title", "Current cached Twitch title.", VariableDataType.TEXT, "Twitch", "Stream"),
+        VariableDefinition("stream.channel", "Stream Channel", "Connected Twitch channel name.", VariableDataType.TEXT, "Twitch", "Stream"),
         VariableDefinition("stream.category", "Stream Category", "Current cached Twitch category.", VariableDataType.TEXT, "Twitch", "Stream"),
         VariableDefinition("stream.viewer_count", "Viewer Count", "Current cached live viewer count.", VariableDataType.INTEGER, "Twitch", "Stream"),
         VariableDefinition("stream.game_id", "Twitch Game ID", "Current cached Twitch category ID.", VariableDataType.TEXT, "Twitch", "Stream"),

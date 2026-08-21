@@ -9,6 +9,8 @@ from products.hub.automation.models import TaskDefinition, TaskExecutionResult, 
 from products.hub.automation.routines import RoutineStore
 from products.hub.automation.service import AutomationService
 from products.hub.automation.tasks import TaskRegistry
+from products.hub.automation.variable_providers import context_provider, runtime_provider
+from products.hub.automation.variable_registry import VariableRegistry
 from products.hub.obs_service.tasks import OBS_TASK_LABELS
 from products.hub.twitch.commands import (
     TwitchCommandTriggerDispatcher,
@@ -140,9 +142,32 @@ class TwitchCommandSimulator:
         routine = self.routine_store.get(result.routine_id)
         routine_name = routine.name if routine is not None else ""
         twitch = DryRunTwitchService()
-        registry = self._build_registry(twitch)
-        automation = AutomationService(self.routine_store, registry)
+        variable_registry = VariableRegistry()
+        variable_registry.register(context_provider())
+        variable_registry.register(
+            runtime_provider(
+                lambda: {
+                    "category": self.live_context.get("stream.category", ""),
+                    "channel": self.live_context.get("stream.channel", ""),
+                    "title": self.live_context.get("stream.title", ""),
+                    "viewer_count": self.live_context.get("stream.viewer_count"),
+                    "game_id": self.live_context.get("stream.game_id", ""),
+                    "connected": bool(self.live_context),
+                },
+                obs_connected=lambda: bool(self.live_context.get("obs.current_scene")),
+                obs_scene=lambda: self.live_context.get("obs.current_scene", ""),
+                hub_uptime=lambda: self.live_context.get("hub.uptime", "00:00:00"),
+            )
+        )
+        task_registry = self._build_registry(twitch, variable_registry)
+        automation = AutomationService(
+            self.routine_store,
+            task_registry,
+            variable_registry=variable_registry,
+        )
         execution = automation.publish_trigger(result.to_event())
+        preview_context = {**result.context, **self.live_context}
+        preview_context.update(variable_registry.context_values(preview_context))
         task_results = tuple(
             task_result
             for routine_result in execution.routine_results
@@ -154,20 +179,22 @@ class TwitchCommandSimulator:
             trigger_id=result.trigger_id,
             routine_id=result.routine_id,
             routine_name=routine_name,
-            context=dict(result.context),
+            context=preview_context,
             sent_messages=tuple(twitch.sent_messages),
             task_results=task_results,
             missing_variables=_missing_variables(
                 routine.tasks if routine is not None else [],
-                result.context,
+                preview_context,
                 self.live_context,
             ),
         )
 
-    def _build_registry(self, twitch: DryRunTwitchService) -> TaskRegistry:
+    def _build_registry(
+        self, twitch: DryRunTwitchService, variables: VariableRegistry
+    ) -> TaskRegistry:
         registry = TaskRegistry()
         registry.register(
-            SendTwitchChatMessageTask(twitch, self._resolve_variables)  # type: ignore[arg-type]
+            SendTwitchChatMessageTask(twitch, variable_registry=variables)  # type: ignore[arg-type]
         )
         for task_type, label in {
             **TWITCH_TASK_LABELS,
@@ -177,26 +204,6 @@ class TwitchCommandSimulator:
             if task_type != SendTwitchChatMessageTask.task_type:
                 registry.register(DryRunTaskHandler(task_type, label))
         return registry
-
-    def _resolve_variables(
-        self,
-        template: str,
-        context: Mapping[str, str],
-    ) -> Mapping[str, str]:
-        requested = set(SendTwitchChatMessageTask.TEMPLATE_PATTERN.findall(template))
-        resolved: dict[str, str] = {}
-        for key in requested:
-            current = str(context.get(key, "--"))
-            live = self.live_context.get(key, "")
-            if current in {"", "--"} and live:
-                resolved[key] = live
-        if requested.intersection({"mute", "muted"}):
-            muted = self.live_context.get("muted") or self.live_context.get("mute")
-            if muted:
-                resolved["muted"] = muted
-                resolved["mute"] = muted
-        return resolved
-
 
 def _render_config(config: Mapping[str, Any], context: Mapping[str, str]) -> str:
     parts: list[str] = []
@@ -221,9 +228,5 @@ def _missing_variables(
                 continue
             for key in SendTwitchChatMessageTask.TEMPLATE_PATTERN.findall(value):
                 if context.get(key, "--") in {"", "--"} and not live_context.get(key):
-                    if key in {"mute", "muted"} and (
-                        live_context.get("mute") or live_context.get("muted")
-                    ):
-                        continue
                     missing.add(key)
     return tuple(sorted(missing))

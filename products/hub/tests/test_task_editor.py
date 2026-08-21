@@ -10,6 +10,8 @@ from PySide6.QtGui import QTextCursor
 
 from products.hub.automation.models import TaskDefinition
 from products.hub.automation.routines import RoutineStore
+from products.hub.automation.variable_providers import context_provider, runtime_provider
+from products.hub.automation.variable_registry import VariableRegistry
 from products.hub.ui.automation_page import TaskEditorDialog
 
 
@@ -32,6 +34,20 @@ class TaskEditorTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.application = QApplication.instance() or QApplication([])
+
+    @staticmethod
+    def variables() -> VariableRegistry:
+        registry = VariableRegistry()
+        registry.register(context_provider())
+        registry.register(
+            runtime_provider(
+                lambda: {"title": "Building Streamhouse", "category": "Science & Technology", "connected": True},
+                obs_connected=lambda: True,
+                obs_scene=lambda: "Gameplay",
+                hub_uptime=lambda: "01:23:45",
+            )
+        )
+        return registry
 
     def test_core_launch_form_round_trips_without_json(self) -> None:
         task = TaskDefinition(
@@ -132,17 +148,18 @@ class TaskEditorTests(unittest.TestCase):
     def test_custom_variable_value_has_template_help(self) -> None:
         dialog = TaskEditorDialog(
             "core.create_routine_variable",
-            variables={"user": "TestViewer", "score": "4"},
+            variables={"user.display_name": "TestViewer"},
+            variable_registry=self.variables(),
         )
 
         rows = {
             dialog.variable_table.item(row, 0).text(): row
             for row in range(dialog.variable_table.rowCount())
         }
-        self.assertIn("{score}", rows)
+        self.assertIn("{user.display_name}", rows)
         self.assertEqual(
-            dialog.variable_table.item(rows["{score}"], 1).text(),
-            "Custom variable",
+            dialog.variable_table.item(rows["{user.display_name}"], 1).text(),
+            "Twitch Context",
         )
 
     def test_if_else_form_disables_value_for_unary_comparison(self) -> None:
@@ -160,7 +177,7 @@ class TaskEditorTests(unittest.TestCase):
             target = store.add("Hydrate response")
             dialog = TaskEditorDialog("core.logic_switch", routine_store=store)
             fields = dialog.field_widgets["core.logic_switch"]
-            fields["input"].setText("{reward}")
+            fields["input"].setText("{event.reward}")
             cases = fields["cases"]
             cases.add_case("Hydrate", target.routine_id)
 
@@ -196,7 +213,7 @@ class TaskEditorTests(unittest.TestCase):
         self.assertTrue(read_config["ignore_blank_lines"])
         self.assertTrue(read_config["stop_on_failure"])
 
-        read_fields["variable"].setText("{random_line}")
+        read_fields["variable"].setText("random_line")
         self.assertEqual(
             read_dialog.values()["config"]["variable"],
             "random_line",
@@ -205,7 +222,7 @@ class TaskEditorTests(unittest.TestCase):
         write_dialog = TaskEditorDialog("core.file_write")
         write_fields = write_dialog.field_widgets["core.file_write"]
         write_fields["path"].setText("C:/Sally/activity.txt")
-        write_fields["text"].setPlainText("{user} redeemed {reward}")
+        write_fields["text"].setPlainText("{user.display_name} redeemed {event.reward}")
         write_fields["mode"].setCurrentIndex(
             write_fields["mode"].findData("overwrite")
         )
@@ -213,67 +230,67 @@ class TaskEditorTests(unittest.TestCase):
         write_config = write_dialog.values()["config"]
 
         self.assertEqual(write_config["mode"], "overwrite")
-        self.assertEqual(write_config["text"], "{user} redeemed {reward}")
+        self.assertEqual(write_config["text"], "{user.display_name} redeemed {event.reward}")
 
     def test_trigger_variable_can_be_inserted_and_previewed(self) -> None:
         dialog = TaskEditorDialog(
             "twitch.send_chat_message",
-            variables={"user": "TestViewer", "channel": "samplechannel"},
+            variables={"user.display_name": "TestViewer", "stream.channel": "samplechannel"},
+            variable_registry=self.variables(),
         )
         message = dialog.field_widgets["twitch.send_chat_message"]["message"]
         message.setPlainText("Hello ")
         message.moveCursor(QTextCursor.MoveOperation.End)
-        dialog.variable_table.selectRow(0)
+        display_row = next(
+            row for row in range(dialog.variable_table.rowCount())
+            if dialog.variable_table.item(row, 0).text() == "{user.display_name}"
+        )
+        dialog.variable_table.selectRow(display_row)
 
         dialog._insert_selected_variable()
 
-        self.assertEqual(message.toPlainText(), "Hello {user}")
+        self.assertEqual(message.toPlainText(), "Hello {user.display_name}")
         self.assertIn("Hello TestViewer", dialog.variable_preview_label.text())
 
     def test_variable_reference_shows_sources_and_sample_runtime_values(self) -> None:
-        dialog = TaskEditorDialog("twitch.send_chat_message")
+        dialog = TaskEditorDialog("twitch.send_chat_message", variable_registry=self.variables())
         message = dialog.field_widgets["twitch.send_chat_message"]["message"]
-        message.setPlainText("Mic is {muted} while playing {game}.")
+        message.setPlainText("Scene is {obs.current_scene} while playing {stream.category}.")
 
         rows = {
             dialog.variable_table.item(row, 0).text(): row
             for row in range(dialog.variable_table.rowCount())
         }
 
-        muted_row = rows["{muted}"]
-        game_row = rows["{game}"]
+        muted_row = rows["{obs.current_scene}"]
+        game_row = rows["{stream.category}"]
         self.assertEqual(
             dialog.variable_table.item(muted_row, 1).text(),
-            "OBS runtime lookup",
+            "OBS",
         )
         self.assertEqual(
             dialog.variable_table.item(game_row, 1).text(),
-            "Twitch live context",
+            "Twitch",
         )
         self.assertIn(
-            "Mic is Not Muted while playing Science & Technology.",
+            "Scene is Gameplay while playing Science & Technology.",
             dialog.variable_preview_label.text(),
         )
 
     def test_twitch_information_outputs_have_friendly_insertable_labels(self) -> None:
         dialog = TaskEditorDialog(
             "twitch.send_chat_message",
-            variables={
-                "stream_title": "Building Streamhouse",
-                "target_display_name": "TargetViewer",
-                "followed_at": "2024-01-02T03:04:05Z",
-                "formatted_duration": "2 hours 18 minutes",
-            },
+            variables={"automation.stream_title": "Building Streamhouse"},
+            variable_registry=self.variables(),
         )
         rows = {
             dialog.variable_table.item(row, 0).text(): row
             for row in range(dialog.variable_table.rowCount())
         }
         expected_sources = {
-            "{stream_title}": "Twitch information task",
-            "{target_display_name}": "Resolve User task",
-            "{followed_at}": "Get Follow Relationship task",
-            "{formatted_duration}": "Format Duration task",
+            "{stream.title}": "Twitch",
+            "{user.display_name}": "Twitch Context",
+            "{obs.current_scene}": "OBS",
         }
         for variable, source in expected_sources.items():
             self.assertIn(variable, rows)
@@ -285,11 +302,12 @@ class TaskEditorTests(unittest.TestCase):
     def test_python_script_form_exposes_safe_execution_options(self) -> None:
         dialog = TaskEditorDialog(
             "core.run_python_script",
-            variables={"user": "TestViewer"},
+            variables={"user.display_name": "TestViewer"},
+            variable_registry=self.variables(),
         )
         fields = dialog.field_widgets["core.run_python_script"]
         fields["script"].setText("C:/Scripts/welcome.py")
-        fields["arguments"].setText('--user "{user}"')
+        fields["arguments"].setText('--user "{user.display_name}"')
 
         self.assertIsInstance(fields["wait_for_completion"], QCheckBox)
         self.assertIsNotNone(dialog.findChild(QLabel, "pythonScriptWarning"))
@@ -300,7 +318,7 @@ class TaskEditorTests(unittest.TestCase):
         self.assertFalse(fields["stop_on_failure"].isEnabled())
         config = dialog.values()["config"]
         self.assertEqual(config["script"], "C:/Scripts/welcome.py")
-        self.assertEqual(config["arguments"], '--user "{user}"')
+        self.assertEqual(config["arguments"], '--user "{user.display_name}"')
         self.assertFalse(config["wait_for_completion"])
 
 

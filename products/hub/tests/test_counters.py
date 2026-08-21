@@ -14,7 +14,6 @@ from products.hub.counters.models import CounterDefinition, counter_id_from_name
 from products.hub.counters.service import CounterService
 from products.hub.counters.store import CounterStore
 from products.hub.counters.tasks import register_counter_tasks
-from products.hub.automation.custom_variables import CustomVariableStore
 from products.hub.core.backup import BackupManager
 from products.hub.twitch.commands import TwitchCommandTriggerStore
 
@@ -218,29 +217,30 @@ class CounterTaskTests(unittest.TestCase):
         context = {"user_id": "111", "user_login": "steve", "user": "Steve"}; trigger = TriggerEvent("command", "twitch", "command", context)
         update = TaskDefinition("1", "counter.update", "Update", {"counter_id": "farts", "amount": "1", "channel_total": True, "stream_total": True, "viewer_total": True, "output_prefix": "farts"})
         self.assertTrue(self.registry.execute(update, trigger).succeeded)
-        self.assertEqual(context["farts_channel_total"], "1"); self.assertEqual(context["farts_viewer_total"], "1"); self.assertEqual(context["farts_status"], "success")
-        self.assertEqual(context["farts_skipped_scopes"], "")
+        self.assertEqual(context["automation.farts_channel_total"], "1"); self.assertEqual(context["automation.farts_viewer_total"], "1"); self.assertEqual(context["automation.farts_status"], "success")
+        self.assertEqual(context["automation.farts_skipped_scopes"], "")
         leaderboard = TaskDefinition("2", "counter.get_leaderboard", "Board", {"counter_id": "farts", "viewer_scope": "lifetime", "limit": 5, "output_prefix": "farts"})
-        self.assertTrue(self.registry.execute(leaderboard, trigger).succeeded); self.assertIn("Steve", context["farts_leaderboard"])
+        self.assertTrue(self.registry.execute(leaderboard, trigger).succeeded); self.assertIn("Steve", context["automation.farts_leaderboard"])
 
     def test_missing_counter_and_missing_viewer_are_controlled(self) -> None:
         trigger = TriggerEvent("command", "twitch", "command", {})
         missing = TaskDefinition("1", "counter.update", "Update", {"counter_id": "gone", "amount": "1", "viewer_total": True, "output_prefix": "gone"})
         result = self.registry.execute(missing, trigger)
-        self.assertFalse(result.succeeded); self.assertIn("does not exist", result.detail); self.assertEqual(trigger.context["gone_status"], "missing_counter")
+        self.assertFalse(result.succeeded); self.assertIn("does not exist", result.detail); self.assertEqual(trigger.context["automation.gone_status"], "missing_counter")
 
         missing_viewer = TaskDefinition("2", "counter.update", "Update", {"counter_id": "farts", "amount": "1", "viewer_total": True, "output_prefix": "farts"})
         result = self.registry.execute(missing_viewer, trigger)
         self.assertFalse(result.succeeded)
-        self.assertEqual(trigger.context["farts_status"], "missing_viewer")
+        self.assertEqual(trigger.context["automation.farts_status"], "missing_viewer")
 
     def test_generated_output_names_are_deterministic_and_prefixable(self) -> None:
-        names = CustomVariableStore.generated_names(
+        from products.hub.automation.variable_outputs import generated_output_definitions
+        names = tuple(item.name for item in generated_output_definitions(
             "counter.update", {"counter_id": "farts", "output_prefix": "party_farts"}
-        )
-        self.assertIn("party_farts_channel_total", names)
-        self.assertIn("party_farts_status", names)
-        self.assertIn("party_farts_skipped_scopes", names)
+        ))
+        self.assertIn("automation.party_farts_channel_total", names)
+        self.assertIn("automation.party_farts_status", names)
+        self.assertIn("automation.party_farts_skipped_scopes", names)
 
     def test_decrease_operation_viewer_rank_and_disabled_status(self) -> None:
         context = {"user_id": "111", "user_login": "steve", "user": "Steve"}
@@ -248,13 +248,13 @@ class CounterTaskTests(unittest.TestCase):
         self.service.set_value("farts", "viewer_total", 5, user_id="111", display_name="Steve")
         decrease = TaskDefinition("1", "counter.update", "Decrease", {"counter_id": "farts", "operation": "decrease", "amount": "2", "viewer_total": True})
         self.assertTrue(self.registry.execute(decrease, trigger).succeeded)
-        self.assertEqual(context["farts_viewer_total"], "3")
+        self.assertEqual(context["automation.farts_viewer_total"], "3")
         rank = TaskDefinition("2", "counter.get_value", "Rank", {"counter_id": "farts", "scope": "viewer_rank"})
         self.assertTrue(self.registry.execute(rank, trigger).succeeded)
-        self.assertEqual(context["farts_viewer_rank"], "1")
+        self.assertEqual(context["automation.farts_viewer_rank"], "1")
         self.service.set_enabled("farts", False)
         self.assertFalse(self.registry.execute(rank, trigger).succeeded)
-        self.assertEqual(context["farts_status"], "disabled_counter")
+        self.assertEqual(context["automation.farts_status"], "disabled_counter")
 
 
 if __name__ == "__main__":

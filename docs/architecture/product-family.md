@@ -60,10 +60,10 @@ Streamhouse AI, Streamhouse Avatar, or Streamhouse Deck.
 
 Hub variables use provider-owned dotted namespaces such as `stream.*`,
 `chat.*`, `counter.<stable_id>.stream`, `counter.<stable_id>.viewer`, `obs.*`,
-and `custom.*`. `VariableRegistry` is Hub's authoritative modern metadata and
-resolution contract. The flat catalog is transitional and is not part of the
-intended Alpha architecture; private development routines may be reset while it
-is removed. These
+and `custom.*`. Routine-scoped outputs use `automation.*`. `VariableRegistry`
+and typed output definitions are Hub's sole metadata and resolution contract;
+the pre-alpha flat catalog, parser, validation, and compatibility aliases have
+been removed. Private development routines using them must be reset. These
 are Hub automation infrastructure, and Streamhouse AI does not read Hub's
 variable or counter files.
 

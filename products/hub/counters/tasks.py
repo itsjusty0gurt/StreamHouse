@@ -3,8 +3,8 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
-from products.hub.automation.custom_variables import CustomVariableStore
 from products.hub.automation.models import TaskDefinition, TaskExecutionResult, TriggerEvent
+from products.hub.automation.variable_outputs import automation_output_name, output_id
 from products.hub.automation.variable_registry import render_placeholders
 from products.hub.counters.models import SCOPES
 from products.hub.counters.service import CounterOperation, CounterService
@@ -25,15 +25,7 @@ OUTPUT_SUFFIXES = (
     "viewer_stream_total_status",
 )
 def output_prefix(config: dict[str, Any]) -> str:
-    return CustomVariableStore.validate_generated_name(str(config.get("output_prefix") or config.get("counter_id", "")))
-
-
-def generated_names(config: dict[str, Any]) -> tuple[str, ...]:
-    try:
-        prefix = output_prefix(config)
-    except ValueError:
-        return ()
-    return tuple(f"{prefix}_{suffix}" for suffix in OUTPUT_SUFFIXES)
+    return output_id(config.get("output_prefix") or config.get("counter_id", ""))
 
 
 class CounterTask:
@@ -82,21 +74,22 @@ class CounterTask:
             "viewer_rank": values.viewer_rank,
         }.get(selected_scope, values.viewer_total if values.viewer_display_name else values.channel_total)
         formatted = self.service.format_value(definition.counter_id, selected_value) if definition else ""
-        context.update({
-            f"{prefix}_amount_changed": str(operation.amount_changed), f"{prefix}_channel_total": str(values.channel_total),
-            f"{prefix}_stream_total": str(values.stream_total), f"{prefix}_viewer_total": str(values.viewer_total),
-            f"{prefix}_viewer_stream_total": str(values.viewer_stream_total), f"{prefix}_viewer_rank": str(values.viewer_rank),
-            f"{prefix}_viewer_display_name": values.viewer_display_name, f"{prefix}_leaderboard": leaderboard,
-            f"{prefix}_leaderboard_entries": str(len([part for part in leaderboard.split(" | ") if part])),
-            f"{prefix}_top_viewer_id": str(top.get("user_id", "")), f"{prefix}_top_viewer_display_name": str(top.get("display_name", top.get("login", ""))),
-            f"{prefix}_top_viewer_login": str(top.get("login", "")), f"{prefix}_top_viewer_value": str(top.get("value", "")), f"{prefix}_updated_scopes": ", ".join(operation.updated_scopes),
-            f"{prefix}_skipped_scopes": ", ".join(operation.skipped_scopes),
-            f"{prefix}_status": operation.status, f"{prefix}_formatted_value": formatted,
-            f"{prefix}_channel_total_status": "unavailable" if "channel_total" in operation.skipped_scopes else "available",
-            f"{prefix}_stream_total_status": "unavailable" if "stream_total" in operation.skipped_scopes else "available",
-            f"{prefix}_viewer_total_status": "unavailable" if "viewer_total" in operation.skipped_scopes else "available",
-            f"{prefix}_viewer_stream_total_status": "unavailable" if "viewer_stream_total" in operation.skipped_scopes else "available",
-        })
+        produced = {
+            "amount_changed": str(operation.amount_changed), "channel_total": str(values.channel_total),
+            "stream_total": str(values.stream_total), "viewer_total": str(values.viewer_total),
+            "viewer_stream_total": str(values.viewer_stream_total), "viewer_rank": str(values.viewer_rank),
+            "viewer_display_name": values.viewer_display_name, "leaderboard": leaderboard,
+            "leaderboard_entries": str(len([part for part in leaderboard.split(" | ") if part])),
+            "top_viewer_id": str(top.get("user_id", "")), "top_viewer_display_name": str(top.get("display_name", top.get("login", ""))),
+            "top_viewer_login": str(top.get("login", "")), "top_viewer_value": str(top.get("value", "")), "updated_scopes": ", ".join(operation.updated_scopes),
+            "skipped_scopes": ", ".join(operation.skipped_scopes), "status": operation.status,
+            "formatted_value": formatted,
+            "channel_total_status": "unavailable" if "channel_total" in operation.skipped_scopes else "available",
+            "stream_total_status": "unavailable" if "stream_total" in operation.skipped_scopes else "available",
+            "viewer_total_status": "unavailable" if "viewer_total" in operation.skipped_scopes else "available",
+            "viewer_stream_total_status": "unavailable" if "viewer_stream_total" in operation.skipped_scopes else "available",
+        }
+        context.update({automation_output_name(prefix, suffix): value for suffix, value in produced.items()})
 
     def _run(self, task: TaskDefinition, trigger: TriggerEvent) -> CounterOperation:
         raise NotImplementedError
@@ -111,7 +104,7 @@ class CounterTask:
         except (KeyError, OSError, TypeError, ValueError) as error:
             try:
                 prefix = output_prefix(task.config)
-                self._context(trigger)[f"{prefix}_status"] = "invalid_configuration"
+                self._context(trigger)[automation_output_name(prefix, "status")] = "invalid_configuration"
             except ValueError:
                 pass
             return TaskExecutionResult(task.task_id, task.task_type, False, str(error))
@@ -181,7 +174,7 @@ class GetCounterLeaderboardTask(CounterTask):
             stream_id = self.stream_id_provider()
             if current and not stream_id:
                 prefix = output_prefix(task.config)
-                self._context(trigger)[f"{prefix}_status"] = "stream_unavailable"
+                self._context(trigger)[automation_output_name(prefix, "status")] = "stream_unavailable"
                 return TaskExecutionResult(task.task_id, task.task_type, False, "A live Twitch stream is required for a current-stream leaderboard.")
             rows = self.service.leaderboard(counter_id, stream_id=stream_id, current_stream=current, limit=int(task.config.get("limit", 5)), include_zero=bool(task.config.get("include_zero", False)))
             key = "stream_total" if current else "total"

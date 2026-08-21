@@ -89,8 +89,8 @@ class TwitchCommandDialog(QDialog):
             source.setWordWrap(True)
             layout.addWidget(source)
         variables = QLabel(
-            "Optional response variables: {user}, {channel}, {uptime}, {followers}, {game}, "
-            "{title}, {command}, {args}, {target}, {uses}"
+            "Use registry-backed values such as {user.display_name}, "
+            "{stream.title}, and {command.target}."
         )
         variables.setWordWrap(True)
         layout.addWidget(variables)

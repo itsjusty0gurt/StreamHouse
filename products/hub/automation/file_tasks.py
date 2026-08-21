@@ -4,10 +4,10 @@ import random
 from pathlib import Path
 from typing import Mapping, MutableMapping
 
-from products.hub.automation.custom_variables import CustomVariableStore
 from products.hub.automation.models import TaskDefinition, TaskExecutionResult, TriggerEvent
 from products.hub.automation.tasks import TaskRegistry
-from products.hub.automation.variables import render_preview
+from products.hub.automation.variable_outputs import automation_output_name
+from products.hub.automation.variable_registry import render_placeholders
 
 
 FILE_TASK_LABELS = {
@@ -37,14 +37,14 @@ def _context(trigger: TriggerEvent) -> MutableMapping[str, str]:
 
 
 def _path(config: Mapping[str, object], context: Mapping[str, str]) -> Path:
-    rendered = render_preview(str(config.get("path", "")), context).strip()
+    rendered = render_placeholders(str(config.get("path", "")), context, strip_values=True).strip()
     if not rendered:
         raise ValueError("Choose a file or folder path.")
     return Path(rendered).expanduser().resolve()
 
 
 def _variable(config: Mapping[str, object]) -> str:
-    return CustomVariableStore.validate_name(str(config.get("variable", "")))
+    return automation_output_name(config.get("variable", ""))
 
 
 def _read_text(path: Path) -> str:
@@ -119,7 +119,7 @@ class ReadSpecificLineTask:
             context = _context(trigger)
             path = _path(task.config, context)
             variable = _variable(task.config)
-            rendered_line = render_preview(
+            rendered_line = render_placeholders(
                 str(task.config.get("line_number", "1")), context
             ).strip()
             line_number = int(rendered_line)
@@ -153,7 +153,7 @@ class WriteTextFileTask:
                 path.parent.mkdir(parents=True, exist_ok=True)
             if not path.parent.is_dir():
                 raise ValueError(f"Parent folder was not found: {path.parent}")
-            text = render_preview(str(task.config.get("text", "")), context)
+            text = render_placeholders(str(task.config.get("text", "")), context, strip_values=True)
             if bool(task.config.get("add_newline", True)):
                 text += "\n"
             with path.open("a" if mode == "append" else "w", encoding="utf-8") as output:

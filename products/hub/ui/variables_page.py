@@ -209,7 +209,7 @@ class VariablesPage(QWidget):
             return
         name, value, data_type, description = dialog.values()
         try:
-            bare = self.store.validate_custom_name(name)
+            bare = self.store.validate_custom_name(f"custom.{name}")
             if self.store.scope_of(bare):
                 raise ValueError(f'Custom variable "custom.{bare}" already exists.')
             self.store.set("global", bare, value, data_type=data_type, description=description)

@@ -38,7 +38,7 @@ class FileTaskTests(unittest.TestCase):
         )
 
         self.assertTrue(result.succeeded)
-        self.assertEqual(self.context["file_text"], "Hello Sally!")
+        self.assertEqual(self.context["automation.file_text"], "Hello Sally!")
 
     def test_random_line_ignores_blanks(self) -> None:
         path = self.root / "responses.txt"
@@ -57,35 +57,35 @@ class FileTaskTests(unittest.TestCase):
         result = ReadRandomLineTask(random.Random(1)).execute(task, self.trigger)
 
         self.assertTrue(result.succeeded)
-        self.assertEqual(self.context["response"], "Only line")
+        self.assertEqual(self.context["automation.response"], "Only line")
 
     def test_specific_line_renders_line_number_variable(self) -> None:
         path = self.root / "lines.txt"
         path.write_text("first\nsecond\nthird", encoding="utf-8")
-        self.context["wanted_line"] = "2"
+        self.context["automation.wanted_line"] = "2"
 
         result = self.execute(
             "core.file_specific_line",
             {
                 "path": str(path),
-                "line_number": "{wanted_line}",
+                "line_number": "{automation.wanted_line}",
                 "variable": "selected",
             },
         )
 
         self.assertTrue(result.succeeded)
-        self.assertEqual(self.context["selected"], "second")
+        self.assertEqual(self.context["automation.selected"], "second")
 
     def test_write_can_overwrite_and_append_rendered_text(self) -> None:
         path = self.root / "activity.txt"
-        self.context["user"] = "Viewer"
+        self.context["user.display_name"] = "Viewer"
 
         first = self.execute(
             "core.file_write",
             {
                 "path": str(path),
                 "mode": "overwrite",
-                "text": "Hello {user}",
+                "text": "Hello {user.display_name}",
                 "add_newline": True,
             },
         )
@@ -117,7 +117,7 @@ class FileTaskTests(unittest.TestCase):
         )
 
         self.assertTrue(result.succeeded)
-        self.assertEqual(self.context["exists"], "false")
+        self.assertEqual(self.context["automation.exists"], "false")
 
     def test_count_lines_can_ignore_blank_lines(self) -> None:
         path = self.root / "lines.txt"
@@ -133,7 +133,7 @@ class FileTaskTests(unittest.TestCase):
         )
 
         self.assertTrue(result.succeeded)
-        self.assertEqual(self.context["line_count"], "2")
+        self.assertEqual(self.context["automation.line_count"], "2")
 
     def test_read_failure_can_continue_the_routine(self) -> None:
         result = self.execute(

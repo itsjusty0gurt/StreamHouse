@@ -11,7 +11,8 @@ from products.hub.automation.models import (
     TriggerEvent,
 )
 from products.hub.automation.tasks import TaskRegistry
-from products.hub.automation.variables import render_preview
+from products.hub.automation.variable_outputs import automation_output_name
+from products.hub.automation.variable_registry import render_placeholders, validate_variable_name
 
 
 VARIABLE_TASK_LABELS = {
@@ -50,20 +51,14 @@ class CreateVariableTask:
         try:
             context = _context(trigger)
             name = self.store.validate_name(str(task.config.get("name", "")))
-            value = render_preview(str(task.config.get("value", "")), context)
-            stored_scope = self.store.scope_of(name)
-            if self.scope == "routine":
-                if stored_scope:
-                    raise ValueError(
-                        f'Variable "{name}" already exists as a {stored_scope} variable.'
-                    )
-            else:
-                if name in context and not stored_scope:
-                    raise ValueError(
-                        f'Variable "{name}" already exists as a routine variable.'
-                    )
+            value = render_placeholders(str(task.config.get("value", "")), context, strip_values=True)
+            if self.scope != "routine":
                 self.store.set(self.scope, name, value)
-            context[name] = value
+            context[
+                automation_output_name(name)
+                if self.scope == "routine"
+                else f"custom.{name}"
+            ] = value
             return _result(task, True, f'Set {self.scope} variable "{name}".')
         except (OSError, TypeError, ValueError) as error:
             return _result(task, False, str(error))
@@ -78,8 +73,11 @@ class DeleteVariableTask:
     def execute(self, task: TaskDefinition, trigger: TriggerEvent) -> TaskExecutionResult:
         try:
             context = _context(trigger)
-            name = self.store.validate_name(str(task.config.get("name", "")))
-            existed = name in context or bool(self.store.scope_of(name))
+            name = validate_variable_name(str(task.config.get("name", "")))
+            if not name.startswith("custom."):
+                raise ValueError("Only custom.* variables can be deleted.")
+            bare = self.store.validate_custom_name(name)
+            existed = name in context or bool(self.store.scope_of(bare))
             self.store.delete(name)
             context.pop(name, None)
             if not existed:
@@ -98,16 +96,19 @@ class AdjustVariableTask:
     def execute(self, task: TaskDefinition, trigger: TriggerEvent) -> TaskExecutionResult:
         try:
             context = _context(trigger)
-            name = self.store.validate_name(str(task.config.get("name", "")))
+            name = validate_variable_name(str(task.config.get("name", "")))
+            if not name.startswith(("custom.", "automation.")):
+                raise ValueError("Only custom.* or automation.* variables can be adjusted.")
             if name not in context:
                 raise ValueError(f'Variable "{name}" does not exist.')
             current = float(str(context[name]).strip())
             amount = float(task.config.get("amount", 1))
             value = current + amount
             rendered = str(int(value)) if value.is_integer() else f"{value:g}"
-            scope = self.store.scope_of(name)
+            bare = name.split(".", 1)[1]
+            scope = self.store.scope_of(bare) if name.startswith("custom.") else ""
             if scope:
-                self.store.set(scope, name, rendered)
+                self.store.set(scope, bare, rendered)
             context[name] = rendered
             return _result(task, True, f'Variable "{name}" is now {rendered}.')
         except (OSError, TypeError, ValueError) as error:
@@ -125,7 +126,9 @@ class ToggleVariableTask:
     def execute(self, task: TaskDefinition, trigger: TriggerEvent) -> TaskExecutionResult:
         try:
             context = _context(trigger)
-            name = self.store.validate_name(str(task.config.get("name", "")))
+            name = validate_variable_name(str(task.config.get("name", "")))
+            if not name.startswith(("custom.", "automation.")):
+                raise ValueError("Only custom.* or automation.* variables can be toggled.")
             if name not in context:
                 raise ValueError(f'Variable "{name}" does not exist.')
             current = str(context[name]).strip().casefold()
@@ -135,9 +138,10 @@ class ToggleVariableTask:
                 value = "true"
             else:
                 raise ValueError(f'Variable "{name}" is not a true/false value.')
-            scope = self.store.scope_of(name)
+            bare = name.split(".", 1)[1]
+            scope = self.store.scope_of(bare) if name.startswith("custom.") else ""
             if scope:
-                self.store.set(scope, name, value)
+                self.store.set(scope, bare, value)
             context[name] = value
             return _result(task, True, f'Variable "{name}" is now {value}.')
         except (OSError, TypeError, ValueError) as error:

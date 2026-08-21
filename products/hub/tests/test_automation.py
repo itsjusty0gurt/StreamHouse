@@ -388,7 +388,7 @@ class SendTwitchChatMessageTaskTests(unittest.TestCase):
             task_id="task-1",
             task_type=handler.task_type,
             name="Send response",
-            config={"message": "Hello {user} in {channel}", "as_bot": True},
+            config={"message": "Hello {user.display_name} in {stream.channel}", "as_bot": True},
         )
 
         result = handler.execute(
@@ -397,13 +397,13 @@ class SendTwitchChatMessageTaskTests(unittest.TestCase):
                 trigger_id="trigger-1",
                 service="twitch",
                 trigger_type="command",
-                context={"user": "Viewer", "channel": "sally"},
+                context={"user.display_name": "Viewer", "stream.channel": "streamhouse"},
             ),
         )
 
         self.assertTrue(result.succeeded)
         twitch_service.send_message.assert_called_once_with(
-            "Hello Viewer in sally",
+            "Hello Viewer in streamhouse",
             as_bot=True,
         )
 

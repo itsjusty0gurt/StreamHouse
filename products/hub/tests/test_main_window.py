@@ -39,7 +39,7 @@ from products.hub.automation.models import (
     TriggerEvent,
 )
 from products.hub.obs_service.triggers import OBS_TRIGGER_TYPES
-from products.hub.obs_service.models import ObsEvent
+from products.hub.obs_service.models import ObsConnectionState, ObsEvent
 from products.hub.twitch.commands import TwitchCommandTriggerStore
 from products.hub.twitch.channel_information import ChannelInformationStore
 from products.hub.twitch.automation_triggers import TwitchEventTriggerStore
@@ -298,7 +298,7 @@ class MainWindowTests(unittest.TestCase):
             routine.routine_id,
             task_type="twitch.send_chat_message",
             name="Say hello",
-            config={"message": "Hello {user}", "as_bot": True},
+            config={"message": "Hello {user.display_name}", "as_bot": True},
         )
 
         page = self.window.automation_page
@@ -521,11 +521,11 @@ class MainWindowTests(unittest.TestCase):
             routine.routine_id,
             "CurrentProgramSceneChanged",
         )
-        context = self.window.automation_page._sample_context_for_routine(routine)
+        context = self.window.automation_page._preview_context_for_routine(routine)
 
-        self.assertEqual(context["scene"], "Gameplay")
-        self.assertEqual(context["source"], "Camera")
-        self.assertNotIn("reward_id", context)
+        self.assertEqual(context["obs.scene"], "Gameplay")
+        self.assertEqual(context["obs.source"], "Camera")
+        self.assertEqual(context["event.reward_id"], "reward-123")
 
     def test_variable_help_includes_values_generated_by_routine_tasks(self) -> None:
         routine = self.twitch_command_trigger_store.routine_store.add(
@@ -541,9 +541,9 @@ class MainWindowTests(unittest.TestCase):
             routine.routine_id
         )
 
-        context = self.window.automation_page._sample_context_for_routine(routine)
+        context = self.window.automation_page._preview_context_for_routine(routine)
 
-        self.assertEqual(context["random_line"], "CustomValue")
+        self.assertEqual(context["automation.random_line"], "Example")
 
     def test_twitch_command_manager_lists_existing_and_respects_routine_limit(self) -> None:
         existing = self.twitch_command_trigger_store.add("hello", "Hello!")
@@ -864,7 +864,7 @@ class MainWindowTests(unittest.TestCase):
 
     def test_twitch_command_can_open_its_connected_automation_routine(self) -> None:
         command = self.twitch_command_trigger_store.add(
-            "socials", "Links for {user}"
+            "socials", "Links for {user.display_name}"
         )
         self.window._refresh_twitch_commands(command.trigger_id)
 
@@ -1004,7 +1004,7 @@ class MainWindowTests(unittest.TestCase):
     def test_custom_twitch_command_sends_as_bot_and_skips_ai_reasoning(self) -> None:
         command = self.twitch_command_trigger_store.add(
             "hello",
-            "Hello {user}! Welcome to {channel}.",
+            "Hello {user.display_name}! Welcome to {stream.channel}.",
             aliases=["hi"],
             global_cooldown_seconds=0,
             user_cooldown_seconds=0,
@@ -1034,7 +1034,7 @@ class MainWindowTests(unittest.TestCase):
     def test_twitch_command_task_resolves_live_obs_and_twitch_variables(self) -> None:
         self.twitch_command_trigger_store.add(
             "status",
-            "Mic is {muted}; playing {game}.",
+            "Scene is {obs.current_scene}; playing {stream.category}.",
             global_cooldown_seconds=0,
             user_cooldown_seconds=0,
         )
@@ -1045,9 +1045,9 @@ class MainWindowTests(unittest.TestCase):
                 "channel": {"game_name": "Science & Technology"},
             },
         )
-        self.window.obs_service.current_mute_state = Mock(
-            return_value=("Mic/Aux", False)
-        )
+        self.window.obs_service._current_program_scene = "Gameplay"
+        self.window.obs_service.state = ObsConnectionState.CONNECTED
+        self.window.obs_service._identified = True
         self.window.twitch_service.send_message = Mock(return_value=True)
 
         self.window.handle_twitch_message(
@@ -1061,9 +1061,8 @@ class MainWindowTests(unittest.TestCase):
             )
         )
 
-        self.window.obs_service.current_mute_state.assert_called_once_with("")
         self.window.twitch_service.send_message.assert_called_once_with(
-            "Mic is Not Muted; playing Science & Technology.",
+            "Scene is Gameplay; playing Science & Technology.",
             as_bot=True,
         )
 
@@ -1358,7 +1357,7 @@ class MainWindowTests(unittest.TestCase):
             routine.routine_id,
             task_type="twitch.send_chat_message",
             name="Thank them",
-            config={"message": "Thanks for following, {user}!", "as_bot": True},
+            config={"message": "Thanks for following, {user.display_name}!", "as_bot": True},
         )
         self.twitch_event_trigger_store.add(
             routine.routine_id, "channel.follow"
@@ -1398,7 +1397,7 @@ class MainWindowTests(unittest.TestCase):
             task_type="twitch.send_chat_message",
             name="Report status",
             config={
-                "message": "Mic is {mute} while playing {game}",
+                "message": "Mic muted: {obs.muted} while playing {stream.category}",
                 "as_bot": True,
             },
         )
@@ -1426,7 +1425,7 @@ class MainWindowTests(unittest.TestCase):
         )
 
         self.window.twitch_service.send_message.assert_called_once_with(
-            "Mic is Muted while playing Science & Technology",
+            "Mic muted: true while playing Science & Technology",
             as_bot=True,
         )
 
@@ -1816,13 +1815,9 @@ class MainWindowTests(unittest.TestCase):
             return_value=("Mic/Aux", True)
         )
 
-        resolved = self.window._resolve_task_variables(
-            "Mic is {muted}",
-            {"muted": "--", "input": "--"},
-        )
-
-        self.window.obs_service.current_mute_state.assert_called_once_with("Mic/Aux")
-        self.assertEqual(resolved["muted"], "Muted")
+        resolved = self.window._resolve_task_variables("Mic is {obs.muted}", {})
+        self.window.obs_service.current_mute_state.assert_not_called()
+        self.assertEqual(resolved, {})
 
     def test_companion_refresh_updates_stream_stats_and_chatters(self) -> None:
         token = Mock(

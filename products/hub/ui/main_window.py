@@ -508,6 +508,7 @@ class MainWindow(QMainWindow):
                 ),
             )
         )
+        self.twitch_command_trigger_store.variable_registry = self.variable_registry
         self.task_registry = TaskRegistry()
         register_twitch_tasks(
             self.task_registry,
@@ -515,6 +516,7 @@ class MainWindow(QMainWindow):
             self._resolve_task_variables,
             lambda: self.twitch_command_trigger_store,
             lambda: self.channel_information_store,
+            self.variable_registry,
         )
         self.task_registry.register(LaunchApplicationTask())
         self.task_registry.register(CloseApplicationTask())
@@ -1332,8 +1334,7 @@ class MainWindow(QMainWindow):
         self.obs_default_mute_input_edit = QLineEdit()
         self.obs_default_mute_input_edit.setPlaceholderText("Optional, for example: Mic/Aux")
         self.obs_default_mute_input_edit.setToolTip(
-            "Used by automation variables {mute} and {muted} when the trigger "
-            "does not already provide an OBS input."
+            "Default OBS input for mute controls when an action does not name one."
         )
         self.obs_status_label = QLabel("Disconnected")
         self.obs_connect_button = QPushButton("Connect")
@@ -2955,6 +2956,7 @@ class MainWindow(QMainWindow):
         channel = snapshot.get("channel")
         channel = channel if isinstance(channel, dict) else {}
         return {
+            "channel": self.twitch_service.channel or "",
             "title": stream.get("title") or channel.get("title") or "",
             "category": stream.get("game_name") or channel.get("game_name") or "",
             "viewer_count": stream.get("viewer_count"),
@@ -2978,15 +2980,12 @@ class MainWindow(QMainWindow):
         stream = stream if isinstance(stream, dict) else {}
         channel = snapshot.get("channel")
         channel = channel if isinstance(channel, dict) else {}
-        followers = snapshot.get("followers")
         return {
-            "channel": self.twitch_service.channel or "--",
-            "uptime": self.stream_time_label.text(),
-            "followers": "--" if followers is None else f"{int(followers):,}",
-            "game": str(
+            "hub.uptime": self.stream_time_label.text(),
+            "stream.category": str(
                 stream.get("game_name") or channel.get("game_name") or "--"
             ),
-            "title": str(stream.get("title") or channel.get("title") or "--"),
+            "stream.title": str(stream.get("title") or channel.get("title") or "--"),
         }
 
     def _resolve_task_variables(
@@ -3003,35 +3002,6 @@ class MainWindow(QMainWindow):
             if snapshot is not None:
                 if snapshot.available:
                     resolved[key] = snapshot.display_value
-                else:
-                    resolved[f"{key}_status"] = "unavailable"
-        live_twitch = self._twitch_command_context()
-        for key in requested.intersection(live_twitch):
-            if context.get(key, "--") in {"", "--"}:
-                value = live_twitch[key]
-                if value not in {"", "--"}:
-                    resolved[key] = value
-        if requested.intersection({"mute", "muted"}) and all(
-            context.get(key, "--") in {"", "--"}
-            for key in requested.intersection({"mute", "muted"})
-        ):
-            input_name = str(context.get("input", "")).strip()
-            if input_name in {"", "--"}:
-                input_name = self.obs_default_mute_input_edit.text().strip()
-            state = self.obs_service.current_mute_state(
-                "" if input_name == "--" else input_name
-            )
-            if state is not None:
-                input_name, is_muted = state
-                label = "Muted" if is_muted else "Not Muted"
-                resolved.update(
-                    {
-                        "input": input_name,
-                        "source": input_name,
-                        "mute": label,
-                        "muted": label,
-                    }
-                )
         return resolved
 
     def _build_reply_review_tab(self) -> None:

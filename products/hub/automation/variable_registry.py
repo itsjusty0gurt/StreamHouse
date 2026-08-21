@@ -12,9 +12,8 @@ from shared.streamhouse_runtime.logger import Logger
 VARIABLE_NAME_PATTERN = re.compile(
     r"^[a-z][a-z0-9_]{0,63}(?:\.[a-z][a-z0-9_]{0,63})+$"
 )
-LEGACY_VARIABLE_NAME_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,127}$")
 PLACEHOLDER_PATTERN = re.compile(
-    r"\{([a-z][a-z0-9_]{0,127}|[a-z][a-z0-9_]{0,63}(?:\.[a-z][a-z0-9_]{0,63})+)\}"
+    r"\{([a-z][a-z0-9_]{0,63}(?:\.[a-z][a-z0-9_]{0,63})+)\}"
 )
 RESERVED_NAMESPACES = frozenset(
     {
@@ -26,6 +25,9 @@ RESERVED_NAMESPACES = frozenset(
         "hub",
         "custom",
         "automation",
+        "command",
+        "event",
+        "target",
         "ads",
         "soundboard",
     }
@@ -60,13 +62,10 @@ class VariableDefinition:
     required_context: tuple[str, ...] = ()
     preview_value: Any | None = None
     alias_of: str = ""
-    legacy: bool = False
 
     def __post_init__(self) -> None:
         name = self.name.strip().casefold()
-        if not VARIABLE_NAME_PATTERN.fullmatch(name) and not (
-            self.legacy and LEGACY_VARIABLE_NAME_PATTERN.fullmatch(name)
-        ):
+        if not VARIABLE_NAME_PATTERN.fullmatch(name):
             raise ValueError(f'Invalid canonical variable name: "{self.name}".')
         object.__setattr__(self, "name", name)
         object.__setattr__(self, "data_type", VariableDataType(self.data_type))
@@ -187,9 +186,8 @@ class VariableRegistry:
         *,
         display_name: str = "",
         description: str = "",
-        legacy: bool = False,
     ) -> VariableDefinition:
-        clean_name = validate_variable_name(name, allow_legacy=legacy)
+        clean_name = validate_variable_name(name)
         clean_target = validate_variable_name(target)
         catalog = {item.name: item for item in self.all_definitions()}
         if clean_name in catalog:
@@ -200,7 +198,7 @@ class VariableRegistry:
         alias = VariableDefinition(
             name=clean_name,
             display_name=display_name or canonical.display_name,
-            description=description or f"Compatibility alias for {canonical.name}.",
+            description=description or f"Alias for {canonical.name}.",
             data_type=canonical.data_type,
             source=canonical.source,
             category=canonical.category,
@@ -210,7 +208,6 @@ class VariableRegistry:
             required_context=canonical.required_context,
             preview_value=canonical.preview_value,
             alias_of=canonical.name,
-            legacy=legacy,
         )
         self._aliases[clean_name] = alias
         # Rebuild now so collisions and accidental alias chains fail immediately.
@@ -354,13 +351,10 @@ class VariableRegistry:
         return "" if value is None else str(value)
 
 
-def validate_variable_name(name: str, *, allow_legacy: bool = False) -> str:
+def validate_variable_name(name: str) -> str:
     clean = str(name).strip().casefold().removeprefix("{").removesuffix("}")
-    if not VARIABLE_NAME_PATTERN.fullmatch(clean) and not (
-        allow_legacy and LEGACY_VARIABLE_NAME_PATTERN.fullmatch(clean)
-    ):
-        kind = "legacy variable" if allow_legacy else "canonical variable"
-        raise ValueError(f'Invalid {kind} name: "{name}".')
+    if not VARIABLE_NAME_PATTERN.fullmatch(clean):
+        raise ValueError(f'Invalid canonical variable name: "{name}".')
     return clean
 
 

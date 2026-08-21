@@ -41,7 +41,6 @@ from PySide6.QtWidgets import (
 )
 
 from products.hub.automation.models import AutomationExecutionResult, TaskDefinition, TriggerEvent
-from products.hub.automation.custom_variables import CustomVariableStore
 from products.hub.automation.core_triggers import (
     CORE_TRIGGER_TYPES,
     CoreAutomationTrigger,
@@ -71,15 +70,11 @@ from products.hub.automation.queues import (
 from products.hub.counters.service import CounterService
 from products.hub.counters.tasks import COUNTER_TASK_LABELS
 from products.hub.automation.transfer import export_routine, import_routine, validate_import
-from products.hub.automation.variables import (
-    CORE_VARIABLES,
-    OBS_VARIABLES,
-    TWITCH_VARIABLES,
-    VARIABLE_INFO,
-    VARIABLE_SOURCE_INFO,
-    TEMPLATE_PATTERN,
-    render_preview,
-    sample_context,
+from products.hub.automation.variable_outputs import generated_output_definitions, output_id
+from products.hub.automation.variable_registry import (
+    PLACEHOLDER_PATTERN,
+    render_placeholders,
+    validate_variable_name,
 )
 from products.hub.obs_service.tasks import OBS_TASK_LABELS
 from products.hub.obs_service.service import ObsWebSocketService
@@ -166,7 +161,7 @@ class NewRoutineDialog(QDialog):
         self.alternate_commands_edit.setPlaceholderText("hello, hi")
         self.response_edit = QTextEdit()
         self.response_edit.setMaximumHeight(90)
-        self.response_edit.setPlaceholderText("Welcome, {user}!")
+        self.response_edit.setPlaceholderText("Welcome, {user.display_name}!")
         self.permission_combo = QComboBox()
         for permission in TwitchCommandPermission:
             self.permission_combo.addItem(
@@ -618,19 +613,19 @@ class TaskEditorDialog(QDialog):
     }
     SCHEMAS: dict[str, tuple[dict[str, object], ...]] = {
         "twitch.send_chat_message": (
-            {"key": "message", "label": "Message", "kind": "multiline", "default": "", "required": True, "placeholder": "Hello {user}!"},
+            {"key": "message", "label": "Message", "kind": "multiline", "default": "", "required": True, "placeholder": "Hello {user.display_name}!"},
             {"key": "as_bot", "label": "", "kind": "bool", "default": True, "text": "Send through Sally's bot account"},
         ),
         "twitch.send_pinned_message": (
-            {"key": "message", "label": "Message", "kind": "multiline", "default": "", "required": True, "placeholder": "Important message for {user}"},
+            {"key": "message", "label": "Message", "kind": "multiline", "default": "", "required": True, "placeholder": "Important message for {user.display_name}"},
         ),
         "twitch.resolve_user": (
-            {"key": "reference", "label": "User ID or login", "kind": "text", "default": "{target}", "required": True, "placeholder": "{target}, {user_id}, @username, or a Twitch ID"},
+            {"key": "reference", "label": "User ID or login", "kind": "text", "default": "{command.target}", "required": True, "placeholder": "{command.target}, {user.id}, @username, or a Twitch ID"},
         ),
         "twitch.get_stream_information": (),
         "twitch.get_channel_information": (),
         "twitch.get_follow_relationship": (
-            {"key": "user_id", "label": "Target user ID", "kind": "text", "default": "{target_user_id}", "required": True},
+            {"key": "user_id", "label": "Target user ID", "kind": "text", "default": "{automation.target_user_id}", "required": True},
         ),
         "twitch.build_command_list": (
             {"key": "maximum_characters", "label": "Maximum characters", "kind": "number", "default": 440, "minimum": 50, "maximum": 480},
@@ -648,27 +643,27 @@ class TaskEditorDialog(QDialog):
         ),
         "twitch.snooze_ad": (),
         "twitch.update_stream_title": (
-            {"key": "title", "label": "Stream title", "kind": "text", "default": "", "required": True, "placeholder": "Playing {game} with {user}"},
+            {"key": "title", "label": "Stream title", "kind": "text", "default": "", "required": True, "placeholder": "Playing {stream.category} with {user.display_name}"},
         ),
         "twitch.update_stream_category": (
             {"key": "category", "label": "Category name", "kind": "text", "default": "", "required": True, "placeholder": "Science & Technology"},
         ),
         "twitch.moderate_user": (
             {"key": "action", "label": "Action", "kind": "choice", "default": "timeout", "choices": (("Timeout", "timeout"), ("Ban", "ban"), ("Unban", "unban"), ("Delete message", "delete_message"))},
-            {"key": "user", "label": "User ID or login", "kind": "text", "default": "{user_id}", "required": True, "placeholder": "{user_id}, {target}, or a login"},
+            {"key": "user", "label": "User ID or login", "kind": "text", "default": "{user.id}", "required": True, "placeholder": "{user.id}, {command.target}, or a login"},
             {"key": "duration_seconds", "label": "Timeout duration", "kind": "number", "default": 600, "minimum": 1, "maximum": 1209600, "suffix": " seconds"},
             {"key": "reason", "label": "Reason", "kind": "text", "default": "", "placeholder": "Optional; up to 500 characters"},
-            {"key": "message_id", "label": "Message ID", "kind": "text", "default": "{message_id}", "placeholder": "Used only by Delete message"},
+            {"key": "message_id", "label": "Message ID", "kind": "text", "default": "{chat.message_id}", "placeholder": "Used only by Delete message"},
         ),
         "twitch.update_redemption": (
-            {"key": "reward_id", "label": "Reward ID", "kind": "text", "default": "{reward_id}", "required": True},
-            {"key": "redemption_id", "label": "Redemption ID", "kind": "text", "default": "{redemption_id}", "required": True},
+            {"key": "reward_id", "label": "Reward ID", "kind": "text", "default": "{event.reward_id}", "required": True},
+            {"key": "redemption_id", "label": "Redemption ID", "kind": "text", "default": "{event.redemption_id}", "required": True},
             {"key": "action", "label": "Result", "kind": "choice", "default": "fulfill", "choices": (("Fulfill", "fulfill"), ("Cancel and refund", "refund"))},
         ),
         "counter.update": (
             {"key": "counter_id", "label": "Counter", "kind": "counter", "default": "", "required": True},
             {"key": "operation", "label": "Operation", "kind": "choice", "default": "increase", "choices": (("Increase", "increase"), ("Decrease", "decrease"))},
-            {"key": "amount", "label": "Amount", "kind": "text", "default": "1", "required": True, "placeholder": "1, -1, or {amount}"},
+            {"key": "amount", "label": "Amount", "kind": "text", "default": "1", "required": True, "placeholder": "1, -1, or {event.amount}"},
             {"key": "viewer_source", "label": "Viewer", "kind": "choice", "default": "trigger", "choices": (("Viewer who triggered this routine", "trigger"), ("No viewer / shared only", "none"))},
             {"key": "channel_total", "label": "Update values", "kind": "bool", "default": True, "text": "Channel all-time total"},
             {"key": "stream_total", "label": "", "kind": "bool", "default": True, "text": "Current stream total"},
@@ -734,7 +729,7 @@ class TaskEditorDialog(QDialog):
         ),
         "core.show_notification": (
             {"key": "title", "label": "Title", "kind": "text", "default": "Sally", "required": True, "placeholder": "Stream reminder"},
-            {"key": "message", "label": "Message", "kind": "multiline", "default": "", "required": True, "placeholder": "{user} triggered a reminder"},
+            {"key": "message", "label": "Message", "kind": "multiline", "default": "", "required": True, "placeholder": "{user.display_name} triggered a reminder"},
             {"key": "icon", "label": "Icon", "kind": "choice", "default": "information", "choices": (("Information", "information"), ("Warning", "warning"), ("Critical", "critical"), ("No icon", "none"))},
             {"key": "duration_seconds", "label": "Display duration", "kind": "number", "default": 5, "minimum": 1, "maximum": 60, "suffix": " seconds"},
         ),
@@ -746,7 +741,7 @@ class TaskEditorDialog(QDialog):
         ),
         "core.create_global_variable": (
             {"key": "name", "label": "Variable name", "kind": "text", "default": "", "required": True, "placeholder": "death_count"},
-            {"key": "value", "label": "Value", "kind": "text", "default": "", "placeholder": "0 or a template such as {user}"},
+            {"key": "value", "label": "Value", "kind": "text", "default": "", "placeholder": "0 or a template such as {user.display_name}"},
         ),
         "core.create_session_variable": (
             {"key": "name", "label": "Variable name", "kind": "text", "default": "", "required": True, "placeholder": "current_song"},
@@ -771,14 +766,14 @@ class TaskEditorDialog(QDialog):
             {"key": "stop_on_failure", "label": "", "kind": "bool", "default": True, "text": "Stop this routine if the nested routine fails"},
         ),
         "core.format_duration": (
-            {"key": "start", "label": "Start date/time", "kind": "text", "default": "", "placeholder": "{stream_started_at} or {followed_at}"},
+            {"key": "start", "label": "Start date/time", "kind": "text", "default": "", "placeholder": "{automation.stream_started_at} or {automation.followed_at}"},
             {"key": "end", "label": "End date/time", "kind": "text", "default": "", "placeholder": "Optional; blank uses the current time"},
             {"key": "seconds", "label": "Duration in seconds", "kind": "text", "default": "", "placeholder": "Optional alternative to start/end dates"},
             {"key": "output_variable", "label": "Output variable", "kind": "text", "default": "formatted_duration", "required": True},
         ),
         "core.select_text": (
-            {"key": "selector", "label": "Value to match", "kind": "text", "default": "", "required": True, "placeholder": "{stream_status}"},
-            {"key": "cases", "label": "Text for each value", "kind": "json", "default": {}, "placeholder": "{\"live\": \"Live for {uptime}.\", \"offline\": \"Offline.\"}"},
+            {"key": "selector", "label": "Value to match", "kind": "text", "default": "", "required": True, "placeholder": "{automation.stream_status}"},
+            {"key": "cases", "label": "Text for each value", "kind": "json", "default": {}, "placeholder": "{\"live\": \"Live for {automation.uptime}.\", \"offline\": \"Offline.\"}"},
             {"key": "default", "label": "Default text", "kind": "multiline", "default": "", "required": True},
             {"key": "output_variable", "label": "Output variable", "kind": "text", "default": "selected_text", "required": True},
         ),
@@ -829,7 +824,7 @@ class TaskEditorDialog(QDialog):
         ),
         "core.file_specific_line": (
             {"key": "path", "label": "Text file", "kind": "file", "default": "", "required": True},
-            {"key": "line_number", "label": "Line number", "kind": "text", "default": "1", "required": True, "placeholder": "1 or {line_number}"},
+            {"key": "line_number", "label": "Line number", "kind": "text", "default": "1", "required": True, "placeholder": "1 or {automation.line_number}"},
             {"key": "variable", "label": "Output variable", "kind": "text", "default": "file_line", "required": True},
             {"key": "ignore_blank_lines", "label": "", "kind": "bool", "default": False, "text": "Ignore blank lines when counting"},
             {"key": "stop_on_failure", "label": "", "kind": "bool", "default": True, "text": "Stop the routine if the line cannot be read"},
@@ -837,7 +832,7 @@ class TaskEditorDialog(QDialog):
         "core.file_write": (
             {"key": "path", "label": "Text file", "kind": "file", "default": "", "required": True},
             {"key": "mode", "label": "Write mode", "kind": "choice", "default": "append", "choices": (("Append to the file", "append"), ("Overwrite the file", "overwrite"))},
-            {"key": "text", "label": "Text", "kind": "multiline", "default": "", "placeholder": "{user} redeemed {reward}"},
+            {"key": "text", "label": "Text", "kind": "multiline", "default": "", "placeholder": "{user.display_name} redeemed {event.reward}"},
             {"key": "add_newline", "label": "", "kind": "bool", "default": True, "text": "Add a new line after the text"},
             {"key": "create_folders", "label": "", "kind": "bool", "default": False, "text": "Create missing parent folders"},
             {"key": "stop_on_failure", "label": "", "kind": "bool", "default": True, "text": "Stop the routine if the file cannot be written"},
@@ -854,7 +849,7 @@ class TaskEditorDialog(QDialog):
             {"key": "stop_on_failure", "label": "", "kind": "bool", "default": True, "text": "Stop the routine if the file cannot be read"},
         ),
         "core.logic_if_else": (
-            {"key": "left", "label": "Input", "kind": "text", "default": "", "required": True, "placeholder": "{death_count}"},
+            {"key": "left", "label": "Input", "kind": "text", "default": "", "required": True, "placeholder": "{custom.death_count}"},
             {"key": "operator", "label": "Comparison", "kind": "choice", "default": "equals", "choices": COMPARISON_CHOICES},
             {"key": "right", "label": "Value", "kind": "text", "default": ""},
             {"key": "true_routine_id", "label": "If true, run", "kind": "routine", "default": ""},
@@ -862,13 +857,13 @@ class TaskEditorDialog(QDialog):
             {"key": "break_if_false", "label": "", "kind": "bool", "default": False, "text": "Break this routine when the condition is false"},
         ),
         "core.logic_switch": (
-            {"key": "input", "label": "Input", "kind": "text", "default": "", "required": True, "placeholder": "{reward}"},
+            {"key": "input", "label": "Input", "kind": "text", "default": "", "required": True, "placeholder": "{event.reward}"},
             {"key": "cases", "label": "Cases", "kind": "switch_cases", "default": {}},
             {"key": "default_routine_id", "label": "Default routine", "kind": "routine", "default": ""},
             {"key": "ignore_case", "label": "", "kind": "bool", "default": True, "text": "Ignore uppercase and lowercase differences"},
         ),
         "core.logic_while": (
-            {"key": "left", "label": "Input", "kind": "text", "default": "", "required": True, "placeholder": "{counter}"},
+            {"key": "left", "label": "Input", "kind": "text", "default": "", "required": True, "placeholder": "{automation.counter}"},
             {"key": "operator", "label": "Comparison", "kind": "choice", "default": "less_than", "choices": COMPARISON_CHOICES},
             {"key": "right", "label": "Value", "kind": "text", "default": "10"},
             {"key": "routine_id", "label": "Repeat routine", "kind": "routine", "default": "", "required": True},
@@ -878,7 +873,7 @@ class TaskEditorDialog(QDialog):
         "core.run_python_script": (
             {"key": "script", "label": "Python script", "kind": "python_file", "default": "", "required": True, "placeholder": "C:/path/to/script.py"},
             {"key": "python_executable", "label": "Python executable", "kind": "file", "default": "", "placeholder": "Optional; automatically uses Streamhouse Hub's Python when available"},
-            {"key": "arguments", "label": "Arguments", "kind": "text", "default": "", "placeholder": "Optional, for example: --user \"{user}\""},
+            {"key": "arguments", "label": "Arguments", "kind": "text", "default": "", "placeholder": "Optional, for example: --user \"{user.display_name}\""},
             {"key": "working_directory", "label": "Working folder", "kind": "folder", "default": ""},
             {"key": "timeout_seconds", "label": "Timeout", "kind": "number", "default": 30.0, "minimum": 0.1, "maximum": 86400.0, "suffix": " seconds"},
             {"key": "wait_for_completion", "label": "", "kind": "bool", "default": True, "text": "Wait for the script to finish"},
@@ -916,7 +911,7 @@ class TaskEditorDialog(QDialog):
         ),
         "obs.set_text_source": (
             {"key": "input", "label": "Text source", "kind": "obs_input", "default": "", "required": True},
-            {"key": "text", "label": "Text", "kind": "multiline", "default": "", "placeholder": "Now playing: {game}"},
+            {"key": "text", "label": "Text", "kind": "multiline", "default": "", "placeholder": "Now playing: {stream.category}"},
         ),
         "obs.set_image_source": (
             {"key": "input", "label": "Image source", "kind": "obs_input", "default": "", "required": True},
@@ -1053,9 +1048,9 @@ class TaskEditorDialog(QDialog):
 
         if self.TEMPLATED_FIELDS.get(self.task_type):
             variables = QLabel(
-                "Task templates support variables such as {user}, {channel}, "
-                "{event_type}, {scene}, {source}, {input}, {message}, "
-                "{viewers}, {reward}, {command}, and {args}."
+                "Task templates use canonical variables such as {user.display_name}, "
+                "{stream.channel}, {event.type}, {obs.scene}, {chat.message}, "
+                "{event.viewers}, {event.reward}, and {command.args}."
             )
             variables.setWordWrap(True)
             layout.addWidget(variables)
@@ -1098,19 +1093,12 @@ class TaskEditorDialog(QDialog):
         )
         self.variable_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.variable_table.setMaximumHeight(190)
-        ordered_keys = list(self.variables)
-        if self.variable_registry is None:
-            ordered_keys.extend(
-                key for key in VARIABLE_INFO if key not in self.variables
-            )
         registry_definitions = (
             {item.name: item for item in self.variable_registry.definitions()}
             if self.variable_registry is not None
             else {}
         )
-        ordered_keys.extend(
-            key for key in registry_definitions if key not in ordered_keys
-        )
+        ordered_keys = list(registry_definitions)
         output_definitions = {}
         if self.routine_store is not None:
             for routine in self.routine_store.routines:
@@ -1118,41 +1106,31 @@ class TaskEditorDialog(QDialog):
                     source = self.LABELS.get(
                         output_task.task_type, output_task.name
                     )
-                    for definition in CustomVariableStore.generated_definitions(
+                    for definition in generated_output_definitions(
                         output_task.task_type, output_task.config, source=source
                     ):
-                        if definition.name in self.variables:
-                            output_definitions.setdefault(definition.name, definition)
+                        output_definitions.setdefault(definition.name, definition)
         self._output_definitions = tuple(output_definitions.values())
         ordered_keys.extend(
             key for key in output_definitions if key not in ordered_keys
         )
-        self.variable_preview_context = {
-            **sample_context(ordered_keys),
-            **self.variables,
-        }
+        self.variable_preview_context = dict(self.variables)
         if self.variable_registry is not None:
             self.variable_preview_context.update(
                 self.variable_registry.context_values(self.variables)
             )
         for row, key in enumerate(ordered_keys):
+            metadata = registry_definitions.get(key) or output_definitions.get(key)
+            if metadata is None:
+                continue
             value = self.variable_preview_context.get(key, "")
             self.variable_table.insertRow(row)
-            description = VARIABLE_INFO.get(key, (value, "Trigger value"))[1]
-            source = VARIABLE_SOURCE_INFO.get(
-                key,
-                "Trigger context" if key in VARIABLE_INFO else "Custom variable",
-            )
-            metadata = registry_definitions.get(key) or output_definitions.get(key)
-            data_type = "Text"
-            availability = "Compatibility"
-            if metadata is not None:
-                description = metadata.description
-                source = metadata.source
-                data_type = metadata.data_type.value.title()
-                availability = metadata.availability.value.title()
-                if not value and metadata.preview_value is not None:
-                    value = str(metadata.preview_value)
+            description = metadata.description
+            source = metadata.source
+            data_type = metadata.data_type.value.title()
+            availability = metadata.availability.value.title()
+            if not value and metadata.preview_value is not None:
+                value = str(metadata.preview_value)
             self.variable_table.setItem(row, 0, QTableWidgetItem(f"{{{key}}}"))
             self.variable_table.setItem(row, 1, QTableWidgetItem(source))
             self.variable_table.setItem(row, 2, QTableWidgetItem(data_type))
@@ -1251,9 +1229,10 @@ class TaskEditorDialog(QDialog):
         self.variable_preview_label.setText(
             "Preview: "
             + (
-                render_preview(
+                render_placeholders(
                     template,
                     getattr(self, "variable_preview_context", self.variables),
+                    strip_values=True,
                 )
                 or "(empty)"
             )
@@ -1493,6 +1472,15 @@ class TaskEditorDialog(QDialog):
                         if value.startswith("{") and value.endswith("}")
                         else None
                     )
+                    if definition is None and value.startswith("{") and value.endswith("}"):
+                        name = value[1:-1].strip().casefold()
+                        definition = next(
+                            (
+                                item for item in self._output_definitions
+                                if item.name == name
+                            ),
+                            None,
+                        )
                     data_type = definition.data_type if definition is not None else None
                 choices = comparison_choices_for_type(data_type)
                 operator.blockSignals(True)
@@ -1500,7 +1488,7 @@ class TaskEditorDialog(QDialog):
                 for label, value in choices:
                     operator.addItem(label, value)
                 if operator.findData(selected) < 0 and selected:
-                    legacy_label = next(
+                    saved_label = next(
                         (
                             label
                             for label, value in COMPARISON_CHOICES
@@ -1508,7 +1496,7 @@ class TaskEditorDialog(QDialog):
                         ),
                         str(selected),
                     )
-                    operator.addItem(f"{legacy_label} (saved)", selected)
+                    operator.addItem(f"{saved_label} (saved)", selected)
                 operator.setCurrentIndex(max(0, operator.findData(selected)))
                 operator.blockSignals(False)
                 update_condition()
@@ -1707,7 +1695,7 @@ class TaskEditorDialog(QDialog):
             ):
                 raise ValueError("Select at least one counter scope.")
             prefix = str(config.get("output_prefix", "")).strip() or str(config.get("counter_id", ""))
-            config["output_prefix"] = CustomVariableStore.validate_generated_name(prefix)
+            config["output_prefix"] = output_id(prefix)
             definition = self.counter_service.get_counter(str(config.get("counter_id", ""))) if self.counter_service is not None else None
             if definition is None:
                 raise ValueError("Missing Counter: choose an existing counter.")
@@ -1727,9 +1715,6 @@ class TaskEditorDialog(QDialog):
             "core.create_global_variable",
             "core.create_session_variable",
             "core.create_routine_variable",
-            "core.delete_variable",
-            "core.adjust_variable",
-            "core.toggle_variable",
             "core.logic_get_input",
             "core.logic_random_number",
             "core.file_read",
@@ -1739,9 +1724,11 @@ class TaskEditorDialog(QDialog):
             "core.file_count_lines",
         }:
             variable_key = "variable" if task_type in FILE_TASK_TYPES else "name"
-            config[variable_key] = CustomVariableStore.validate_name(
+            config[variable_key] = output_id(
                 str(config.get(variable_key, ""))
             )
+        if task_type in {"core.delete_variable", "core.adjust_variable", "core.toggle_variable"}:
+            config["name"] = validate_variable_name(str(config.get("name", "")))
         name = self.name_edit.text().strip()
         if not name:
             raise ValueError("Task name is required.")
@@ -3703,7 +3690,7 @@ class AutomationPage(QWidget):
             task_type,
             self,
             obs_service=self.obs_service,
-            variables=self._sample_context_for_routine(routine),
+            variables=self._preview_context_for_routine(routine),
             routine_store=self.routine_store,
             queue_store=self.queue_store,
             counter_service=self.counter_service,
@@ -3751,7 +3738,7 @@ class AutomationPage(QWidget):
             self,
             task,
             self.obs_service,
-            self._sample_context_for_routine(routine),
+            self._preview_context_for_routine(routine),
             self.routine_store,
             self.queue_store,
             self.counter_service,
@@ -4072,46 +4059,19 @@ class AutomationPage(QWidget):
                     "Available" if task_type in available else "Unavailable",
                 )
 
-    def _sample_context_for_routine(self, routine) -> dict[str, str]:
-        keys: set[str] = set()
-        if (
-            self.trigger_store.for_routine(routine.routine_id) is not None
-            or self.event_trigger_store.for_routine(routine.routine_id)
-        ):
-            keys.update(TWITCH_VARIABLES)
-        if self.obs_trigger_store.for_routine(routine.routine_id):
-            keys.update(OBS_VARIABLES)
-        if self.core_trigger_store.for_routine(routine.routine_id):
-            keys.update(CORE_VARIABLES)
+    def _preview_context_for_routine(self, routine) -> dict[str, str]:
+        context = {
+            definition.name: str(definition.preview_value)
+            for definition in self.variable_registry.definitions()
+            if definition.preview_value is not None
+        }
+        context.update(self.variable_registry.context_values(context))
         for task in routine.tasks:
-            for value in task.config.values():
-                if isinstance(value, str):
-                    keys.update(TEMPLATE_PATTERN.findall(value))
-        context = sample_context(keys)
-        context.update(self.automation_service.variable_store.values())
-        for task in routine.tasks:
-            for name in CustomVariableStore.generated_names(
-                task.task_type,
-                task.config,
-            ):
-                context.setdefault(name, "CustomValue")
-        for definition in self.routine_store.routines:
-            for task in definition.tasks:
-                if task.task_type not in {
-                    "core.create_global_variable",
-                    "core.create_session_variable",
-                    "core.create_routine_variable",
-                }:
-                    continue
-                name = str(task.config.get("name", "")).strip().casefold()
-                if name and name not in VARIABLE_INFO:
-                    context.setdefault(
-                        name,
-                        str(task.config.get("value", "CustomValue")),
-                    )
-        for key in keys:
-            if key not in VARIABLE_INFO:
-                context.setdefault(key, "CustomValue")
+            for definition in generated_output_definitions(task.task_type, task.config):
+                context.setdefault(
+                    definition.name,
+                    str(definition.preview_value or "Example"),
+                )
         return context
 
     def _test_selected_task(self) -> None:
@@ -4121,7 +4081,7 @@ class AutomationPage(QWidget):
             return
         dialog = TaskTestDialog(
             task,
-            self._sample_context_for_routine(routine),
+            self._preview_context_for_routine(routine),
             self._task_external_effect(task),
             self,
         )

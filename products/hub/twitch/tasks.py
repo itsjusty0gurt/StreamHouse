@@ -1,15 +1,16 @@
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from typing import Mapping
 from urllib.error import HTTPError, URLError
 
-from products.hub.automation.custom_variables import CustomVariableStore
 from products.hub.automation.models import TaskDefinition, TaskExecutionResult, TriggerEvent
-from products.hub.automation.variables import VARIABLE_INFO
+from products.hub.automation.variable_outputs import automation_output_name, output_id
 from products.hub.automation.variable_registry import (
     PLACEHOLDER_PATTERN,
-    RESERVED_NAMESPACES,
+    VariableDefinition,
+    VariableRegistry,
     render_placeholders,
 )
 from products.hub.twitch.channel_information import (
@@ -23,18 +24,14 @@ from shared.streamhouse_runtime.logger import Logger
 class SendTwitchChatMessageTask:
     task_type = "twitch.send_chat_message"
     TEMPLATE_PATTERN = PLACEHOLDER_PATTERN
-    TEMPLATE_VARIABLES = frozenset(VARIABLE_INFO)
-    CANONICAL_NAMESPACES = RESERVED_NAMESPACES
 
     def __init__(
         self,
         twitch_service: TwitchService,
-        variable_resolver: Callable[
-            [str, Mapping[str, str]], Mapping[str, str]
-        ] | None = None,
+        variable_registry: VariableRegistry | None = None,
     ) -> None:
         self.twitch_service = twitch_service
-        self.variable_resolver = variable_resolver
+        self.variable_registry = variable_registry
 
     def execute(
         self,
@@ -43,10 +40,19 @@ class SendTwitchChatMessageTask:
     ) -> TaskExecutionResult:
         template = str(task.config.get("message", "")).strip()
         context = dict(trigger.context)
-        if self.variable_resolver is not None:
-            context.update(self.variable_resolver(template, context))
+        if self.variable_registry is not None:
+            for name in self.TEMPLATE_PATTERN.findall(template):
+                if name in context:
+                    continue
+                snapshot = self.variable_registry.resolve(name, context)
+                if snapshot is not None and snapshot.available:
+                    context[name] = snapshot.display_value
         try:
-            self.validate_template(template, context)
+            self.validate_template(
+                template,
+                context,
+                registry=self.variable_registry,
+            )
         except ValueError as error:
             return TaskExecutionResult(
                 task_id=task.task_id,
@@ -62,7 +68,14 @@ class SendTwitchChatMessageTask:
         unavailable = sorted(
             name
             for name in set(self.TEMPLATE_PATTERN.findall(template))
-            if str(context.get(f"{name}_status", "")).casefold()
+            if str(
+                context.get(
+                    automation_output_name(name, "status")
+                    if name.startswith("automation.")
+                    else "",
+                    "",
+                )
+            ).casefold()
             in {"missing", "unavailable", "error"}
         )
         blocked = missing or unavailable
@@ -97,16 +110,30 @@ class SendTwitchChatMessageTask:
         cls,
         template: str,
         allowed_variables: Mapping[str, object] | set[str] | tuple[str, ...] = (),
+        *,
+        registry: VariableRegistry | None = None,
+        extra_definitions: tuple[VariableDefinition, ...] = (),
     ) -> None:
         if not template or len(template) > 500:
             raise ValueError("Twitch messages must contain 1-500 characters.")
+        malformed = next(
+            (
+                token
+                for token in re.findall(r"\{([^{}]+)\}", template)
+                if not PLACEHOLDER_PATTERN.fullmatch(f"{{{token}}}")
+            ),
+            "",
+        )
+        if malformed:
+            raise ValueError(f"Invalid canonical command variable: {{{malformed}}}")
         allowed = set(allowed_variables)
+        allowed.update(definition.name for definition in extra_definitions)
+        if registry is not None:
+            allowed.update(definition.name for definition in registry.definitions())
         unknown = sorted(
             name
             for name in set(cls.TEMPLATE_PATTERN.findall(template))
-            if name not in cls.TEMPLATE_VARIABLES
-            and name not in allowed
-            and name.split(".", 1)[0] not in cls.CANONICAL_NAMESPACES
+            if registry is not None and name not in allowed
         )
         if unknown:
             raise ValueError(f"Unknown command variable: {{{unknown[0]}}}")
@@ -152,6 +179,20 @@ def _mutable_context(trigger: TriggerEvent) -> dict[str, str]:
     return trigger.context
 
 
+def _publish(context: dict[str, str], values: Mapping[str, object]) -> None:
+    context.update(
+        {automation_output_name(name): str(value) for name, value in values.items()}
+    )
+
+
+def _output(context: Mapping[str, str], name: str, default: str = "") -> str:
+    return str(context.get(automation_output_name(name), default))
+
+
+def _set_output(context: dict[str, str], name: str, value: object) -> None:
+    context[automation_output_name(name)] = str(value)
+
+
 def _task_result(task: TaskDefinition, detail: str, succeeded: bool = True):
     return TaskExecutionResult(task.task_id, task.task_type, succeeded, detail)
 
@@ -165,11 +206,11 @@ class ResolveTwitchUserTask:
     def execute(self, task: TaskDefinition, trigger: TriggerEvent) -> TaskExecutionResult:
         context = _mutable_context(trigger)
         reference = SendTwitchChatMessageTask.render(
-            str(task.config.get("reference", "{target}")), context
+            str(task.config.get("reference", "{command.target}")), context
         ).strip().lstrip("@")
-        if not reference or reference == "--":
-            reference = str(context.get("user_id", "")).strip()
-        context.update(
+        if not reference or reference == "--" or PLACEHOLDER_PATTERN.fullmatch(reference):
+            reference = str(context.get("user.id", context.get("user_id", ""))).strip()
+        _publish(context,
             {
                 "target_user_id": "",
                 "target_login": "",
@@ -182,14 +223,14 @@ class ResolveTwitchUserTask:
             user = self.service.resolve_user(reference)
         except ValueError as error:
             if "not found" in str(error).casefold():
-                context["user_lookup_status"] = "not_found"
+                _set_output(context, "user_lookup_status", "not_found")
                 return _task_result(task, "Twitch user was not found.")
             Logger.warning(f"Could not resolve Twitch user: {error}", source="TWITCH")
             return _task_result(task, "Twitch user lookup is unavailable.")
         except (HTTPError, URLError, OSError) as error:
             Logger.warning(f"Could not resolve Twitch user: {error}", source="TWITCH")
             return _task_result(task, "Twitch user lookup is unavailable.")
-        context.update(
+        _publish(context,
             {
                 "target_user_id": str(user.get("id", "")),
                 "target_login": str(user.get("login", "")),
@@ -211,7 +252,7 @@ class GetStreamInformationTask:
 
     def execute(self, task: TaskDefinition, trigger: TriggerEvent) -> TaskExecutionResult:
         context = _mutable_context(trigger)
-        context.update(
+        _publish(context,
             {
                 "stream_status": "error",
                 "is_live": "false",
@@ -229,9 +270,9 @@ class GetStreamInformationTask:
             Logger.warning(f"Could not retrieve Twitch stream information: {error}", source="TWITCH")
             return _task_result(task, "Twitch stream information is unavailable.")
         if not stream:
-            context["stream_status"] = "offline"
+            _set_output(context, "stream_status", "offline")
             return _task_result(task, "The Twitch channel is offline.")
-        context.update(
+        _publish(context,
             {
                 "stream_status": "live",
                 "is_live": "true",
@@ -254,7 +295,7 @@ class GetChannelInformationTask:
 
     def execute(self, task: TaskDefinition, trigger: TriggerEvent) -> TaskExecutionResult:
         context = _mutable_context(trigger)
-        context.update(
+        _publish(context,
             {
                 "channel_info_status": "error",
                 "title_status": "error",
@@ -270,7 +311,7 @@ class GetChannelInformationTask:
             Logger.warning(f"Could not retrieve Twitch channel information: {error}", source="TWITCH")
             return _task_result(task, "Twitch channel information is unavailable.")
         if not channel:
-            context.update(
+            _publish(context,
                 {
                     "channel_info_status": "unavailable",
                     "title_status": "unavailable",
@@ -280,7 +321,7 @@ class GetChannelInformationTask:
             return _task_result(task, "Twitch channel information was empty.")
         title = str(channel.get("title", "")).strip()
         category = str(channel.get("game_name", "")).strip()
-        context.update(
+        _publish(context,
             {
                 "channel_info_status": "available",
                 "title_status": "available" if title else "unavailable",
@@ -302,9 +343,9 @@ class GetFollowRelationshipTask:
     def execute(self, task: TaskDefinition, trigger: TriggerEvent) -> TaskExecutionResult:
         context = _mutable_context(trigger)
         user_id = SendTwitchChatMessageTask.render(
-            str(task.config.get("user_id", "{target_user_id}")), context
+            str(task.config.get("user_id", "{automation.target_user_id}")), context
         ).strip()
-        context.update(
+        _publish(context,
             {
                 "is_following": "false",
                 "followed_at": "",
@@ -313,29 +354,29 @@ class GetFollowRelationshipTask:
             }
         )
         if not user_id:
-            if context.get("user_lookup_status") == "not_found":
-                context["follow_status"] = "user_not_found"
+            if _output(context, "user_lookup_status") == "not_found":
+                _set_output(context, "follow_status", "user_not_found")
                 return _task_result(task, "Follow lookup skipped because the user was not found.")
             return _task_result(task, "Follow lookup skipped because user lookup failed.")
         if user_id == getattr(self.service, "broadcaster_user_id", ""):
-            context["follow_status"] = "broadcaster"
+            _set_output(context, "follow_status", "broadcaster")
             return _task_result(task, "The selected user is the broadcaster.")
         try:
             relationship = self.service.get_follow_relationship(user_id)
         except PermissionError:
-            context["follow_status"] = "missing_scope"
+            _set_output(context, "follow_status", "missing_scope")
             return _task_result(task, "Follow information permission has not been granted.")
         except HTTPError as error:
-            context["follow_status"] = "missing_scope" if error.code in {401, 403} else "error"
+            _set_output(context, "follow_status", "missing_scope" if error.code in {401, 403} else "error")
             Logger.warning(f"Could not retrieve Twitch follow information: HTTP {error.code}", source="TWITCH")
             return _task_result(task, "Twitch follow information is unavailable.")
         except (URLError, OSError, ValueError) as error:
             Logger.warning(f"Could not retrieve Twitch follow information: {error}", source="TWITCH")
             return _task_result(task, "Twitch follow information is unavailable.")
         if not relationship:
-            context["follow_status"] = "not_following"
+            _set_output(context, "follow_status", "not_following")
             return _task_result(task, "The selected user is not following the channel.")
-        context.update(
+        _publish(context,
             {
                 "is_following": "true",
                 "followed_at": str(relationship.get("followed_at", "")),
@@ -360,7 +401,7 @@ class BuildCommandListTask:
 
     def execute(self, task: TaskDefinition, trigger: TriggerEvent) -> TaskExecutionResult:
         context = _mutable_context(trigger)
-        context.update({"command_list": "", "command_list_status": "empty"})
+        _publish(context, {"command_list": "", "command_list_status": "empty"})
         role = str(context.get("viewer_permission", "everyone")).casefold()
         rank = self.PERMISSION_RANK.get(role, 0)
         try:
@@ -376,7 +417,7 @@ class BuildCommandListTask:
             )
         except Exception as error:
             Logger.warning(f"Could not build Twitch command list: {error}", source="TWITCH")
-            context["command_list_status"] = "error"
+            _set_output(context, "command_list_status", "error")
             return _task_result(task, "Command list is unavailable.")
         try:
             requested_limit = int(task.config.get("maximum_characters", 450))
@@ -389,8 +430,8 @@ class BuildCommandListTask:
             if len(candidate) > limit:
                 break
             selected.append(name)
-        context["command_list"] = ", ".join(selected)
-        context["command_list_status"] = "available" if selected else "empty"
+        _set_output(context, "command_list", ", ".join(selected))
+        _set_output(context, "command_list_status", "available" if selected else "empty")
         return _task_result(task, f"Listed {len(selected)} enabled Twitch commands.")
 
 
@@ -404,7 +445,7 @@ class GetChannelInformationFieldTask:
     def output_name(config: Mapping[str, object]) -> str:
         field_id = str(config.get("field", "")).strip().casefold()
         requested = str(config.get("output_variable", "")).strip()
-        return CustomVariableStore.validate_generated_name(requested or field_id)
+        return automation_output_name(requested or field_id)
 
     def execute(self, task: TaskDefinition, trigger: TriggerEvent) -> TaskExecutionResult:
         context = _mutable_context(trigger)
@@ -419,16 +460,16 @@ class GetChannelInformationFieldTask:
         context.update(
             {
                 output_name: "",
-                f"{output_name}_status": "unavailable",
-                "channel_information_available": "false",
-                "channel_information_status": "unavailable",
+                automation_output_name(output_name, "status"): "unavailable",
+                automation_output_name("channel_information_available"): "false",
+                automation_output_name("channel_information_status"): "unavailable",
             }
         )
         try:
             value = self.store_provider().field_value(field_id)
         except (OSError, ValueError) as error:
-            context["channel_information_status"] = "error"
-            context[f"{output_name}_status"] = "error"
+            _set_output(context, "channel_information_status", "error")
+            context[automation_output_name(output_name, "status")] = "error"
             return _task_result(task, f"Could not read {label}: {error}", False)
         if not value:
             return _task_result(
@@ -439,9 +480,9 @@ class GetChannelInformationFieldTask:
         context.update(
             {
                 output_name: value,
-                f"{output_name}_status": "available",
-                "channel_information_available": "true",
-                "channel_information_status": "available",
+                automation_output_name(output_name, "status"): "available",
+                automation_output_name("channel_information_available"): "true",
+                automation_output_name("channel_information_status"): "available",
             }
         )
         return _task_result(task, f"Loaded {label} from Channel Information.")
@@ -456,9 +497,7 @@ class BuildSocialLinksMessageTask:
     @staticmethod
     def output_name(config: Mapping[str, object]) -> str:
         requested = str(config.get("output_variable", "")).strip()
-        return CustomVariableStore.validate_generated_name(
-            requested or "social_links_message"
-        )
+        return automation_output_name(requested or "social_links_message")
 
     def execute(self, task: TaskDefinition, trigger: TriggerEvent) -> TaskExecutionResult:
         context = _mutable_context(trigger)
@@ -469,17 +508,17 @@ class BuildSocialLinksMessageTask:
         context.update(
             {
                 output_name: "",
-                f"{output_name}_status": "unavailable",
-                "channel_information_available": "false",
-                "channel_information_status": "unavailable",
+                automation_output_name(output_name, "status"): "unavailable",
+                automation_output_name("channel_information_available"): "false",
+                automation_output_name("channel_information_status"): "unavailable",
             }
         )
         try:
             maximum = int(task.config.get("maximum_characters", 480))
             message = self.store_provider().build_social_links_message(maximum)
         except (OSError, TypeError, ValueError) as error:
-            context["channel_information_status"] = "error"
-            context[f"{output_name}_status"] = "error"
+            _set_output(context, "channel_information_status", "error")
+            context[automation_output_name(output_name, "status")] = "error"
             return _task_result(task, f"Could not build social links: {error}", False)
         if not message:
             return _task_result(
@@ -490,9 +529,9 @@ class BuildSocialLinksMessageTask:
         context.update(
             {
                 output_name: message,
-                f"{output_name}_status": "available",
-                "channel_information_available": "true",
-                "channel_information_status": "available",
+                automation_output_name(output_name, "status"): "available",
+                automation_output_name("channel_information_available"): "true",
+                automation_output_name("channel_information_status"): "available",
             }
         )
         return _task_result(task, "Built a Twitch-ready social links message.")
@@ -564,9 +603,9 @@ class TwitchAutomationTask:
             return f'Changed the Twitch stream category to "{selected}".'
         if self.task_type == "twitch.moderate_user":
             action = str(config.get("action", "timeout"))
-            user_id = self.service.resolve_user_id(render("user", "{user_id}"))
+            user_id = self.service.resolve_user_id(render("user", "{user.id}"))
             duration = int(config.get("duration_seconds", 600)) if action == "timeout" else None
-            message_id = render("message_id", "{message_id}")
+            message_id = render("message_id", "{chat.message_id}")
             succeeded = self.service.moderate_user(
                 action,
                 user_id,
@@ -580,8 +619,8 @@ class TwitchAutomationTask:
         if self.task_type == "twitch.update_redemption":
             status = "FULFILLED" if config.get("action", "fulfill") == "fulfill" else "CANCELED"
             self.service.update_redemption_status(
-                render("reward_id", "{reward_id}"),
-                render("redemption_id", "{redemption_id}"),
+                render("reward_id", "{event.reward_id}"),
+                render("redemption_id", "{event.redemption_id}"),
                 status,
             )
             return "Fulfilled Twitch redemption." if status == "FULFILLED" else "Refunded Twitch redemption."
@@ -596,8 +635,9 @@ def register_twitch_tasks(
     ] | None = None,
     command_provider: Callable[[], object] | None = None,
     channel_information_provider: Callable[[], ChannelInformationStore] | None = None,
+    variable_registry: VariableRegistry | None = None,
 ) -> None:
-    registry.register(SendTwitchChatMessageTask(service, variable_resolver))
+    registry.register(SendTwitchChatMessageTask(service, variable_registry))
     registry.register(ResolveTwitchUserTask(service))
     registry.register(GetStreamInformationTask(service))
     registry.register(GetChannelInformationTask(service))

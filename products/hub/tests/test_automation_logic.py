@@ -57,11 +57,11 @@ class AutomationLogicTests(unittest.TestCase):
         )
 
     def test_condition_comparisons_render_variables(self) -> None:
-        context = {"score": "12", "name": "Sally"}
-        self.assertTrue(evaluate_condition("{score}", "greater_than", "10", context))
-        self.assertTrue(evaluate_condition("{name}", "equals_ignore_case", "sally", context))
-        self.assertTrue(evaluate_condition("score", "exists", "", context))
-        self.assertTrue(evaluate_condition("missing", "not_exists", "", context))
+        context = {"automation.score": "12", "automation.name": "Sally"}
+        self.assertTrue(evaluate_condition("{automation.score}", "greater_than", "10", context))
+        self.assertTrue(evaluate_condition("{automation.name}", "equals_ignore_case", "sally", context))
+        self.assertTrue(evaluate_condition("automation.score", "exists", "", context))
+        self.assertTrue(evaluate_condition("automation.missing", "not_exists", "", context))
 
     def test_break_stops_remaining_tasks_successfully(self) -> None:
         routine = self.routines.add("Break")
@@ -113,7 +113,7 @@ class AutomationLogicTests(unittest.TestCase):
             parent.routine_id,
             "core.logic_if_else",
             {
-                "left": "{enabled_flag}",
+                "left": "{automation.enabled_flag}",
                 "operator": "is_true",
                 "right": "",
                 "true_routine_id": true_branch.routine_id,
@@ -121,10 +121,10 @@ class AutomationLogicTests(unittest.TestCase):
         )
         self.add_task(parent.routine_id, self.capture.task_type)
 
-        result = self.service.run_routine(parent.routine_id, {"enabled_flag": "true"})
+        result = self.service.run_routine(parent.routine_id, {"automation.enabled_flag": "true"})
 
         self.assertTrue(result.succeeded)
-        self.assertEqual(self.capture.contexts[-1]["answer"], "yes")
+        self.assertEqual(self.capture.contexts[-1]["automation.answer"], "yes")
 
     def test_switch_runs_first_matching_case(self) -> None:
         hydrate = self.routines.add("Hydrate")
@@ -138,17 +138,17 @@ class AutomationLogicTests(unittest.TestCase):
             parent.routine_id,
             "core.logic_switch",
             {
-                "input": "{reward}",
+                "input": "{event.reward}",
                 "cases": {"Hydrate": hydrate.routine_id},
                 "ignore_case": True,
             },
         )
         self.add_task(parent.routine_id, self.capture.task_type)
 
-        result = self.service.run_routine(parent.routine_id, {"reward": "HYDRATE"})
+        result = self.service.run_routine(parent.routine_id, {"event.reward": "HYDRATE"})
 
         self.assertTrue(result.succeeded)
-        self.assertEqual(self.capture.contexts[-1]["selected_case"], "hydrate")
+        self.assertEqual(self.capture.contexts[-1]["automation.selected_case"], "hydrate")
 
     def test_random_choice_runs_a_weighted_routine_with_shared_variables(self) -> None:
         selected = self.routines.add("Rare sound")
@@ -187,14 +187,14 @@ class AutomationLogicTests(unittest.TestCase):
 
         run_result = self.service.run_routine(parent.routine_id)
         self.assertTrue(run_result.succeeded)
-        self.assertEqual(self.capture.contexts[-1]["selected_choice"], "rare")
+        self.assertEqual(self.capture.contexts[-1]["automation.selected_choice"], "rare")
 
     def test_while_repeats_routine_until_condition_is_false(self) -> None:
         body = self.routines.add("Increment")
         self.add_task(
             body.routine_id,
             "core.adjust_variable",
-            {"name": "counter", "amount": 1},
+            {"name": "automation.counter", "amount": 1},
         )
         parent = self.routines.add("Loop")
         self.add_task(
@@ -206,7 +206,7 @@ class AutomationLogicTests(unittest.TestCase):
             parent.routine_id,
             "core.logic_while",
             {
-                "left": "{counter}",
+                "left": "{automation.counter}",
                 "operator": "less_than",
                 "right": "3",
                 "routine_id": body.routine_id,
@@ -219,7 +219,7 @@ class AutomationLogicTests(unittest.TestCase):
         result = self.service.run_routine(parent.routine_id)
 
         self.assertTrue(result.succeeded)
-        self.assertEqual(self.capture.contexts[-1]["counter"], "3")
+        self.assertEqual(self.capture.contexts[-1]["automation.counter"], "3")
 
     def test_get_input_and_random_number_create_routine_variables(self) -> None:
         trigger = TriggerEvent("manual", "test", "manual", {})
@@ -232,7 +232,7 @@ class AutomationLogicTests(unittest.TestCase):
         handler = GetInputTask(lambda *_args, **_kwargs: ("coffee", True))
         result = handler.execute(definition, trigger)
         self.assertTrue(result.succeeded)
-        self.assertEqual(trigger.context["viewer_choice"], "coffee")
+        self.assertEqual(trigger.context["automation.viewer_choice"], "coffee")
 
         random_definition = self.add_task(
             input_task.routine_id,
@@ -244,7 +244,7 @@ class AutomationLogicTests(unittest.TestCase):
             trigger,
         )
         self.assertTrue(random_result.succeeded)
-        self.assertEqual(trigger.context["roll"], "5")
+        self.assertEqual(trigger.context["automation.roll"], "5")
 
 
 if __name__ == "__main__":

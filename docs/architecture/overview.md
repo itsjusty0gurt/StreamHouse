@@ -432,10 +432,10 @@ Availability/lifetime is metadata, not a sample-value inference:
   registered as permanent global variables. Nested routines intentionally
   share their parent's routine context; sibling executions do not.
 
-Registry text rendering uses `{variable.name}`. The shared placeholder parser
-currently also accepts flat `{lowercase_name}` placeholders. Unavailable values
-retain the original placeholder by default and registry resolution emits a
-debug diagnostic; callers may explicitly supply a fallback. Preview/sample
+Registry text rendering accepts only canonical dotted `{variable.name}`
+placeholders. Unavailable values retain the original placeholder by default and
+registry resolution emits a debug diagnostic; callers may explicitly supply a
+fallback. Preview/sample
 values are UI examples only and never define a variable's type or availability.
 
 Provider writes are opt-in. `custom.*` writes use `CustomVariableStore`, and a
@@ -446,16 +446,16 @@ runtime state remain read-only; the variable layer is not a backdoor around
 their service actions.
 
 Counter variable names always use the immutable counter ID, never the editable
-display label. `counter.<id>` is currently a hidden transitional alias for
-`counter.<id>.stream`; it resolves with the canonical type/access metadata and
-writes through the same CounterService path. The `.viewer` scope uses the
+display label. Stream and viewer scope are explicit: `counter.<id>.stream` and
+`counter.<id>.viewer`. The `.viewer` scope uses the
 triggering viewer's stable Twitch user ID. Without that context it is explicitly
 unavailable and does not substitute the shared value or create a viewer entry.
 
 The Automation **Variables** tab provides search/source filtering plus name,
 value, source, type, availability, and access metadata, copy actions, and
-custom-variable creation/edit/delete. Transitional aliases are hidden from
-normal browsing so new work uses canonical names. Custom records persist
+custom-variable creation/edit/delete. Generic canonical aliases may be hidden
+from normal browsing, but no pre-alpha compatibility aliases are registered.
+Custom records persist
 in `automation/variables.json` using atomic replacement and now include `text`,
 `integer`, `number`, `boolean`, or ISO-8601 `datetime` metadata plus an optional
 description. The reusable picker in `products/hub/ui/variable_picker.py` uses
@@ -463,54 +463,28 @@ the same registry metadata, supports source/category/search filtering, and is
 also available from templated task editors. Contextual definitions remain
 discoverable when unavailable and state their required context.
 
-The current implementation still supports flat automation variables and
-outputs. A variable named
-`random_line` is still referenced as `{random_line}`. New shared/domain values
-use dotted canonical names, and custom `game_mode` is displayed as
-`{custom.game_mode}`. `products/hub/automation/variables.py` is transitional:
-it supplies old flat names and preview examples but
-is not authoritative for modern type, availability, access, or provider
-metadata. New variable-aware features must use `VariableRegistry`.
-
-Generated outputs are currently discoverable through
-`CustomVariableStore.generated_names()` for the flat path and
-`generated_definitions()` for typed metadata. The latter describes the output's
-name, type, source task, temporary/global lifetime, description, and optional
-preview without globally registering it. Same-name temporary outputs retain
-the existing deterministic task-order overwrite behavior; counter tasks offer
-an output-prefix setting where user-controlled disambiguation is needed.
+The flat variable catalog and flat placeholder path have been removed. Domain
+values use their provider namespace, stored values use `custom.<name>`, and
+routine-scoped task outputs use `automation.<name>`. Typed output definitions in
+`products/hub/automation/variable_outputs.py` describe each output's name,
+type, source task, lifetime, description, and preview without globally
+registering temporary values. Same-name temporary outputs retain deterministic
+task-order overwrite behavior; counter tasks offer an output-prefix setting
+where user-controlled disambiguation is needed.
 
 Variable precedence when preparing a trigger is:
 
-1. persisted/session custom variables;
-2. source trigger context (wins on name collision);
-3. task-created values as the routine executes.
+1. raw source-event fields enter the provider as internal context;
+2. registry providers publish canonical contextual, global, and custom values;
+3. typed `automation.*` outputs are added as tasks execute.
 
-Built-in flat names in `products/hub/automation/variables.py` and all non-
-`custom` namespaces are reserved from custom creation.
+Custom creation is constrained to `custom.*`; its namespace cannot collide with
+provider-owned definitions. Pre-alpha custom-variable schema versions before
+version 3 are intentionally rejected for reset rather than migrated. Twitch
+authentication storage is independent and was not changed by this cleanup.
 
-The intended Alpha architecture has no parallel flat-variable runtime. Remove
-the flat catalog, old parser/validation paths, compatibility aliases, and other
-obsolete output metadata after all active production consumers have moved to
-the registry or typed output definitions. Before Alpha, saved development
-routines, variables, templates, and outputs may be reset; their migration is
-not a prerequisite for removal.
-
-The Variables cleanup is complete when:
-
-1. every production editor, picker, condition UI, validator, and runtime
-   resolver obtains definitions from the registry or typed output metadata;
-2. all output-producing tasks publish typed definitions and no production
-   feature treats sample values as definitions;
-3. repository searches and package tests show no production metadata consumer
-   reads `VARIABLE_INFO`, `VARIABLE_SOURCE_INFO`, or `sample_context()` solely
-   as its definition source;
-4. active built-in routines, tasks, commands, triggers, and templates use the
-   authoritative path; and
-5. obsolete implementations, compatibility tests, and current documentation
-   have been deleted.
-
-Do not add new features to the flat catalog while this transition remains.
+`VariableRegistry`, its providers, and typed output definitions are now the only
+Variables metadata, validation, preview, resolution, and domain-write path.
 
 ### Task providers
 
@@ -1105,7 +1079,7 @@ Inspect and update:
 3. registration in `MainWindow`;
 4. schema and task menu in `products/hub/ui/automation_page.py`;
 5. template rendering and live-variable resolution if applicable;
-6. `CustomVariableStore.generated_names()` if it creates outputs;
+6. `generated_output_definitions()` if it creates outputs;
 7. import/export validation in `products/hub/automation/transfer.py` if needed;
 8. focused execution, editor, and integration tests.
 

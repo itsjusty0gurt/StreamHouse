@@ -151,7 +151,7 @@ class ObsTriggerStoreTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 store.add(routine.routine_id, "MadeUpEvent")
 
-    def test_mute_context_is_human_readable(self) -> None:
+    def test_mute_context_is_typed_and_canonicalizable(self) -> None:
         muted = ObsTriggerStore.context_for(
             ObsEvent("InputMuteStateChanged", {"inputMuted": True})
         )
@@ -159,10 +159,10 @@ class ObsTriggerStoreTests(unittest.TestCase):
             ObsEvent("InputMuteStateChanged", {"inputMuted": False})
         )
 
-        self.assertEqual(muted["muted"], "Muted")
-        self.assertEqual(muted["mute"], "Muted")
-        self.assertEqual(unmuted["muted"], "Not Muted")
-        self.assertEqual(unmuted["mute"], "Not Muted")
+        self.assertEqual(muted["muted"], "true")
+        self.assertNotIn("mute", muted)
+        self.assertEqual(unmuted["muted"], "false")
+        self.assertNotIn("mute", unmuted)
 
 
 class ObsTaskTests(unittest.TestCase):
@@ -222,18 +222,18 @@ class ObsTaskTests(unittest.TestCase):
             "manual",
             "sally",
             "manual",
-            {"game": "Portal 2", "image": "C:/art/portal.png"},
+            {"stream.category": "Portal 2", "automation.image": "C:/art/portal.png"},
         )
         self.assertTrue(
             self.run_task(
                 "obs.set_text_source",
-                {"input": "Now Playing", "text": "Playing {game}"},
+                {"input": "Now Playing", "text": "Playing {stream.category}"},
             )
         )
         self.assertTrue(
             self.run_task(
                 "obs.set_image_source",
-                {"input": "Game Art", "file": "{image}"},
+                {"input": "Game Art", "file": "{automation.image}"},
             )
         )
         self.assertEqual(
@@ -300,8 +300,8 @@ class CoreTaskTests(unittest.TestCase):
             "core.show_notification",
             "Notification",
             {
-                "title": "Sally alert for {user}",
-                "message": "{user} redeemed {reward}",
+                "title": "Streamhouse alert for {user.display_name}",
+                "message": "{user.display_name} redeemed {event.reward}",
                 "icon": "warning",
                 "duration_seconds": 8,
             },
@@ -310,7 +310,7 @@ class CoreTaskTests(unittest.TestCase):
             "reward",
             "twitch",
             "channel_points",
-            {"user": "Viewer", "reward": "Hydrate"},
+            {"user.display_name": "Viewer", "event.reward": "Hydrate"},
         )
 
         result = DesktopNotificationTask(notifier=notify).execute(task, trigger)
@@ -320,7 +320,7 @@ class CoreTaskTests(unittest.TestCase):
             notifications,
             [
                 (
-                    "Sally alert for Viewer",
+                    "Streamhouse alert for Viewer",
                     "Viewer redeemed Hydrate",
                     "warning",
                     8000,

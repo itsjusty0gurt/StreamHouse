@@ -28,7 +28,10 @@ class PythonScriptTaskTests(unittest.TestCase):
             trigger_id="test.python",
             service="twitch",
             trigger_type="command",
-            context={"user": "Test Viewer", "channel": "samplechannel"},
+            context={
+                "user": "Test Viewer", "channel": "samplechannel",
+                "user.display_name": "Test Viewer",
+            },
         )
 
     def tearDown(self) -> None:
@@ -64,7 +67,7 @@ class PythonScriptTaskTests(unittest.TestCase):
         )
 
         result = PythonScriptTask().execute(
-            self._task(script, arguments='"{user}"'),
+            self._task(script, arguments='"{user.display_name}"'),
             self.trigger,
         )
 

@@ -220,11 +220,11 @@ class ObsTriggerStore:
 
         muted_value = values.get("inputMuted")
         if isinstance(muted_value, bool):
-            muted = "Muted" if muted_value else "Not Muted"
+            muted = "true" if muted_value else "false"
         elif str(muted_value).strip().casefold() in {"true", "1", "yes", "on"}:
-            muted = "Muted"
+            muted = "true"
         elif str(muted_value).strip().casefold() in {"false", "0", "no", "off"}:
-            muted = "Not Muted"
+            muted = "false"
         else:
             muted = "--" if muted_value is None else str(muted_value).strip()
         return {
@@ -235,11 +235,9 @@ class ObsTriggerStore:
             "input": first("inputName"),
             "output_state": first("outputState"),
             "enabled": first("sceneItemEnabled", "studioModeEnabled"),
-            "mute": muted,
             "muted": muted,
             "volume_db": first("inputVolumeDb"),
             "media": first("inputName"),
-            "channel": "--", "user": "--", "message": "--", "amount": "--",
             "bits": "--", "viewers": "--", "tier": "--", "reward": "--",
             "reward_id": "--", "reward_cost": "--", "title": "--", "game": "--",
             "uptime": "--", "followers": "--", "command": "--", "args": "--",

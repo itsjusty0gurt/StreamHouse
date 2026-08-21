@@ -226,10 +226,7 @@ class AutomationService:
         return routine.name if routine is not None else ""
 
     def _prepare_trigger(self, trigger: TriggerEvent) -> TriggerEvent:
-        context = {
-            **self.variable_store.values(),
-            **{str(key): str(value) for key, value in trigger.context.items()},
-        }
+        context = {str(key): str(value) for key, value in trigger.context.items()}
         if self.variable_registry is not None:
             context.update(self.variable_registry.context_values(context))
         return replace(trigger, context=context)

@@ -62,7 +62,7 @@ def _send(command: str):
         "send",
         "twitch.send_chat_message",
         "Send Twitch chat response",
-        {"message": "{command_response}", "as_bot": True},
+        {"message": "{automation.command_response}", "as_bot": True},
     )
 
 
@@ -108,13 +108,13 @@ def default_command_definitions() -> tuple[DefaultCommandDefinition, ...]:
                 "duration",
                 "core.format_duration",
                 "Format stream uptime",
-                {"start": "{stream_started_at}", "end": "", "seconds": "", "output_variable": "uptime"},
+                {"start": "{automation.stream_started_at}", "end": "", "seconds": "", "output_variable": "uptime"},
             ),
             _select(
                 "uptime",
-                "{stream_status}:{uptime_status}",
+                "{automation.stream_status}:{automation.uptime_status}",
                 {
-                    "live:available": "The stream has been live for {uptime}.",
+                    "live:available": "The stream has been live for {automation.uptime}.",
                     "offline:missing": "The channel is currently offline.",
                     "error:missing": "I couldn't retrieve the stream status right now.",
                     "error": "I couldn't retrieve the stream status right now.",
@@ -127,22 +127,22 @@ def default_command_definitions() -> tuple[DefaultCommandDefinition, ...]:
         "followage",
         "followage",
         (
-            _task("followage", "user", "twitch.resolve_user", "Resolve target user", {"reference": "{target}"}),
-            _task("followage", "follow", "twitch.get_follow_relationship", "Get follow relationship", {"user_id": "{target_user_id}"}),
+            _task("followage", "user", "twitch.resolve_user", "Resolve target user", {"reference": "{command.target}"}),
+            _task("followage", "follow", "twitch.get_follow_relationship", "Get follow relationship", {"user_id": "{automation.target_user_id}"}),
             _task(
                 "followage",
                 "duration",
                 "core.format_duration",
                 "Format follow age",
-                {"start": "{followed_at}", "end": "", "seconds": "", "output_variable": "followage"},
+                {"start": "{automation.followed_at}", "end": "", "seconds": "", "output_variable": "followage"},
             ),
             _select(
                 "followage",
-                "{follow_status}:{followage_status}",
+                "{automation.follow_status}:{automation.followage_status}",
                 {
-                    "following:available": "{target_display_name} has followed {channel_display_name} for {followage}.",
-                    "not_following:missing": "{target_display_name} is not currently following {channel_display_name}.",
-                    "broadcaster:missing": "{target_display_name} is the broadcaster for {channel_display_name}.",
+                    "following:available": "{automation.target_display_name} has followed {automation.channel_display_name} for {automation.followage}.",
+                    "not_following:missing": "{automation.target_display_name} is not currently following {automation.channel_display_name}.",
+                    "broadcaster:missing": "{automation.target_display_name} is the broadcaster for {automation.channel_display_name}.",
                     "user_not_found:missing": "I couldn't find that Twitch user.",
                     "missing_scope:missing": "Follow information is unavailable because the required Twitch permission has not been granted.",
                     "error:missing": "I couldn't retrieve follow information right now.",
@@ -158,19 +158,19 @@ def default_command_definitions() -> tuple[DefaultCommandDefinition, ...]:
         "accountage",
         "accountage",
         (
-            _task("accountage", "user", "twitch.resolve_user", "Resolve target user", {"reference": "{target}"}),
+            _task("accountage", "user", "twitch.resolve_user", "Resolve target user", {"reference": "{command.target}"}),
             _task(
                 "accountage",
                 "duration",
                 "core.format_duration",
                 "Format account age",
-                {"start": "{account_created_at}", "end": "", "seconds": "", "output_variable": "account_age"},
+                {"start": "{automation.account_created_at}", "end": "", "seconds": "", "output_variable": "account_age"},
             ),
             _select(
                 "accountage",
-                "{user_lookup_status}:{account_age_status}",
+                "{automation.user_lookup_status}:{automation.account_age_status}",
                 {
-                    "found:available": "{target_display_name}'s Twitch account was created {account_age} ago.",
+                    "found:available": "{automation.target_display_name}'s Twitch account was created {automation.account_age} ago.",
                     "not_found:missing": "I couldn't find that Twitch user.",
                     "error:missing": "I couldn't retrieve that Twitch account right now.",
                     "error": "I couldn't retrieve that Twitch account right now.",
@@ -188,9 +188,9 @@ def default_command_definitions() -> tuple[DefaultCommandDefinition, ...]:
             _task("title", "channel", "twitch.get_channel_information", "Get channel information", {}),
             _select(
                 "title",
-                "{title_status}",
+                "{automation.title_status}",
                 {
-                    "available": "Current title: {stream_title}",
+                    "available": "Current title: {automation.stream_title}",
                     "unavailable": "No Twitch stream title is currently set.",
                     "error": "I couldn't retrieve the stream title right now.",
                 },
@@ -205,9 +205,9 @@ def default_command_definitions() -> tuple[DefaultCommandDefinition, ...]:
             _task("game", "channel", "twitch.get_channel_information", "Get channel information", {}),
             _select(
                 "game",
-                "{category_status}",
+                "{automation.category_status}",
                 {
-                    "set": "We're currently streaming {stream_category}.",
+                    "set": "We're currently streaming {automation.stream_category}.",
                     "unset": "No Twitch category is currently set.",
                     "error": "I couldn't retrieve the Twitch category right now.",
                 },
@@ -228,9 +228,9 @@ def default_command_definitions() -> tuple[DefaultCommandDefinition, ...]:
             ),
             _select(
                 "commands",
-                "{command_list_status}",
+                "{automation.command_list_status}",
                 {
-                    "available": "Commands: {command_list}",
+                    "available": "Commands: {automation.command_list}",
                     "empty": "No chat commands are currently enabled.",
                     "error": "I couldn't build the command list right now.",
                 },
@@ -241,7 +241,7 @@ def default_command_definitions() -> tuple[DefaultCommandDefinition, ...]:
         user_cooldown_seconds=30,
     )
     discord = _channel_information_command(
-        "discord", "discord_url", "Join the Discord: {discord_url}"
+        "discord", "discord_url", "Join the Discord: {automation.discord_url}"
     )
     socials = DefaultCommandDefinition(
         "socials",
@@ -259,7 +259,7 @@ def default_command_definitions() -> tuple[DefaultCommandDefinition, ...]:
                 "send",
                 "twitch.send_chat_message",
                 "Send Twitch chat response",
-                {"message": "{social_links_message}", "as_bot": True},
+                {"message": "{automation.social_links_message}", "as_bot": True},
             ),
         ),
         global_cooldown_seconds=15,
@@ -268,16 +268,16 @@ def default_command_definitions() -> tuple[DefaultCommandDefinition, ...]:
         setup_requirement="socials",
     )
     youtube = _channel_information_command(
-        "youtube", "youtube_url", "YouTube: {youtube_url}"
+        "youtube", "youtube_url", "YouTube: {automation.youtube_url}"
     )
     schedule = _channel_information_command(
-        "schedule", "schedule", "Schedule: {schedule}"
+        "schedule", "schedule", "Schedule: {automation.schedule}"
     )
     rules = _channel_information_command(
-        "rules", "rules", "Channel rules: {rules}"
+        "rules", "rules", "Channel rules: {automation.rules}"
     )
     server = _channel_information_command(
-        "server", "server_info", "Server information: {server_info}"
+        "server", "server_info", "Server information: {automation.server_info}"
     )
     return (
         uptime,

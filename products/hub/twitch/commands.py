@@ -10,7 +10,8 @@ from time import monotonic
 from typing import Any, Callable, Mapping
 from uuid import uuid4
 
-from products.hub.automation.custom_variables import CustomVariableStore
+from products.hub.automation.variable_outputs import generated_output_definitions
+from products.hub.automation.variable_registry import VariableRegistry
 from products.hub.automation.models import RoutineDefinition, TriggerEvent
 from products.hub.automation.routines import RoutineStore
 from shared.streamhouse_runtime.json_store import atomic_write_json, load_json_with_backup
@@ -138,7 +139,7 @@ class TwitchCommandTriggerResult:
 
 
 class TwitchCommandTriggerStore:
-    VERSION = 4
+    VERSION = 5
     MANAGED_BY = "twitch.command"
     NAME_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]{0,24}$")
     RESERVED_NAMES = frozenset({"sallymemory", "sallytrain"})
@@ -147,9 +148,11 @@ class TwitchCommandTriggerStore:
         self,
         path: Path | None = None,
         routine_store: RoutineStore | None = None,
+        variable_registry: VariableRegistry | None = None,
     ) -> None:
         self.path = path or user_data_root() / "twitch" / "commands.json"
         self.routine_store = routine_store or RoutineStore()
+        self.variable_registry = variable_registry
         self.triggers: list[TwitchCommandTrigger] = []
         self.removed_default_ids: set[str] = set()
         self.default_seed_conflicts: tuple[str, ...] = ()
@@ -163,10 +166,12 @@ class TwitchCommandTriggerStore:
         payload = load_json_with_backup(self.path)
         if not isinstance(payload, dict):
             raise ValueError("Twitch command triggers must contain a JSON object.")
-        version = int(payload.get("version", 1))
-        if version > self.VERSION:
-            raise ValueError("Twitch command trigger data is newer than this app.")
-        values = payload.get("triggers", payload.get("commands", []))
+        version = int(payload.get("version", 0))
+        if version != self.VERSION:
+            raise ValueError(
+                "Twitch command data uses a discarded pre-alpha schema and must be reset."
+            )
+        values = payload.get("triggers", [])
         if not isinstance(values, list):
             raise ValueError("Twitch command triggers must contain a trigger list.")
         loaded: list[TwitchCommandTrigger] = []
@@ -175,25 +180,18 @@ class TwitchCommandTriggerStore:
         self.removed_default_ids = {
             str(value) for value in removed if str(value).strip()
         } if isinstance(removed, list) else set()
-        migrated = False
         for value in values:
             if not isinstance(value, dict):
                 continue
             try:
                 trigger = TwitchCommandTrigger.from_dict(value)
-                response = self._validated_response(value.get("response", ""))
                 if not trigger.routine_id:
-                    trigger.has_chat_response = bool(response)
-                    routine = self._create_routine(trigger, response)
-                    trigger.routine_id = routine.routine_id
-                    migrated = True
+                    raise ValueError("Twitch command trigger is missing its routine.")
                 self._validate_trigger(trigger)
                 self._validate_routine(trigger)
             except (TypeError, ValueError):
                 continue
             loaded.append(trigger)
-        if migrated or version < self.VERSION:
-            self.save()
         return list(loaded)
 
     def save(self) -> None:
@@ -663,24 +661,26 @@ class TwitchCommandTriggerStore:
         if trigger.has_chat_response and task is None:
             raise ValueError("The Twitch command trigger has no response task.")
         if task is not None:
-            generated_variables = {
-                name
+            generated_definitions = tuple(
+                definition
                 for candidate in routine.tasks
-                for name in CustomVariableStore.generated_names(
+                for definition in generated_output_definitions(
                     candidate.task_type,
                     candidate.config,
                 )
-            }
+            )
             SendTwitchChatMessageTask.validate_template(
                 str(task.config.get("message", "")),
-                generated_variables,
+                registry=self.variable_registry,
+                extra_definitions=generated_definitions,
             )
 
-    @staticmethod
-    def _validated_response(value: object) -> str:
+    def _validated_response(self, value: object) -> str:
         response = str(value or "").strip()
         if response:
-            SendTwitchChatMessageTask.validate_template(response)
+            SendTwitchChatMessageTask.validate_template(
+                response, registry=self.variable_registry
+            )
         return response
 
     def _validate_trigger(
@@ -805,7 +805,6 @@ class TwitchCommandTriggerDispatcher:
         values = {
             key: str(value)
             for key, value in (context or {}).items()
-            if key in SendTwitchChatMessageTask.TEMPLATE_VARIABLES
         }
         values.update(
             {
@@ -835,8 +834,6 @@ class TwitchCommandTriggerDispatcher:
                 "uses": str(trigger.uses + 1),
             }
         )
-        for variable in SendTwitchChatMessageTask.TEMPLATE_VARIABLES:
-            values.setdefault(variable, "--")
         return TwitchCommandTriggerResult(
             TwitchCommandTriggerOutcome.READY,
             context=values,

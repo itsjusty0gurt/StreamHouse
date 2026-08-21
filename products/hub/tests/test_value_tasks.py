@@ -38,34 +38,34 @@ class ValueTaskTests(unittest.TestCase):
             ("not-a-date", "invalid"),
             ("2999-01-01T00:00:00Z", "future"),
         ):
-            trigger = TriggerEvent("test", "core", "test", {"start": value})
+            trigger = TriggerEvent("test", "core", "test", {"automation.start": value})
             task = TaskDefinition(
                 "duration",
                 "core.format_duration",
                 "Format",
-                {"start": "{start}", "output_variable": "age"},
+                {"start": "{automation.start}", "output_variable": "age"},
             )
 
             result = self.registry.execute(task, trigger)
 
             self.assertTrue(result.succeeded)
-            self.assertEqual(trigger.context["age"], "")
-            self.assertEqual(trigger.context["age_status"], status)
+            self.assertEqual(trigger.context["automation.age"], "")
+            self.assertEqual(trigger.context["automation.age_status"], status)
 
     def test_select_text_renders_the_selected_case_into_routine_context(self) -> None:
         trigger = TriggerEvent(
             "test",
             "core",
             "test",
-            {"status": "live", "duration": "2 hours"},
+            {"automation.status": "live", "automation.duration": "2 hours"},
         )
         task = TaskDefinition(
             "select",
             "core.select_text",
             "Select",
             {
-                "selector": "{status}",
-                "cases": {"live": "Live for {duration}.", "offline": "Offline."},
+                "selector": "{automation.status}",
+                "cases": {"live": "Live for {automation.duration}.", "offline": "Offline."},
                 "default": "Unknown.",
                 "output_variable": "response",
             },
@@ -74,7 +74,7 @@ class ValueTaskTests(unittest.TestCase):
         result = self.registry.execute(task, trigger)
 
         self.assertTrue(result.succeeded)
-        self.assertEqual(trigger.context["response"], "Live for 2 hours.")
+        self.assertEqual(trigger.context["automation.response"], "Live for 2 hours.")
 
 
 if __name__ == "__main__":

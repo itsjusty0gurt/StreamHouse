@@ -9,6 +9,9 @@ from products.hub.automation.models import TaskDefinition, TaskExecutionResult, 
 from products.hub.automation.routines import RoutineStore
 from products.hub.automation.service import AutomationService
 from products.hub.automation.tasks import TaskRegistry
+from products.hub.automation.variable_outputs import generated_output_definitions
+from products.hub.automation.variable_providers import CustomVariableProvider, context_provider
+from products.hub.automation.variable_registry import VariableRegistry
 from products.hub.automation.variable_tasks import RunRoutineTask, register_variable_tasks
 
 
@@ -35,10 +38,14 @@ class AutomationVariableTests(unittest.TestCase):
         register_variable_tasks(self.registry, self.variable_store)
         self.capture = CaptureContextTask()
         self.registry.register(self.capture)
+        self.variable_registry = VariableRegistry()
+        self.variable_registry.register(context_provider())
+        self.variable_registry.register(CustomVariableProvider(self.variable_store))
         self.service = AutomationService(
             self.routine_store,
             self.registry,
             self.variable_store,
+            variable_registry=self.variable_registry,
         )
         self.registry.register(RunRoutineTask(self.service.run_nested_routine))
 
@@ -56,71 +63,70 @@ class AutomationVariableTests(unittest.TestCase):
         self.assertEqual(loaded.scope_of("death_count"), "global")
         self.assertEqual(loaded.scope_of("current_song"), "")
 
-    def test_builtin_variable_names_are_reserved(self) -> None:
-        with self.assertRaisesRegex(ValueError, "reserved"):
-            self.variable_store.set("global", "user", "Someone")
+    def test_custom_variables_are_isolated_in_the_custom_namespace(self) -> None:
+        self.variable_store.set("global", "user", "Someone")
+        provider = CustomVariableProvider(self.variable_store)
+        self.assertEqual(provider.definitions()[0].name, "custom.user")
 
-    def test_variable_names_accept_optional_template_braces(self) -> None:
+    def test_variable_ids_do_not_accept_placeholder_syntax(self) -> None:
         self.assertEqual(
             CustomVariableStore.validate_name("random_line"),
             "random_line",
         )
-        self.assertEqual(
-            CustomVariableStore.validate_name("{random_line}"),
-            "random_line",
-        )
+        with self.assertRaises(ValueError):
+            CustomVariableStore.validate_name("{random_line}")
 
-    def test_generated_names_cover_output_tasks(self) -> None:
+    def test_generated_definitions_cover_output_tasks(self) -> None:
         self.assertEqual(
-            CustomVariableStore.generated_names(
+            tuple(item.name for item in generated_output_definitions(
                 "core.file_random_line",
                 {"variable": "random_line"},
-            ),
-            ("random_line",),
+            )),
+            ("automation.random_line",),
         )
         self.assertEqual(
-            CustomVariableStore.generated_names(
+            tuple(item.name for item in generated_output_definitions(
                 "core.logic_get_input",
-                {"name": "{answer}"},
-            ),
-            ("answer", "answer_accepted"),
+                {"name": "answer"},
+            )),
+            ("automation.answer", "automation.answer_accepted"),
         )
         self.assertEqual(
-            CustomVariableStore.generated_names(
+            tuple(item.name for item in generated_output_definitions(
                 "core.format_duration",
                 {"output_variable": "followage"},
-            ),
-            ("followage", "followage_status"),
+            )),
+            ("automation.followage", "automation.followage_status"),
         )
         self.assertEqual(
-            CustomVariableStore.generated_names(
+            tuple(item.name for item in generated_output_definitions(
                 "core.select_text",
                 {"output_variable": "command_response"},
-            ),
-            ("command_response",),
+            )),
+            ("automation.command_response",),
         )
         self.assertEqual(
-            CustomVariableStore.generated_names(
+            tuple(item.name for item in generated_output_definitions(
                 "twitch.get_channel_information_field",
                 {"field": "discord_url"},
-            ),
+            )),
             (
-                "discord_url",
-                "discord_url_status",
-                "channel_information_available",
-                "channel_information_status",
+                "automation.discord_url",
+                "automation.discord_url_status",
+                "automation.channel_information_available",
+                "automation.channel_information_status",
             ),
         )
         self.assertEqual(
-            CustomVariableStore.generated_names(
+            tuple(item.name for item in generated_output_definitions(
                 "twitch.build_social_links_message",
                 {},
-            ),
+            )),
             (
-                "social_links_message",
-                "social_links_message_status",
-                "channel_information_available",
-                "channel_information_status",
+                "automation.social_links_message",
+                "automation.social_links_message_status",
+                "automation.channel_information_available",
+                "automation.channel_information_status",
             ),
         )
 
@@ -130,7 +136,7 @@ class AutomationVariableTests(unittest.TestCase):
             child.routine_id,
             task_type="core.adjust_variable",
             name="Add one",
-            config={"name": "score", "amount": 1},
+            config={"name": "automation.score", "amount": 1},
         )
         parent = self.routine_store.add("Parent")
         self.routine_store.add_task(
@@ -154,7 +160,7 @@ class AutomationVariableTests(unittest.TestCase):
         result = self.service.run_routine(parent.routine_id)
 
         self.assertTrue(result.succeeded)
-        self.assertEqual(self.capture.contexts[-1]["score"], "2")
+        self.assertEqual(self.capture.contexts[-1]["automation.score"], "2")
         self.assertNotIn("score", self.variable_store.values())
 
     def test_global_variable_is_available_to_later_executions(self) -> None:
@@ -163,7 +169,7 @@ class AutomationVariableTests(unittest.TestCase):
             create.routine_id,
             task_type="core.create_global_variable",
             name="Remember winner",
-            config={"name": "last_winner", "value": "{user}"},
+            config={"name": "last_winner", "value": "{user.display_name}"},
         )
         read = self.routine_store.add("Read")
         self.routine_store.add_task(
@@ -177,7 +183,7 @@ class AutomationVariableTests(unittest.TestCase):
         )
         self.assertTrue(self.service.run_routine(read.routine_id).succeeded)
 
-        self.assertEqual(self.capture.contexts[-1]["last_winner"], "ViewerOne")
+        self.assertEqual(self.capture.contexts[-1]["custom.last_winner"], "ViewerOne")
         self.assertEqual(self.variable_store.global_values["last_winner"], "ViewerOne")
 
     def test_recursive_routine_call_is_blocked(self) -> None:
@@ -217,7 +223,7 @@ class AutomationVariableTests(unittest.TestCase):
         )
 
         self.assertTrue(result.succeeded)
-        self.assertNotIn("temporary_value", self.capture.contexts[-1])
+        self.assertNotIn("automation.temporary_value", self.capture.contexts[-1])
 
 
 if __name__ == "__main__":

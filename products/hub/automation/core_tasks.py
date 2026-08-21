@@ -22,7 +22,7 @@ from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtWidgets import QApplication, QStyle, QSystemTrayIcon
 
 from products.hub.automation.models import TaskDefinition, TaskExecutionResult, TriggerEvent
-from products.hub.automation.variables import render_preview
+from products.hub.automation.variable_registry import render_placeholders
 from products.hub.automation.variable_tasks import VARIABLE_TASK_LABELS
 from products.hub.automation.logic_tasks import LOGIC_TASK_LABELS
 from products.hub.automation.file_tasks import FILE_TASK_LABELS
@@ -202,11 +202,11 @@ class DesktopNotificationTask:
 
     def execute(self, task: TaskDefinition, trigger: TriggerEvent) -> TaskExecutionResult:
         try:
-            title = render_preview(
+            title = render_placeholders(
                 str(task.config.get("title", "Streamhouse Hub")),
                 trigger.context,
             ).strip()
-            message = render_preview(
+            message = render_placeholders(
                 str(task.config.get("message", "")),
                 trigger.context,
             ).strip()

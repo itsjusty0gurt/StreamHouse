@@ -121,7 +121,7 @@ class AutomationTransferTests(unittest.TestCase):
     def test_command_routine_round_trip_rebuilds_managed_trigger_task(self) -> None:
         command = self.stores["command_store"].add(
             "discord",
-            "Join us, {user}!",
+            "Join us, {user.display_name}!",
             aliases=["community"],
         )
         self.stores["routine_store"].add_task(
@@ -148,7 +148,7 @@ class AutomationTransferTests(unittest.TestCase):
         self.assertEqual(imported_command.aliases, ["community"])
         self.assertEqual(
             destination["command_store"].response_for(imported_command),
-            "Join us, {user}!",
+            "Join us, {user.display_name}!",
         )
         self.assertEqual(len(imported.tasks), 2)
         self.assertEqual(imported.tasks[0].managed_key, "twitch.command")

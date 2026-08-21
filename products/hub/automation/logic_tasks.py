@@ -8,15 +8,15 @@ from typing import MutableMapping
 
 from PySide6.QtWidgets import QInputDialog
 
-from products.hub.automation.custom_variables import CustomVariableStore
 from products.hub.automation.models import (
     RoutineExecutionResult,
     TaskDefinition,
     TaskExecutionResult,
     TriggerEvent,
 )
-from products.hub.automation.variables import render_preview
+from products.hub.automation.variable_registry import render_placeholders
 from products.hub.automation.variable_registry import VariableDataType
+from products.hub.automation.variable_outputs import automation_output_name
 
 
 LOGIC_TASK_LABELS = {
@@ -122,8 +122,8 @@ def evaluate_condition(
     if operation in {"exists", "not_exists"}:
         exists = _variable_name(left_template) in context
         return exists if operation == "exists" else not exists
-    left = render_preview(left_template, context)
-    right = render_preview(right_template, context)
+    left = render_placeholders(left_template, context, strip_values=True)
+    right = render_placeholders(right_template, context, strip_values=True)
     if operation == "equals":
         return left == right
     if operation == "not_equals":
@@ -175,15 +175,15 @@ class GetInputTask:
     def execute(self, task: TaskDefinition, trigger: TriggerEvent) -> TaskExecutionResult:
         try:
             context = _context(trigger)
-            name = CustomVariableStore.validate_name(str(task.config.get("name", "")))
-            title = render_preview(
+            name = automation_output_name(task.config.get("name", ""))
+            title = render_placeholders(
                 str(task.config.get("title", "Streamhouse Hub Input")), context
             )
-            prompt = render_preview(str(task.config.get("prompt", "Enter a value:")), context)
-            default = render_preview(str(task.config.get("default", "")), context)
+            prompt = render_placeholders(str(task.config.get("prompt", "Enter a value:")), context, strip_values=True)
+            default = render_placeholders(str(task.config.get("default", "")), context, strip_values=True)
             value, accepted = self.input_provider(None, title, prompt, text=default)
             context[name] = str(value) if accepted else ""
-            context[f"{name}_accepted"] = "true" if accepted else "false"
+            context[automation_output_name(name, "accepted")] = "true" if accepted else "false"
             if not accepted and bool(task.config.get("break_on_cancel", False)):
                 return _result(
                     task,
@@ -209,7 +209,7 @@ class GetRandomNumberTask:
     def execute(self, task: TaskDefinition, trigger: TriggerEvent) -> TaskExecutionResult:
         try:
             context = _context(trigger)
-            name = CustomVariableStore.validate_name(str(task.config.get("name", "")))
+            name = automation_output_name(task.config.get("name", ""))
             mode = str(task.config.get("mode", "integer"))
             if mode == "decimal":
                 value = f"{self.rng.random():.6f}".rstrip("0").rstrip(".")
@@ -334,7 +334,7 @@ class SwitchTask(_RoutineLogicTask):
     def execute(self, task: TaskDefinition, trigger: TriggerEvent) -> TaskExecutionResult:
         try:
             context = _context(trigger)
-            value = render_preview(str(task.config.get("input", "")), context)
+            value = render_placeholders(str(task.config.get("input", "")), context, strip_values=True)
             cases = task.config.get("cases", {})
             if not isinstance(cases, dict):
                 raise ValueError("Switch cases are invalid.")
@@ -343,7 +343,7 @@ class SwitchTask(_RoutineLogicTask):
             routine_id = ""
             matched_case = "Default"
             for case, target in cases.items():
-                rendered_case = render_preview(str(case), context)
+                rendered_case = render_placeholders(str(case), context, strip_values=True)
                 candidate = rendered_case.casefold() if ignore_case else rendered_case
                 if comparison == candidate:
                     routine_id = str(target)

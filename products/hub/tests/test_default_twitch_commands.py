@@ -9,6 +9,8 @@ from products.hub.automation.models import TriggerEvent
 from products.hub.automation.routines import RoutineStore
 from products.hub.automation.service import AutomationService
 from products.hub.automation.tasks import TaskRegistry
+from products.hub.automation.variable_providers import context_provider
+from products.hub.automation.variable_registry import VariableRegistry
 from products.hub.automation.value_tasks import register_value_tasks
 from products.hub.twitch.commands import TwitchCommandTriggerStore
 from products.hub.twitch.channel_information import (
@@ -84,15 +86,20 @@ class DefaultTwitchCommandTests(unittest.TestCase):
         )
         self.channel_information.load()
         self.twitch = FakeTwitchInformationService()
+        self.variable_registry = VariableRegistry()
+        self.variable_registry.register(context_provider())
         self.registry = TaskRegistry()
         register_twitch_tasks(
             self.registry,
             self.twitch,
             command_provider=lambda: self.store,
             channel_information_provider=lambda: self.channel_information,
+            variable_registry=self.variable_registry,
         )
         register_value_tasks(self.registry)
-        self.automation = AutomationService(self.routines, self.registry)
+        self.automation = AutomationService(
+            self.routines, self.registry, variable_registry=self.variable_registry
+        )
 
     def tearDown(self) -> None:
         self.temporary.cleanup()

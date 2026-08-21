@@ -54,7 +54,7 @@ class TwitchCommandTriggerStoreTests(unittest.TestCase):
     def test_trigger_crud_round_trip_manages_its_routine_and_task(self) -> None:
         trigger = self.store.add(
             "Discord",
-            "Join us, {user}!",
+            "Join us, {user.display_name}!",
             aliases=["dc"],
             permission=TwitchCommandPermission.SUBSCRIBER.value,
             global_cooldown_seconds=5,
@@ -82,11 +82,11 @@ class TwitchCommandTriggerStoreTests(unittest.TestCase):
         self.assertEqual(saved.permission, "subscriber")
         self.assertEqual(saved.uses, 1)
         self.assertTrue(saved.last_used_at)
-        self.assertEqual(loaded.response_for(saved), "Join us, {user}!")
+        self.assertEqual(loaded.response_for(saved), "Join us, {user.display_name}!")
         loaded.update(
             saved.trigger_id,
             name="community",
-            response="Community: {channel}",
+            response="Community: {stream.channel}",
             aliases=["discord"],
             permission="everyone",
             global_cooldown_seconds=0,
@@ -95,13 +95,13 @@ class TwitchCommandTriggerStoreTests(unittest.TestCase):
         self.assertIsNotNone(loaded.resolve("discord"))
         self.assertEqual(
             loaded.response_for(saved),
-            "Community: {channel}",
+            "Community: {stream.channel}",
         )
         self.assertTrue(loaded.delete(saved.trigger_id))
         self.assertEqual(loaded.triggers, [])
         self.assertEqual(loaded.routine_store.routines, [])
 
-    def test_version_one_direct_response_migrates_to_managed_routine(self) -> None:
+    def test_version_one_flat_response_is_discarded_before_alpha(self) -> None:
         self.path.write_text(
             json.dumps(
                 {
@@ -118,15 +118,9 @@ class TwitchCommandTriggerStoreTests(unittest.TestCase):
             encoding="utf-8",
         )
 
-        self.store.load()
-
-        trigger = self.store.triggers[0]
-        self.assertEqual(trigger.trigger_id, "legacy-1")
-        self.assertTrue(trigger.routine_id)
-        self.assertEqual(self.store.response_for(trigger), "Hello {user}")
-        saved = json.loads(self.path.read_text(encoding="utf-8"))
-        self.assertEqual(saved["version"], 4)
-        self.assertIn("triggers", saved)
+        with self.assertRaisesRegex(ValueError, "discarded pre-alpha schema"):
+            self.store.load()
+        self.assertEqual(self.store.triggers, [])
 
     def test_validation_rejects_collisions_reserved_names_and_bad_variables(self) -> None:
         self.store.add("discord", "Community link")
@@ -134,11 +128,11 @@ class TwitchCommandTriggerStoreTests(unittest.TestCase):
             self.store.add("socials", "Links", aliases=["discord"])
         with self.assertRaisesRegex(ValueError, "built-in"):
             self.store.add("sallymemory", "No")
-        with self.assertRaisesRegex(ValueError, "Unknown command variable"):
+        with self.assertRaisesRegex(ValueError, "Invalid canonical command variable"):
             self.store.add("broken", "Hello {username}")
 
     def test_command_edit_preserves_added_routine_tasks_after_reordering(self) -> None:
-        trigger = self.store.add("hello", "Hello {user}")
+        trigger = self.store.add("hello", "Hello {user.display_name}")
         routine = self.routine_store.get(trigger.routine_id)
         primary_id = routine.tasks[0].task_id
         extra = self.routine_store.add_task(
@@ -151,7 +145,7 @@ class TwitchCommandTriggerStoreTests(unittest.TestCase):
         self.store.update(
             trigger.trigger_id,
             name="hello",
-            response="Welcome {user}",
+            response="Welcome {user.display_name}",
             aliases=[],
             permission="everyone",
             global_cooldown_seconds=0,
@@ -160,14 +154,14 @@ class TwitchCommandTriggerStoreTests(unittest.TestCase):
 
         saved = self.routine_store.get(trigger.routine_id)
         self.assertEqual([task.task_id for task in saved.tasks], [extra.task_id, primary_id])
-        self.assertEqual(self.store.response_for(trigger), "Welcome {user}")
+        self.assertEqual(self.store.response_for(trigger), "Welcome {user.display_name}")
 
         loaded = TwitchCommandTriggerStore(
             self.path,
             RoutineStore(self.routine_store.path),
         )
         self.assertEqual(len(loaded.load()), 1)
-        self.assertEqual(loaded.response_for(loaded.triggers[0]), "Welcome {user}")
+        self.assertEqual(loaded.response_for(loaded.triggers[0]), "Welcome {user.display_name}")
 
     def test_command_response_accepts_variable_generated_by_another_task(self) -> None:
         trigger = self.store.add("random", "Placeholder")
@@ -183,7 +177,7 @@ class TwitchCommandTriggerStoreTests(unittest.TestCase):
         self.routine_store.update_task(
             routine.routine_id,
             response.task_id,
-            config={"message": "{random_line}", "as_bot": True},
+            config={"message": "{automation.random_line}", "as_bot": True},
         )
         self.store.save()
 
@@ -195,7 +189,7 @@ class TwitchCommandTriggerStoreTests(unittest.TestCase):
         self.assertEqual(len(loaded.load()), 1)
         self.assertEqual(
             loaded.response_for(loaded.triggers[0]),
-            "{random_line}",
+            "{automation.random_line}",
         )
 
     def test_command_can_trigger_routine_without_chat_response(self) -> None:
@@ -247,7 +241,7 @@ class TwitchCommandTriggerStoreTests(unittest.TestCase):
         self.assertEqual(loaded.response_for(loaded.triggers[0]), "")
 
     def test_clearing_response_removes_only_managed_response_task(self) -> None:
-        trigger = self.store.add("hello", "Hello {user}")
+        trigger = self.store.add("hello", "Hello {user.display_name}")
         extra = self.routine_store.add_task(
             trigger.routine_id,
             task_type="core.delay",
@@ -272,14 +266,14 @@ class TwitchCommandTriggerStoreTests(unittest.TestCase):
         self.store.update(
             trigger.trigger_id,
             name="hello",
-            response="Done, {user}",
+            response="Done, {user.display_name}",
             aliases=[],
             permission="everyone",
             global_cooldown_seconds=0,
             user_cooldown_seconds=0,
         )
 
-        self.assertEqual(self.store.response_for(trigger), "Done, {user}")
+        self.assertEqual(self.store.response_for(trigger), "Done, {user.display_name}")
         self.assertEqual(len(self.routine_store.get(trigger.routine_id).tasks), 2)
 
     def test_trigger_can_attach_to_and_detach_from_existing_routine(self) -> None:
@@ -293,7 +287,7 @@ class TwitchCommandTriggerStoreTests(unittest.TestCase):
         trigger = self.store.attach_routine(
             routine.routine_id,
             "hello",
-            "Hello {user}",
+            "Hello {user.display_name}",
         )
 
         attached = self.routine_store.get(routine.routine_id)
@@ -535,7 +529,7 @@ class TwitchCommandTriggerDispatcherTests(unittest.TestCase):
     def test_builds_general_trigger_context_and_records_only_after_execution(self) -> None:
         trigger = self.store.add(
             "uptime",
-            "{user}: {channel} has streamed {uptime}; use #{uses}; target {target}; args {args}.",
+            "{user.display_name}: {stream.channel} has streamed {hub.uptime}; use #{command.uses}; target {command.target}; args {command.args}.",
             global_cooldown_seconds=10,
             user_cooldown_seconds=30,
         )
@@ -548,7 +542,7 @@ class TwitchCommandTriggerDispatcherTests(unittest.TestCase):
         )
         result = self.dispatcher.evaluate(
             incoming,
-            {"channel": "sally", "uptime": "01:02:03"},
+            {"stream.channel": "streamhouse", "hub.uptime": "01:02:03"},
         )
 
         self.assertEqual(result.outcome, TwitchCommandTriggerOutcome.READY)
@@ -571,7 +565,7 @@ class TwitchCommandTriggerDispatcherTests(unittest.TestCase):
     def test_global_and_per_viewer_cooldowns_are_both_enforced(self) -> None:
         self.store.add(
             "hello",
-            "Hello {user}",
+            "Hello {user.display_name}",
             global_cooldown_seconds=5,
             user_cooldown_seconds=20,
         )

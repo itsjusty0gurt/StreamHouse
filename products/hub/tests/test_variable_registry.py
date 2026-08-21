@@ -20,6 +20,7 @@ from products.hub.automation.variable_providers import (
     CustomVariableProvider,
     context_provider,
 )
+from products.hub.automation.variable_outputs import generated_output_definitions
 from products.hub.automation.variable_registry import (
     CallbackVariableProvider,
     VariableAvailability,
@@ -118,10 +119,8 @@ def test_counter_variable_uses_stable_id_and_domain_service_for_writes() -> None
         registry.register(provider)
 
         assert registry.resolve("counter.deaths.stream").display_value == "5"
-        alias = registry.resolve("counter.deaths")
-        assert alias.display_value == "5"
-        assert alias.definition.alias_of == "counter.deaths.stream"
-        registry.set_value("counter.deaths", 9)
+        assert registry.resolve("counter.deaths") is None
+        registry.set_value("counter.deaths.stream", 9)
         assert service.get_values("deaths").channel_total == 9
         assert not registry.resolve("counter.deaths.viewer", {}).available
         service.set_value("deaths", "viewer_total", 3, user_id="111")
@@ -142,10 +141,10 @@ def test_alias_metadata_collisions_and_loop_prevention() -> None:
     registry.register(
         CallbackVariableProvider("Hub", (canonical,), lambda _name, _context: (True, 2, ""))
     )
-    alias = registry.register_alias("hub.old_value", "hub.value", legacy=True)
+    alias = registry.register_alias("hub.alternate_value", "hub.value")
     assert alias.is_alias and alias.data_type is VariableDataType.INTEGER
-    assert registry.resolve("hub.old_value").value == 2
-    assert registry.render("Old: {hub.old_value}") == "Old: 2"
+    assert registry.resolve("hub.alternate_value").value == 2
+    assert registry.render("Alternate: {hub.alternate_value}") == "Alternate: 2"
     assert alias not in registry.definitions()
     assert alias in registry.definitions(include_aliases=True)
     with pytest.raises(ValueError, match="already registered"):
@@ -169,7 +168,7 @@ def test_alias_metadata_collisions_and_loop_prevention() -> None:
 
 def test_temporary_definition_reports_lifetime_and_preview_separately() -> None:
     definition = VariableDefinition(
-        "task_output",
+        "automation.task_output",
         "Task Output",
         "Only available during this routine.",
         VariableDataType.INTEGER,
@@ -177,7 +176,6 @@ def test_temporary_definition_reports_lifetime_and_preview_separately() -> None:
         "Task outputs",
         availability=VariableAvailability.TEMPORARY,
         preview_value=12,
-        legacy=True,
     )
     assert definition.availability is VariableAvailability.TEMPORARY
     assert definition.preview_value == 12
@@ -185,25 +183,31 @@ def test_temporary_definition_reports_lifetime_and_preview_separately() -> None:
 
 
 def test_generated_task_outputs_have_typed_temporary_metadata() -> None:
-    random_output = CustomVariableStore.generated_definitions(
+    random_output = generated_output_definitions(
         "core.logic_random_number", {"name": "roll", "mode": "integer"}
     )[0]
-    assert random_output.name == "roll"
+    assert random_output.name == "automation.roll"
     assert random_output.data_type is VariableDataType.INTEGER
     assert random_output.availability is VariableAvailability.TEMPORARY
     assert random_output.preview_value == 1
 
-    counter_outputs = CustomVariableStore.generated_definitions(
+    counter_outputs = generated_output_definitions(
         "counter.update", {"counter_id": "deaths"}, source="Counter — Update"
     )
-    amount = next(item for item in counter_outputs if item.name == "deaths_amount_changed")
-    status = next(item for item in counter_outputs if item.name == "deaths_status")
+    amount = next(item for item in counter_outputs if item.name == "automation.deaths_amount_changed")
+    status = next(item for item in counter_outputs if item.name == "automation.deaths_status")
     assert amount.data_type is VariableDataType.INTEGER
     assert status.data_type is VariableDataType.TEXT
     assert amount.source == "Counter — Update"
 
+    twitch_outputs = generated_output_definitions("twitch.get_stream_information", {})
+    by_name = {item.name: item for item in twitch_outputs}
+    assert by_name["automation.is_live"].data_type is VariableDataType.BOOLEAN
+    assert by_name["automation.stream_viewers"].data_type is VariableDataType.INTEGER
+    assert by_name["automation.stream_started_at"].data_type is VariableDataType.DATETIME
 
-def test_version_one_custom_variable_file_remains_compatible() -> None:
+
+def test_pre_alpha_custom_variable_schema_is_rejected_for_reset() -> None:
     with TemporaryDirectory() as temporary:
         path = Path(temporary) / "variables.json"
         path.write_text(
@@ -211,8 +215,8 @@ def test_version_one_custom_variable_file_remains_compatible() -> None:
             encoding="utf-8",
         )
         store = CustomVariableStore(path)
-        assert store.load() == {"game_mode": "classic"}
-        assert store.type_of("game_mode") == "text"
+        with pytest.raises(ValueError, match="discarded pre-alpha schema"):
+            store.load()
 
 
 def test_condition_operator_choices_use_registry_types() -> None:

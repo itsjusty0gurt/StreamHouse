@@ -4,13 +4,13 @@ import calendar
 from datetime import datetime, timedelta, timezone
 from typing import Mapping
 
-from products.hub.automation.custom_variables import CustomVariableStore
 from products.hub.automation.models import (
     TaskDefinition,
     TaskExecutionResult,
     TriggerEvent,
 )
-from products.hub.automation.variables import render_preview
+from products.hub.automation.variable_registry import render_placeholders
+from products.hub.automation.variable_outputs import automation_output_name
 
 
 VALUE_TASK_LABELS = {
@@ -95,18 +95,16 @@ class FormatDurationTask:
     def execute(self, task: TaskDefinition, trigger: TriggerEvent) -> TaskExecutionResult:
         context = _context(trigger)
         try:
-            output = CustomVariableStore.validate_generated_name(
-                str(task.config.get("output_variable", "formatted_duration"))
-            )
+            output = automation_output_name(task.config.get("output_variable", "formatted_duration"))
         except ValueError as error:
             return _result(task, False, str(error))
-        status_name = f"{output}_status"
+        status_name = automation_output_name(output, "status")
         context[output] = ""
         context[status_name] = "missing"
         try:
             seconds_template = str(task.config.get("seconds", "")).strip()
             if seconds_template:
-                seconds = float(render_preview(seconds_template, context))
+                seconds = float(render_placeholders(seconds_template, context, strip_values=True))
                 if seconds < 0:
                     context[status_name] = "future"
                     return _result(task, True, "Duration is in the future.")
@@ -114,13 +112,13 @@ class FormatDurationTask:
                 start = end - timedelta(seconds=seconds)
             else:
                 start = _parse_datetime(
-                    render_preview(str(task.config.get("start", "")), context)
+                    render_placeholders(str(task.config.get("start", "")), context, strip_values=True)
                 )
                 if start is None:
                     return _result(task, True, "Duration start is unavailable.")
                 end_template = str(task.config.get("end", "")).strip()
                 end = (
-                    _parse_datetime(render_preview(end_template, context))
+                    _parse_datetime(render_placeholders(end_template, context, strip_values=True))
                     if end_template
                     else datetime.now(timezone.utc)
                 )
@@ -143,12 +141,10 @@ class SelectTextTask:
     def execute(self, task: TaskDefinition, trigger: TriggerEvent) -> TaskExecutionResult:
         context = _context(trigger)
         try:
-            output = CustomVariableStore.validate_generated_name(
-                str(task.config.get("output_variable", "selected_text"))
-            )
+            output = automation_output_name(task.config.get("output_variable", "selected_text"))
         except ValueError as error:
             return _result(task, False, str(error))
-        selector = render_preview(
+        selector = render_placeholders(
             str(task.config.get("selector", "")), context
         ).strip().casefold()
         raw_cases = task.config.get("cases", {})
@@ -161,7 +157,7 @@ class SelectTextTask:
             ),
             task.config.get("default", ""),
         )
-        context[output] = render_preview(str(selected), context).strip()
+        context[output] = render_placeholders(str(selected), context, strip_values=True).strip()
         if not context[output]:
             return _result(task, False, "The selected text is empty.")
         return _result(task, True, f'Selected text for "{selector or "(empty)"}".')
