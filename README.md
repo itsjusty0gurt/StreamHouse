@@ -31,7 +31,10 @@ bound only to `127.0.0.1:8765`.
 
 See [architecture](docs/architecture/overview.md) for ownership and change
 routing, and [product family](docs/architecture/product-family.md) for canonical
-product names and dependency rules. Relay operators should use the
+product names and dependency rules. Streamhouse is pre-alpha; the
+[development and compatibility policy](docs/architecture/development-policy.md)
+defines the clean-architecture baseline and the point at which upgrade
+compatibility begins. Relay operators should use the
 [production migration runbook](docs/deployment/relay-brand-migration.md), which
 keeps the old service available until Render, Hub, Twitch Extension, and
 database verification are complete.
@@ -72,7 +75,9 @@ Independent outputs:
 - `release\StreamhouseHub-0.1.0-windows-x64.zip`
 - `release\StreamhouseAI-0.1.0-windows-x64.zip`
 
-User data remains under `%LOCALAPPDATA%\Streamhouse`. Missing legacy files from
-`%LOCALAPPDATA%\SallyAI` are copied without overwrite or deletion. The new
-`STREAMHOUSE_DATA_DIR` and `STREAMHOUSE_SMOKE_TEST` environment variables take
-precedence; `SALLY_DATA_DIR` and `SALLY_SMOKE_TEST` remain deprecated fallbacks.
+Current user data lives under `%LOCALAPPDATA%\Streamhouse`. Some Sally-era
+migration and environment fallbacks still exist as transitional implementation,
+not as guaranteed pre-alpha compatibility. New work uses
+`STREAMHOUSE_DATA_DIR` and `STREAMHOUSE_SMOKE_TEST`; obsolete fallbacks should be
+removed when their active consumers have been migrated. Encrypted Twitch-token
+preservation is preferred when easy, but it must not constrain clean design.

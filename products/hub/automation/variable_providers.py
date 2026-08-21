@@ -13,11 +13,6 @@ from products.hub.automation.variable_registry import (
 from products.hub.counters.service import CounterService
 
 
-RESERVED_NAMESPACES = frozenset(
-    {"stream", "user", "chat", "counter", "obs", "hub", "automation"}
-)
-
-
 class CustomVariableProvider:
     source = "Custom"
 
@@ -68,34 +63,94 @@ class CounterVariableProvider:
         self.stream_id = stream_id or (lambda: "")
 
     def definitions(self) -> tuple[VariableDefinition, ...]:
-        return tuple(
-            VariableDefinition(
-                name=f"counter.{counter.counter_id}",
-                display_name=counter.display_name,
-                description=f"Channel all-time total for {counter.display_name}.",
-                data_type=VariableDataType.INTEGER,
-                source=self.source,
-                category="Counters",
-                writable=counter.enabled and counter.track_channel_total,
+        definitions: list[VariableDefinition] = []
+        for counter in self.service.list_counters():
+            stream_name = f"counter.{counter.counter_id}.stream"
+            definitions.extend(
+                (
+                    VariableDefinition(
+                        name=stream_name,
+                        display_name=f"{counter.display_name} - Stream",
+                        description=f"Shared channel counter value for {counter.display_name}.",
+                        data_type=VariableDataType.INTEGER,
+                        source=self.source,
+                        category="Counters",
+                        writable=counter.enabled and counter.track_channel_total,
+                    ),
+                    VariableDefinition(
+                        name=f"counter.{counter.counter_id}.viewer",
+                        display_name=f"{counter.display_name} - Viewer",
+                        description=(
+                            f"Lifetime value for {counter.display_name} associated "
+                            "with the current viewer."
+                        ),
+                        data_type=VariableDataType.INTEGER,
+                        source=self.source,
+                        category="Counters",
+                        availability=VariableAvailability.CONTEXTUAL,
+                        writable=False,
+                        required_context=("user.id",),
+                    ),
+                    VariableDefinition(
+                        name=f"counter.{counter.counter_id}",
+                        display_name=f"{counter.display_name} - Legacy Alias",
+                        description=f"Legacy alias for {stream_name}.",
+                        data_type=VariableDataType.INTEGER,
+                        source=self.source,
+                        category="Counters",
+                        writable=counter.enabled and counter.track_channel_total,
+                        alias_of=stream_name,
+                        legacy=True,
+                    ),
+                )
             )
-            for counter in self.service.list_counters()
-        )
+        return tuple(definitions)
 
     def resolve(self, name: str, context: Mapping[str, object]) -> VariableSnapshot:
-        counter_id = name.removeprefix("counter.")
+        counter_id, scope = self._parts(name)
         definition = next(item for item in self.definitions() if item.name == name)
         counter = self.service.get_counter(counter_id)
-        if counter is None or not counter.enabled or not counter.track_channel_total:
+        tracked = counter and (
+            counter.track_channel_total
+            if scope == "stream"
+            else counter.track_viewer_total
+        )
+        if counter is None or not counter.enabled or not tracked:
             return VariableSnapshot(definition, None, False, "Counter is unavailable.")
-        values = self.service.get_values(counter_id, stream_id=self.stream_id())
-        return VariableSnapshot(definition, values.channel_total, True)
+        user_id = self._context_user_id(context)
+        if scope == "viewer" and not user_id:
+            return VariableSnapshot(definition, None, False, "Requires viewer context.")
+        values = self.service.get_values(
+            counter_id,
+            user_id=user_id,
+            stream_id=self.stream_id(),
+        )
+        value = values.channel_total if scope == "stream" else values.viewer_total
+        return VariableSnapshot(definition, value, True)
 
     def set_value(self, name: str, value: object) -> VariableSnapshot:
-        counter_id = name.removeprefix("counter.")
+        counter_id, scope = self._parts(name)
+        if scope != "stream":
+            raise PermissionError(f'Variable "{name}" is read-only.')
         result = self.service.set_value(counter_id, "channel_total", int(value))
         if result.status not in {"success", "minimum_reached"}:
             raise ValueError(result.detail or f"Counter update failed: {result.status}.")
         return self.resolve(name, {})
+
+    @staticmethod
+    def _parts(name: str) -> tuple[str, str]:
+        prefix, counter_id, scope = name.split(".", 2)
+        if prefix != "counter" or scope not in {"stream", "viewer"}:
+            raise KeyError(f'Unknown counter variable "{name}".')
+        return counter_id, scope
+
+    @staticmethod
+    def _context_user_id(context: Mapping[str, object]) -> str:
+        for key in ("user.id", "user_id", "viewer_id"):
+            value = str(context.get(key, "")).strip()
+            if value not in {"", "--"}:
+                return value
+        return ""
 
 
 CONTEXT_DEFINITIONS = (
@@ -119,6 +174,7 @@ def context_provider() -> CallbackVariableProvider:
             source="Twitch Context",
             category=name.split(".", 1)[0].title(),
             availability=VariableAvailability.CONTEXTUAL,
+            required_context=tuple(_aliases),
         )
         for name, display, description, data_type, _aliases in CONTEXT_DEFINITIONS
     )

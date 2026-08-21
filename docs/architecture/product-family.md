@@ -18,6 +18,9 @@ not the name of the complete Streamhouse ecosystem.
 The implementation, packages, executables, and local protocol now use
 Streamhouse product names. The GitHub repository remains `SallyAIBot`; changing
 that external repository identifier is outside the application rebrand.
+Generic SallyBot-era infrastructure is transitional pre-alpha debt, not a
+compatibility requirement. Sally names remain current only where they refer to
+the AI personality/character or another deliberately Sally-specific concept.
 
 ## Product status
 
@@ -56,8 +59,13 @@ Hub must work independently. It must not require Streamhouse Studio,
 Streamhouse AI, Streamhouse Avatar, or Streamhouse Deck.
 
 Hub variables use provider-owned dotted namespaces such as `stream.*`,
-`chat.*`, `counter.*`, `obs.*`, and `custom.*`. They are Hub automation
-infrastructure; Streamhouse AI does not read Hub's variable or counter files.
+`chat.*`, `counter.<stable_id>.stream`, `counter.<stable_id>.viewer`, `obs.*`,
+and `custom.*`. `VariableRegistry` is Hub's authoritative modern metadata and
+resolution contract. The flat catalog is transitional and is not part of the
+intended Alpha architecture; private development routines may be reset while it
+is removed. These
+are Hub automation infrastructure, and Streamhouse AI does not read Hub's
+variable or counter files.
 
 Implementation mapping:
 

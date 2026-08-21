@@ -12,8 +12,23 @@ from shared.streamhouse_runtime.logger import Logger
 VARIABLE_NAME_PATTERN = re.compile(
     r"^[a-z][a-z0-9_]{0,63}(?:\.[a-z][a-z0-9_]{0,63})+$"
 )
+LEGACY_VARIABLE_NAME_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,127}$")
 PLACEHOLDER_PATTERN = re.compile(
-    r"\{([a-z][a-z0-9_]{0,63}(?:\.[a-z][a-z0-9_]{0,63})*)\}"
+    r"\{([a-z][a-z0-9_]{0,127}|[a-z][a-z0-9_]{0,63}(?:\.[a-z][a-z0-9_]{0,63})+)\}"
+)
+RESERVED_NAMESPACES = frozenset(
+    {
+        "stream",
+        "user",
+        "chat",
+        "counter",
+        "obs",
+        "hub",
+        "custom",
+        "automation",
+        "ads",
+        "soundboard",
+    }
 )
 
 
@@ -28,6 +43,7 @@ class VariableDataType(StrEnum):
 class VariableAvailability(StrEnum):
     GLOBAL = "global"
     CONTEXTUAL = "contextual"
+    TEMPORARY = "temporary"
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,16 +57,46 @@ class VariableDefinition:
     availability: VariableAvailability = VariableAvailability.GLOBAL
     writable: bool = False
     default: Any | None = None
+    required_context: tuple[str, ...] = ()
+    preview_value: Any | None = None
+    alias_of: str = ""
+    legacy: bool = False
 
     def __post_init__(self) -> None:
         name = self.name.strip().casefold()
-        if not VARIABLE_NAME_PATTERN.fullmatch(name):
+        if not VARIABLE_NAME_PATTERN.fullmatch(name) and not (
+            self.legacy and LEGACY_VARIABLE_NAME_PATTERN.fullmatch(name)
+        ):
             raise ValueError(f'Invalid canonical variable name: "{self.name}".')
         object.__setattr__(self, "name", name)
+        object.__setattr__(self, "data_type", VariableDataType(self.data_type))
+        object.__setattr__(
+            self, "availability", VariableAvailability(self.availability)
+        )
+        alias_of = self.alias_of.strip().casefold()
+        if alias_of:
+            if alias_of == name or not VARIABLE_NAME_PATTERN.fullmatch(alias_of):
+                raise ValueError(f'Invalid variable alias target: "{self.alias_of}".')
+            object.__setattr__(self, "alias_of", alias_of)
+        object.__setattr__(
+            self,
+            "required_context",
+            tuple(
+                dict.fromkeys(
+                    str(item).strip().casefold()
+                    for item in self.required_context
+                    if str(item).strip()
+                )
+            ),
+        )
 
     @property
     def placeholder(self) -> str:
         return f"{{{self.name}}}"
+
+    @property
+    def is_alias(self) -> bool:
+        return bool(self.alias_of)
 
 
 @dataclass(frozen=True, slots=True)
@@ -115,9 +161,10 @@ class VariableRegistry:
 
     def __init__(self) -> None:
         self._providers: list[VariableProvider] = []
+        self._aliases: dict[str, VariableDefinition] = {}
 
     def register(self, provider: VariableProvider) -> None:
-        existing = {item.name for item in self.definitions()}
+        existing = {item.name for item in self.all_definitions()}
         offered = provider.definitions()
         names = [item.name for item in offered]
         duplicate = next(
@@ -127,31 +174,131 @@ class VariableRegistry:
         if duplicate:
             raise ValueError(f'Variable "{duplicate}" is already registered.')
         self._providers.append(provider)
+        try:
+            self._catalog(include_aliases=True)
+        except (TypeError, ValueError):
+            self._providers.pop()
+            raise
 
-    def definitions(self) -> tuple[VariableDefinition, ...]:
-        return tuple(
-            definition
-            for provider in self._providers
-            for definition in provider.definitions()
+    def register_alias(
+        self,
+        name: str,
+        target: str,
+        *,
+        display_name: str = "",
+        description: str = "",
+        legacy: bool = False,
+    ) -> VariableDefinition:
+        clean_name = validate_variable_name(name, allow_legacy=legacy)
+        clean_target = validate_variable_name(target)
+        catalog = {item.name: item for item in self.all_definitions()}
+        if clean_name in catalog:
+            raise ValueError(f'Variable "{clean_name}" is already registered.')
+        if clean_target not in catalog:
+            raise ValueError(f'Alias target "{clean_target}" is not registered.')
+        canonical = self._canonical_definition(clean_target, catalog)
+        alias = VariableDefinition(
+            name=clean_name,
+            display_name=display_name or canonical.display_name,
+            description=description or f"Compatibility alias for {canonical.name}.",
+            data_type=canonical.data_type,
+            source=canonical.source,
+            category=canonical.category,
+            availability=canonical.availability,
+            writable=canonical.writable,
+            default=canonical.default,
+            required_context=canonical.required_context,
+            preview_value=canonical.preview_value,
+            alias_of=canonical.name,
+            legacy=legacy,
         )
+        self._aliases[clean_name] = alias
+        # Rebuild now so collisions and accidental alias chains fail immediately.
+        self._catalog(include_aliases=True)
+        return alias
+
+    def definitions(
+        self, *, include_aliases: bool = False
+    ) -> tuple[VariableDefinition, ...]:
+        catalog = self._catalog(include_aliases=True)
+        return tuple(
+            definition for definition in catalog.values()
+            if include_aliases or not definition.is_alias
+        )
+
+    def all_definitions(self) -> tuple[VariableDefinition, ...]:
+        return self.definitions(include_aliases=True)
+
+    def aliases(self) -> tuple[VariableDefinition, ...]:
+        return tuple(item for item in self.all_definitions() if item.is_alias)
+
+    def definition(self, name: str) -> VariableDefinition | None:
+        clean = str(name).strip().casefold().removeprefix("{").removesuffix("}")
+        return self._catalog(include_aliases=True).get(clean)
+
+    def _catalog(self, *, include_aliases: bool) -> dict[str, VariableDefinition]:
+        catalog: dict[str, VariableDefinition] = {}
+        for provider in self._providers:
+            for definition in provider.definitions():
+                if definition.name in catalog:
+                    raise ValueError(
+                        f'Variable "{definition.name}" is already registered.'
+                    )
+                catalog[definition.name] = definition
+        for name, definition in self._aliases.items():
+            if name in catalog:
+                raise ValueError(f'Variable "{name}" is already registered.')
+            catalog[name] = definition
+        for definition in tuple(catalog.values()):
+            if definition.alias_of:
+                self._canonical_definition(definition.name, catalog)
+        if include_aliases:
+            return catalog
+        return {name: item for name, item in catalog.items() if not item.is_alias}
+
+    @staticmethod
+    def _canonical_definition(
+        name: str, catalog: Mapping[str, VariableDefinition]
+    ) -> VariableDefinition:
+        current = name
+        seen: set[str] = set()
+        while True:
+            if current in seen:
+                raise ValueError(f'Variable alias loop detected at "{current}".')
+            seen.add(current)
+            definition = catalog.get(current)
+            if definition is None:
+                raise ValueError(f'Alias target "{current}" is not registered.')
+            if not definition.alias_of:
+                return definition
+            current = definition.alias_of
 
     def resolve(
         self, name: str, context: Mapping[str, object] | None = None
     ) -> VariableSnapshot | None:
         clean = name.strip().casefold().removeprefix("{").removesuffix("}")
+        catalog = self._catalog(include_aliases=True)
+        requested = catalog.get(clean)
+        if requested is None:
+            return None
+        canonical = self._canonical_definition(clean, catalog)
         for provider in self._providers:
-            if clean in {item.name for item in provider.definitions()}:
-                return provider.resolve(clean, context or {})
+            if canonical.name in {item.name for item in provider.definitions()}:
+                snapshot = provider.resolve(canonical.name, context or {})
+                if requested.is_alias:
+                    return VariableSnapshot(requested, snapshot.value, snapshot.available, snapshot.detail)
+                return snapshot
         return None
 
     def snapshots(
         self, context: Mapping[str, object] | None = None
     ) -> tuple[VariableSnapshot, ...]:
-        return tuple(
-            provider.resolve(definition.name, context or {})
-            for provider in self._providers
-            for definition in provider.definitions()
-        )
+        resolved: list[VariableSnapshot] = []
+        for definition in self.definitions():
+            snapshot = self.resolve(definition.name, context)
+            if snapshot is not None:
+                resolved.append(snapshot)
+        return tuple(resolved)
 
     def set_value(self, name: str, value: object) -> VariableSnapshot:
         snapshot = self.resolve(name)
@@ -159,9 +306,12 @@ class VariableRegistry:
             raise KeyError(f'Variable "{name}" is not registered.')
         if not snapshot.definition.writable:
             raise PermissionError(f'Variable "{snapshot.definition.name}" is read-only.')
+        catalog = self._catalog(include_aliases=True)
+        canonical = self._canonical_definition(snapshot.definition.name, catalog)
         for provider in self._providers:
-            if snapshot.definition.name in {item.name for item in provider.definitions()}:
-                return provider.set_value(snapshot.definition.name, value)
+            if canonical.name in {item.name for item in provider.definitions()}:
+                result = provider.set_value(canonical.name, value)
+                return self.resolve(snapshot.definition.name) or result
         raise KeyError(f'Variable "{name}" is not registered.')
 
     def context_values(
@@ -202,3 +352,37 @@ class VariableRegistry:
         if isinstance(value, bool):
             return "true" if value else "false"
         return "" if value is None else str(value)
+
+
+def validate_variable_name(name: str, *, allow_legacy: bool = False) -> str:
+    clean = str(name).strip().casefold().removeprefix("{").removesuffix("}")
+    if not VARIABLE_NAME_PATTERN.fullmatch(clean) and not (
+        allow_legacy and LEGACY_VARIABLE_NAME_PATTERN.fullmatch(clean)
+    ):
+        kind = "legacy variable" if allow_legacy else "canonical variable"
+        raise ValueError(f'Invalid {kind} name: "{name}".')
+    return clean
+
+
+def placeholder_names(template: str) -> tuple[str, ...]:
+    return tuple(match.group(1) for match in PLACEHOLDER_PATTERN.finditer(str(template)))
+
+
+def render_placeholders(
+    template: str,
+    values: Mapping[str, object],
+    *,
+    fallback: str | None = None,
+    strip_values: bool = False,
+) -> str:
+    def replacement(match: re.Match[str]) -> str:
+        name = match.group(1)
+        if name not in values:
+            return match.group(0) if fallback is None else fallback
+        rendered = VariableRegistry.display_value(values[name])
+        return rendered.strip() if strip_values else rendered
+
+    return PLACEHOLDER_PATTERN.sub(
+        replacement,
+        str(template),
+    )

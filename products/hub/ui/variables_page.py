@@ -99,9 +99,9 @@ class VariablesPage(QWidget):
         toolbar.addWidget(self.picker_button)
         toolbar.addWidget(self.new_button)
         layout.addLayout(toolbar)
-        self.table = QTableWidget(0, 5)
+        self.table = QTableWidget(0, 6)
         self.table.setHorizontalHeaderLabels(
-            ("Name", "Value", "Source", "Type", "Access")
+            ("Name", "Value", "Source", "Type", "Availability", "Access")
         )
         self.table.horizontalHeader().setStretchLastSection(True)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
@@ -161,7 +161,19 @@ class VariablesPage(QWidget):
             self.table.setItem(row, 1, QTableWidgetItem(snapshot.display_value))
             self.table.setItem(row, 2, QTableWidgetItem(definition.source))
             self.table.setItem(row, 3, QTableWidgetItem(definition.data_type.value.title()))
-            self.table.setItem(row, 4, QTableWidgetItem("Read/write" if definition.writable else "Read-only"))
+            availability = (
+                definition.availability.value.title()
+                if snapshot.available
+                else f"Unavailable — {definition.availability.value.title()}"
+            )
+            self.table.setItem(row, 4, QTableWidgetItem(availability))
+            self.table.setItem(
+                row,
+                5,
+                QTableWidgetItem(
+                    "Read/write" if definition.writable else "Read-only"
+                ),
+            )
             if definition.name == selected:
                 self.table.selectRow(row)
         if self.table.rowCount() and self.table.currentRow() < 0:
@@ -181,6 +193,11 @@ class VariablesPage(QWidget):
             f"{definition.description or 'No description.'}\n"
             f"{definition.availability.value.title()} - "
             f"{'Read/write' if definition.writable else 'Read-only'}"
+            + (
+                f"\nRequires: {', '.join(definition.required_context)}"
+                if definition.required_context and not snapshot.available
+                else ""
+            )
         )
         custom = definition.name.startswith("custom.")
         self.edit_button.setEnabled(custom or definition.writable)

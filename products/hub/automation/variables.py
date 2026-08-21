@@ -1,7 +1,11 @@
 from __future__ import annotations
 
-import re
 from typing import Iterable, Mapping
+
+from products.hub.automation.variable_registry import (
+    PLACEHOLDER_PATTERN,
+    render_placeholders,
+)
 
 
 VARIABLE_INFO: dict[str, tuple[str, str]] = {
@@ -193,7 +197,7 @@ CORE_VARIABLES = (
     "followers",
 )
 
-TEMPLATE_PATTERN = re.compile(r"\{([a-z][a-z0-9_.]*)\}")
+TEMPLATE_PATTERN = PLACEHOLDER_PATTERN
 
 
 def sample_context(keys: Iterable[str]) -> dict[str, str]:
@@ -206,9 +210,4 @@ def sample_context(keys: Iterable[str]) -> dict[str, str]:
 
 
 def render_preview(template: str, context: Mapping[str, str]) -> str:
-    return TEMPLATE_PATTERN.sub(
-        lambda match: str(
-            context.get(match.group(1), f"{{{match.group(1)}}}")
-        ).strip(),
-        template,
-    )
+    return render_placeholders(template, context, strip_values=True)

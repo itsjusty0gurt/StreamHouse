@@ -16,6 +16,7 @@ from products.hub.automation.models import (
     TriggerEvent,
 )
 from products.hub.automation.variables import render_preview
+from products.hub.automation.variable_registry import VariableDataType
 
 
 LOGIC_TASK_LABELS = {
@@ -50,6 +51,36 @@ COMPARISON_CHOICES = (
 UNARY_OPERATORS = frozenset(
     {"is_empty", "is_true", "is_false", "exists", "not_exists"}
 )
+
+
+def comparison_choices_for_type(
+    data_type: VariableDataType | None,
+) -> tuple[tuple[str, str], ...]:
+    """Return operators supported by the existing condition evaluator for a type."""
+    if data_type is None:
+        return COMPARISON_CHOICES
+    allowed = {
+        VariableDataType.TEXT: {
+            "equals", "not_equals", "equals_ignore_case", "contains",
+            "not_contains", "starts_with", "ends_with", "regex", "is_empty",
+            "exists", "not_exists",
+        },
+        VariableDataType.INTEGER: {
+            "equals", "not_equals", "less_than", "less_or_equal",
+            "greater_than", "greater_or_equal", "exists", "not_exists",
+        },
+        VariableDataType.NUMBER: {
+            "equals", "not_equals", "less_than", "less_or_equal",
+            "greater_than", "greater_or_equal", "exists", "not_exists",
+        },
+        VariableDataType.BOOLEAN: {
+            "equals", "not_equals", "is_true", "is_false", "exists", "not_exists",
+        },
+        VariableDataType.DATETIME: {
+            "equals", "not_equals", "exists", "not_exists",
+        },
+    }[data_type]
+    return tuple(choice for choice in COMPARISON_CHOICES if choice[1] in allowed)
 
 
 def _result(

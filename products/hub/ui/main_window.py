@@ -3004,7 +3004,6 @@ class MainWindow(QMainWindow):
                 if snapshot.available:
                     resolved[key] = snapshot.display_value
                 else:
-                    resolved[key] = "--"
                     resolved[f"{key}_status"] = "unavailable"
         live_twitch = self._twitch_command_context()
         for key in requested.intersection(live_twitch):

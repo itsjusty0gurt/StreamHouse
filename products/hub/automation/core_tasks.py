@@ -644,12 +644,9 @@ class PythonScriptTask:
 
     @staticmethod
     def _render(template: str, context: Mapping[str, str]) -> str:
-        from products.hub.automation.variables import TEMPLATE_PATTERN
+        from products.hub.automation.variable_registry import render_placeholders
 
-        return TEMPLATE_PATTERN.sub(
-            lambda match: str(context.get(match.group(1), "")),
-            template,
-        )
+        return render_placeholders(template, context)
 
     @staticmethod
     def _strip_matching_quotes(value: str) -> str:

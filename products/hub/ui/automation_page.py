@@ -60,6 +60,7 @@ from products.hub.automation.logic_tasks import (
     COMPARISON_CHOICES,
     LOGIC_TASK_LABELS,
     UNARY_OPERATORS,
+    comparison_choices_for_type,
 )
 from products.hub.automation.file_tasks import FILE_TASK_TYPES
 from products.hub.automation.queues import (
@@ -1080,9 +1081,16 @@ class TaskEditorDialog(QDialog):
         )
         help_label.setWordWrap(True)
         group_layout.addWidget(help_label)
-        self.variable_table = QTableWidget(0, 4)
+        self.variable_table = QTableWidget(0, 6)
         self.variable_table.setHorizontalHeaderLabels(
-            ("Variable", "Source", "Test value", "Meaning")
+            (
+                "Variable",
+                "Source",
+                "Type",
+                "Availability",
+                "Test value",
+                "Meaning",
+            )
         )
         self.variable_table.horizontalHeader().setStretchLastSection(True)
         self.variable_table.setSelectionBehavior(
@@ -1091,12 +1099,33 @@ class TaskEditorDialog(QDialog):
         self.variable_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.variable_table.setMaximumHeight(190)
         ordered_keys = list(self.variables)
-        ordered_keys.extend(key for key in VARIABLE_INFO if key not in self.variables)
-        registry_definitions = {
-            item.name: item for item in self.variable_registry.definitions()
-        } if self.variable_registry is not None else {}
+        if self.variable_registry is None:
+            ordered_keys.extend(
+                key for key in VARIABLE_INFO if key not in self.variables
+            )
+        registry_definitions = (
+            {item.name: item for item in self.variable_registry.definitions()}
+            if self.variable_registry is not None
+            else {}
+        )
         ordered_keys.extend(
             key for key in registry_definitions if key not in ordered_keys
+        )
+        output_definitions = {}
+        if self.routine_store is not None:
+            for routine in self.routine_store.routines:
+                for output_task in routine.tasks:
+                    source = self.LABELS.get(
+                        output_task.task_type, output_task.name
+                    )
+                    for definition in CustomVariableStore.generated_definitions(
+                        output_task.task_type, output_task.config, source=source
+                    ):
+                        if definition.name in self.variables:
+                            output_definitions.setdefault(definition.name, definition)
+        self._output_definitions = tuple(output_definitions.values())
+        ordered_keys.extend(
+            key for key in output_definitions if key not in ordered_keys
         )
         self.variable_preview_context = {
             **sample_context(ordered_keys),
@@ -1106,16 +1135,6 @@ class TaskEditorDialog(QDialog):
             self.variable_preview_context.update(
                 self.variable_registry.context_values(self.variables)
             )
-        counter_prefixes: dict[str, str] = {}
-        if self.routine_store is not None and self.counter_service is not None:
-            for routine in self.routine_store.routines:
-                for task in routine.tasks:
-                    if not task.task_type.startswith("counter."):
-                        continue
-                    definition = self.counter_service.get_counter(str(task.config.get("counter_id", "")))
-                    if definition is not None:
-                        prefix = str(task.config.get("output_prefix") or definition.counter_id)
-                        counter_prefixes[prefix] = definition.display_name
         for row, key in enumerate(ordered_keys):
             value = self.variable_preview_context.get(key, "")
             self.variable_table.insertRow(row)
@@ -1124,35 +1143,22 @@ class TaskEditorDialog(QDialog):
                 key,
                 "Trigger context" if key in VARIABLE_INFO else "Custom variable",
             )
-            if key in registry_definitions:
-                description = registry_definitions[key].description
-                source = registry_definitions[key].source
-            counter_suffixes = {
-                "amount_changed": "Amount Changed", "channel_total": "Channel Total",
-                "stream_total": "Stream Total", "viewer_total": "Viewer Total",
-                "viewer_stream_total": "Viewer Stream Total", "viewer_rank": "Viewer Rank",
-                "viewer_display_name": "Viewer Display Name", "leaderboard": "Leaderboard",
-                "updated_scopes": "Updated Scopes", "skipped_scopes": "Skipped Scopes",
-                "top_viewer_login": "Top Viewer Login", "status": "Status", "formatted_value": "Formatted Value",
-            }
-            for suffix, friendly in counter_suffixes.items():
-                marker = f"_{suffix}"
-                if key.endswith(marker):
-                    raw_prefix = key[:-len(marker)]
-                    prefix = counter_prefixes.get(raw_prefix, raw_prefix.replace("_", " ").title())
-                    description = f"{prefix} — {friendly}"
-                    source = "Earlier counter task"
-                    break
+            metadata = registry_definitions.get(key) or output_definitions.get(key)
+            data_type = "Text"
+            availability = "Compatibility"
+            if metadata is not None:
+                description = metadata.description
+                source = metadata.source
+                data_type = metadata.data_type.value.title()
+                availability = metadata.availability.value.title()
+                if not value and metadata.preview_value is not None:
+                    value = str(metadata.preview_value)
             self.variable_table.setItem(row, 0, QTableWidgetItem(f"{{{key}}}"))
-            self.variable_table.setItem(
-                row,
-                1,
-                QTableWidgetItem(
-                    source
-                ),
-            )
-            self.variable_table.setItem(row, 2, QTableWidgetItem(value))
-            self.variable_table.setItem(row, 3, QTableWidgetItem(description))
+            self.variable_table.setItem(row, 1, QTableWidgetItem(source))
+            self.variable_table.setItem(row, 2, QTableWidgetItem(data_type))
+            self.variable_table.setItem(row, 3, QTableWidgetItem(availability))
+            self.variable_table.setItem(row, 4, QTableWidgetItem(value))
+            self.variable_table.setItem(row, 5, QTableWidgetItem(description))
         if self.variable_table.rowCount():
             self.variable_table.selectRow(0)
         group_layout.addWidget(self.variable_table)
@@ -1203,6 +1209,7 @@ class TaskEditorDialog(QDialog):
             self.variable_registry,
             self.variables,
             self,
+            extra_definitions=tuple(getattr(self, "_output_definitions", ())),
         )
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
@@ -1471,13 +1478,44 @@ class TaskEditorDialog(QDialog):
             fields = self.field_widgets[self.task_type]
             operator = fields["operator"]
 
-            def update_condition(_index: int = 0) -> None:
+            def update_condition(_value: object = None) -> None:
                 fields["right"].setEnabled(
                     str(operator.currentData()) not in UNARY_OPERATORS
                 )
 
+            def update_condition_type(_text: str = "") -> None:
+                selected = operator.currentData()
+                data_type = None
+                if self.variable_registry is not None:
+                    value = fields["left"].text().strip()
+                    definition = (
+                        self.variable_registry.definition(value)
+                        if value.startswith("{") and value.endswith("}")
+                        else None
+                    )
+                    data_type = definition.data_type if definition is not None else None
+                choices = comparison_choices_for_type(data_type)
+                operator.blockSignals(True)
+                operator.clear()
+                for label, value in choices:
+                    operator.addItem(label, value)
+                if operator.findData(selected) < 0 and selected:
+                    legacy_label = next(
+                        (
+                            label
+                            for label, value in COMPARISON_CHOICES
+                            if value == selected
+                        ),
+                        str(selected),
+                    )
+                    operator.addItem(f"{legacy_label} (saved)", selected)
+                operator.setCurrentIndex(max(0, operator.findData(selected)))
+                operator.blockSignals(False)
+                update_condition()
+
             operator.currentIndexChanged.connect(update_condition)
-            update_condition()
+            fields["left"].textChanged.connect(update_condition_type)
+            update_condition_type()
         if self.task is None:
             label = self.LABELS.get(self.task_type, self.task_type)
             self.name_edit.setText(label.partition("—")[2].strip() or label)

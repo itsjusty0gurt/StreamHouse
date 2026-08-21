@@ -315,3 +315,16 @@ class CustomVariableStore:
         if normalized_type == "core.format_duration":
             return name, f"{name}_status"
         return (name,)
+
+    @classmethod
+    def generated_definitions(
+        cls,
+        task_type: str,
+        config: Mapping[str, object],
+        *,
+        source: str = "",
+    ):
+        """Return typed metadata for temporary outputs created by a task."""
+        from products.hub.automation.variable_outputs import generated_output_definitions
+
+        return generated_output_definitions(task_type, config, source=source)

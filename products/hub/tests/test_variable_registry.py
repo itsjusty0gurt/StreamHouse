@@ -1,3 +1,4 @@
+import json
 import os
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -10,6 +11,7 @@ from PySide6.QtWidgets import QApplication
 
 from products.hub.automation.custom_variables import CustomVariableStore
 from products.hub.automation.models import TaskExecutionResult
+from products.hub.automation.logic_tasks import comparison_choices_for_type
 from products.hub.automation.routines import RoutineStore
 from products.hub.automation.service import AutomationService
 from products.hub.automation.tasks import TaskRegistry
@@ -20,6 +22,7 @@ from products.hub.automation.variable_providers import (
 )
 from products.hub.automation.variable_registry import (
     CallbackVariableProvider,
+    VariableAvailability,
     VariableDataType,
     VariableDefinition,
     VariableRegistry,
@@ -114,11 +117,113 @@ def test_counter_variable_uses_stable_id_and_domain_service_for_writes() -> None
         registry = VariableRegistry()
         registry.register(provider)
 
-        assert registry.resolve("counter.deaths").display_value == "5"
+        assert registry.resolve("counter.deaths.stream").display_value == "5"
+        alias = registry.resolve("counter.deaths")
+        assert alias.display_value == "5"
+        assert alias.definition.alias_of == "counter.deaths.stream"
         registry.set_value("counter.deaths", 9)
         assert service.get_values("deaths").channel_total == 9
+        assert not registry.resolve("counter.deaths.viewer", {}).available
+        service.set_value("deaths", "viewer_total", 3, user_id="111")
+        viewer = registry.resolve("counter.deaths.viewer", {"user_id": "111"})
+        assert viewer.available and viewer.value == 3
+        with pytest.raises(PermissionError, match="read-only"):
+            registry.set_value("counter.deaths.viewer", 4)
         service.update_counter("deaths", display_name="Boss Deaths")
-        assert provider.definitions()[0].name == "counter.deaths"
+        assert provider.definitions()[0].name == "counter.deaths.stream"
+        assert registry.resolve("counter.deaths.stream").definition.display_name.startswith("Boss Deaths")
+
+
+def test_alias_metadata_collisions_and_loop_prevention() -> None:
+    canonical = VariableDefinition(
+        "hub.value", "Value", "A value.", VariableDataType.INTEGER, "Hub", "Hub"
+    )
+    registry = VariableRegistry()
+    registry.register(
+        CallbackVariableProvider("Hub", (canonical,), lambda _name, _context: (True, 2, ""))
+    )
+    alias = registry.register_alias("hub.old_value", "hub.value", legacy=True)
+    assert alias.is_alias and alias.data_type is VariableDataType.INTEGER
+    assert registry.resolve("hub.old_value").value == 2
+    assert registry.render("Old: {hub.old_value}") == "Old: 2"
+    assert alias not in registry.definitions()
+    assert alias in registry.definitions(include_aliases=True)
+    with pytest.raises(ValueError, match="already registered"):
+        registry.register_alias("hub.value", "hub.value")
+
+    loop = (
+        VariableDefinition(
+            "hub.first", "First", "", VariableDataType.TEXT, "Hub", "Hub",
+            alias_of="hub.second",
+        ),
+        VariableDefinition(
+            "hub.second", "Second", "", VariableDataType.TEXT, "Hub", "Hub",
+            alias_of="hub.first",
+        ),
+    )
+    with pytest.raises(ValueError, match="loop"):
+        registry.register(
+            CallbackVariableProvider("Hub", loop, lambda _name, _context: (True, "", ""))
+        )
+
+
+def test_temporary_definition_reports_lifetime_and_preview_separately() -> None:
+    definition = VariableDefinition(
+        "task_output",
+        "Task Output",
+        "Only available during this routine.",
+        VariableDataType.INTEGER,
+        "Automation",
+        "Task outputs",
+        availability=VariableAvailability.TEMPORARY,
+        preview_value=12,
+        legacy=True,
+    )
+    assert definition.availability is VariableAvailability.TEMPORARY
+    assert definition.preview_value == 12
+    assert definition.default is None
+
+
+def test_generated_task_outputs_have_typed_temporary_metadata() -> None:
+    random_output = CustomVariableStore.generated_definitions(
+        "core.logic_random_number", {"name": "roll", "mode": "integer"}
+    )[0]
+    assert random_output.name == "roll"
+    assert random_output.data_type is VariableDataType.INTEGER
+    assert random_output.availability is VariableAvailability.TEMPORARY
+    assert random_output.preview_value == 1
+
+    counter_outputs = CustomVariableStore.generated_definitions(
+        "counter.update", {"counter_id": "deaths"}, source="Counter — Update"
+    )
+    amount = next(item for item in counter_outputs if item.name == "deaths_amount_changed")
+    status = next(item for item in counter_outputs if item.name == "deaths_status")
+    assert amount.data_type is VariableDataType.INTEGER
+    assert status.data_type is VariableDataType.TEXT
+    assert amount.source == "Counter — Update"
+
+
+def test_version_one_custom_variable_file_remains_compatible() -> None:
+    with TemporaryDirectory() as temporary:
+        path = Path(temporary) / "variables.json"
+        path.write_text(
+            json.dumps({"version": 1, "global": {"game_mode": "classic"}}),
+            encoding="utf-8",
+        )
+        store = CustomVariableStore(path)
+        assert store.load() == {"game_mode": "classic"}
+        assert store.type_of("game_mode") == "text"
+
+
+def test_condition_operator_choices_use_registry_types() -> None:
+    numeric = {value for _label, value in comparison_choices_for_type(VariableDataType.INTEGER)}
+    boolean = {value for _label, value in comparison_choices_for_type(VariableDataType.BOOLEAN)}
+    text = {value for _label, value in comparison_choices_for_type(VariableDataType.TEXT)}
+    assert {"greater_than", "less_or_equal"} <= numeric
+    assert "contains" not in numeric
+    assert {"is_true", "is_false"} <= boolean
+    assert "greater_than" not in boolean
+    assert {"contains", "starts_with", "ends_with"} <= text
 
 
 def test_automation_context_receives_canonical_provider_values() -> None:
@@ -170,6 +275,9 @@ def test_variables_page_and_picker_search_canonical_names() -> None:
         picker = VariablePickerDialog(registry)
         picker.search_edit.setText("game_mode")
         assert picker.selected_placeholder() == "{custom.game_mode}"
+        picker.search_edit.setText("user.id")
+        assert picker.selected_placeholder() == "{user.id}"
+        assert picker.table.item(0, 4).text() == "Unavailable — Contextual"
         editor = TaskEditorDialog(
             "twitch.send_chat_message",
             variable_registry=registry,
@@ -179,6 +287,25 @@ def test_variables_page_and_picker_search_canonical_names() -> None:
             editor.variable_table.item(row, 0).text() == "{custom.game_mode}"
             for row in range(editor.variable_table.rowCount())
         )
+        integer_definition = VariableDefinition(
+            "hub.score", "Score", "Current score.", VariableDataType.INTEGER, "Hub", "Hub"
+        )
+        integer_registry = VariableRegistry()
+        integer_registry.register(
+            CallbackVariableProvider(
+                "Hub", (integer_definition,), lambda _name, _context: (True, 4, "")
+            )
+        )
+        condition_editor = TaskEditorDialog(
+            "core.logic_if_else", variable_registry=integer_registry
+        )
+        condition_editor.field_widgets["core.logic_if_else"]["left"].setText("{hub.score}")
+        application.processEvents()
+        operator = condition_editor.field_widgets["core.logic_if_else"]["operator"]
+        operators = {operator.itemData(index) for index in range(operator.count())}
+        assert "greater_than" in operators
+        assert "contains" not in operators
+        condition_editor.close()
         editor.close()
         picker.close()
         page.close()

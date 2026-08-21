@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-import re
 from collections.abc import Callable
 from typing import Any
 
 from products.hub.automation.custom_variables import CustomVariableStore
 from products.hub.automation.models import TaskDefinition, TaskExecutionResult, TriggerEvent
+from products.hub.automation.variable_registry import render_placeholders
 from products.hub.counters.models import SCOPES
 from products.hub.counters.service import CounterOperation, CounterService
 
@@ -24,9 +24,6 @@ OUTPUT_SUFFIXES = (
     "channel_total_status", "stream_total_status", "viewer_total_status",
     "viewer_stream_total_status",
 )
-TEMPLATE = re.compile(r"\{([a-z][a-z0-9_]*)\}")
-
-
 def output_prefix(config: dict[str, Any]) -> str:
     return CustomVariableStore.validate_generated_name(str(config.get("output_prefix") or config.get("counter_id", "")))
 
@@ -65,7 +62,7 @@ class CounterTask:
 
     @staticmethod
     def _integer(value: Any, context: dict[str, str]) -> int:
-        rendered = TEMPLATE.sub(lambda match: str(context.get(match.group(1), "")), str(value)).strip()
+        rendered = render_placeholders(str(value), context).strip()
         try:
             return int(rendered)
         except ValueError as error:

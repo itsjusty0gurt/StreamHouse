@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import re
 from collections.abc import Callable
 from typing import Mapping
 from urllib.error import HTTPError, URLError
@@ -8,6 +7,11 @@ from urllib.error import HTTPError, URLError
 from products.hub.automation.custom_variables import CustomVariableStore
 from products.hub.automation.models import TaskDefinition, TaskExecutionResult, TriggerEvent
 from products.hub.automation.variables import VARIABLE_INFO
+from products.hub.automation.variable_registry import (
+    PLACEHOLDER_PATTERN,
+    RESERVED_NAMESPACES,
+    render_placeholders,
+)
 from products.hub.twitch.channel_information import (
     CHANNEL_INFORMATION_FIELD_LABELS,
     ChannelInformationStore,
@@ -18,11 +22,9 @@ from shared.streamhouse_runtime.logger import Logger
 
 class SendTwitchChatMessageTask:
     task_type = "twitch.send_chat_message"
-    TEMPLATE_PATTERN = re.compile(r"\{([a-z][a-z0-9_.]*)\}")
+    TEMPLATE_PATTERN = PLACEHOLDER_PATTERN
     TEMPLATE_VARIABLES = frozenset(VARIABLE_INFO)
-    CANONICAL_NAMESPACES = frozenset(
-        {"stream", "user", "chat", "counter", "obs", "hub", "custom"}
-    )
+    CANONICAL_NAMESPACES = RESERVED_NAMESPACES
 
     def __init__(
         self,
@@ -111,10 +113,7 @@ class SendTwitchChatMessageTask:
 
     @classmethod
     def render(cls, template: str, values: Mapping[str, str]) -> str:
-        return cls.TEMPLATE_PATTERN.sub(
-            lambda match: str(values.get(match.group(1), "--")).strip(),
-            template,
-        )
+        return render_placeholders(template, values, strip_values=True)
 
 
 TWITCH_TASK_LABELS = {

@@ -49,7 +49,9 @@ production criteria in `relay-brand-migration.md` are satisfied.
 
 `shared/streamhouse_shared/protocol.py` and its architecture documentation use
 `X-Sally-Protocol` for the separate local Streamhouse AI protocol migration.
-That is historical compatibility outside the relay contract and is preserved.
+That is historical compatibility outside the relay contract. It remains in the
+current implementation but is transitional pre-alpha debt, not a preservation
+requirement; remove it when active Hub and AI consumers use the current header.
 
 ## Intentional Sally AI or Twitch-bot identity
 
@@ -75,6 +77,12 @@ That is historical compatibility outside the relay contract and is preserved.
   character-facing examples, not relay branding.
 
 ## Historical migration support or fixtures
+
+This section inventories current or historical files; it does not grant them
+ongoing support status. Under `docs/architecture/development-policy.md`, local
+Sally-era migration code and fixtures should be removed when no external,
+security, or post-Alpha requirement justifies them. The deployed relay shim is
+the operational exception described below.
 
 - Legacy data/QSettings/backup paths: `shared/streamhouse_runtime/paths.py`,
   `shared/streamhouse_runtime/qt_settings.py`, `products/hub/core/backup.py`,

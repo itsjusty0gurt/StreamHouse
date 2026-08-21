@@ -21,6 +21,8 @@ Read only the sections relevant to the task:
 This file describes the code that exists. The focused documents under `docs/`
 provide product behavior and policy detail:
 
+- `docs/architecture/development-policy.md` (authoritative pre-alpha engineering
+  and compatibility rules)
 - `docs/architecture/product-family.md` (canonical product-facing names)
 - `docs/hub/twitch.md`
 - `docs/ai/local-ai.md`
@@ -32,6 +34,11 @@ Product-facing branding is defined in the
 [Streamhouse product-family reference](product-family.md). This implementation
 map uses the current code, executable, protocol, window-title, and storage
 identifiers.
+
+Streamhouse has not reached its first external Alpha. A transitional path
+described in this implementation map is not automatically an Alpha support
+requirement; apply `development-policy.md` when deciding whether to migrate or
+remove it.
 
 ## System at a glance
 
@@ -390,47 +397,88 @@ Qt-based tasks remain thread-safe.
 - **routine** variables: context-only, shared with nested routines during one
   execution.
 
-`products/hub/automation/variable_registry.py` is the canonical typed lookup
-layer above those execution scopes. `VariableDefinition` records the dotted
-name, display name, description, type, source, category, availability, default,
-and whether the owning provider supports writes. Providers are registered by
-`MainWindow`; duplicate canonical names are rejected. Current providers expose:
+`products/hub/automation/variable_registry.py` is the authoritative metadata,
+resolution, placeholder, alias, and write-routing layer for modern Hub
+variables. Canonical names use `namespace.name` or deeper dotted scopes such as
+`counter.<stable_id>.viewer`. `VariableDefinition` records the canonical name,
+display name, description, type, source, category, availability, required
+context, optional default and preview values, alias status, and whether the
+owning provider supports writes. Valid types are `text`, `integer`, `number`,
+`boolean`, and ISO-8601 `datetime`. Providers are registered by `MainWindow`;
+malformed names, duplicate names, provider collisions, alias collisions, and
+alias loops are rejected. Reserved built-in namespaces currently include
+`stream`, `user`, `chat`, `counter`, `obs`, `hub`, `custom`, and `automation`;
+`ads` and `soundboard` are reserved for their owning future/current domains.
+Current providers expose:
 
 - cached Twitch stream values: `stream.title`, `stream.category`,
   `stream.viewer_count`, and `stream.game_id`;
 - contextual `user.*` and `chat.*` values from the current trigger;
-- stable counter totals as `counter.<counter_id>`;
+- stable shared counter totals as `counter.<counter_id>.stream` and contextual
+  lifetime viewer totals as `counter.<counter_id>.viewer`;
 - the observed OBS program scene as `obs.current_scene`;
 - Hub uptime and Twitch/OBS connection booleans as `hub.*`;
 - persisted/session custom values as `custom.<name>`.
 
-Global providers resolve without an event. Contextual providers report
-unavailable when their required trigger values are absent; they never invent a
-global viewer or message. Registry text rendering uses `{namespace.name}`.
-Unavailable values retain the original placeholder by default and emit a
-debug diagnostic; callers may explicitly supply a fallback. This avoids both
-crashes and silently plausible output.
+Availability/lifetime is metadata, not a sample-value inference:
+
+- **Global** definitions may resolve whenever their provider has valid state.
+  A provider can still report one unavailable while disconnected or before a
+  cached value has been observed.
+- **Contextual** definitions require trigger/event data. `user.*`, `chat.*`,
+  and `counter.<id>.viewer` never invent a viewer, message, or fallback value.
+- **Temporary** definitions describe task/action outputs that exist only in the
+  current routine execution after their producing task has run. They are not
+  registered as permanent global variables. Nested routines intentionally
+  share their parent's routine context; sibling executions do not.
+
+Registry text rendering uses `{variable.name}`. The shared placeholder parser
+currently also accepts flat `{lowercase_name}` placeholders. Unavailable values
+retain the original placeholder by default and registry resolution emits a
+debug diagnostic; callers may explicitly supply a fallback. Preview/sample
+values are UI examples only and never define a variable's type or availability.
 
 Provider writes are opt-in. `custom.*` writes use `CustomVariableStore`, and a
-writable `counter.*` channel total uses `CounterService.set_value()`. Twitch and
-OBS state remains read-only; the variable layer is not a backdoor around their
-service actions.
+writable `counter.<id>.stream` value uses `CounterService.set_value()` for the
+existing shared channel total. `counter.<id>.viewer` is read-only because a
+registry write does not carry a safe viewer identity. Twitch, chat, OBS, and Hub
+runtime state remain read-only; the variable layer is not a backdoor around
+their service actions.
 
-The Automation **Variables** tab provides search/source filtering, metadata,
-copy actions, and custom-variable creation/edit/delete. Custom records persist
+Counter variable names always use the immutable counter ID, never the editable
+display label. `counter.<id>` is currently a hidden transitional alias for
+`counter.<id>.stream`; it resolves with the canonical type/access metadata and
+writes through the same CounterService path. The `.viewer` scope uses the
+triggering viewer's stable Twitch user ID. Without that context it is explicitly
+unavailable and does not substitute the shared value or create a viewer entry.
+
+The Automation **Variables** tab provides search/source filtering plus name,
+value, source, type, availability, and access metadata, copy actions, and
+custom-variable creation/edit/delete. Transitional aliases are hidden from
+normal browsing so new work uses canonical names. Custom records persist
 in `automation/variables.json` using atomic replacement and now include `text`,
 `integer`, `number`, `boolean`, or ISO-8601 `datetime` metadata plus an optional
-description. The reusable picker in `products/hub/ui/variable_picker.py` is
-also available from templated task editors.
+description. The reusable picker in `products/hub/ui/variable_picker.py` uses
+the same registry metadata, supports source/category/search filtering, and is
+also available from templated task editors. Contextual definitions remain
+discoverable when unavailable and state their required context.
 
-Legacy flat automation outputs remain supported. A variable named
+The current implementation still supports flat automation variables and
+outputs. A variable named
 `random_line` is still referenced as `{random_line}`. New shared/domain values
 use dotted canonical names, and custom `game_mode` is displayed as
-`{custom.game_mode}`. This compatibility avoids breaking existing routines.
+`{custom.game_mode}`. `products/hub/automation/variables.py` is transitional:
+it supplies old flat names and preview examples but
+is not authoritative for modern type, availability, access, or provider
+metadata. New variable-aware features must use `VariableRegistry`.
 
-Generated outputs are discoverable through
-`CustomVariableStore.generated_names()`. Add every new output-producing task
-there so command validation, editor previews, and template help recognize it.
+Generated outputs are currently discoverable through
+`CustomVariableStore.generated_names()` for the flat path and
+`generated_definitions()` for typed metadata. The latter describes the output's
+name, type, source task, temporary/global lifetime, description, and optional
+preview without globally registering it. Same-name temporary outputs retain
+the existing deterministic task-order overwrite behavior; counter tasks offer
+an output-prefix setting where user-controlled disambiguation is needed.
 
 Variable precedence when preparing a trigger is:
 
@@ -440,6 +488,29 @@ Variable precedence when preparing a trigger is:
 
 Built-in flat names in `products/hub/automation/variables.py` and all non-
 `custom` namespaces are reserved from custom creation.
+
+The intended Alpha architecture has no parallel flat-variable runtime. Remove
+the flat catalog, old parser/validation paths, compatibility aliases, and other
+obsolete output metadata after all active production consumers have moved to
+the registry or typed output definitions. Before Alpha, saved development
+routines, variables, templates, and outputs may be reset; their migration is
+not a prerequisite for removal.
+
+The Variables cleanup is complete when:
+
+1. every production editor, picker, condition UI, validator, and runtime
+   resolver obtains definitions from the registry or typed output metadata;
+2. all output-producing tasks publish typed definitions and no production
+   feature treats sample values as definitions;
+3. repository searches and package tests show no production metadata consumer
+   reads `VARIABLE_INFO`, `VARIABLE_SOURCE_INFO`, or `sample_context()` solely
+   as its definition source;
+4. active built-in routines, tasks, commands, triggers, and templates use the
+   authoritative path; and
+5. obsolete implementations, compatibility tests, and current documentation
+   have been deleted.
+
+Do not add new features to the flat catalog while this transition remains.
 
 ### Task providers
 
@@ -613,9 +684,10 @@ request IDs and callbacks rather than blocking the UI waiting for OBS.
 threads. Every request includes `X-Streamhouse-Protocol`.
 
 `PROTOCOL_VERSION` is `2`. New clients emit only
-`X-Streamhouse-Protocol`. The v2 server temporarily accepts the legacy
+`X-Streamhouse-Protocol`. The v2 server currently accepts the transitional
 `X-Sally-Protocol` header with version 1 because the route payloads are still
 compatible; unsupported versions receive a clear HTTP 409 mismatch response.
+This private pre-alpha header path is not an Alpha compatibility requirement.
 The `/v1/...` routes remain product-neutral.
 
 Current routes:
@@ -850,14 +922,14 @@ Use these rules:
 
 ## Persistence and secrets
 
-`core.paths.user_data_root()` resolves:
+`core.paths.user_data_root()` currently resolves:
 
 1. `STREAMHOUSE_DATA_DIR` when set (tests/smoke isolation);
 2. legacy `SALLY_DATA_DIR` as a temporary fallback, with a deprecation warning;
 3. `%LOCALAPPDATA%\Streamhouse`;
 4. a temporary `Streamhouse` directory if app data is unwritable.
 
-Both entry points call `migrate_legacy_user_data()` before loading settings or
+Both entry points currently call `migrate_legacy_user_data()` before loading settings or
 credentials. With the normal default root, it recursively copies every missing
 file from `%LOCALAPPDATA%\SallyAI` into `%LOCALAPPDATA%\Streamhouse`. Existing
 destination files are never overwritten, the legacy tree is never deleted,
@@ -869,14 +941,19 @@ Qt application metadata now uses organization `Streamhouse` with application
 names `Streamhouse Hub` and `Streamhouse AI`. `core.qt_settings` copies missing
 values from the legacy `Sally AI`/`Sally Bot` and
 `Sally AI`/`Sally AI Companion` QSettings stores without overwriting new state.
-This preserves geometry, dock, splitter, and related UI preferences.
+This currently preserves geometry, dock, splitter, and related UI preferences.
+These Sally-era local-data and UI-state paths are transitional implementation,
+not pre-alpha compatibility requirements. Remove or rename generic obsolete
+infrastructure when active code has moved; development state may be reset.
+Preserve encrypted Twitch tokens when easy, but token storage may also reset if
+clean architecture requires it. Secret-handling rules always remain mandatory.
 
 JSON stores use `atomic_write_json()` and `load_json_with_backup()`: write to a
 temporary file, keep an adjacent `.bak`, then replace atomically.
 
 Routine exports use `streamhouse.automation.routine` and the
 `.streamhouse-routine.json` extension. Task clipboard payloads use
-`streamhouse.automation.task`. Imports temporarily accept the corresponding
+`streamhouse.automation.task`. Imports currently accept the transitional
 legacy `sally.automation.*` identifiers and `.sally-routine.json` files.
 
 ### Main files
@@ -1045,7 +1122,8 @@ Inspect and update:
 4. event wiring in `MainWindow`;
 5. import/export mapping;
 6. live and simulated paths;
-7. persistence-version migration and tests.
+7. current-schema persistence tests, plus a migration only when intentionally
+   required by `development-policy.md`.
 
 Link the existing shared `RoutineStore`.
 
@@ -1081,13 +1159,16 @@ result, and explicit memory disable.
 
 For each persisted schema:
 
-1. increment the store version only when required;
-2. accept older versions and migrate without changing stable IDs;
-3. reject newer unknown versions;
-4. write atomically;
-5. use a temporary path in tests;
-6. decide backup, migration, diagnostics, deletion, and secret handling;
-7. add corrupt/round-trip/migration tests.
+1. identify whether the change is before or after the first external Alpha;
+2. before Alpha, prefer the clean intended schema and reset disposable
+   development data instead of building substantial compatibility machinery;
+3. at/after Alpha, version saved-data changes and consider migration, rollback,
+   breaking-change, and compatibility implications explicitly;
+4. reject newer unknown versions where versioned stores require it;
+5. write atomically and use a temporary path in tests;
+6. decide backup, diagnostics, deletion, privacy, and secret handling; and
+7. test the current schema plus only migrations intentionally supported under
+   `development-policy.md`.
 
 ### Changing UI
 
@@ -1147,7 +1228,9 @@ Keep public config free of local paths and routine internals.
   In that context it means the stream-companion refresh, not the Sally
   character. `SALLY_*` environment aliases, old QSettings application names,
   the legacy Hub window title, and the historical `companion/settings.json`
-  path are intentionally retained for data/script migration compatibility.
+  path remain as transitional rebrand debt. They are not Alpha requirements;
+  future cleanup should remove or rename generic Sally-era infrastructure once
+  active consumers use Streamhouse names.
 - The registry intentionally exposes only already-cached Twitch and OBS state.
   Follow/subscription profile state, OBS recording/profile/scene-collection
   values, mathematical expressions, and bulk migration of every legacy flat
