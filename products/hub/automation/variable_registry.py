@@ -26,6 +26,7 @@ RESERVED_NAMESPACES = frozenset(
         "custom",
         "automation",
         "command",
+        "keyword",
         "event",
         "target",
         "ads",

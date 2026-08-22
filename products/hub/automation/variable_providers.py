@@ -150,6 +150,73 @@ class CounterVariableProvider:
         return ""
 
 
+class AdsVariableProvider:
+    source = "Twitch Ads"
+
+    _FIELDS = (
+        ("next_at", "Next Ad At", "Scheduled start time of the next automatic ad.", VariableDataType.DATETIME),
+        ("next_in", "Next Ad In", "Seconds until the next scheduled automatic ad.", VariableDataType.INTEGER),
+        ("next_duration", "Next Ad Duration", "Scheduled duration of the next automatic ad in seconds.", VariableDataType.INTEGER),
+        ("last_at", "Last Ad At", "Start time of the most recently observed ad.", VariableDataType.DATETIME),
+        ("snooze_count", "Ad Snoozes", "Currently available Twitch ad snoozes.", VariableDataType.INTEGER),
+        ("snooze_refresh_at", "Next Snooze At", "Time Twitch will restore a snooze.", VariableDataType.DATETIME),
+        ("snooze_refresh_in", "Next Snooze In", "Seconds until Twitch restores a snooze.", VariableDataType.INTEGER),
+        ("preroll_free_time", "Preroll-Free Time", "Seconds of Twitch preroll-free time remaining.", VariableDataType.INTEGER),
+        ("in_progress", "Ads In Progress", "Whether Hub currently considers an ad break active.", VariableDataType.BOOLEAN),
+        ("remaining", "Ad Time Remaining", "Estimated seconds remaining in the active ad break.", VariableDataType.INTEGER),
+        ("duration", "Active Ad Duration", "Duration of the active ad break in seconds.", VariableDataType.INTEGER),
+        ("started_at", "Ad Started At", "Start time reported for the active ad break.", VariableDataType.DATETIME),
+        ("is_automatic", "Ad Is Automatic", "Whether Twitch reported the active ad as automatic.", VariableDataType.BOOLEAN),
+        ("manual_retry_after", "Manual Ad Retry", "Seconds until another manual commercial can be requested.", VariableDataType.INTEGER),
+    )
+
+    def __init__(self, values: Callable[[], Mapping[str, object]]) -> None:
+        self.values = values
+
+    def definitions(self) -> tuple[VariableDefinition, ...]:
+        return tuple(
+            VariableDefinition(
+                name=f"ads.{name}",
+                display_name=display_name,
+                description=description,
+                data_type=data_type,
+                source=self.source,
+                category="Ads",
+                preview_value={
+                    "next_at": "2026-08-22T20:00:00+00:00",
+                    "next_in": 300,
+                    "next_duration": 90,
+                    "last_at": "2026-08-22T19:30:00+00:00",
+                    "snooze_count": 2,
+                    "snooze_refresh_at": "2026-08-22T20:15:00+00:00",
+                    "snooze_refresh_in": 900,
+                    "preroll_free_time": 1200,
+                    "in_progress": False,
+                    "remaining": 45,
+                    "duration": 90,
+                    "started_at": "2026-08-22T19:58:30+00:00",
+                    "is_automatic": True,
+                    "manual_retry_after": 0,
+                }.get(name),
+            )
+            for name, display_name, description, data_type in self._FIELDS
+        )
+
+    def resolve(self, name: str, _context: Mapping[str, object]) -> VariableSnapshot:
+        definition = next(item for item in self.definitions() if item.name == name)
+        key = name.split(".", 1)[1]
+        value = self.values().get(key)
+        return VariableSnapshot(
+            definition,
+            value,
+            value is not None,
+            "" if value is not None else "Twitch ad state is unavailable.",
+        )
+
+    def set_value(self, name: str, value: object) -> VariableSnapshot:
+        raise PermissionError(f'Variable "{name}" is read-only.')
+
+
 CONTEXT_DEFINITIONS = (
     ("user.name", "User Name", "Triggering user's readable name.", VariableDataType.TEXT, ("user",)),
     ("user.display_name", "User Display Name", "Triggering user's Twitch display name.", VariableDataType.TEXT, ("user",)),
@@ -164,6 +231,12 @@ CONTEXT_DEFINITIONS = (
     ("command.data", "Command Data", "Raw text following the command name, trimmed at its outer edges.", VariableDataType.TEXT, ("command_data",)),
     ("command.target", "Command Target", "First command argument without the at sign.", VariableDataType.TEXT, ("target",)),
     ("command.uses", "Command Uses", "Number of times the command has run.", VariableDataType.INTEGER, ("uses",)),
+    ("keyword.message", "Keyword Message", "Full Twitch message that matched the Keyword / Phrase trigger.", VariableDataType.TEXT, ("keyword.message",)),
+    ("keyword.match", "Keyword Match", "Configured keyword or phrase that matched.", VariableDataType.TEXT, ("keyword.match",)),
+    ("keyword.before", "Text Before Keyword", "Text before the matched keyword or phrase.", VariableDataType.TEXT, ("keyword.before",)),
+    ("keyword.after", "Text After Keyword", "Text after the matched keyword or phrase.", VariableDataType.TEXT, ("keyword.after",)),
+    ("ads.requester.id", "Ad Requester ID", "Twitch ID of the requester reported for an Ads Started event.", VariableDataType.TEXT, ("ads.requester.id",)),
+    ("ads.requester.name", "Ad Requester Name", "Readable requester name reported for an Ads Started event.", VariableDataType.TEXT, ("ads.requester.name",)),
     ("event.name", "Event Name", "Readable trigger event name.", VariableDataType.TEXT, ("event",)),
     ("event.type", "Event Type", "Owning service event type.", VariableDataType.TEXT, ("event_type",)),
     ("event.input", "Event Input", "Viewer input or event input name.", VariableDataType.TEXT, ("input",)),
@@ -191,6 +264,9 @@ CONTEXT_PREVIEW = {
     "user.is_mod": False, "user.is_subscriber": False,
     "chat.message": "Hello Streamhouse!", "chat.message_id": "message-123",
     "command.name": "hello", "command.data": "friend", "command.target": "friend", "command.uses": 3,
+    "keyword.message": "I think coffee is better than tea", "keyword.match": "coffee",
+    "keyword.before": "I think", "keyword.after": "is better than tea",
+    "ads.requester.id": "123456", "ads.requester.name": "Streamer",
     "event.name": "Follow", "event.type": "channel.follow", "event.input": "Viewer input",
     "event.amount": 100, "event.bits": 100, "event.viewers": 12, "event.tier": "1000",
     "event.reward": "Hydrate", "event.reward_id": "reward-123", "event.reward_cost": 500,

@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+import re
 from typing import Any, Mapping
 from uuid import uuid4
 
@@ -17,7 +18,7 @@ from products.hub.twitch.models import TwitchEvent, TwitchMessage
 TWITCH_EVENT_TYPES = tuple(
     sorted({subscription.type for subscription in EVENTSUB_SUBSCRIPTIONS})
 )
-TWITCH_AUTOMATION_EVENT_TYPES = (
+TWITCH_EVENT_AUTOMATION_TYPES = (
     "channel.follow",
     "channel.subscribe",
     "channel.subscription.gift",
@@ -29,6 +30,26 @@ TWITCH_AUTOMATION_EVENT_TYPES = (
     "stream.offline",
     "channel.chat.first_message",
 )
+KEYWORD_PHRASE_EVENT_TYPE = "channel.chat.keyword_phrase"
+ADS_TRIGGER_TYPES = {
+    "ads.warning.5_minutes": "5 Minute Warning",
+    "ads.warning.3_minutes": "3 Minute Warning",
+    "ads.warning.2_minutes": "2 Minute Warning",
+    "ads.warning.1_minute": "1 Minute Warning",
+    "ads.started": "Ads Started",
+    "ads.ended": "Ads Ended",
+}
+TWITCH_AUTOMATION_EVENT_TYPES = (
+    *TWITCH_EVENT_AUTOMATION_TYPES,
+    KEYWORD_PHRASE_EVENT_TYPE,
+    *ADS_TRIGGER_TYPES,
+)
+KEYWORD_MATCH_TYPES = {
+    "contains": "Contains",
+    "exact": "Exact Message",
+    "starts_with": "Starts With",
+    "ends_with": "Ends With",
+}
 
 
 @dataclass(slots=True)
@@ -242,6 +263,109 @@ class TwitchEventTriggerStore:
             and self._matches(event, trigger.filters)
         )
 
+    def evaluate_named(
+        self,
+        event_type: str,
+        context: Mapping[str, object],
+        *,
+        trigger_type: str = "event",
+    ) -> tuple[TriggerEvent, ...]:
+        """Publish Hub-derived Twitch events through the normal trigger store."""
+
+        values = {str(key): str(value) for key, value in context.items()}
+        return tuple(
+            TriggerEvent(
+                trigger_id=trigger.trigger_id,
+                service="twitch",
+                trigger_type=trigger_type,
+                context=values,
+            )
+            for trigger in self.triggers
+            if trigger.enabled and trigger.event_type == event_type
+        )
+
+    def add_keyword_phrase(
+        self,
+        routine_id: str,
+        phrase: str,
+        *,
+        match_type: str = "contains",
+        ignore_case: bool = True,
+        whole_word: bool = True,
+        enabled: bool = True,
+    ) -> TwitchEventAutomationTrigger:
+        return self.add(
+            routine_id,
+            KEYWORD_PHRASE_EVENT_TYPE,
+            filters={
+                "phrase": phrase,
+                "match_type": match_type,
+                "ignore_case": str(bool(ignore_case)).lower(),
+                "whole_word": str(bool(whole_word)).lower(),
+            },
+            enabled=enabled,
+        )
+
+    def update_keyword_phrase(
+        self,
+        trigger_id: str,
+        phrase: str,
+        *,
+        match_type: str = "contains",
+        ignore_case: bool = True,
+        whole_word: bool = True,
+        enabled: bool | None = None,
+    ) -> TwitchEventAutomationTrigger:
+        return self.update(
+            trigger_id,
+            event_type=KEYWORD_PHRASE_EVENT_TYPE,
+            filters={
+                "phrase": phrase,
+                "match_type": match_type,
+                "ignore_case": str(bool(ignore_case)).lower(),
+                "whole_word": str(bool(whole_word)).lower(),
+            },
+            enabled=enabled,
+        )
+
+    def evaluate_keyword_phrase(
+        self,
+        message: TwitchMessage,
+    ) -> tuple[TriggerEvent, ...]:
+        matches: list[TriggerEvent] = []
+        for trigger in self.triggers:
+            if not trigger.enabled or trigger.event_type != KEYWORD_PHRASE_EVENT_TYPE:
+                continue
+            phrase = trigger.filters.get("phrase", "")
+            span = self._keyword_span(
+                message.text,
+                phrase,
+                trigger.filters.get("match_type", "contains"),
+                self._filter_bool(trigger.filters, "ignore_case", True),
+                self._filter_bool(trigger.filters, "whole_word", True),
+            )
+            if span is None:
+                continue
+            start, end = span
+            context = self.chat_context_for(message)
+            context.update(
+                {
+                    "keyword.message": message.text,
+                    "keyword.match": phrase,
+                    "keyword.before": message.text[:start].strip(),
+                    "keyword.after": message.text[end:].strip(),
+                }
+            )
+            matches.append(
+                TriggerEvent(
+                    trigger_id=trigger.trigger_id,
+                    service="twitch",
+                    trigger_type="keyword_phrase",
+                    context=context,
+                )
+            )
+        return tuple(matches)
+
     def observe_stream(
         self,
         stream: Mapping[str, Any] | None,
@@ -288,17 +412,9 @@ class TwitchEventTriggerStore:
             "message_type": message.message_type,
         }
         context = {
-            "user": message.username or "--",
-            "user_id": message.user_id or "--",
-            "channel": (
-                message.broadcaster_user_name
-                or message.broadcaster_user_login
-                or "--"
-            ),
+            **self.chat_context_for(message),
             "event": "first message",
             "event_type": "channel.chat.first_message",
-            "message": message.text or "--",
-            "message_id": message.message_id or "--",
             "input": message.text or "--",
             "amount": "--",
             "bits": str(message.bits) if message.bits is not None else "--",
@@ -339,6 +455,65 @@ class TwitchEventTriggerStore:
                 )
             )
         return tuple(matches)
+
+    @staticmethod
+    def chat_context_for(message: TwitchMessage) -> dict[str, str]:
+        badges = {badge.set_id for badge in message.badges}
+        is_broadcaster = "broadcaster" in badges or (
+            bool(message.broadcaster_user_id)
+            and message.user_id == message.broadcaster_user_id
+        )
+        return {
+            "user": message.username or "--",
+            "user_id": message.user_id or "--",
+            "user_login": message.user_login or "--",
+            "user_is_mod": str(is_broadcaster or "moderator" in badges).lower(),
+            "user_is_subscriber": str(
+                is_broadcaster or bool(badges.intersection({"subscriber", "founder"}))
+            ).lower(),
+            "channel": (
+                message.broadcaster_user_name
+                or message.broadcaster_user_login
+                or "--"
+            ),
+            "message": message.text or "--",
+            "message_id": message.message_id or "--",
+        }
+
+    @staticmethod
+    def _filter_bool(
+        filters: Mapping[str, str], key: str, default: bool
+    ) -> bool:
+        value = filters.get(key)
+        if value is None:
+            return default
+        return value.strip().casefold() in {"1", "true", "yes", "on"}
+
+    @staticmethod
+    def _keyword_span(
+        message: str,
+        phrase: str,
+        match_type: str,
+        ignore_case: bool,
+        whole_word: bool,
+    ) -> tuple[int, int] | None:
+        if not phrase:
+            return None
+        flags = re.IGNORECASE if ignore_case else 0
+        escaped = re.escape(phrase)
+        if whole_word:
+            escaped = rf"(?<!\w){escaped}(?!\w)"
+        anchors = {
+            "contains": escaped,
+            "exact": rf"^{escaped}$",
+            "starts_with": rf"^{escaped}",
+            "ends_with": rf"{escaped}$",
+        }
+        pattern = anchors.get(match_type)
+        if pattern is None:
+            return None
+        match = re.search(pattern, message, flags)
+        return match.span() if match is not None else None
 
     def _expire_first_message_state(self, now: datetime) -> None:
         if self._offline_since is None:
@@ -469,6 +644,14 @@ class TwitchEventTriggerStore:
             raise ValueError(
                 "That Twitch EventSub type is not connected for live automation yet."
             )
+        if trigger.event_type == KEYWORD_PHRASE_EVENT_TYPE:
+            phrase = trigger.filters.get("phrase", "").strip()
+            if not phrase:
+                raise ValueError("Keyword / Phrase triggers require text to match.")
+            if len(phrase) > 500:
+                raise ValueError("Keyword / Phrase text is limited to 500 characters.")
+            if trigger.filters.get("match_type", "contains") not in KEYWORD_MATCH_TYPES:
+                raise ValueError("Unknown Keyword / Phrase match type.")
         if not 1 <= trigger.reset_minutes <= 180:
             raise ValueError("First-message reset must be between 1 and 180 minutes.")
         for path in trigger.filters:

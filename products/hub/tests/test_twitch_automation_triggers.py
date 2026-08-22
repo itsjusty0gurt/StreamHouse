@@ -199,6 +199,113 @@ class TwitchEventTriggerStoreTests(unittest.TestCase):
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0].trigger_id, trigger.trigger_id)
 
+    def test_keyword_phrase_contains_context_and_normal_chat_identity(self) -> None:
+        routine = self.routines.add("Coffee response")
+        trigger = self.store.add_keyword_phrase(routine.routine_id, "coffee")
+        message = TwitchMessage(
+            username="Viewer",
+            user_id="viewer-1",
+            user_login="viewer",
+            text="I think coffee is better than tea",
+            message_id="message-1",
+            received_at=datetime.now(timezone.utc),
+        )
+
+        result = self.store.evaluate_keyword_phrase(message)
+
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0].trigger_id, trigger.trigger_id)
+        self.assertEqual(result[0].context["keyword.message"], message.text)
+        self.assertEqual(result[0].context["keyword.match"], "coffee")
+        self.assertEqual(result[0].context["keyword.before"], "I think")
+        self.assertEqual(result[0].context["keyword.after"], "is better than tea")
+        self.assertEqual(result[0].context["user_id"], "viewer-1")
+        self.assertEqual(result[0].context["message_id"], "message-1")
+        self.assertNotIn("command_data", result[0].context)
+
+    def test_keyword_phrase_match_modes_case_and_whole_word(self) -> None:
+        cases = (
+            ("contains", "Coffee time", "coffee", True),
+            ("exact", "COFFEE", "coffee", True),
+            ("starts_with", "coffee time", "coffee", True),
+            ("ends_with", "more coffee", "coffee", True),
+            ("contains", "category", "cat", False),
+        )
+        for index, (match_type, text, phrase, expected) in enumerate(cases):
+            routine = self.routines.add(f"Keyword {index}")
+            self.store.add_keyword_phrase(
+                routine.routine_id,
+                phrase,
+                match_type=match_type,
+                ignore_case=True,
+                whole_word=True,
+            )
+            message = TwitchMessage(
+                username="Viewer",
+                user_id=f"viewer-{index}",
+                text=text,
+                received_at=datetime.now(timezone.utc),
+            )
+            matches = tuple(
+                item
+                for item in self.store.evaluate_keyword_phrase(message)
+                if item.trigger_id in self.routines.get(routine.routine_id).trigger_ids
+            )
+            self.assertEqual(bool(matches), expected, (match_type, text, phrase))
+
+    def test_keyword_phrase_preserves_canonical_phrase_and_empty_edges(self) -> None:
+        routine = self.routines.add("Phrase response")
+        self.store.add_keyword_phrase(
+            routine.routine_id,
+            "I love you Sally",
+            ignore_case=True,
+        )
+        leading = TwitchMessage(
+            username="Viewer",
+            user_id="one",
+            text="I LOVE YOU SALLY lol",
+            received_at=datetime.now(timezone.utc),
+        )
+        trailing = TwitchMessage(
+            username="Viewer",
+            user_id="two",
+            text="Hey, I love you Sally",
+            received_at=datetime.now(timezone.utc),
+        )
+
+        first = self.store.evaluate_keyword_phrase(leading)[0].context
+        second = self.store.evaluate_keyword_phrase(trailing)[0].context
+
+        self.assertEqual(first["keyword.match"], "I love you Sally")
+        self.assertEqual(first["keyword.before"], "")
+        self.assertEqual(first["keyword.after"], "lol")
+        self.assertEqual(second["keyword.before"], "Hey,")
+        self.assertEqual(second["keyword.after"], "")
+
+    def test_ads_warning_started_and_ended_use_normal_routine_links(self) -> None:
+        expected = (
+            "ads.warning.5_minutes",
+            "ads.warning.3_minutes",
+            "ads.warning.2_minutes",
+            "ads.warning.1_minute",
+            "ads.started",
+            "ads.ended",
+        )
+        for event_type in expected:
+            routine = self.routines.add(event_type)
+            trigger = self.store.add(routine.routine_id, event_type)
+
+            events = self.store.evaluate_named(
+                event_type,
+                {"ads.next_in": "300", "ads.in_progress": "false"},
+                trigger_type="ads",
+            )
+
+            self.assertEqual(len(events), 1)
+            self.assertEqual(events[0].trigger_id, trigger.trigger_id)
+            self.assertEqual(events[0].trigger_type, "ads")
+            self.assertEqual(events[0].context["ads.next_in"], "300")
+
 
 if __name__ == "__main__":
     unittest.main()

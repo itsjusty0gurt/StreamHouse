@@ -68,6 +68,23 @@ separator whitespace trimmed. It may be empty and preserves internal spaces.
 For example, `!title Tonight we're playing Vintage Story` provides
 `command.name = title` and
 `command.data = Tonight we're playing Vintage Story`.
+Both values are contextual for that one routine execution, remain available to
+every task in the routine, and are discarded afterward. Non-command triggers
+do not receive stale command context.
+
+Keyword / Phrase is a separate Twitch Chat trigger for matching ordinary chat.
+One trigger handles both single words and multi-word phrases with Contains,
+Exact Message, Starts With, and Ends With modes plus Ignore Case and Whole Word
+controls. A match supplies the normal `user.*` and `chat.*` context plus:
+
+- `keyword.message`: the full triggering message;
+- `keyword.match`: the configured canonical text;
+- `keyword.before`: trimmed text before the match;
+- `keyword.after`: trimmed text after the match.
+
+These values are routine-scoped and never create `command.*` context. For
+`I think coffee is better than tea`, matching `coffee` yields `I think` and
+`is better than tea` as the before/after values.
 
 Built-in commands have stable default IDs. Startup seeds only missing defaults,
 never overwrites an existing default, and records deletion tombstones so a
@@ -136,13 +153,28 @@ routines persist at `automation/routines.json`. Both are included in current
 Streamhouse Hub backups. Older chatter records migrate through defaulted
 version-three fields.
 
-The channel snapshot refresh reads Twitch's ad schedule with `channel:read:ads` and
-shows the next break and duration, the last break, remaining pre-roll-free
-time, available snoozes, and the next snooze refresh. A one-second local timer
-updates countdowns between the normal one-minute Helix refreshes. Running and
-snoozing ads continue to require `channel:edit:commercial` and
-`channel:manage:ads`; the last manually used commercial duration is retained
-as a local UI preference.
+The channel snapshot refresh reads Twitch's ad schedule with `channel:read:ads`.
+`AdsService` owns the single cached `AdsState`, including the next/last break,
+duration, preroll-free time, snoozes, manual-commercial retry time, and active
+break timing. The compact Ad Manager remains on the Chat tab and shows the next
+or active countdown, next duration, snooze count/refresh, a remembered
+30–180-second commercial duration (180 seconds by default), Run Ads, and
+Snooze. It intentionally has no preroll-free progress bar or separate Ads
+settings workspace. API operations run on the existing Qt worker pattern and
+call `AdsService`, not Helix from the widget.
+
+With `channel:read:ads`, Hub subscribes to `channel.ad_break.begin`. The service
+retains Twitch's start time, duration, automatic/manual flag, and requester
+identity when supplied. Twitch has no public ad-break-end EventSub event, so
+Hub calculates the estimated end as start time plus duration, clears active
+state then, refreshes the schedule, and publishes Ads Ended. This is a Hub
+timing estimate, not confirmation of each viewer's playback completion.
+
+`AdsVariableProvider` exposes the authoritative state as typed `ads.*` values:
+`ads.next_at`, `ads.next_in`, `ads.next_duration`, `ads.last_at`, snooze and
+preroll fields, `ads.in_progress`, `ads.remaining`, active duration/start/mode,
+and `ads.manual_retry_after`. `ads.requester.id` and
+`ads.requester.name` are contextual to Ads Started when Twitch supplies them.
 
 Editing a Twitch command updates its managed chat-response task in place. Any
 additional tasks attached in Automation remain ordered and intact, even when
@@ -168,6 +200,13 @@ case-insensitive. The normalized task context includes `{event_type}`, `{user}`,
 `{message}`, `{input}`, `{amount}`, `{bits}`, `{viewers}`, `{tier}`, `{reward}`,
 `{reward_id}`, and `{reward_cost}` in addition to the existing Twitch message
 variables. Live traffic and Developer Simulation enter the same routing path.
+
+The Twitch trigger tree also provides an Ads category with 5-, 3-, 2-, and
+1-minute warnings, Ads Started, and Ads Ended. Warning state belongs to
+`AdsService`: each threshold fires at most once for one scheduled timestamp,
+and a successful snooze replaces that timestamp and recalculates warning
+eligibility. There are no built-in chat messages; users compose a warning
+trigger with an ordinary Chat task and any registry Variables they need.
 
 Counter actions do not require a counter-specific trigger system. The four
 registered Counter tasks—Increase, Decrease, Set, and Reset—may be placed in

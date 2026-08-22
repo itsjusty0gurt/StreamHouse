@@ -60,8 +60,9 @@ Hub must work independently. It must not require Streamhouse Studio,
 Streamhouse AI, Streamhouse Avatar, or Streamhouse Deck.
 
 Hub variables use provider-owned dotted namespaces such as `stream.*`,
-`chat.*`, `counter.<stable_id>.stream`, `counter.<stable_id>.viewer`, `obs.*`,
-and `custom.*`. Routine-scoped outputs use `automation.*`. `VariableRegistry`
+`chat.*`, contextual `command.*` and `keyword.*`, global/contextual `ads.*`,
+`counter.<stable_id>.stream`, `counter.<stable_id>.viewer`, `obs.*`, and
+`custom.*`. Routine-scoped outputs use `automation.*`. `VariableRegistry`
 and typed output definitions are Hub's sole metadata and resolution contract;
 the pre-alpha flat catalog, parser, validation, and compatibility aliases have
 been removed. Private development routines using them must be reset. These

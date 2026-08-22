@@ -79,6 +79,16 @@ def test_contextual_resolution_and_safe_placeholder_rendering() -> None:
     assert registry.resolve("command.name", command).display_value == "counterset"
     assert registry.resolve("command.data", command).display_value == " 4.5 "
     assert registry.resolve("command.data", {"command": "counterset", "command_data": ""}).available is False
+    keyword = {
+        "keyword.message": "I think coffee is better than tea",
+        "keyword.match": "coffee",
+        "keyword.before": "I think",
+        "keyword.after": "is better than tea",
+    }
+    assert registry.resolve("keyword.match", keyword).display_value == "coffee"
+    assert registry.resolve("keyword.before", keyword).display_value == "I think"
+    assert not registry.resolve("keyword.match", command).available
+    assert not registry.resolve("command.data", keyword).available
 
 
 def test_custom_metadata_type_persistence_deletion_and_reserved_names() -> None:

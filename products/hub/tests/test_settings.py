@@ -116,7 +116,7 @@ class SettingsStoreTests(unittest.TestCase):
         self.assertTrue(settings.twitch_chat_show_timestamps)
         self.assertEqual(settings.twitch_chat_font_family, "Segoe UI")
         self.assertEqual(settings.twitch_chat_font_size, 24)
-        self.assertEqual(settings.twitch_last_ad_duration, 30)
+        self.assertEqual(settings.twitch_last_ad_duration, 180)
         self.assertTrue(settings.local_ai_enabled)
         self.assertEqual(settings.streamhouse_ai_endpoint, "http://127.0.0.1:8765")
         self.assertEqual(settings.local_ai_endpoint, "http://127.0.0.1:11434")

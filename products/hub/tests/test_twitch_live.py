@@ -191,6 +191,20 @@ class TwitchHelixClientTests(unittest.TestCase):
         self.assertIn("stream.online", event_types)
         self.assertIn("stream.offline", event_types)
 
+    def test_ads_scope_enables_ad_break_begin_eventsub(self) -> None:
+        client = TwitchHelixClient()
+        client._create_subscription = Mock()
+        token = TwitchToken("access", "refresh", 999, ["channel:read:ads"])
+
+        client.create_activity_subscriptions(
+            "session-1", "channel-1", "channel-1", token
+        )
+
+        event_types = {
+            call.args[0] for call in client._create_subscription.call_args_list
+        }
+        self.assertIn("channel.ad_break.begin", event_types)
+
     @patch("products.hub.twitch.live.urlopen")
     def test_custom_reward_crud_uses_helix_contract(self, open_url) -> None:
         reward = {"id": "reward-1", "title": "Hydrate", "cost": 500}

@@ -59,6 +59,7 @@ class TwitchTaskTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
         self.service = FakeTwitchService()
+        self.ads_service = FakeTwitchService()
         self.channel_information = ChannelInformationStore(
             Path(self.temporary.name) / "channel-information.json"
         )
@@ -68,6 +69,7 @@ class TwitchTaskTests(unittest.TestCase):
             self.registry,
             self.service,
             channel_information_provider=lambda: self.channel_information,
+            ads_service=self.ads_service,
         )
         self.trigger = TriggerEvent(
             "event",
@@ -146,7 +148,8 @@ class TwitchTaskTests(unittest.TestCase):
                 },
             )
         )
-        self.assertIn(("commercial", 90), self.service.calls)
+        self.assertIn(("commercial", 90), self.ads_service.calls)
+        self.assertNotIn(("commercial", 90), self.service.calls)
         self.assertIn(("redemption", "reward-1", "redeem-1", "CANCELED"), self.service.calls)
 
     def test_stream_title_and_category_tasks_render_variables(self) -> None:

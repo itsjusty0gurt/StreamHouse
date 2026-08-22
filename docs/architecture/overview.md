@@ -290,7 +290,7 @@ Important event families:
 | --- | --- | --- |
 | `twitch_auth_changed`, `twitch_bot_auth_changed` | `TwitchAuthService` | Twitch bridge / connection UI |
 | `twitch_status_changed` | `TwitchService` | status bar, health, connection UI |
-| `twitch_message_received` | `TwitchService` | chat, command dispatcher, AI queue, memories, first-message triggers |
+| `twitch_message_received` | `TwitchService` | chat, command and Keyword/Phrase dispatchers, AI queue, memories, first-message triggers |
 | `twitch_event_received` | `TwitchService` | raw EventSub diagnostics |
 | `twitch_event`, `twitch_event.<type>` | `TwitchService` | activity feed, sessions, Twitch automation |
 | `obs_status_changed` | `ObsWebSocketService` | connection UI |
@@ -323,8 +323,9 @@ groups, enable state, queue assignment, and trigger-ID links.
 
 ### Shared routine store
 
-`TwitchCommandTriggerStore` creates the canonical `RoutineStore`. Twitch event,
-Core, and OBS trigger stores receive that same object/path. Do not instantiate
+`TwitchCommandTriggerStore` creates the canonical `RoutineStore`. Twitch event
+(including Hub-derived Ads and chat triggers), Core, and OBS trigger stores
+receive that same object/path. Do not instantiate
 an unrelated routine store for a new trigger provider inside `MainWindow`;
 doing so would split the automation graph.
 
@@ -409,8 +410,8 @@ owning provider supports writes. Valid types are `text`, `integer`, `number`,
 `boolean`, and ISO-8601 `datetime`. Providers are registered by `MainWindow`;
 malformed names, duplicate names, provider collisions, alias collisions, and
 alias loops are rejected. Reserved built-in namespaces currently include
-`stream`, `user`, `chat`, `counter`, `obs`, `hub`, `custom`, and `automation`;
-`ads` and `soundboard` are reserved for their owning future/current domains.
+`stream`, `user`, `chat`, `command`, `keyword`, `event`, `counter`, `obs`,
+`hub`, `custom`, `automation`, `ads`, and `soundboard`.
 Current providers expose:
 
 - cached Twitch stream values: `stream.title`, `stream.category`,
@@ -418,6 +419,10 @@ Current providers expose:
 - contextual `user.*` and `chat.*` values from the current trigger;
 - contextual Chat Command values `command.name` and `command.data`, where data
   is the trimmed raw text following the recognized command;
+- contextual Keyword/Phrase values `keyword.message`, `keyword.match`,
+  `keyword.before`, and `keyword.after`;
+- cached and calculated Twitch ad state as `ads.*`, plus contextual
+  `ads.requester.*` values when an Ads Started event supplies them;
 - stable shared counter totals as `counter.<counter_id>.stream` and contextual
   lifetime viewer totals as `counter.<counter_id>.viewer`;
 - the observed OBS program scene as `obs.current_scene`;
@@ -430,7 +435,8 @@ Availability/lifetime is metadata, not a sample-value inference:
   A provider can still report one unavailable while disconnected or before a
   cached value has been observed.
 - **Contextual** definitions require trigger/event data. `user.*`, `chat.*`,
-  and `counter.<id>.viewer` never invent a viewer, message, or fallback value.
+  `command.*`, `keyword.*`, `ads.requester.*`, and `counter.<id>.viewer` never
+  invent a viewer, message, requester, or fallback value.
 - **Temporary** definitions describe task/action outputs that exist only in the
   current routine execution after their producing task has run. They are not
   registered as permanent global variables. Nested routines intentionally
@@ -585,6 +591,8 @@ Adding a task requires more than a handler. See **Adding an automation task**.
 | Twitch commands | `TwitchCommandTriggerStore` | `twitch/commands.json` | `!command`, aliases, permissions, cooldowns, editable default provenance and removed-default tombstones |
 | Twitch activity | `TwitchEventTriggerStore` | `twitch/event_triggers.json` | follow, sub, gift, cheer, raid, reward, online/offline |
 | Twitch first message | same as above | same | once per viewer per stream with offline grace reset |
+| Twitch Keyword / Phrase | same as above | same | Contains/Exact/Starts With/Ends With chat matching with case and whole-word controls |
+| Twitch Ads | same as above | same | 5/3/2/1-minute warnings, EventSub-backed Ads Started, Hub-calculated Ads Ended |
 | Core | `CoreTriggerStore` | `automation/core_triggers.json` | application started/closing |
 | OBS | `ObsTriggerStore` | `obs/triggers.json` | connection, scene, source, audio, media, output changes |
 | Soundboard | button record in `SoundboardStore` | `twitch/soundboard.json` | local preview or Extension button |
@@ -593,6 +601,13 @@ The first-message trigger is synthesized from accepted chat messages, not a
 native EventSub subscription. It ignores broadcaster/bot messages, tracks
 viewer identity per trigger, resets on a new stream ID, and preserves state
 through brief offline periods according to `reset_minutes`.
+
+Keyword/Phrase is a separate chat concept from Chat Command. Its trigger
+context is fresh for one routine execution, keeps normal `user.*`/`chat.*`
+data, and never manufactures `command.*`. Ads warnings are deduplicated per
+scheduled timestamp and reset when Twitch moves the schedule. Ads Ended is an
+estimated Hub event derived from the EventSub start time plus duration because
+Twitch does not publish a public ad-break-end EventSub event.
 
 ## Twitch subsystem
 
@@ -644,7 +659,7 @@ An accepted non-bot chat message can feed several independent consumers:
 1. Twitch chat rendering;
 2. chatter/session counters;
 3. custom command dispatch;
-4. first-message automation;
+4. Keyword/Phrase and first-message automation;
 5. RAM recent-chat context;
 6. AI reply decision queue;
 7. opt-in memory buffer/training capture.
@@ -964,7 +979,7 @@ formats are accepted.
 | `twitch/channel-information.json` | Hub | versioned social links, social inclusion choices, schedule, rules, and server information used by commands and automation tasks |
 | `counters/index.json` | Hub | pre-alpha schema v2 definitions: stable ID, labels, scopes, numeric type, reset/minimum, and display precision |
 | `counters/<counter_id>.json` | Hub | schema v2 atomic values stored as exact decimal strings; shared/current-stream and Twitch-user-ID keyed values |
-| `twitch/event_triggers.json` | Hub | Twitch event/first-message trigger definitions |
+| `twitch/event_triggers.json` | Hub | Twitch EventSub, first-message, Keyword/Phrase, and Ads trigger definitions |
 | `twitch/soundboard.json` | Hub | pages, buttons, routine IDs |
 | `twitch/soundboard-relay.json` | Hub | non-secret relay URL/channel/autoconnect |
 | `obs/connection.json` | Hub | non-secret OBS host/port/autoconnect |
@@ -1218,7 +1233,8 @@ Keep public config free of local paths and routine internals.
   so Hub cannot reliably suppress the unban action or show moderation history.
   Moderation API requests are service-owned, but the current coordinator call
   is synchronous and should move to a focused worker before adding bulk tools.
-- The registry intentionally exposes only already-cached Twitch and OBS state.
+- The registry intentionally exposes only already-cached Twitch/Ads and OBS
+  state; providers do not perform network requests while resolving Variables.
   Follow/subscription profile state, OBS recording/profile/scene-collection
   values, and mathematical expressions are deferred provider work.
 

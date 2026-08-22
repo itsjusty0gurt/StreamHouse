@@ -35,7 +35,7 @@ class AppSettings:
     twitch_chat_show_timestamps: bool = True
     twitch_chat_font_family: str = "Segoe UI"
     twitch_chat_font_size: int = 10
-    twitch_last_ad_duration: int = 30
+    twitch_last_ad_duration: int = 180
     local_ai_enabled: bool = True
     streamhouse_ai_endpoint: str = "http://127.0.0.1:8765"
     local_ai_endpoint: str = "http://127.0.0.1:11434"

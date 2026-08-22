@@ -89,7 +89,10 @@ from products.hub.twitch.commands import (
 )
 from products.hub.twitch.tasks import SendTwitchChatMessageTask, TWITCH_TASK_LABELS
 from products.hub.twitch.automation_triggers import (
-    TWITCH_AUTOMATION_EVENT_TYPES,
+    ADS_TRIGGER_TYPES,
+    KEYWORD_MATCH_TYPES,
+    KEYWORD_PHRASE_EVENT_TYPE,
+    TWITCH_EVENT_AUTOMATION_TYPES,
     TwitchEventAutomationTrigger,
     TwitchEventTriggerStore,
 )
@@ -189,7 +192,7 @@ class NewRoutineDialog(QDialog):
         self.event_group = QGroupBox("Twitch Event")
         event_form = QFormLayout(self.event_group)
         self.event_type_combo = QComboBox()
-        for event_type in TWITCH_AUTOMATION_EVENT_TYPES:
+        for event_type in TWITCH_EVENT_AUTOMATION_TYPES:
             self.event_type_combo.addItem(_event_display_name(event_type), event_type)
         self.event_filters_edit = QLineEdit()
         self.event_filters_edit.setPlaceholderText(
@@ -311,7 +314,7 @@ class TwitchEventTriggerDialog(QDialog):
         layout = QVBoxLayout(self)
         form = QFormLayout()
         self.event_type_combo = QComboBox()
-        for event_type in TWITCH_AUTOMATION_EVENT_TYPES:
+        for event_type in TWITCH_EVENT_AUTOMATION_TYPES:
             self.event_type_combo.addItem(_event_display_name(event_type), event_type)
         if trigger:
             self.event_type_combo.setCurrentIndex(
@@ -371,6 +374,106 @@ class TwitchEventTriggerDialog(QDialog):
         label = form.labelForField(self.reset_spin)
         if label is not None:
             label.setVisible(visible)
+
+
+class KeywordPhraseTriggerDialog(QDialog):
+    def __init__(
+        self,
+        parent: QWidget | None = None,
+        trigger: TwitchEventAutomationTrigger | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.setWindowTitle(
+            "Edit Keyword / Phrase Trigger"
+            if trigger
+            else "Add Keyword / Phrase Trigger"
+        )
+        self.setMinimumWidth(480)
+        filters = trigger.filters if trigger is not None else {}
+        layout = QVBoxLayout(self)
+        form = QFormLayout()
+        self.phrase_edit = QLineEdit(filters.get("phrase", ""))
+        self.phrase_edit.setPlaceholderText("coffee or I love you Sally")
+        self.match_combo = QComboBox()
+        for value, label in KEYWORD_MATCH_TYPES.items():
+            self.match_combo.addItem(label, value)
+        self.match_combo.setCurrentIndex(
+            max(self.match_combo.findData(filters.get("match_type", "contains")), 0)
+        )
+        self.ignore_case_check = QCheckBox("Ignore case")
+        self.ignore_case_check.setChecked(
+            filters.get("ignore_case", "true").casefold() == "true"
+        )
+        self.whole_word_check = QCheckBox("Match whole word / phrase")
+        self.whole_word_check.setChecked(
+            filters.get("whole_word", "true").casefold() == "true"
+        )
+        self.enabled_check = QCheckBox("Enabled")
+        self.enabled_check.setChecked(trigger.enabled if trigger else True)
+        form.addRow("Keyword / Phrase", self.phrase_edit)
+        form.addRow("Match", self.match_combo)
+        form.addRow("", self.ignore_case_check)
+        form.addRow("", self.whole_word_check)
+        form.addRow("", self.enabled_check)
+        layout.addLayout(form)
+        help_label = QLabel(
+            "One trigger handles both single words and multi-word phrases. "
+            "Whole-word matching prevents text such as cat from matching category."
+        )
+        help_label.setWordWrap(True)
+        layout.addWidget(help_label)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Save
+            | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self._accept_values)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def _accept_values(self) -> None:
+        if not self.phrase_edit.text().strip():
+            QMessageBox.warning(
+                self,
+                "Keyword / Phrase Required",
+                "Enter the text this trigger should match.",
+            )
+            return
+        self.accept()
+
+    def values(self) -> dict[str, object]:
+        return {
+            "phrase": self.phrase_edit.text().strip(),
+            "match_type": str(self.match_combo.currentData()),
+            "ignore_case": self.ignore_case_check.isChecked(),
+            "whole_word": self.whole_word_check.isChecked(),
+            "enabled": self.enabled_check.isChecked(),
+        }
+
+
+class AdsTriggerDialog(QDialog):
+    def __init__(
+        self,
+        trigger: TwitchEventAutomationTrigger,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.trigger = trigger
+        self.setWindowTitle("Edit Twitch Ads Trigger")
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel(ADS_TRIGGER_TYPES.get(trigger.event_type, trigger.event_type)))
+        self.enabled_check = QCheckBox("Enabled")
+        self.enabled_check.setChecked(trigger.enabled)
+        layout.addWidget(self.enabled_check)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Save
+            | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def enabled(self) -> bool:
+        return self.enabled_check.isChecked()
 
 
 class CoreTriggerDialog(QDialog):
@@ -2844,12 +2947,25 @@ class AutomationPage(QWidget):
         for trigger in event_triggers:
             state = "Enabled" if trigger.enabled else "Disabled"
             filtered = f" • {len(trigger.filters)} filter(s)" if trigger.filters else ""
-            item = QListWidgetItem(
-                f"Twitch event — {_event_display_name(trigger.event_type)} "
-                f"[{state}{filtered}]"
-            )
+            if trigger.event_type == KEYWORD_PHRASE_EVENT_TYPE:
+                item = QListWidgetItem(
+                    f"Twitch chat — Keyword / Phrase: "
+                    f"{trigger.filters.get('phrase', '')} [{state}]"
+                )
+                kind = "keyword"
+            elif trigger.event_type in ADS_TRIGGER_TYPES:
+                item = QListWidgetItem(
+                    f"Twitch ads — {ADS_TRIGGER_TYPES[trigger.event_type]} [{state}]"
+                )
+                kind = "event"
+            else:
+                item = QListWidgetItem(
+                    f"Twitch event — {_event_display_name(trigger.event_type)} "
+                    f"[{state}{filtered}]"
+                )
+                kind = "event"
             item.setData(Qt.ItemDataRole.UserRole, trigger.trigger_id)
-            item.setData(Qt.ItemDataRole.UserRole + 1, "event")
+            item.setData(Qt.ItemDataRole.UserRole + 1, kind)
             self.trigger_list.addItem(item)
         for trigger in core_triggers:
             state = "Enabled" if trigger.enabled else "Disabled"
@@ -3341,15 +3457,41 @@ class AutomationPage(QWidget):
         add_menu._streamhouse_trigger_submenus.append(obs_menu)
 
         twitch_menu = QMenu("Twitch", add_menu)
-        command_action = twitch_menu.addAction(
+        chat_menu = QMenu("Chat", twitch_menu)
+        command_action = chat_menu.addAction(
             "Chat Command…", self._open_command_manager
         )
         command_action.setEnabled(routine is not None)
-        for event_type in TWITCH_AUTOMATION_EVENT_TYPES:
-            twitch_menu.addAction(
+        keyword_action = chat_menu.addAction(
+            "Keyword / Phrase…", self._add_keyword_phrase_trigger
+        )
+        keyword_action.setEnabled(routine is not None)
+        chat_menu.addAction(
+            _event_display_name("channel.chat.first_message"),
+            lambda checked=False: self._add_event_trigger(
+                "channel.chat.first_message"
+            ),
+        )
+        twitch_menu.addMenu(chat_menu)
+
+        ads_menu = QMenu("Ads", twitch_menu)
+        for event_type, label in ADS_TRIGGER_TYPES.items():
+            ads_menu.addAction(
+                label,
+                lambda checked=False, value=event_type: self._add_event_trigger(value),
+            )
+        twitch_menu.addMenu(ads_menu)
+
+        event_menu = QMenu("Events", twitch_menu)
+        for event_type in TWITCH_EVENT_AUTOMATION_TYPES:
+            if event_type == "channel.chat.first_message":
+                continue
+            event_menu.addAction(
                 _event_display_name(event_type),
                 lambda checked=False, value=event_type: self._add_event_trigger(value),
             )
+        twitch_menu.addMenu(event_menu)
+        twitch_menu._streamhouse_trigger_submenus = [chat_menu, ads_menu, event_menu]
         add_menu.addMenu(twitch_menu)
         add_menu._streamhouse_trigger_submenus.append(twitch_menu)
         return add_menu
@@ -3389,6 +3531,23 @@ class AutomationPage(QWidget):
             return
         self.select_routine(routine.routine_id)
         self._select_trigger("event", trigger.trigger_id)
+
+    def _add_keyword_phrase_trigger(self) -> None:
+        routine = self.routine_store.get(self._selected_routine_id)
+        if routine is None:
+            return
+        dialog = KeywordPhraseTriggerDialog(self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        try:
+            trigger = self.event_trigger_store.add_keyword_phrase(
+                routine.routine_id, **dialog.values()
+            )
+        except (OSError, TypeError, ValueError) as error:
+            self._error("Could Not Add Trigger", error)
+            return
+        self.select_routine(routine.routine_id)
+        self._select_trigger("keyword", trigger.trigger_id)
 
     def _add_core_trigger(self, event_type: str | None = None) -> None:
         routine = self.routine_store.get(self._selected_routine_id)
@@ -3465,6 +3624,20 @@ class AutomationPage(QWidget):
                 f"Cooldowns: {command.global_cooldown_seconds}s global, "
                 f"{command.user_cooldown_seconds}s per viewer"
             )
+        elif kind == "keyword":
+            trigger = self.event_trigger_store.get(trigger_id)
+            if trigger is None:
+                return
+            match_type = KEYWORD_MATCH_TYPES.get(
+                trigger.filters.get("match_type", "contains"), "Contains"
+            )
+            self.trigger_detail_label.setText(
+                f"Twitch chat Keyword / Phrase: {trigger.filters.get('phrase', '')}\n"
+                f"Match: {match_type}\n"
+                f"Ignore case: {trigger.filters.get('ignore_case', 'true').title()}\n"
+                f"Whole word: {trigger.filters.get('whole_word', 'true').title()}\n"
+                f"State: {'Enabled' if trigger.enabled else 'Disabled'}"
+            )
         elif kind == "event":
             trigger = self.event_trigger_store.get(trigger_id)
             if trigger is None:
@@ -3506,7 +3679,15 @@ class AutomationPage(QWidget):
         if kind == "event":
             trigger = self.event_trigger_store.get(trigger_id)
             if trigger is not None:
-                self._edit_event_trigger(routine.routine_id, trigger)
+                if trigger.event_type in ADS_TRIGGER_TYPES:
+                    self._edit_ads_trigger(routine.routine_id, trigger)
+                else:
+                    self._edit_event_trigger(routine.routine_id, trigger)
+            return
+        if kind == "keyword":
+            trigger = self.event_trigger_store.get(trigger_id)
+            if trigger is not None:
+                self._edit_keyword_phrase_trigger(routine.routine_id, trigger)
             return
         if kind == "core":
             trigger = self.core_trigger_store.get(trigger_id)
@@ -3549,6 +3730,41 @@ class AutomationPage(QWidget):
         self.select_routine(routine_id)
         self._select_trigger("event", updated.trigger_id)
 
+    def _edit_keyword_phrase_trigger(
+        self, routine_id: str, trigger: TwitchEventAutomationTrigger
+    ) -> None:
+        dialog = KeywordPhraseTriggerDialog(self, trigger)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        try:
+            updated = self.event_trigger_store.update_keyword_phrase(
+                trigger.trigger_id, **dialog.values()
+            )
+        except (OSError, TypeError, ValueError) as error:
+            self._error("Could Not Update Trigger", error)
+            return
+        self.select_routine(routine_id)
+        self._select_trigger("keyword", updated.trigger_id)
+
+    def _edit_ads_trigger(
+        self, routine_id: str, trigger: TwitchEventAutomationTrigger
+    ) -> None:
+        dialog = AdsTriggerDialog(trigger, self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        try:
+            updated = self.event_trigger_store.update(
+                trigger.trigger_id,
+                event_type=trigger.event_type,
+                filters={},
+                enabled=dialog.enabled(),
+            )
+        except (OSError, TypeError, ValueError) as error:
+            self._error("Could Not Update Trigger", error)
+            return
+        self.select_routine(routine_id)
+        self._select_trigger("event", updated.trigger_id)
+
     def _edit_core_trigger(
         self, routine_id: str, trigger: CoreAutomationTrigger
     ) -> None:
@@ -3584,7 +3800,11 @@ class AutomationPage(QWidget):
         kind, trigger_id = self._selected_trigger()
         if routine is None or not trigger_id:
             return
-        if kind == "event":
+        if kind == "keyword":
+            trigger = self.event_trigger_store.get(trigger_id)
+            detail = trigger.filters.get("phrase", "") if trigger else "this match"
+            prompt = f'Remove the Keyword / Phrase trigger "{detail}" but keep the routine?'
+        elif kind == "event":
             trigger = self.event_trigger_store.get(trigger_id)
             detail = trigger.event_type if trigger else "this event"
             prompt = f"Remove the {detail} trigger but keep the routine?"
@@ -3612,7 +3832,7 @@ class AutomationPage(QWidget):
         ) != QMessageBox.StandardButton.Yes:
             return
         try:
-            if kind == "event":
+            if kind in {"event", "keyword"}:
                 self.event_trigger_store.delete(trigger_id)
             elif kind == "core":
                 self.core_trigger_store.delete(trigger_id)

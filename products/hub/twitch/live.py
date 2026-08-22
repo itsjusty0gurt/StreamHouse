@@ -235,6 +235,12 @@ class TwitchHelixClient:
                 activity_specs.append((event_type, "1", {"broadcaster_user_id": broadcaster_user_id}))
         if "bits:read" in scopes:
             activity_specs.append(("channel.cheer", "1", {"broadcaster_user_id": broadcaster_user_id}))
+        if "channel:read:ads" in scopes:
+            activity_specs.append((
+                "channel.ad_break.begin",
+                "1",
+                {"broadcaster_user_id": broadcaster_user_id},
+            ))
         if scopes.intersection(
             {"channel:read:redemptions", "channel:manage:redemptions"}
         ):

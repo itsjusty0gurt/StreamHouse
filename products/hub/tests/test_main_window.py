@@ -448,8 +448,27 @@ class MainWindowTests(unittest.TestCase):
         )
         self.assertEqual(
             [action.text() for action in add_menu.actions()[2].menu().actions()],
+            ["Chat", "Ads", "Events"],
+        )
+        twitch_menu = add_menu.actions()[2].menu()
+        self.assertEqual(
+            [action.text() for action in twitch_menu.actions()[0].menu().actions()],
+            ["Chat Command…", "Keyword / Phrase…", "First Message Of Stream"],
+        )
+        self.assertEqual(
+            [action.text() for action in twitch_menu.actions()[1].menu().actions()],
             [
-                "Chat Command…",
+                "5 Minute Warning",
+                "3 Minute Warning",
+                "2 Minute Warning",
+                "1 Minute Warning",
+                "Ads Started",
+                "Ads Ended",
+            ],
+        )
+        self.assertEqual(
+            [action.text() for action in twitch_menu.actions()[2].menu().actions()],
+            [
                 "Follow",
                 "Subscribe",
                 "Subscription › Gift",
@@ -459,7 +478,6 @@ class MainWindowTests(unittest.TestCase):
                 "Channel Points Custom Reward Redemption › Add",
                 "Stream › Online",
                 "Stream › Offline",
-                "First Message Of Stream",
             ],
         )
 
@@ -489,8 +507,9 @@ class MainWindowTests(unittest.TestCase):
         menu = QMenu()
         add_menu = page._add_trigger_submenu(menu)
         twitch_menu = add_menu.actions()[2].menu()
+        event_menu = twitch_menu.actions()[2].menu()
 
-        twitch_menu.actions()[1].trigger()
+        event_menu.actions()[0].trigger()
 
         triggers = page.event_trigger_store.for_routine(routine.routine_id)
         self.assertEqual(len(triggers), 1)
@@ -1944,11 +1963,10 @@ class MainWindowTests(unittest.TestCase):
         self.assertEqual(self.window.stream_subscribers_label.text(), "12")
         self.assertTrue(self.window.stream_time_label.text().startswith("01:01:"))
         self.assertIn("#ff4f64", self.window.stream_status_card.styleSheet())
-        self.assertIn("Next 90s ad in", self.window.ad_next_label.text())
-        self.assertIn("Pre-roll free for", self.window.ad_preroll_label.text())
-        self.assertIn("#66ffd1", self.window.ad_preroll_label.styleSheet())
-        self.assertIn("Snoozes 2", self.window.ad_snooze_status_label.text())
-        self.assertGreater(self.window.ad_schedule_progress.value(), 0)
+        self.assertIn("Next ads in -", self.window.ad_next_label.text())
+        self.assertEqual(self.window.ad_detail_label.text(), "Next break: 90 sec")
+        self.assertIn("Snoozes: 2", self.window.ad_snooze_status_label.text())
+        self.assertFalse(hasattr(self.window, "ad_schedule_progress"))
         self.assertTrue(self.window.run_ad_button.isEnabled())
         self.assertTrue(self.window.snooze_ad_button.isEnabled())
 
@@ -1967,6 +1985,7 @@ class MainWindowTests(unittest.TestCase):
     def test_running_ad_remembers_duration_and_applies_retry_cooldown(self) -> None:
         self.window.stream_is_live = True
         self.window.twitch_auth.token = Mock(scopes=["channel:edit:commercial"])
+        self.window.twitch_service.auth = self.window.twitch_auth
         self.window.twitch_service.broadcaster_user_id = "42"
         self.window.twitch_service.helix.start_commercial = Mock(
             return_value={"message": "Commercial started", "retry_after": 480}
@@ -1978,6 +1997,8 @@ class MainWindowTests(unittest.TestCase):
 
         with patch("products.hub.ui.main_window.QTimer.singleShot"):
             self.window.run_commercial()
+            self.window.ads_thread_pool.waitForDone(2_000)
+            self.application.processEvents()
 
         self.assertEqual(self.window.settings.twitch_last_ad_duration, 90)
         self.window.settings_store.save.assert_called_once_with(
@@ -2165,6 +2186,86 @@ class MainWindowTests(unittest.TestCase):
         )
         self.assertEqual(trigger.trigger_type, "first_message")
         self.assertEqual(trigger.context["user"], "Viewer")
+
+    def test_keyword_phrase_chat_trigger_publishes_accurate_context(self) -> None:
+        routine = self.twitch_command_trigger_store.routine_store.add(
+            "Coffee response"
+        )
+        self.twitch_event_trigger_store.add_keyword_phrase(
+            routine.routine_id, "coffee"
+        )
+        execution = Mock(succeeded=True, handled=True)
+        self.window.automation_service.publish_trigger = Mock(
+            return_value=execution
+        )
+        self.window.automation_page.record_execution = Mock()
+        self.window.settings.ai_response_decisions_enabled = False
+
+        self.window.handle_twitch_message(
+            TwitchMessage(
+                username="Viewer",
+                text="I think coffee is better than tea",
+                received_at=datetime.now(timezone.utc),
+                message_id="message-1",
+                user_id="viewer-1",
+                user_login="viewer",
+            )
+        )
+
+        trigger = self.window.automation_service.publish_trigger.call_args.args[0]
+        self.assertEqual(trigger.trigger_type, "keyword_phrase")
+        self.assertEqual(trigger.context["keyword.match"], "coffee")
+        self.assertEqual(trigger.context["keyword.before"], "I think")
+        self.assertEqual(trigger.context["keyword.after"], "is better than tea")
+        self.assertNotIn("command_data", trigger.context)
+
+    def test_ad_break_event_updates_ui_and_started_then_calculated_end_triggers(self) -> None:
+        routines = self.twitch_command_trigger_store.routine_store
+        started_routine = routines.add("Ads started")
+        ended_routine = routines.add("Ads ended")
+        self.twitch_event_trigger_store.add(started_routine.routine_id, "ads.started")
+        self.twitch_event_trigger_store.add(ended_routine.routine_id, "ads.ended")
+        execution = Mock(succeeded=True, handled=True)
+        self.window.automation_service.publish_trigger = Mock(return_value=execution)
+        self.window.automation_page.record_execution = Mock()
+        now = datetime.now(timezone.utc)
+        self.window.stream_is_live = True
+        self.window.twitch_auth.token = Mock(scopes=["channel:read:ads"])
+        event = TwitchEvent(
+            subscription_type="channel.ad_break.begin",
+            version="1",
+            received_at=now,
+            message_id="ad-1",
+            broadcaster_user_id="streamer-1",
+            broadcaster_user_login="streamer",
+            broadcaster_user_name="Streamer",
+            transport=TwitchEventTransport.SIMULATOR,
+            payload={
+                "event": {
+                    "started_at": now.isoformat(),
+                    "duration_seconds": 60,
+                    "is_automatic": True,
+                }
+            },
+        )
+
+        self.window.handle_twitch_activity(event)
+        self.window._update_stream_overview_clock()
+
+        self.assertTrue(self.window.ads_service.state.in_progress)
+        self.assertIn("Ads Running -", self.window.ad_next_label.text())
+        started_trigger = self.window.automation_service.publish_trigger.call_args_list[0].args[0]
+        self.assertEqual(started_trigger.context["ads.is_automatic"], "true")
+
+        ended = self.window.ads_service.tick(now + timedelta(seconds=60))[0]
+        with patch("products.hub.ui.main_window.QTimer.singleShot"):
+            self.window._publish_ads_event(ended)
+
+        self.assertFalse(self.window.ads_service.state.in_progress)
+        self.assertEqual(
+            self.window.automation_service.publish_trigger.call_args_list[-1].args[0].trigger_id,
+            self.twitch_event_trigger_store.for_routine(ended_routine.routine_id)[0].trigger_id,
+        )
 
     def test_live_chat_starts_local_memory_reasoning_at_threshold(self) -> None:
         self.window.settings.ai_viewer_memory_enabled = True

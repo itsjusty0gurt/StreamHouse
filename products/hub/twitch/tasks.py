@@ -636,6 +636,7 @@ def register_twitch_tasks(
     command_provider: Callable[[], object] | None = None,
     channel_information_provider: Callable[[], ChannelInformationStore] | None = None,
     variable_registry: VariableRegistry | None = None,
+    ads_service: object | None = None,
 ) -> None:
     registry.register(SendTwitchChatMessageTask(service, variable_registry))
     registry.register(ResolveTwitchUserTask(service))
@@ -657,6 +658,12 @@ def register_twitch_tasks(
             GetChannelInformationFieldTask.task_type,
             BuildSocialLinksMessageTask.task_type,
         }:
+            task_service = (
+                ads_service
+                if ads_service is not None
+                and task_type in {"twitch.run_commercial", "twitch.snooze_ad"}
+                else service
+            )
             registry.register(
-                TwitchAutomationTask(service, task_type, variable_resolver)
+                TwitchAutomationTask(task_service, task_type, variable_resolver)
             )

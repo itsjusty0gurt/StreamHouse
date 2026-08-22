@@ -225,6 +225,45 @@ class AutomationVariableTests(unittest.TestCase):
         self.assertTrue(result.succeeded)
         self.assertNotIn("automation.temporary_value", self.capture.contexts[-1])
 
+    def test_trigger_context_is_available_to_every_task_and_never_leaks(self) -> None:
+        routine = self.routine_store.add("Context lifecycle", trigger_id="context")
+        self.routine_store.add_task(
+            routine.routine_id,
+            task_type=self.capture.task_type,
+            name="First capture",
+        )
+        self.routine_store.add_task(
+            routine.routine_id,
+            task_type=self.capture.task_type,
+            name="Second capture",
+        )
+
+        command = self.service.publish_trigger(
+            TriggerEvent(
+                "context",
+                "twitch",
+                "command",
+                {"command": "title", "command_data": "Tonight we play"},
+            )
+        )
+        unrelated = self.service.publish_trigger(
+            TriggerEvent(
+                "context",
+                "twitch",
+                "keyword_phrase",
+                {"keyword.match": "coffee"},
+            )
+        )
+
+        self.assertTrue(command.succeeded and unrelated.succeeded)
+        self.assertEqual(
+            [item["command.data"] for item in self.capture.contexts[:2]],
+            ["Tonight we play", "Tonight we play"],
+        )
+        self.assertNotIn("command.data", self.capture.contexts[2])
+        self.assertNotIn("command.name", self.capture.contexts[3])
+        self.assertEqual(self.capture.contexts[2]["keyword.match"], "coffee")
+
 
 if __name__ == "__main__":
     unittest.main()
