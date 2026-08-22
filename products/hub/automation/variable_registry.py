@@ -363,6 +363,39 @@ def placeholder_names(template: str) -> tuple[str, ...]:
     return tuple(match.group(1) for match in PLACEHOLDER_PATTERN.finditer(str(template)))
 
 
+def validate_placeholders(
+    template: str,
+    allowed_variables: Mapping[str, object] | set[str] | tuple[str, ...] = (),
+    *,
+    registry: VariableRegistry | None = None,
+    extra_definitions: tuple[VariableDefinition, ...] = (),
+) -> tuple[str, ...]:
+    """Validate canonical placeholders against registry and temporary metadata."""
+    text = str(template)
+    malformed = next(
+        (
+            token
+            for token in re.findall(r"\{([^{}]+)\}", text)
+            if not PLACEHOLDER_PATTERN.fullmatch(f"{{{token}}}")
+        ),
+        "",
+    )
+    if malformed:
+        raise ValueError(
+            f"Invalid canonical variable placeholder: {{{malformed}}}. "
+            "Use a dotted name such as {automation.random_line}."
+        )
+    names = placeholder_names(text)
+    allowed = set(allowed_variables)
+    allowed.update(definition.name for definition in extra_definitions)
+    if registry is not None:
+        allowed.update(definition.name for definition in registry.definitions())
+        unknown = sorted(name for name in set(names) if name not in allowed)
+        if unknown:
+            raise ValueError(f"Unknown variable: {{{unknown[0]}}}")
+    return names
+
+
 def render_placeholders(
     template: str,
     values: Mapping[str, object],

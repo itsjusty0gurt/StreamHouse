@@ -70,9 +70,14 @@ from products.hub.automation.queues import (
 from products.hub.counters.service import CounterService
 from products.hub.counters.tasks import COUNTER_TASK_LABELS
 from products.hub.automation.transfer import export_routine, import_routine, validate_import
-from products.hub.automation.variable_outputs import generated_output_definitions, output_id
+from products.hub.automation.variable_outputs import (
+    generated_output_definitions,
+    output_config_key,
+    output_id,
+)
 from products.hub.automation.variable_registry import (
     PLACEHOLDER_PATTERN,
+    VariableDefinition,
     render_placeholders,
     validate_variable_name,
 )
@@ -1065,6 +1070,7 @@ class TaskEditorDialog(QDialog):
         queue_store: AutomationQueueStore | None = None,
         counter_service: CounterService | None = None,
         variable_registry: VariableRegistry | None = None,
+        output_definitions: tuple[VariableDefinition, ...] = (),
     ) -> None:
         super().__init__(parent)
         self.task = task
@@ -1075,6 +1081,7 @@ class TaskEditorDialog(QDialog):
         self.queue_store = queue_store
         self.counter_service = counter_service
         self.variable_registry = variable_registry
+        self._output_definitions = output_definitions
         self.field_widgets: dict[str, dict[str, QWidget]] = {}
         self.setWindowTitle("Edit Task" if task else "Add Task")
         self.setMinimumWidth(620)
@@ -1179,18 +1186,9 @@ class TaskEditorDialog(QDialog):
             else {}
         )
         ordered_keys = list(registry_definitions)
-        output_definitions = {}
-        if self.routine_store is not None:
-            for routine in self.routine_store.routines:
-                for output_task in routine.tasks:
-                    source = self.LABELS.get(
-                        output_task.task_type, output_task.name
-                    )
-                    for definition in generated_output_definitions(
-                        output_task.task_type, output_task.config, source=source
-                    ):
-                        output_definitions.setdefault(definition.name, definition)
-        self._output_definitions = tuple(output_definitions.values())
+        output_definitions = {
+            definition.name: definition for definition in self._output_definitions
+        }
         ordered_keys.extend(
             key for key in output_definitions if key not in ordered_keys
         )
@@ -1333,7 +1331,45 @@ class TaskEditorDialog(QDialog):
             fields[key] = widget
             form.addRow(str(spec.get("label", "")), row_widget)
         self.field_widgets[task_type] = fields
+        self._add_generated_output_hint(form, task_type, fields, values)
         return page
+
+    def _add_generated_output_hint(
+        self,
+        form: QFormLayout,
+        task_type: str,
+        fields: dict[str, QWidget],
+        values: dict[str, object],
+    ) -> None:
+        key = output_config_key(task_type)
+        editor = fields.get(key)
+        if not key or not isinstance(editor, QLineEdit):
+            return
+        hint = QLabel()
+        hint.setObjectName("generatedOutputPlaceholder")
+        hint.setWordWrap(True)
+
+        def refresh(text: str) -> None:
+            config = dict(values)
+            config[key] = text
+            definitions = generated_output_definitions(task_type, config)
+            if definitions:
+                hint.setText(
+                    "Generated placeholder: "
+                    + ", ".join(definition.placeholder for definition in definitions)
+                )
+                hint.setProperty("state", "ready")
+            else:
+                hint.setText(
+                    "Enter a lowercase output name; generated outputs use the automation.* namespace."
+                )
+                hint.setProperty("state", "error")
+            hint.style().unpolish(hint)
+            hint.style().polish(hint)
+
+        editor.textChanged.connect(refresh)
+        refresh(editor.text())
+        form.addRow("Available afterward", hint)
 
     def _create_field(
         self, kind: str, spec: dict[str, object], value: object
@@ -1755,6 +1791,8 @@ class TaskEditorDialog(QDialog):
             SendTwitchChatMessageTask.validate_template(
                 str(config.get("message", "")),
                 self.variables,
+                registry=self.variable_registry,
+                extra_definitions=self._output_definitions,
             )
         if task_type.startswith("counter."):
             if config.get("counter_id") == "__create__":
@@ -1765,22 +1803,9 @@ class TaskEditorDialog(QDialog):
             scope = str(config.get("scope", "channel_total"))
             if not definition.tracks(scope):
                 raise ValueError(f"The counter does not track {scope.replace('_', ' ')}.")
-        if task_type in {
-            "core.create_global_variable",
-            "core.create_session_variable",
-            "core.create_routine_variable",
-            "core.logic_get_input",
-            "core.logic_random_number",
-            "core.file_read",
-            "core.file_random_line",
-            "core.file_specific_line",
-            "core.path_exists",
-            "core.file_count_lines",
-        }:
-            variable_key = "variable" if task_type in FILE_TASK_TYPES else "name"
-            config[variable_key] = output_id(
-                str(config.get(variable_key, ""))
-            )
+        variable_key = output_config_key(task_type)
+        if variable_key:
+            config[variable_key] = output_id(str(config.get(variable_key, "")))
         if task_type in {"core.delete_variable", "core.adjust_variable", "core.toggle_variable"}:
             config["name"] = validate_variable_name(str(config.get("name", "")))
         name = self.name_edit.text().strip()
@@ -2871,6 +2896,10 @@ class AutomationPage(QWidget):
 
     def _routine_issues(self, routine, trigger_count: int | None = None) -> list[str]:
         issues: list[str] = []
+        if routine.managed_by and trigger_count == 0:
+            issues.append(
+                "Owning trigger no longer exists; assign a new trigger or delete this routine"
+            )
         if routine.queue_id and self.queue_store.get(routine.queue_id) is None:
             issues.append("Assigned automation queue no longer exists")
         if not routine.tasks:
@@ -3357,7 +3386,13 @@ class AutomationPage(QWidget):
                 self.trigger_store.delete(command.trigger_id)
                 self.commands_changed()
             else:
-                self.routine_store.delete(routine.routine_id)
+                self.routine_store.delete(
+                    routine.routine_id,
+                    allow_managed=(
+                        routine.managed_by == TwitchCommandTriggerStore.MANAGED_BY
+                        and self.trigger_store.for_routine(routine.routine_id) is None
+                    ),
+                )
         except (OSError, ValueError) as error:
             self._error("Could Not Delete Routine", error)
             return
@@ -3507,9 +3542,11 @@ class AutomationPage(QWidget):
             self.commands_changed,
         )
         dialog.exec()
-        self.select_routine(routine.routine_id)
-        if dialog.created_trigger_id:
-            self._select_trigger("command", dialog.created_trigger_id)
+        target_routine_id = dialog.selected_routine_id or routine.routine_id
+        self.select_routine(target_routine_id)
+        target_trigger_id = dialog.selected_trigger_id or dialog.created_trigger_id
+        if target_trigger_id:
+            self._select_trigger("command", target_trigger_id)
 
     def _add_event_trigger(self, event_type: str | None = None) -> None:
         routine = self.routine_store.get(self._selected_routine_id)
@@ -3868,6 +3905,7 @@ class AutomationPage(QWidget):
             queue_store=self.queue_store,
             counter_service=self.counter_service,
             variable_registry=self.variable_registry,
+            output_definitions=self._output_definitions_before(routine),
         )
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
@@ -3911,11 +3949,12 @@ class AutomationPage(QWidget):
             self,
             task,
             self.obs_service,
-            self._preview_context_for_routine(routine),
+            self._preview_context_for_routine(routine, task.task_id),
             self.routine_store,
             self.queue_store,
             self.counter_service,
             self.variable_registry,
+            self._output_definitions_before(routine, task.task_id),
         )
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
@@ -4231,19 +4270,40 @@ class AutomationPage(QWidget):
                     "Available" if task_type in available else "Unavailable",
                 )
 
-    def _preview_context_for_routine(self, routine) -> dict[str, str]:
+    def _output_definitions_before(
+        self,
+        routine,
+        task_id: str = "",
+    ) -> tuple[VariableDefinition, ...]:
+        definitions: dict[str, VariableDefinition] = {}
+        for task in routine.tasks:
+            if task_id and task.task_id == task_id:
+                break
+            source = TaskEditorDialog.LABELS.get(task.task_type, task.name)
+            for definition in generated_output_definitions(
+                task.task_type,
+                task.config,
+                source=source,
+            ):
+                definitions[definition.name] = definition
+        return tuple(definitions.values())
+
+    def _preview_context_for_routine(
+        self,
+        routine,
+        before_task_id: str = "",
+    ) -> dict[str, str]:
         context = {
             definition.name: str(definition.preview_value)
             for definition in self.variable_registry.definitions()
             if definition.preview_value is not None
         }
         context.update(self.variable_registry.context_values(context))
-        for task in routine.tasks:
-            for definition in generated_output_definitions(task.task_type, task.config):
-                context.setdefault(
-                    definition.name,
-                    str(definition.preview_value or "Example"),
-                )
+        for definition in self._output_definitions_before(routine, before_task_id):
+            context.setdefault(
+                definition.name,
+                str(definition.preview_value or "Example"),
+            )
         return context
 
     def _test_selected_task(self) -> None:
@@ -4253,7 +4313,7 @@ class AutomationPage(QWidget):
             return
         dialog = TaskTestDialog(
             task,
-            self._preview_context_for_routine(routine),
+            self._preview_context_for_routine(routine, task.task_id),
             self._task_external_effect(task),
             self,
         )

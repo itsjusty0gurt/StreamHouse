@@ -11,7 +11,7 @@ from typing import Any, Callable, Mapping
 from uuid import uuid4
 
 from products.hub.automation.variable_outputs import generated_output_definitions
-from products.hub.automation.variable_registry import VariableRegistry
+from products.hub.automation.variable_registry import VariableDefinition, VariableRegistry
 from products.hub.automation.models import RoutineDefinition, TriggerEvent
 from products.hub.automation.routines import RoutineStore
 from shared.streamhouse_runtime.json_store import atomic_write_json, load_json_with_backup
@@ -162,6 +162,7 @@ class TwitchCommandTriggerStore:
         if not self.path.exists():
             self.triggers = []
             self.removed_default_ids = set()
+            self.reconcile_managed_routines()
             return []
         payload = load_json_with_backup(self.path)
         if not isinstance(payload, dict):
@@ -192,7 +193,38 @@ class TwitchCommandTriggerStore:
             except (TypeError, ValueError):
                 continue
             loaded.append(trigger)
+        self.reconcile_managed_routines()
         return list(loaded)
+
+    def reconcile_managed_routines(self) -> tuple[int, int]:
+        """Release routines whose owning command no longer exists.
+
+        Custom routines keep their tasks and become ordinary routines so they
+        can be edited, assigned a new trigger, or deleted. Orphaned built-in
+        routines are removed so normal default seeding can recreate the
+        authoritative trigger/routine pair.
+        """
+        active = {
+            trigger.routine_id: trigger.trigger_id
+            for trigger in self.triggers
+        }
+        default_routine_ids = {
+            definition.routine_id for definition in default_command_definitions()
+        }
+        detached = 0
+        deleted = 0
+        for routine in tuple(self.routine_store.routines):
+            if routine.managed_by != self.MANAGED_BY:
+                continue
+            if active.get(routine.routine_id) == routine.trigger_id:
+                continue
+            if routine.routine_id in default_routine_ids:
+                self.routine_store.delete_managed(routine.routine_id, self.MANAGED_BY)
+                deleted += 1
+            else:
+                self.routine_store.detach_managed(routine.routine_id, self.MANAGED_BY)
+                detached += 1
+        return detached, deleted
 
     def save(self) -> None:
         atomic_write_json(
@@ -264,6 +296,13 @@ class TwitchCommandTriggerStore:
             default_id="",
         )
         self._validate_trigger(trigger)
+        routine = self.routine_store.get(routine_id)
+        if (
+            routine is not None
+            and routine.managed_by == self.MANAGED_BY
+            and self.for_routine(routine_id) is None
+        ):
+            self.routine_store.detach_managed(routine_id, self.MANAGED_BY)
         self.routine_store.attach_managed(
             routine_id,
             trigger_id=trigger.trigger_id,
@@ -661,18 +700,20 @@ class TwitchCommandTriggerStore:
         if trigger.has_chat_response and task is None:
             raise ValueError("The Twitch command trigger has no response task.")
         if task is not None:
-            generated_definitions = tuple(
-                definition
-                for candidate in routine.tasks
-                for definition in generated_output_definitions(
-                    candidate.task_type,
-                    candidate.config,
+            generated_definitions: list[VariableDefinition] = []
+            for candidate in routine.tasks:
+                if candidate.task_id == task.task_id:
+                    break
+                generated_definitions.extend(
+                    generated_output_definitions(
+                        candidate.task_type,
+                        candidate.config,
+                    )
                 )
-            )
             SendTwitchChatMessageTask.validate_template(
                 str(task.config.get("message", "")),
                 registry=self.variable_registry,
-                extra_definitions=generated_definitions,
+                extra_definitions=tuple(generated_definitions),
             )
 
     def _validated_response(self, value: object) -> str:

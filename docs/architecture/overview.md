@@ -2,7 +2,7 @@
 
 > Canonical implementation map for maintainers and coding agents.
 >
-> Last verified: 2026-08-21 against version `0.1.0`.
+> Last verified: 2026-08-22 against version `0.1.0`.
 > Update this file when a change moves ownership, adds a persisted format,
 > changes an inter-process contract, or introduces a new service/trigger/task.
 
@@ -481,6 +481,16 @@ type, source task, lifetime, description, and preview without globally
 registering temporary values. Same-name temporary outputs retain deterministic
 task-order overwrite behavior. Counter tasks do not manufacture outputs: later
 tasks read the refreshed `counter.<id>.stream` or `.viewer` provider value.
+
+Output-producing task editors store a validated leaf ID such as `random_line`
+and show its canonical placeholder, `{automation.random_line}`, beside the
+field. A flat `{random_line}` placeholder is invalid. The task editor and
+Variable Picker expose only outputs produced by earlier tasks in the selected
+routine; an output does not exist before its producer succeeds. Successful
+outputs remain in that execution's mutable routine context for all later tasks
+and nested routines, then disappear with the execution. They do not enter the
+registry's global provider catalog, persist to disk, or leak into sibling or
+later executions.
 
 Variable precedence when preparing a trigger is:
 

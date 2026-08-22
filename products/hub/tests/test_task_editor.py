@@ -12,6 +12,7 @@ from products.hub.automation.models import TaskDefinition
 from products.hub.automation.routines import RoutineStore
 from products.hub.automation.variable_providers import context_provider, runtime_provider
 from products.hub.automation.variable_registry import VariableRegistry
+from products.hub.automation.variable_outputs import generated_output_definitions
 from products.hub.ui.automation_page import TaskEditorDialog
 
 
@@ -218,6 +219,13 @@ class TaskEditorTests(unittest.TestCase):
             read_dialog.values()["config"]["variable"],
             "random_line",
         )
+        self.assertEqual(
+            read_dialog.findChild(QLabel, "generatedOutputPlaceholder").text(),
+            "Generated placeholder: {automation.random_line}",
+        )
+        read_fields["variable"].setText("command.data")
+        with self.assertRaisesRegex(ValueError, "Automation output names"):
+            read_dialog.values()
 
         write_dialog = TaskEditorDialog("core.file_write")
         write_fields = write_dialog.field_widgets["core.file_write"]
@@ -231,6 +239,33 @@ class TaskEditorTests(unittest.TestCase):
 
         self.assertEqual(write_config["mode"], "overwrite")
         self.assertEqual(write_config["text"], "{user.display_name} redeemed {event.reward}")
+
+    def test_chat_editor_accepts_only_canonical_preceding_output(self) -> None:
+        output_definitions = generated_output_definitions(
+            "core.file_random_line",
+            {"variable": "random_line"},
+        )
+        dialog = TaskEditorDialog(
+            "twitch.send_chat_message",
+            variable_registry=self.variables(),
+            output_definitions=output_definitions,
+        )
+        message = dialog.field_widgets["twitch.send_chat_message"]["message"]
+        message.setPlainText("{automation.random_line}")
+
+        self.assertEqual(
+            dialog.values()["config"]["message"],
+            "{automation.random_line}",
+        )
+        rows = {
+            dialog.variable_table.item(row, 0).text()
+            for row in range(dialog.variable_table.rowCount())
+        }
+        self.assertIn("{automation.random_line}", rows)
+
+        message.setPlainText("{random_line}")
+        with self.assertRaisesRegex(ValueError, "Invalid canonical variable placeholder"):
+            dialog.values()
 
     def test_trigger_variable_can_be_inserted_and_previewed(self) -> None:
         dialog = TaskEditorDialog(

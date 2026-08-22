@@ -118,6 +118,11 @@ class TwitchTaskTests(unittest.TestCase):
             ),
             "Viewer: Hardcore",
         )
+        with self.assertRaisesRegex(
+            ValueError, "Invalid canonical variable placeholder"
+        ) as raised:
+            SendTwitchChatMessageTask.validate_template("{random_line}")
+        self.assertNotIn("command variable", str(raised.exception).casefold())
 
     def test_moderation_uses_trigger_user_and_message_ids(self) -> None:
         self.assertTrue(

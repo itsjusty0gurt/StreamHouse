@@ -7,6 +7,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from products.hub.automation.routines import RoutineStore
+from products.hub.automation.variable_providers import context_provider
+from products.hub.automation.variable_registry import VariableRegistry
 from products.hub.twitch.commands import (
     TwitchCommandPermission,
     TwitchCommandSetupState,
@@ -19,6 +21,7 @@ from products.hub.twitch.channel_information import (
     ChannelInformationStore,
     SocialLink,
 )
+from products.hub.twitch.default_commands import default_command_definitions
 from products.hub.twitch.models import TwitchBadge, TwitchMessage
 from products.hub.twitch.tasks import SendTwitchChatMessageTask
 
@@ -128,7 +131,7 @@ class TwitchCommandTriggerStoreTests(unittest.TestCase):
             self.store.add("socials", "Links", aliases=["discord"])
         with self.assertRaisesRegex(ValueError, "built-in"):
             self.store.add("sallymemory", "No")
-        with self.assertRaisesRegex(ValueError, "Invalid canonical command variable"):
+        with self.assertRaisesRegex(ValueError, "Invalid canonical variable placeholder"):
             self.store.add("broken", "Hello {username}")
 
     def test_command_edit_preserves_added_routine_tasks_after_reordering(self) -> None:
@@ -191,6 +194,32 @@ class TwitchCommandTriggerStoreTests(unittest.TestCase):
             loaded.response_for(loaded.triggers[0]),
             "{automation.random_line}",
         )
+
+    def test_command_response_rejects_output_produced_after_response(self) -> None:
+        trigger = self.store.add("random", "Placeholder")
+        routine = self.routine_store.get(trigger.routine_id)
+        response = routine.tasks[0]
+        self.routine_store.update_task(
+            routine.routine_id,
+            response.task_id,
+            config={"message": "{automation.random_line}", "as_bot": True},
+        )
+        self.routine_store.add_task(
+            routine.routine_id,
+            task_type="core.file_random_line",
+            name="Too late",
+            config={"path": "responses.txt", "variable": "random_line"},
+        )
+        self.store.save()
+
+        loaded = TwitchCommandTriggerStore(
+            self.path,
+            RoutineStore(self.routine_store.path),
+        )
+        loaded.variable_registry = VariableRegistry()
+        loaded.variable_registry.register(context_provider())
+
+        self.assertEqual(loaded.load(), [])
 
     def test_command_can_trigger_routine_without_chat_response(self) -> None:
         routine = self.routine_store.add("Toggle the lights")
@@ -301,6 +330,48 @@ class TwitchCommandTriggerStoreTests(unittest.TestCase):
         self.assertEqual(detached.trigger_id, "")
         self.assertEqual(detached.managed_by, "")
         self.assertEqual(len(detached.tasks), 2)
+
+    def test_load_releases_custom_orphans_and_removes_default_orphans(self) -> None:
+        custom = self.routine_store.create_managed(
+            trigger_id="missing-command",
+            name="Yippie",
+            managed_by=self.store.MANAGED_BY,
+            task_type="twitch.send_chat_message",
+            task_name="Keep response",
+            task_config={"message": "Yippie!", "as_bot": True},
+        )
+        default = next(iter(default_command_definitions()))
+        self.routine_store.routines.append(self.store._routine_for(default))
+        self.routine_store.save()
+
+        self.assertEqual(self.store.load(), [])
+
+        released = self.routine_store.get(custom.routine_id)
+        self.assertIsNotNone(released)
+        self.assertEqual(released.managed_by, "")
+        self.assertEqual(released.trigger_id, "")
+        self.assertEqual(released.tasks[0].managed_key, "")
+        self.assertEqual(released.tasks[0].config["message"], "Yippie!")
+        self.assertIsNone(self.routine_store.get(default.routine_id))
+
+    def test_attach_command_releases_stale_command_ownership(self) -> None:
+        routine = self.routine_store.create_managed(
+            trigger_id="missing-command",
+            name="Yippie",
+            managed_by=self.store.MANAGED_BY,
+            task_type="core.delay",
+            task_name="Keep task",
+            task_config={"seconds": 1},
+        )
+
+        trigger = self.store.attach_routine(routine.routine_id, "yippie")
+
+        attached = self.routine_store.get(routine.routine_id)
+        self.assertEqual(trigger.name, "yippie")
+        self.assertEqual(attached.managed_by, self.store.MANAGED_BY)
+        self.assertEqual(attached.trigger_id, trigger.trigger_id)
+        self.assertEqual(len(attached.tasks), 1)
+        self.assertEqual(attached.tasks[0].task_type, "core.delay")
 
     def test_command_update_preserves_a_custom_routine_name(self) -> None:
         trigger = self.store.add("hello", "Hello")

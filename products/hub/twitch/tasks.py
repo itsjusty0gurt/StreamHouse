@@ -12,6 +12,7 @@ from products.hub.automation.variable_registry import (
     VariableDefinition,
     VariableRegistry,
     render_placeholders,
+    validate_placeholders,
 )
 from products.hub.twitch.channel_information import (
     CHANNEL_INFORMATION_FIELD_LABELS,
@@ -116,27 +117,12 @@ class SendTwitchChatMessageTask:
     ) -> None:
         if not template or len(template) > 500:
             raise ValueError("Twitch messages must contain 1-500 characters.")
-        malformed = next(
-            (
-                token
-                for token in re.findall(r"\{([^{}]+)\}", template)
-                if not PLACEHOLDER_PATTERN.fullmatch(f"{{{token}}}")
-            ),
-            "",
+        validate_placeholders(
+            template,
+            allowed_variables,
+            registry=registry,
+            extra_definitions=extra_definitions,
         )
-        if malformed:
-            raise ValueError(f"Invalid canonical command variable: {{{malformed}}}")
-        allowed = set(allowed_variables)
-        allowed.update(definition.name for definition in extra_definitions)
-        if registry is not None:
-            allowed.update(definition.name for definition in registry.definitions())
-        unknown = sorted(
-            name
-            for name in set(cls.TEMPLATE_PATTERN.findall(template))
-            if registry is not None and name not in allowed
-        )
-        if unknown:
-            raise ValueError(f"Unknown command variable: {{{unknown[0]}}}")
 
     @classmethod
     def render(cls, template: str, values: Mapping[str, str]) -> str:

@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 
 from products.hub.automation.custom_variables import CustomVariableStore
+from products.hub.automation.file_tasks import register_file_tasks
 from products.hub.automation.models import TaskDefinition, TaskExecutionResult, TriggerEvent
 from products.hub.automation.routines import RoutineStore
 from products.hub.automation.service import AutomationService
@@ -13,6 +14,7 @@ from products.hub.automation.variable_outputs import generated_output_definition
 from products.hub.automation.variable_providers import CustomVariableProvider, context_provider
 from products.hub.automation.variable_registry import VariableRegistry
 from products.hub.automation.variable_tasks import RunRoutineTask, register_variable_tasks
+from products.hub.twitch.tasks import SendTwitchChatMessageTask
 
 
 class CaptureContextTask:
@@ -24,6 +26,15 @@ class CaptureContextTask:
     def execute(self, task, trigger):
         self.contexts.append(dict(trigger.context))
         return TaskExecutionResult(task.task_id, task.task_type, True, "Captured.")
+
+
+class CaptureTwitchService:
+    def __init__(self) -> None:
+        self.messages: list[str] = []
+
+    def send_message(self, message: str, *, as_bot: bool = True) -> bool:
+        self.messages.append(message)
+        return True
 
 
 class AutomationVariableTests(unittest.TestCase):
@@ -48,6 +59,14 @@ class AutomationVariableTests(unittest.TestCase):
             variable_registry=self.variable_registry,
         )
         self.registry.register(RunRoutineTask(self.service.run_nested_routine))
+
+    def _register_file_and_chat_tasks(self) -> CaptureTwitchService:
+        register_file_tasks(self.registry)
+        twitch = CaptureTwitchService()
+        self.registry.register(
+            SendTwitchChatMessageTask(twitch, self.variable_registry)
+        )
+        return twitch
 
     def tearDown(self) -> None:
         self.temporary.cleanup()
@@ -129,6 +148,123 @@ class AutomationVariableTests(unittest.TestCase):
                 "automation.channel_information_status",
             ),
         )
+
+    def test_file_output_is_available_only_after_producer_and_across_later_tasks(self) -> None:
+        twitch = self._register_file_and_chat_tasks()
+        path = Path(self.temporary.name) / "responses.txt"
+        path.write_text("Yippie!", encoding="utf-8")
+        routine = self.routine_store.add("Generated output")
+        self.routine_store.add_task(
+            routine.routine_id,
+            task_type="core.file_random_line",
+            name="Choose response",
+            config={"path": str(path), "variable": "random_line"},
+        )
+        for name in ("First message", "Second message"):
+            self.routine_store.add_task(
+                routine.routine_id,
+                task_type="twitch.send_chat_message",
+                name=name,
+                config={"message": "{automation.random_line}", "as_bot": True},
+            )
+
+        supplied_context: dict[str, str] = {}
+        result = self.service.run_routine(routine.routine_id, supplied_context)
+
+        self.assertTrue(result.succeeded)
+        self.assertEqual(twitch.messages, ["Yippie!", "Yippie!"])
+        self.assertNotIn("automation.random_line", supplied_context)
+
+    def test_generated_output_is_unavailable_before_producer_and_never_leaks(self) -> None:
+        twitch = self._register_file_and_chat_tasks()
+        path = Path(self.temporary.name) / "responses.txt"
+        path.write_text("Later", encoding="utf-8")
+        before = self.routine_store.add("Before producer")
+        self.routine_store.add_task(
+            before.routine_id,
+            task_type="twitch.send_chat_message",
+            name="Too early",
+            config={"message": "{automation.random_line}", "as_bot": True},
+        )
+        self.routine_store.add_task(
+            before.routine_id,
+            task_type="core.file_random_line",
+            name="Choose response",
+            config={"path": str(path), "variable": "random_line"},
+        )
+        next_run = self.routine_store.add("Unrelated run")
+        self.routine_store.add_task(
+            next_run.routine_id,
+            task_type="twitch.send_chat_message",
+            name="Must not leak",
+            config={"message": "{automation.random_line}", "as_bot": True},
+        )
+
+        early_result = self.service.run_routine(before.routine_id)
+        next_result = self.service.run_routine(next_run.routine_id)
+
+        self.assertFalse(early_result.succeeded)
+        self.assertFalse(next_result.succeeded)
+        self.assertEqual(twitch.messages, [])
+        self.assertIn(
+            "Unknown variable",
+            early_result.routine_results[0].task_results[0].detail,
+        )
+
+    def test_generated_command_and_keyword_context_can_coexist(self) -> None:
+        twitch = self._register_file_and_chat_tasks()
+        path = Path(self.temporary.name) / "responses.txt"
+        path.write_text("chosen", encoding="utf-8")
+        routine = self.routine_store.add("Combined context")
+        self.routine_store.add_task(
+            routine.routine_id,
+            task_type="core.file_random_line",
+            name="Choose response",
+            config={"path": str(path), "variable": "random_line"},
+        )
+        self.routine_store.add_task(
+            routine.routine_id,
+            task_type="twitch.send_chat_message",
+            name="Report context",
+            config={
+                "message": "{command.data}|{keyword.match}|{automation.random_line}",
+                "as_bot": True,
+            },
+        )
+
+        result = self.service.run_routine(
+            routine.routine_id,
+            {"command_data": "input", "keyword.match": "coffee"},
+        )
+
+        self.assertTrue(result.succeeded)
+        self.assertEqual(twitch.messages, ["input|coffee|chosen"])
+
+    def test_later_generated_output_predictably_replaces_same_name(self) -> None:
+        twitch = self._register_file_and_chat_tasks()
+        first = Path(self.temporary.name) / "first.txt"
+        second = Path(self.temporary.name) / "second.txt"
+        first.write_text("first", encoding="utf-8")
+        second.write_text("second", encoding="utf-8")
+        routine = self.routine_store.add("Overwrite output")
+        for path in (first, second):
+            self.routine_store.add_task(
+                routine.routine_id,
+                task_type="core.file_random_line",
+                name=f"Read {path.stem}",
+                config={"path": str(path), "variable": "choice"},
+            )
+        self.routine_store.add_task(
+            routine.routine_id,
+            task_type="twitch.send_chat_message",
+            name="Use latest",
+            config={"message": "{automation.choice}", "as_bot": True},
+        )
+
+        result = self.service.run_routine(routine.routine_id)
+
+        self.assertTrue(result.succeeded)
+        self.assertEqual(twitch.messages, ["second"])
 
     def test_nested_routine_shares_routine_variables_with_parent(self) -> None:
         child = self.routine_store.add("Child")

@@ -133,14 +133,17 @@ class TwitchCommandManagerDialog(QDialog):
         self.routine_id = routine_id
         self.commands_changed = commands_changed or (lambda: None)
         self.created_trigger_id = ""
+        self.selected_trigger_id = ""
+        self.selected_routine_id = ""
         self.setWindowTitle("Twitch Chat Commands")
         self.setMinimumSize(620, 420)
 
         layout = QVBoxLayout(self)
         introduction = QLabel(
             "Commands are Twitch triggers attached to routines. Create New adds "
-            "a command to the selected routine; Edit Selected can update any "
-            "existing command. Chat response text is optional."
+            "a command to the current routine. Select Command opens an existing "
+            "command's attached routine; Edit Selected updates its settings. "
+            "Chat response text is optional."
         )
         introduction.setWordWrap(True)
         layout.addWidget(introduction)
@@ -162,13 +165,19 @@ class TwitchCommandManagerDialog(QDialog):
         self.status_label.setWordWrap(True)
         layout.addWidget(self.status_label)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
-        buttons.rejected.connect(self.accept)
+        self.select_button = buttons.addButton(
+            "Select Command", QDialogButtonBox.ButtonRole.AcceptRole
+        )
+        self.select_button.clicked.connect(self._select_command)
+        buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
 
         self.create_button.clicked.connect(self._create_command)
         self.edit_button.clicked.connect(self._edit_command)
         self.command_list.itemSelectionChanged.connect(self._update_actions)
-        self.command_list.itemDoubleClicked.connect(lambda _item: self._edit_command())
+        self.command_list.itemDoubleClicked.connect(
+            lambda _item: self._select_command()
+        )
         self._refresh()
 
     def _refresh(self, selected_trigger_id: str = "") -> None:
@@ -205,6 +214,15 @@ class TwitchCommandManagerDialog(QDialog):
             else "This routine already has a Twitch chat command trigger."
         )
         self.edit_button.setEnabled(self._selected_command() is not None)
+        self.select_button.setEnabled(self._selected_command() is not None)
+
+    def _select_command(self) -> None:
+        command = self._selected_command()
+        if command is None:
+            return
+        self.selected_trigger_id = command.trigger_id
+        self.selected_routine_id = command.routine_id
+        self.accept()
 
     def _create_command(self) -> None:
         if self.store.for_routine(self.routine_id) is not None:

@@ -100,6 +100,26 @@ STATIC_OUTPUTS = {
     "twitch.build_command_list": ("command_list", "command_list_status"),
 }
 
+OUTPUT_CONFIG_KEYS = {
+    "core.create_global_variable": "name",
+    "core.create_session_variable": "name",
+    "core.create_routine_variable": "name",
+    "core.logic_get_input": "name",
+    "core.logic_random_number": "name",
+    "core.file_read": "variable",
+    "core.file_random_line": "variable",
+    "core.file_specific_line": "variable",
+    "core.path_exists": "variable",
+    "core.file_count_lines": "variable",
+    "core.format_duration": "output_variable",
+    "core.select_text": "output_variable",
+    "twitch.get_channel_information_field": "output_variable",
+}
+
+
+def output_config_key(task_type: str) -> str:
+    return OUTPUT_CONFIG_KEYS.get(str(task_type).strip().casefold(), "")
+
 
 def _output_definition_names(task_type: str, config: Mapping[str, object]) -> tuple[str, ...]:
     if task_type in STATIC_OUTPUTS:
@@ -111,20 +131,7 @@ def _output_definition_names(task_type: str, config: Mapping[str, object]) -> tu
             automation_output_name(name)
             for name in (base, f"{base}_status", "channel_information_available", "channel_information_status")
         )
-    key = {
-        "core.create_global_variable": "name",
-        "core.create_session_variable": "name",
-        "core.create_routine_variable": "name",
-        "core.logic_get_input": "name",
-        "core.logic_random_number": "name",
-        "core.file_read": "variable",
-        "core.file_random_line": "variable",
-        "core.file_specific_line": "variable",
-        "core.path_exists": "variable",
-        "core.file_count_lines": "variable",
-        "core.format_duration": "output_variable",
-        "core.select_text": "output_variable",
-    }.get(task_type)
+    key = output_config_key(task_type)
     if key is None:
         return ()
     base = output_id(config.get(key, ""))

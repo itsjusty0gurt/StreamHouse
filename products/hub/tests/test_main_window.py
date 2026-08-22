@@ -320,6 +320,28 @@ class MainWindowTests(unittest.TestCase):
         self.assertEqual(saved.name, "Welcome Everyone")
         self.assertEqual(saved.description, "Updated description")
 
+    def test_automation_page_can_delete_orphaned_command_routine(self) -> None:
+        store = self.twitch_command_trigger_store.routine_store
+        routine = store.create_managed(
+            trigger_id="missing-command",
+            name="Yippie",
+            managed_by=self.twitch_command_trigger_store.MANAGED_BY,
+            task_type="twitch.send_chat_message",
+            task_name="Response",
+            task_config={"message": "Yippie!", "as_bot": True},
+        )
+        page = self.window.automation_page
+        page.select_routine(routine.routine_id)
+
+        with patch.object(
+            QMessageBox,
+            "question",
+            return_value=QMessageBox.StandardButton.Yes,
+        ):
+            page._delete_routine()
+
+        self.assertIsNone(store.get(routine.routine_id))
+
     def test_automation_queues_tab_assigns_and_displays_pending_routines(self) -> None:
         page = self.window.automation_page
         queue = self.window.automation_queue_store.add("Soundboard")
@@ -567,6 +589,47 @@ class MainWindowTests(unittest.TestCase):
 
         self.assertEqual(context["automation.random_line"], "Example")
 
+    def test_generated_output_discovery_respects_task_order(self) -> None:
+        store = self.twitch_command_trigger_store.routine_store
+        routine = store.add("Ordered outputs")
+        first = store.add_task(
+            routine.routine_id,
+            task_type="core.file_random_line",
+            name="First output",
+            config={"path": "first.txt", "variable": "first_value"},
+        )
+        consumer = store.add_task(
+            routine.routine_id,
+            task_type="twitch.send_chat_message",
+            name="Consumer",
+            config={"message": "{automation.first_value}", "as_bot": True},
+        )
+        store.add_task(
+            routine.routine_id,
+            task_type="core.file_random_line",
+            name="Later output",
+            config={"path": "later.txt", "variable": "later_value"},
+        )
+        routine = store.get(routine.routine_id)
+        page = self.window.automation_page
+
+        before_first = page._output_definitions_before(routine, first.task_id)
+        before_consumer = page._output_definitions_before(routine, consumer.task_id)
+        all_outputs = page._output_definitions_before(routine)
+
+        self.assertEqual(before_first, ())
+        self.assertEqual(
+            tuple(item.name for item in before_consumer),
+            ("automation.first_value",),
+        )
+        self.assertEqual(
+            tuple(item.name for item in all_outputs),
+            ("automation.first_value", "automation.later_value"),
+        )
+        preview = page._preview_context_for_routine(routine, consumer.task_id)
+        self.assertIn("automation.first_value", preview)
+        self.assertNotIn("automation.later_value", preview)
+
     def test_twitch_command_manager_lists_existing_and_respects_routine_limit(self) -> None:
         existing = self.twitch_command_trigger_store.add("hello", "Hello!")
         empty_routine = self.twitch_command_trigger_store.routine_store.add(
@@ -580,8 +643,13 @@ class MainWindowTests(unittest.TestCase):
         self.assertIn("!hello", manager.command_list.item(0).text())
         self.assertTrue(manager.create_button.isEnabled())
         self.assertFalse(manager.edit_button.isEnabled())
+        self.assertFalse(manager.select_button.isEnabled())
         manager.command_list.setCurrentRow(0)
         self.assertTrue(manager.edit_button.isEnabled())
+        self.assertTrue(manager.select_button.isEnabled())
+        manager.select_button.click()
+        self.assertEqual(manager.selected_trigger_id, existing.trigger_id)
+        self.assertEqual(manager.selected_routine_id, existing.routine_id)
         manager.close()
 
         attached_manager = TwitchCommandManagerDialog(
