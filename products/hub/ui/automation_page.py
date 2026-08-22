@@ -660,47 +660,24 @@ class TaskEditorDialog(QDialog):
             {"key": "redemption_id", "label": "Redemption ID", "kind": "text", "default": "{event.redemption_id}", "required": True},
             {"key": "action", "label": "Result", "kind": "choice", "default": "fulfill", "choices": (("Fulfill", "fulfill"), ("Cancel and refund", "refund"))},
         ),
-        "counter.update": (
+        "counter.increase": (
             {"key": "counter_id", "label": "Counter", "kind": "counter", "default": "", "required": True},
-            {"key": "operation", "label": "Operation", "kind": "choice", "default": "increase", "choices": (("Increase", "increase"), ("Decrease", "decrease"))},
-            {"key": "amount", "label": "Amount", "kind": "text", "default": "1", "required": True, "placeholder": "1, -1, or {event.amount}"},
-            {"key": "viewer_source", "label": "Viewer", "kind": "choice", "default": "trigger", "choices": (("Viewer who triggered this routine", "trigger"), ("No viewer / shared only", "none"))},
-            {"key": "channel_total", "label": "Update values", "kind": "bool", "default": True, "text": "Channel all-time total"},
-            {"key": "stream_total", "label": "", "kind": "bool", "default": True, "text": "Current stream total"},
-            {"key": "viewer_total", "label": "", "kind": "bool", "default": True, "text": "Viewer all-time total"},
-            {"key": "viewer_stream_total", "label": "", "kind": "bool", "default": False, "text": "Viewer current-stream total"},
-            {"key": "output_prefix", "label": "Output prefix", "kind": "text", "default": "", "placeholder": "Blank uses stable counter ID"},
+            {"key": "scope", "label": "Value", "kind": "choice", "default": "channel_total", "choices": (("Shared counter", "channel_total"), ("Current broadcast", "stream_total"), ("Triggering viewer", "viewer_total"), ("Triggering viewer — current broadcast", "viewer_stream_total"))},
+            {"key": "amount", "label": "Amount", "kind": "text", "default": "1", "required": True, "placeholder": "1, 0.5, or {command.data}"},
         ),
-        "counter.get_value": (
+        "counter.decrease": (
             {"key": "counter_id", "label": "Counter", "kind": "counter", "default": "", "required": True},
-            {"key": "scope", "label": "Value to read", "kind": "choice", "default": "channel_total", "choices": (("Channel lifetime", "channel_total"), ("Current stream", "stream_total"), ("Viewer lifetime", "viewer_total"), ("Viewer current stream", "viewer_stream_total"), ("Viewer rank", "viewer_rank"))},
-            {"key": "viewer_source", "label": "Viewer", "kind": "choice", "default": "trigger", "choices": (("Viewer who triggered this routine", "trigger"), ("No viewer / shared only", "none"))},
-            {"key": "output_prefix", "label": "Output prefix", "kind": "text", "default": "", "placeholder": "Blank uses stable counter ID"},
+            {"key": "scope", "label": "Value", "kind": "choice", "default": "channel_total", "choices": (("Shared counter", "channel_total"), ("Current broadcast", "stream_total"), ("Triggering viewer", "viewer_total"), ("Triggering viewer — current broadcast", "viewer_stream_total"))},
+            {"key": "amount", "label": "Amount", "kind": "text", "default": "1", "required": True, "placeholder": "1, 0.5, or {command.data}"},
         ),
         "counter.set_value": (
             {"key": "counter_id", "label": "Counter", "kind": "counter", "default": "", "required": True},
-            {"key": "scope", "label": "Value to set", "kind": "choice", "default": "channel_total", "choices": (("Channel all-time", "channel_total"), ("Current stream", "stream_total"), ("Viewer all-time", "viewer_total"), ("Viewer current stream", "viewer_stream_total"))},
-            {"key": "value", "label": "Exact value", "kind": "text", "default": "0", "required": True},
-            {"key": "viewer_source", "label": "Viewer", "kind": "choice", "default": "trigger", "choices": (("Viewer who triggered this routine", "trigger"), ("No viewer / shared only", "none"))},
-            {"key": "output_prefix", "label": "Output prefix", "kind": "text", "default": "", "placeholder": "Blank uses stable counter ID"},
+            {"key": "scope", "label": "Value", "kind": "choice", "default": "channel_total", "choices": (("Shared counter", "channel_total"), ("Current broadcast", "stream_total"), ("Triggering viewer", "viewer_total"), ("Triggering viewer — current broadcast", "viewer_stream_total"))},
+            {"key": "value", "label": "Value", "kind": "text", "default": "0", "required": True, "placeholder": "4.5 or {command.data}"},
         ),
         "counter.reset": (
             {"key": "counter_id", "label": "Counter", "kind": "counter", "default": "", "required": True},
-            {"key": "viewer_source", "label": "Viewer", "kind": "choice", "default": "trigger", "choices": (("Viewer who triggered this routine", "trigger"), ("No viewer / shared only", "none"))},
-            {"key": "channel_total", "label": "Reset values", "kind": "bool", "default": True, "text": "Channel all-time total"},
-            {"key": "stream_total", "label": "", "kind": "bool", "default": False, "text": "Current stream total"},
-            {"key": "viewer_total", "label": "", "kind": "bool", "default": False, "text": "One viewer's all-time total"},
-            {"key": "viewer_stream_total", "label": "", "kind": "bool", "default": False, "text": "One viewer's current-stream total"},
-            {"key": "all_viewer_totals", "label": "Danger zone", "kind": "bool", "default": False, "text": "Reset every viewer lifetime value for this counter"},
-            {"key": "all_viewer_stream_totals", "label": "", "kind": "bool", "default": False, "text": "Reset every viewer current-stream value for this counter"},
-            {"key": "output_prefix", "label": "Output prefix", "kind": "text", "default": "", "placeholder": "Blank uses stable counter ID"},
-        ),
-        "counter.get_leaderboard": (
-            {"key": "counter_id", "label": "Counter", "kind": "counter", "default": "", "required": True},
-            {"key": "viewer_scope", "label": "Viewer scope", "kind": "choice", "default": "lifetime", "choices": (("Viewer lifetime", "lifetime"), ("Viewer current stream", "current_stream"))},
-            {"key": "limit", "label": "Number of entries", "kind": "number", "default": 5, "minimum": 1, "maximum": 25},
-            {"key": "include_zero", "label": "", "kind": "bool", "default": False, "text": "Include zero values"},
-            {"key": "output_prefix", "label": "Output prefix", "kind": "text", "default": "", "placeholder": "Blank uses stable counter ID"},
+            {"key": "scope", "label": "Value", "kind": "choice", "default": "channel_total", "choices": (("Shared counter", "channel_total"), ("Current broadcast", "stream_total"), ("Triggering viewer", "viewer_total"), ("Triggering viewer — current broadcast", "viewer_stream_total"))},
         ),
         "core.launch_application": (
             {"key": "executable", "label": "Application", "kind": "file", "default": "", "required": True},
@@ -969,7 +946,8 @@ class TaskEditorDialog(QDialog):
         "core.file_count_lines": ("path",),
         "obs.set_text_source": ("text",),
         "obs.set_image_source": ("file",),
-        "counter.update": ("amount",),
+        "counter.increase": ("amount",),
+        "counter.decrease": ("amount",),
         "counter.set_value": ("value",),
     }
 
@@ -1049,7 +1027,7 @@ class TaskEditorDialog(QDialog):
             variables = QLabel(
                 "Task templates use canonical variables such as {user.display_name}, "
                 "{stream.channel}, {event.type}, {obs.scene}, {chat.message}, "
-                "{event.viewers}, {event.reward}, and {command.args}."
+                "{event.viewers}, {event.reward}, and {command.data}."
             )
             variables.setWordWrap(True)
             layout.addWidget(variables)
@@ -1403,9 +1381,7 @@ class TaskEditorDialog(QDialog):
             combo.setCurrentIndex(0)
             return
         try:
-            definition = self.counter_service.create_counter(
-                dialog.values(), dialog.starting_total.value()
-            )
+            definition = self.counter_service.create_counter(dialog.values())
         except (OSError, ValueError) as error:
             QMessageBox.warning(self, "Could Not Create Counter", str(error))
             combo.setCurrentIndex(0)
@@ -1680,36 +1656,12 @@ class TaskEditorDialog(QDialog):
         if task_type.startswith("counter."):
             if config.get("counter_id") == "__create__":
                 raise ValueError("Choose or create a counter.")
-            if (
-                task_type in {"counter.update", "counter.reset"}
-                and not config.get("all_viewers")
-                and not config.get("all_viewer_totals")
-                and not config.get("all_viewer_stream_totals")
-                and not any(
-                    bool(config.get(scope))
-                    for scope in (
-                        "channel_total", "stream_total", "viewer_total", "viewer_stream_total"
-                    )
-                )
-            ):
-                raise ValueError("Select at least one counter scope.")
-            prefix = str(config.get("output_prefix", "")).strip() or str(config.get("counter_id", ""))
-            config["output_prefix"] = output_id(prefix)
             definition = self.counter_service.get_counter(str(config.get("counter_id", ""))) if self.counter_service is not None else None
             if definition is None:
                 raise ValueError("Missing Counter: choose an existing counter.")
-            selected_scopes: set[str] = set()
-            if task_type in {"counter.get_value", "counter.set_value"}:
-                selected_scopes.add(str(config.get("scope", "")))
-            elif task_type in {"counter.update", "counter.reset"}:
-                selected_scopes.update(scope for scope in ("channel_total", "stream_total", "viewer_total", "viewer_stream_total") if bool(config.get(scope)))
-                if bool(config.get("all_viewer_totals")): selected_scopes.add("viewer_total")
-                if bool(config.get("all_viewer_stream_totals")): selected_scopes.add("viewer_stream_total")
-            unavailable = sorted(scope for scope in selected_scopes if not definition.tracks("viewer_total" if scope == "viewer_rank" else scope))
-            if unavailable:
-                raise ValueError("The counter does not track: " + ", ".join(unavailable) + ".")
-            if any(scope.startswith("viewer_") or scope == "viewer_rank" for scope in selected_scopes) and config.get("viewer_source") == "none":
-                raise ValueError("Viewer scopes require a viewer source.")
+            scope = str(config.get("scope", "channel_total"))
+            if not definition.tracks(scope):
+                raise ValueError(f"The counter does not track {scope.replace('_', ' ')}.")
         if task_type in {
             "core.create_global_variable",
             "core.create_session_variable",
@@ -2799,16 +2751,18 @@ class AutomationPage(QWidget):
         definition = self.counter_service.get_counter(str(task.config.get("counter_id", "")))
         if definition is None:
             return "Missing Counter"
-        if task.task_type == "counter.update":
+        if task.task_type in {"counter.increase", "counter.decrease"}:
             amount = str(task.config.get("amount", "1"))
-            operation = str(task.config.get("operation", "increase"))
-            sign = "+" if operation != "decrease" else "−"
-            viewer = {"trigger": "Triggering viewer", "none": "Shared values"}.get(str(task.config.get("viewer_source", "trigger")), "Viewer")
-            scopes = [label for scope, label in (("channel_total", "Channel lifetime"), ("stream_total", "Current stream"), ("viewer_total", "Viewer lifetime"), ("viewer_stream_total", "Viewer stream")) if task.config.get(scope)]
-            return f"{definition.display_name} · {sign}{amount.lstrip('+-')} · {viewer}" + (f" · {' / '.join(scopes)}" if scopes else "")
+            sign = "+" if task.task_type == "counter.increase" else "−"
+            scope = {
+                "channel_total": "Shared",
+                "stream_total": "Current broadcast",
+                "viewer_total": "Triggering viewer",
+                "viewer_stream_total": "Viewer current broadcast",
+            }.get(str(task.config.get("scope", "channel_total")), "Counter")
+            return f"{definition.display_name} · {sign}{amount.lstrip('+-')} · {scope}"
         labels = {
-            "counter.get_value": "Read value", "counter.set_value": "Set value",
-            "counter.reset": "Reset", "counter.get_leaderboard": "Leaderboard",
+            "counter.set_value": "Set", "counter.reset": "Reset",
         }
         return f"{definition.display_name} · {labels.get(task.task_type, 'Counter')}"
 
@@ -4138,7 +4092,7 @@ class AutomationPage(QWidget):
             "game": "--",
             "title": "Automation test",
             "command": "manual",
-            "args": "",
+            "command_data": "",
             "target": "--",
             "uses": "1",
         }

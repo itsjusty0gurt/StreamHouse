@@ -825,7 +825,7 @@ class TwitchCommandTriggerDispatcher:
                 "message_id": message.message_id or "--",
                 "redemption_id": "--",
                 "command": trigger.name,
-                "args": arguments,
+                "command_data": arguments,
                 "target": (
                     arguments.split(maxsplit=1)[0].lstrip("@")
                     if arguments

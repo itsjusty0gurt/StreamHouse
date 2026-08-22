@@ -15,14 +15,6 @@ OUTPUT_ID_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 
 INTEGER_SUFFIXES = frozenset(
     {
-        "amount_changed",
-        "channel_total",
-        "stream_total",
-        "viewer_total",
-        "viewer_stream_total",
-        "viewer_rank",
-        "leaderboard_entries",
-        "top_viewer_value",
         "file_count",
         "line_count",
         "stream_viewers",
@@ -110,11 +102,6 @@ STATIC_OUTPUTS = {
 
 
 def _output_definition_names(task_type: str, config: Mapping[str, object]) -> tuple[str, ...]:
-    if task_type.startswith("counter."):
-        from products.hub.counters.tasks import OUTPUT_SUFFIXES
-
-        prefix = output_id(config.get("output_prefix") or config.get("counter_id", ""))
-        return tuple(automation_output_name(prefix, suffix) for suffix in OUTPUT_SUFFIXES)
     if task_type in STATIC_OUTPUTS:
         return tuple(automation_output_name(name) for name in STATIC_OUTPUTS[task_type])
     if task_type in {"twitch.get_channel_information_field", "twitch.build_social_links_message"}:

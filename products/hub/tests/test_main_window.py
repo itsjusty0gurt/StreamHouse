@@ -370,7 +370,10 @@ class MainWindowTests(unittest.TestCase):
             ["Run Python script"],
         )
         self.assertIn("Change scene", [action.text() for action in obs_menu.actions()])
-        self.assertIn("Update", [action.text() for action in counters_menu.actions()])
+        self.assertEqual(
+            [action.text() for action in counters_menu.actions()],
+            ["Increase", "Decrease", "Set", "Reset"],
+        )
         twitch_tasks = [action.text() for action in twitch_menu.actions()]
         self.assertIn("Send chat message", twitch_tasks)
         self.assertIn("Run commercial", twitch_tasks)

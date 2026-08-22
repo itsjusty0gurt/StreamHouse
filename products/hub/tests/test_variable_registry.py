@@ -75,6 +75,10 @@ def test_contextual_resolution_and_safe_placeholder_rendering() -> None:
         "{user.name}: {chat.message} / {chat.message_id}", context
     ) == "Viewer: hello / {chat.message_id}"
     assert registry.render("{chat.message_id}", context, fallback="--") == "--"
+    command = {"command": "counterset", "command_data": " 4.5 "}
+    assert registry.resolve("command.name", command).display_value == "counterset"
+    assert registry.resolve("command.data", command).display_value == " 4.5 "
+    assert registry.resolve("command.data", {"command": "counterset", "command_data": ""}).available is False
 
 
 def test_custom_metadata_type_persistence_deletion_and_reserved_names() -> None:
@@ -113,7 +117,7 @@ def test_custom_metadata_type_persistence_deletion_and_reserved_names() -> None:
 def test_counter_variable_uses_stable_id_and_domain_service_for_writes() -> None:
     with TemporaryDirectory() as temporary:
         service = CounterService(CounterStore(Path(temporary) / "counters"))
-        service.create_counter(definition(), 5)
+        service.create_counter(CounterDefinition("deaths", "Deaths", "death", "deaths", reset_value="5"))
         provider = CounterVariableProvider(service)
         registry = VariableRegistry()
         registry.register(provider)
@@ -131,6 +135,17 @@ def test_counter_variable_uses_stable_id_and_domain_service_for_writes() -> None
         service.update_counter("deaths", display_name="Boss Deaths")
         assert provider.definitions()[0].name == "counter.deaths.stream"
         assert registry.resolve("counter.deaths.stream").definition.display_name.startswith("Boss Deaths")
+        service.create_counter(
+            CounterDefinition(
+                "coffee", "Coffee", "cup", "cups",
+                numeric_type="decimal", display_precision=2,
+            )
+        )
+        decimal_definition = next(
+            item for item in provider.definitions()
+            if item.name == "counter.coffee.stream"
+        )
+        assert decimal_definition.data_type is VariableDataType.NUMBER
 
 
 def test_alias_metadata_collisions_and_loop_prevention() -> None:
@@ -191,14 +206,9 @@ def test_generated_task_outputs_have_typed_temporary_metadata() -> None:
     assert random_output.availability is VariableAvailability.TEMPORARY
     assert random_output.preview_value == 1
 
-    counter_outputs = generated_output_definitions(
-        "counter.update", {"counter_id": "deaths"}, source="Counter — Update"
-    )
-    amount = next(item for item in counter_outputs if item.name == "automation.deaths_amount_changed")
-    status = next(item for item in counter_outputs if item.name == "automation.deaths_status")
-    assert amount.data_type is VariableDataType.INTEGER
-    assert status.data_type is VariableDataType.TEXT
-    assert amount.source == "Counter — Update"
+    assert generated_output_definitions(
+        "counter.increase", {"counter_id": "deaths"}
+    ) == ()
 
     twitch_outputs = generated_output_definitions("twitch.get_stream_information", {})
     by_name = {item.name: item for item in twitch_outputs}

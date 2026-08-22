@@ -2787,7 +2787,7 @@ class MainWindow(QMainWindow):
             "uptime": "--",
             "followers": "--",
             "command": "--",
-            "args": "--",
+            "command_data": "--",
             "target": "--",
             "uses": "--",
         }

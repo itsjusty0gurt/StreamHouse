@@ -4,15 +4,31 @@ from pathlib import Path
 from threading import RLock
 from typing import Any, Callable
 
-from products.hub.counters.models import CounterDefinition, validate_counter_id
+from products.hub.counters.models import (
+    CounterDefinition,
+    counter_number_to_storage,
+    parse_counter_number,
+    validate_counter_id,
+)
 from shared.streamhouse_runtime.json_store import atomic_write_json, load_json_with_backup
 
-INDEX_VERSION = 1
-COUNTER_VERSION = 1
+INDEX_VERSION = 2
+COUNTER_VERSION = 2
 
 
-def empty_counter_payload(counter_id: str, starting_total: int = 0) -> dict[str, Any]:
-    return {"version": COUNTER_VERSION, "counter_id": validate_counter_id(counter_id), "channel_total": int(starting_total), "current_stream": {"stream_id": "", "value": 0}, "viewers": {}}
+def empty_counter_payload(
+    counter_id: str,
+    reset_value: Any = "0",
+    numeric_type: str = "integer",
+) -> dict[str, Any]:
+    stored = counter_number_to_storage(reset_value, numeric_type)
+    return {
+        "version": COUNTER_VERSION,
+        "counter_id": validate_counter_id(counter_id),
+        "channel_total": stored,
+        "current_stream": {"stream_id": "", "value": stored},
+        "viewers": {},
+    }
 
 
 class CounterStore:
@@ -73,7 +89,7 @@ class CounterStore:
                 raise ValueError("Counter definitions contain duplicate IDs.")
             atomic_write_json(self.index_path, {"version": INDEX_VERSION, "counters": [item.to_dict() for item in ordered]})
 
-    def create(self, definition: CounterDefinition, starting_total: int = 0) -> None:
+    def create(self, definition: CounterDefinition) -> None:
         with self._index_lock:
             definitions = self.list_definitions()
             if any(item.counter_id == definition.counter_id for item in definitions):
@@ -82,7 +98,14 @@ class CounterStore:
             with self._lock_for(definition.counter_id):
                 if path.exists():
                     raise ValueError(f'Counter data file "{path.name}" already exists.')
-                atomic_write_json(path, empty_counter_payload(definition.counter_id, starting_total))
+                atomic_write_json(
+                    path,
+                    empty_counter_payload(
+                        definition.counter_id,
+                        definition.reset_value,
+                        definition.numeric_type,
+                    ),
+                )
                 try:
                     self.save_definitions([*definitions, definition])
                 except Exception:
@@ -99,7 +122,15 @@ class CounterStore:
     def _read_data_unlocked(self, counter_id: str) -> dict[str, Any]:
         path = self._counter_path(counter_id)
         if not path.exists() and not path.with_suffix(".json.bak").exists():
-            return empty_counter_payload(counter_id)
+            definition = next(
+                (item for item in self.list_definitions() if item.counter_id == counter_id),
+                None,
+            )
+            return empty_counter_payload(
+                counter_id,
+                definition.reset_value if definition else "0",
+                definition.numeric_type if definition else "integer",
+            )
         payload = load_json_with_backup(path)
         try:
             return self._validate_counter_payload(payload, counter_id)
@@ -119,13 +150,13 @@ class CounterStore:
         if payload.get("counter_id") != counter_id or not isinstance(viewers, dict) or not isinstance(current_stream, dict):
             raise ValueError(f"Counter {counter_id} data is invalid.")
         try:
-            int(payload.get("channel_total", 0))
-            int(current_stream.get("value", 0))
+            parse_counter_number(payload.get("channel_total", "0"))
+            parse_counter_number(current_stream.get("value", "0"))
             for user_id, viewer in viewers.items():
                 if not str(user_id).strip() or not isinstance(viewer, dict) or not isinstance(viewer.get("current_stream", {}), dict):
                     raise ValueError
-                int(viewer.get("total", 0))
-                int(viewer.get("current_stream", {}).get("value", 0))
+                parse_counter_number(viewer.get("total", "0"))
+                parse_counter_number(viewer.get("current_stream", {}).get("value", "0"))
         except (TypeError, ValueError) as error:
             raise ValueError(f"Counter {counter_id} data is invalid.") from error
         return payload

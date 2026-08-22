@@ -253,6 +253,7 @@ class AutomationService:
             for task in routine.tasks:
                 if not task.enabled:
                     continue
+                self._refresh_registry_values(trigger)
                 task_result = self._execute_task(routine, task, trigger)
                 task_results.append(task_result)
                 if not task_result.succeeded:
@@ -283,6 +284,18 @@ class AutomationService:
             return routine_result
         finally:
             self._routine_stack.pop()
+
+    def _refresh_registry_values(self, trigger: TriggerEvent) -> None:
+        """Refresh global/contextual snapshots before each routine task.
+
+        Domain tasks can mutate state that a later task reads through a normal
+        registry variable. Refreshing here keeps composed routines on the same
+        authoritative provider path without task-specific output variables.
+        """
+        if self.variable_registry is not None and isinstance(trigger.context, dict):
+            trigger.context.update(
+                self.variable_registry.context_values(trigger.context)
+            )
 
     def _execute_task(self, routine, task, trigger: TriggerEvent) -> TaskExecutionResult:
         Events.emit(

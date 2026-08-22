@@ -1,15 +1,19 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+from decimal import Decimal
 import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
 
-from products.hub.automation.models import TaskDefinition, TriggerEvent
+from products.hub.automation.models import TaskDefinition, TaskExecutionResult, TriggerEvent
 from products.hub.automation.routines import RoutineStore
+from products.hub.automation.service import AutomationService
 from products.hub.automation.tasks import TaskRegistry
+from products.hub.automation.variable_providers import CounterVariableProvider, context_provider
+from products.hub.automation.variable_registry import VariableRegistry
 from products.hub.counters.models import CounterDefinition, counter_id_from_name, validate_counter_id
 from products.hub.counters.service import CounterService
 from products.hub.counters.store import CounterStore
@@ -22,6 +26,17 @@ def definition(counter_id: str = "farts", **changes) -> CounterDefinition:
     values = {"counter_id": counter_id, "display_name": "Farts", "singular": "fart", "plural": "farts"}
     values.update(changes)
     return CounterDefinition(**values)
+
+
+class CaptureCounterContextTask:
+    task_type = "test.capture_counter_context"
+
+    def __init__(self) -> None:
+        self.context: dict[str, str] = {}
+
+    def execute(self, task: TaskDefinition, trigger: TriggerEvent) -> TaskExecutionResult:
+        self.context = dict(trigger.context)
+        return TaskExecutionResult(task.task_id, task.task_type, True, "Captured.")
 
 
 class CounterStoreTests(unittest.TestCase):
@@ -37,12 +52,13 @@ class CounterStoreTests(unittest.TestCase):
     def test_empty_first_load_create_reload_and_named_format(self) -> None:
         self.assertEqual(self.service.list_counters(), ())
         self.assertFalse(self.root.exists())
-        self.service.create_counter(definition(), 4)
+        self.service.create_counter(definition(reset_value="4"))
         reloaded = CounterService(CounterStore(self.root))
         self.assertEqual(reloaded.get_counter("farts").display_name, "Farts")
         self.assertEqual(reloaded.get_values("farts").channel_total, 4)
         payload = json.loads((self.root / "farts.json").read_text(encoding="utf-8"))
-        self.assertEqual(payload["version"], 1)
+        self.assertEqual(payload["version"], 2)
+        self.assertEqual(payload["channel_total"], "4")
         self.assertEqual(payload["viewers"], {})
 
     def test_duplicate_invalid_case_collision_and_path_traversal_rejected(self) -> None:
@@ -72,9 +88,12 @@ class CounterStoreTests(unittest.TestCase):
 
     def test_versions_invalid_payload_and_backup_recovery(self) -> None:
         self.root.mkdir(parents=True)
+        (self.root / "index.json").write_text('{"version": 1, "counters": []}', encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "Unsupported counter index version"):
+            self.service.list_counters()
         (self.root / "index.json").write_text('{"version": 99, "counters": []}', encoding="utf-8")
         with self.assertRaises(ValueError): self.service.list_counters()
-        (self.root / "index.json").write_text('{"version": 1, "counters": "bad"}', encoding="utf-8")
+        (self.root / "index.json").write_text('{"version": 2, "counters": "bad"}', encoding="utf-8")
         with self.assertRaises(ValueError): self.service.list_counters()
         self.store.save_definitions([definition()])
         self.store.mutate_data("farts", lambda payload: payload.update(channel_total=3))
@@ -85,7 +104,7 @@ class CounterStoreTests(unittest.TestCase):
     def test_invalid_named_counter_payload_is_rejected(self) -> None:
         self.store.save_definitions([definition()])
         (self.root / "farts.json").write_text(
-            '{"version": 1, "counter_id": "wrong", "viewers": {}}',
+            '{"version": 2, "counter_id": "wrong", "viewers": {}}',
             encoding="utf-8",
         )
         with self.assertRaises(ValueError):
@@ -95,7 +114,7 @@ class CounterStoreTests(unittest.TestCase):
         self.service.create_counter(definition())
         self.service.update_values("farts", 2, ("channel_total",))
         self.service.update_values("farts", 3, ("channel_total",))
-        (self.root / "farts.json").write_text('{"version":1,"counter_id":"farts","viewers":[]}', encoding="utf-8")
+        (self.root / "farts.json").write_text('{"version":2,"counter_id":"farts","viewers":[]}', encoding="utf-8")
         self.assertEqual(self.service.get_values("farts").channel_total, 2)
 
     def test_delete_rolls_back_definition_and_files_when_index_save_fails(self) -> None:
@@ -107,7 +126,7 @@ class CounterStoreTests(unittest.TestCase):
         self.assertTrue((self.root / "farts.json").exists())
 
     def test_backup_round_trip_includes_index_and_named_value_file(self) -> None:
-        self.service.create_counter(definition(), 7)
+        self.service.create_counter(definition(reset_value="7"))
         manager = BackupManager(Path(self.temp.name), Path(self.temp.name) / "archives")
         archive = manager.create("counter-test")
         restore_root = Path(self.temp.name) / "restored"
@@ -161,10 +180,54 @@ class CounterValueTests(unittest.TestCase):
         self.assertEqual(self.service.get_values("farts", user_id="111").viewer_total, 0)
         self.assertTrue(self.service.remove_viewer("farts", "111")); self.assertEqual(self.service.viewer_rows("farts"), [])
 
+    def test_negative_values_work_only_when_configuration_allows_them(self) -> None:
+        service = CounterService(CounterStore(Path(self.temp.name) / "negative"))
+        service.create_counter(definition("temperature", allow_negative=True, minimum="-100"))
+        self.assertEqual(service.set_value("temperature", "channel_total", "-2").status, "success")
+        self.assertEqual(service.get_values("temperature").channel_total, -2)
+
     def test_concurrent_increments_do_not_get_lost(self) -> None:
         with ThreadPoolExecutor(max_workers=8) as executor:
             list(executor.map(lambda _index: self.service.update_values("farts", 1, ("channel_total",)), range(100)))
         self.assertEqual(self.service.get_values("farts").channel_total, 100)
+
+    def test_decimal_arithmetic_persistence_precision_and_integer_validation(self) -> None:
+        decimal_service = CounterService(CounterStore(Path(self.temp.name) / "decimal"))
+        decimal_service.create_counter(
+            definition(
+                "coffee",
+                display_name="Coffee Drank",
+                singular="cup",
+                plural="cups",
+                numeric_type="decimal",
+                display_precision=1,
+                reset_value="0",
+            )
+        )
+        decimal_service.update_values("coffee", "0.1", ("channel_total",))
+        decimal_service.update_values("coffee", "0.2", ("channel_total",))
+        self.assertEqual(decimal_service.get_values("coffee").channel_total, Decimal("0.3"))
+        self.assertEqual(decimal_service.format_value("coffee", "3.75"), "3.8 cups")
+        payload = json.loads((Path(self.temp.name) / "decimal" / "coffee.json").read_text(encoding="utf-8"))
+        self.assertEqual(payload["channel_total"], "0.3")
+        reloaded = CounterService(CounterStore(Path(self.temp.name) / "decimal"))
+        self.assertEqual(reloaded.get_values("coffee").channel_total, Decimal("0.3"))
+        self.assertEqual(self.service.set_value("farts", "channel_total", "1.5").status, "invalid_value")
+        decimal_service.create_counter(
+            CounterDefinition(
+                "distance", "Distance", "", "",
+                numeric_type="decimal", display_precision=2,
+            )
+        )
+        self.assertEqual(decimal_service.format_value("distance", "14.75"), "14.75")
+
+    def test_configured_reset_value_applies_to_stream_and_viewer_scopes(self) -> None:
+        service = CounterService(CounterStore(Path(self.temp.name) / "reset"))
+        service.create_counter(definition("starts_five", reset_value="5", track_viewer_stream_total=True))
+        service.update_values("starts_five", 2, ("stream_total", "viewer_total", "viewer_stream_total"), user_id="111", stream_id="stream-1")
+        service.reset("starts_five", ("stream_total", "viewer_total", "viewer_stream_total"), user_id="111", stream_id="stream-1")
+        values = service.get_values("starts_five", user_id="111", stream_id="stream-1")
+        self.assertEqual((values.stream_total, values.viewer_total, values.viewer_stream_total), (5, 5, 5))
 
     def test_failed_write_preserves_last_good_file(self) -> None:
         self.service.update_values("farts", 2, ("channel_total",))
@@ -212,49 +275,106 @@ class CounterTaskTests(unittest.TestCase):
         self.registry = TaskRegistry(); register_counter_tasks(self.registry, self.service, lambda: "stream-1")
     def tearDown(self) -> None: self.temp.cleanup()
 
-    def test_registration_update_outputs_get_set_reset_and_leaderboard(self) -> None:
-        self.assertEqual(set(self.registry.registered_types()), {"counter.update", "counter.get_value", "counter.set_value", "counter.reset", "counter.get_leaderboard"})
-        context = {"user_id": "111", "user_login": "steve", "user": "Steve"}; trigger = TriggerEvent("command", "twitch", "command", context)
-        update = TaskDefinition("1", "counter.update", "Update", {"counter_id": "farts", "amount": "1", "channel_total": True, "stream_total": True, "viewer_total": True, "output_prefix": "farts"})
-        self.assertTrue(self.registry.execute(update, trigger).succeeded)
-        self.assertEqual(context["automation.farts_channel_total"], "1"); self.assertEqual(context["automation.farts_viewer_total"], "1"); self.assertEqual(context["automation.farts_status"], "success")
-        self.assertEqual(context["automation.farts_skipped_scopes"], "")
-        leaderboard = TaskDefinition("2", "counter.get_leaderboard", "Board", {"counter_id": "farts", "viewer_scope": "lifetime", "limit": 5, "output_prefix": "farts"})
-        self.assertTrue(self.registry.execute(leaderboard, trigger).succeeded); self.assertIn("Steve", context["automation.farts_leaderboard"])
+    def test_registration_and_four_simple_tasks(self) -> None:
+        self.assertEqual(set(self.registry.registered_types()), {"counter.increase", "counter.decrease", "counter.set_value", "counter.reset"})
+        trigger = TriggerEvent("command", "twitch", "command", {"command.data": "4"})
+        set_task = TaskDefinition("1", "counter.set_value", "Set", {"counter_id": "farts", "scope": "channel_total", "value": "{command.data}"})
+        self.assertTrue(self.registry.execute(set_task, trigger).succeeded)
+        self.assertEqual(self.service.get_values("farts").channel_total, 4)
+        increase = TaskDefinition("2", "counter.increase", "Increase", {"counter_id": "farts", "scope": "channel_total", "amount": "2"})
+        decrease = TaskDefinition("3", "counter.decrease", "Decrease", {"counter_id": "farts", "scope": "channel_total", "amount": "1"})
+        reset = TaskDefinition("4", "counter.reset", "Reset", {"counter_id": "farts", "scope": "channel_total"})
+        self.assertTrue(self.registry.execute(increase, trigger).succeeded)
+        self.assertTrue(self.registry.execute(decrease, trigger).succeeded)
+        self.assertEqual(self.service.get_values("farts").channel_total, 5)
+        self.assertTrue(self.registry.execute(reset, trigger).succeeded)
+        self.assertEqual(self.service.get_values("farts").channel_total, 0)
 
     def test_missing_counter_and_missing_viewer_are_controlled(self) -> None:
         trigger = TriggerEvent("command", "twitch", "command", {})
-        missing = TaskDefinition("1", "counter.update", "Update", {"counter_id": "gone", "amount": "1", "viewer_total": True, "output_prefix": "gone"})
+        missing = TaskDefinition("1", "counter.increase", "Increase", {"counter_id": "gone", "scope": "channel_total", "amount": "1"})
         result = self.registry.execute(missing, trigger)
-        self.assertFalse(result.succeeded); self.assertIn("does not exist", result.detail); self.assertEqual(trigger.context["automation.gone_status"], "missing_counter")
+        self.assertFalse(result.succeeded); self.assertIn("does not exist", result.detail)
 
-        missing_viewer = TaskDefinition("2", "counter.update", "Update", {"counter_id": "farts", "amount": "1", "viewer_total": True, "output_prefix": "farts"})
+        missing_viewer = TaskDefinition("2", "counter.increase", "Increase", {"counter_id": "farts", "scope": "viewer_total", "amount": "1"})
         result = self.registry.execute(missing_viewer, trigger)
         self.assertFalse(result.succeeded)
-        self.assertEqual(trigger.context["automation.farts_status"], "missing_viewer")
+        self.assertIn("viewer", result.detail.casefold())
 
-    def test_generated_output_names_are_deterministic_and_prefixable(self) -> None:
+    def test_counter_tasks_do_not_generate_redundant_outputs(self) -> None:
         from products.hub.automation.variable_outputs import generated_output_definitions
-        names = tuple(item.name for item in generated_output_definitions(
-            "counter.update", {"counter_id": "farts", "output_prefix": "party_farts"}
-        ))
-        self.assertIn("automation.party_farts_channel_total", names)
-        self.assertIn("automation.party_farts_status", names)
-        self.assertIn("automation.party_farts_skipped_scopes", names)
+        self.assertEqual(generated_output_definitions("counter.increase", {"counter_id": "farts"}), ())
 
-    def test_decrease_operation_viewer_rank_and_disabled_status(self) -> None:
+    def test_decimal_variable_inputs_invalid_input_and_viewer_isolation(self) -> None:
+        decimal_service = CounterService(CounterStore(Path(self.temp.name) / "decimal"))
+        decimal_service.create_counter(definition("coffee", numeric_type="decimal", display_precision=2))
+        registry = TaskRegistry(); register_counter_tasks(registry, decimal_service, lambda: "stream-1")
         context = {"user_id": "111", "user_login": "steve", "user": "Steve"}
         trigger = TriggerEvent("command", "twitch", "command", context)
-        self.service.set_value("farts", "viewer_total", 5, user_id="111", display_name="Steve")
-        decrease = TaskDefinition("1", "counter.update", "Decrease", {"counter_id": "farts", "operation": "decrease", "amount": "2", "viewer_total": True})
-        self.assertTrue(self.registry.execute(decrease, trigger).succeeded)
-        self.assertEqual(context["automation.farts_viewer_total"], "3")
-        rank = TaskDefinition("2", "counter.get_value", "Rank", {"counter_id": "farts", "scope": "viewer_rank"})
-        self.assertTrue(self.registry.execute(rank, trigger).succeeded)
-        self.assertEqual(context["automation.farts_viewer_rank"], "1")
-        self.service.set_enabled("farts", False)
-        self.assertFalse(self.registry.execute(rank, trigger).succeeded)
-        self.assertEqual(context["automation.farts_status"], "disabled_counter")
+        trigger.context["command.data"] = "0.5"
+        increase = TaskDefinition("1", "counter.increase", "Increase", {"counter_id": "coffee", "scope": "viewer_total", "amount": "{command.data}"})
+        self.assertTrue(registry.execute(increase, trigger).succeeded)
+        self.assertEqual(decimal_service.get_values("coffee", user_id="111").viewer_total, Decimal("0.5"))
+        self.assertEqual(decimal_service.get_values("coffee", user_id="222").viewer_total, 0)
+        trigger.context["command.data"] = "banana"
+        invalid = TaskDefinition("2", "counter.set_value", "Set", {"counter_id": "coffee", "scope": "viewer_total", "value": "{command.data}"})
+        result = registry.execute(invalid, trigger)
+        self.assertFalse(result.succeeded)
+        self.assertIn("not numeric", result.detail)
+        self.assertEqual(decimal_service.get_values("coffee", user_id="111").viewer_total, Decimal("0.5"))
+        for task_type in ("counter.increase", "counter.decrease"):
+            with self.subTest(task_type=task_type):
+                task = TaskDefinition("bad", task_type, "Invalid", {"counter_id": "coffee", "scope": "viewer_total", "amount": "{command.data}"})
+                failed = registry.execute(task, trigger)
+                self.assertFalse(failed.succeeded)
+                self.assertIn("not numeric", failed.detail)
+        self.assertEqual(decimal_service.get_values("coffee", user_id="111").viewer_total, Decimal("0.5"))
+
+    def test_registry_counter_value_refreshes_between_composed_tasks(self) -> None:
+        capture = CaptureCounterContextTask()
+        self.registry.register(capture)
+        routine_store = RoutineStore(Path(self.temp.name) / "routines.json")
+        routine = routine_store.add("Increase and report")
+        routine_store.add_task(
+            routine.routine_id,
+            task_type="counter.increase",
+            name="Increase",
+            config={"counter_id": "farts", "scope": "channel_total", "amount": "1"},
+        )
+        routine_store.add_task(
+            routine.routine_id,
+            task_type=capture.task_type,
+            name="Read Counter",
+        )
+        variables = VariableRegistry()
+        variables.register(CounterVariableProvider(self.service))
+        result = AutomationService(
+            routine_store,
+            self.registry,
+            variable_registry=variables,
+        ).run_routine(routine.routine_id)
+        self.assertTrue(result.succeeded)
+        self.assertEqual(capture.context["counter.farts.stream"], "1")
+
+    def test_chat_command_data_drives_decimal_set_and_increase_routines(self) -> None:
+        service = CounterService(CounterStore(Path(self.temp.name) / "commands"))
+        service.create_counter(definition("coffee", numeric_type="decimal", display_precision=2))
+        tasks = TaskRegistry(); register_counter_tasks(tasks, service, lambda: "stream-1")
+        routines = RoutineStore(Path(self.temp.name) / "command-routines.json")
+        set_routine = routines.add("Counter set")
+        routines.add_task(set_routine.routine_id, task_type="counter.set_value", name="Set", config={"counter_id": "coffee", "scope": "channel_total", "value": "{command.data}"})
+        increase_routine = routines.add("Coffee increase")
+        routines.add_task(increase_routine.routine_id, task_type="counter.increase", name="Increase", config={"counter_id": "coffee", "scope": "channel_total", "amount": "{command.data}"})
+        variables = VariableRegistry()
+        variables.register(context_provider())
+        variables.register(CounterVariableProvider(service))
+        automation = AutomationService(routines, tasks, variable_registry=variables)
+        set_result = automation.run_routine(set_routine.routine_id, {"command": "counterset", "command_data": "4.5"})
+        self.assertTrue(set_result.succeeded)
+        self.assertEqual(service.get_values("coffee").channel_total, Decimal("4.5"))
+        increase_result = automation.run_routine(increase_routine.routine_id, {"command": "coffee", "command_data": "0.5"})
+        self.assertTrue(increase_result.succeeded)
+        self.assertEqual(service.get_values("coffee").channel_total, Decimal("5.0"))
 
 
 if __name__ == "__main__":

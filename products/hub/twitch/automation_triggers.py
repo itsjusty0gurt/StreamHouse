@@ -314,7 +314,7 @@ class TwitchEventTriggerStore:
             "uptime": "--",
             "followers": "--",
             "command": "--",
-            "args": "--",
+            "command_data": "--",
             "target": "--",
             "uses": "--",
         }
@@ -424,7 +424,7 @@ class TwitchEventTriggerStore:
             "uptime": "--",
             "followers": "--",
             "command": "--",
-            "args": "--",
+            "command_data": "--",
             "target": "--",
             "uses": "--",
         }

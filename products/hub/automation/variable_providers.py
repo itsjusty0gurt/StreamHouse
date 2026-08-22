@@ -72,7 +72,11 @@ class CounterVariableProvider:
                         name=stream_name,
                         display_name=f"{counter.display_name} - Stream",
                         description=f"Shared channel counter value for {counter.display_name}.",
-                        data_type=VariableDataType.INTEGER,
+                        data_type=(
+                            VariableDataType.INTEGER
+                            if counter.numeric_type == "integer"
+                            else VariableDataType.NUMBER
+                        ),
                         source=self.source,
                         category="Counters",
                         writable=counter.enabled and counter.track_channel_total,
@@ -84,7 +88,11 @@ class CounterVariableProvider:
                             f"Lifetime value for {counter.display_name} associated "
                             "with the current viewer."
                         ),
-                        data_type=VariableDataType.INTEGER,
+                        data_type=(
+                            VariableDataType.INTEGER
+                            if counter.numeric_type == "integer"
+                            else VariableDataType.NUMBER
+                        ),
                         source=self.source,
                         category="Counters",
                         availability=VariableAvailability.CONTEXTUAL,
@@ -121,7 +129,7 @@ class CounterVariableProvider:
         counter_id, scope = self._parts(name)
         if scope != "stream":
             raise PermissionError(f'Variable "{name}" is read-only.')
-        result = self.service.set_value(counter_id, "channel_total", int(value))
+        result = self.service.set_value(counter_id, "channel_total", value)
         if result.status not in {"success", "minimum_reached"}:
             raise ValueError(result.detail or f"Counter update failed: {result.status}.")
         return self.resolve(name, {})
@@ -153,7 +161,7 @@ CONTEXT_DEFINITIONS = (
     ("chat.message", "Chat Message", "Triggering Twitch chat message.", VariableDataType.TEXT, ("message",)),
     ("chat.message_id", "Chat Message ID", "Triggering Twitch message ID.", VariableDataType.TEXT, ("message_id",)),
     ("command.name", "Command Name", "Command name without the exclamation mark.", VariableDataType.TEXT, ("command",)),
-    ("command.args", "Command Arguments", "Text following the command name.", VariableDataType.TEXT, ("args",)),
+    ("command.data", "Command Data", "Raw text following the command name, trimmed at its outer edges.", VariableDataType.TEXT, ("command_data",)),
     ("command.target", "Command Target", "First command argument without the at sign.", VariableDataType.TEXT, ("target",)),
     ("command.uses", "Command Uses", "Number of times the command has run.", VariableDataType.INTEGER, ("uses",)),
     ("event.name", "Event Name", "Readable trigger event name.", VariableDataType.TEXT, ("event",)),
@@ -182,7 +190,7 @@ CONTEXT_PREVIEW = {
     "user.id": "123456", "user.login": "testviewer", "user.permission": "everyone",
     "user.is_mod": False, "user.is_subscriber": False,
     "chat.message": "Hello Streamhouse!", "chat.message_id": "message-123",
-    "command.name": "hello", "command.args": "friend", "command.target": "friend", "command.uses": 3,
+    "command.name": "hello", "command.data": "friend", "command.target": "friend", "command.uses": 3,
     "event.name": "Follow", "event.type": "channel.follow", "event.input": "Viewer input",
     "event.amount": 100, "event.bits": 100, "event.viewers": 12, "event.tier": "1000",
     "event.reward": "Hydrate", "event.reward_id": "reward-123", "event.reward_cost": 500,

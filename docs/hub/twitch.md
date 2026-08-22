@@ -61,6 +61,14 @@ ordered tasks are ordinary registered automation providers. The built-in
 definitions use the same editable routines as custom commands rather than
 dispatcher branches.
 
+Every ready Chat Command trigger exposes `command.name` and `command.data`
+through the modern Variables registry. `command.name` is the recognized name
+without `!`; `command.data` is the raw text after that name with surrounding
+separator whitespace trimmed. It may be empty and preserves internal spaces.
+For example, `!title Tonight we're playing Vintage Story` provides
+`command.name = title` and
+`command.data = Tonight we're playing Vintage Story`.
+
 Built-in commands have stable default IDs. Startup seeds only missing defaults,
 never overwrites an existing default, and records deletion tombstones so a
 streamer's removed default stays removed. The Commands page can reset one
@@ -161,9 +169,13 @@ case-insensitive. The normalized task context includes `{event_type}`, `{user}`,
 `{reward_id}`, and `{reward_cost}` in addition to the existing Twitch message
 variables. Live traffic and Developer Simulation enter the same routing path.
 
-Counter actions do not require a counter-specific trigger system. The five
-registered Counter tasks may be placed in any routine reached by a Twitch chat
-command, supported EventSub trigger, OBS/Core trigger, or manual execution.
+Counter actions do not require a counter-specific trigger system. The four
+registered Counter tasks—Increase, Decrease, Set, and Reset—may be placed in
+any routine reached by a Twitch chat command, supported EventSub trigger,
+OBS/Core trigger, or manual execution. Amount/Value fields accept literals or
+modern Variables. Thus `!counterset 4.5` plus Set value `{command.data}` and
+`!coffee 0.5` plus Increase amount `{command.data}` are ordinary composed
+automations, not hardcoded Counter commands.
 
 ## Planned Hub channel workspace
 

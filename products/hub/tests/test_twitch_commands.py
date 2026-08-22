@@ -529,7 +529,7 @@ class TwitchCommandTriggerDispatcherTests(unittest.TestCase):
     def test_builds_general_trigger_context_and_records_only_after_execution(self) -> None:
         trigger = self.store.add(
             "uptime",
-            "{user.display_name}: {stream.channel} has streamed {hub.uptime}; use #{command.uses}; target {command.target}; args {command.args}.",
+            "{user.display_name}: {stream.channel} has streamed {hub.uptime}; use #{command.uses}; target {command.target}; data {command.data}.",
             global_cooldown_seconds=10,
             user_cooldown_seconds=30,
         )
@@ -551,7 +551,7 @@ class TwitchCommandTriggerDispatcherTests(unittest.TestCase):
         self.assertEqual(event.trigger_type, "command")
         self.assertEqual(event.trigger_id, trigger.trigger_id)
         self.assertEqual(event.context["target"], "Someone")
-        self.assertEqual(event.context["args"], "@Someone extra words")
+        self.assertEqual(event.context["command_data"], "@Someone extra words")
         self.assertEqual(event.context["user_is_mod"], "true")
         self.assertEqual(event.context["user_is_subscriber"], "true")
         self.assertEqual(trigger.uses, 0)
@@ -579,6 +579,23 @@ class TwitchCommandTriggerDispatcherTests(unittest.TestCase):
             self.dispatcher.evaluate(second).outcome,
             TwitchCommandTriggerOutcome.READY,
         )
+
+    def test_command_data_preserves_trimmed_raw_remainder_and_empty_value(self) -> None:
+        self.store.add(
+            "title",
+            "Updated",
+            global_cooldown_seconds=0,
+            user_cooldown_seconds=0,
+        )
+        multi_word = self.dispatcher.evaluate(
+            message("!title    Tonight we're playing Vintage Story   ")
+        )
+        self.assertEqual(
+            multi_word.context["command_data"],
+            "Tonight we're playing Vintage Story",
+        )
+        empty = self.dispatcher.evaluate(message("!title"))
+        self.assertEqual(empty.context["command_data"], "")
 
     def test_permissions_follow_twitch_role_hierarchy(self) -> None:
         self.store.add(

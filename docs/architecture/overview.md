@@ -361,6 +361,8 @@ sequenceDiagram
 `AutomationService`:
 
 - merges global/session values into a fresh context per routine;
+- refreshes registry-backed values before each task so a later task observes
+  domain changes made by an earlier task;
 - emits normalized lifecycle events;
 - runs enabled tasks in order;
 - stops on failed tasks or a logic `break`;
@@ -414,6 +416,8 @@ Current providers expose:
 - cached Twitch stream values: `stream.title`, `stream.category`,
   `stream.viewer_count`, and `stream.game_id`;
 - contextual `user.*` and `chat.*` values from the current trigger;
+- contextual Chat Command values `command.name` and `command.data`, where data
+  is the trimmed raw text following the recognized command;
 - stable shared counter totals as `counter.<counter_id>.stream` and contextual
   lifetime viewer totals as `counter.<counter_id>.viewer`;
 - the observed OBS program scene as `obs.current_scene`;
@@ -469,8 +473,8 @@ routine-scoped task outputs use `automation.<name>`. Typed output definitions in
 `products/hub/automation/variable_outputs.py` describe each output's name,
 type, source task, lifetime, description, and preview without globally
 registering temporary values. Same-name temporary outputs retain deterministic
-task-order overwrite behavior; counter tasks offer an output-prefix setting
-where user-controlled disambiguation is needed.
+task-order overwrite behavior. Counter tasks do not manufacture outputs: later
+tasks read the refreshed `counter.<id>.stream` or `.viewer` provider value.
 
 Variable precedence when preparing a trigger is:
 
@@ -498,26 +502,58 @@ Handlers are registered in `MainWindow` with one stable lowercase task type.
 | Files | `products/hub/automation/file_tasks.py` | read text/random/specific lines, write, existence, line count |
 | Control | `products/hub/automation/control_tasks.py` | enable/disable routines/tasks, pause/clear queues |
 | Twitch | `products/hub/twitch/tasks.py` | chat/pinned chat, ads, moderation, redemption results, user/stream/channel/follow lookups, enabled-command lists, Hub-owned Channel Information fields and social-message building |
-| Counters | `products/hub/counters/tasks.py` | transactional update/get/set/reset/leaderboard tasks; routine-scoped generated values are prefixed by the stable counter ID or an explicit output prefix |
+| Counters | `products/hub/counters/tasks.py` | four mutation tasks: Increase, Decrease, Set, and Reset; amounts/values accept numeric literals or modern Variables |
 | OBS | `products/hub/obs_service/tasks.py` | scenes, sources, inputs, filters, media, outputs, hotkeys, raw request |
 
-Counter definitions and values remain Hub implementation. `CounterService`
-uses the real stream ID cached by the Twitch channel snapshot refresh; it never
-creates a process-lifetime or offline stand-in stream. Each named counter has
+Counter definitions and values remain Hub implementation. A definition has an
+immutable ID, editable display labels, Integer or Decimal numeric type,
+configured reset/start value, minimum, and display precision. Decimal values
+use exact decimal arithmetic and persist as decimal strings; display rounding
+never changes the stored value. Optional singular/plural display units (for
+example `cup`/`cups`, `L`, or `points`) are presentation-only; canonical
+Variable values stay numeric. Renaming a counter does not change its storage
+file or canonical Variables. Counter storage is pre-alpha schema version 2;
+older private-development counter files are reset rather than migrated.
+
+`CounterService` owns every mutation from the setup page, task providers, and
+registry-routed shared writes. It uses the real stream ID cached by the Twitch
+channel snapshot refresh and never creates a process-lifetime or offline
+stand-in stream. Viewer operations use the triggering viewer's stable Twitch
+user ID and fail with `missing_viewer` when it is absent. Each named counter has
 an independent read-modify-write lock and atomic JSON replacement, so selected
 scopes commit as one task transaction without serializing unrelated counters.
-Fresh stores remain absent/empty until explicit counter creation. Value-task
-results use structured statuses (`success`, `partial_success`,
-`skipped_known_bot`, `missing_counter`, `disabled_counter`, `missing_viewer`,
-`stream_unavailable`, `invalid_configuration`, `invalid_value`,
-`minimum_reached`, or `persistence_failed`). Reads also expose viewer rank;
-offline multi-scope updates and resets commit valid lifetime scopes while
-reporting skipped stream scopes.
+Fresh stores remain absent/empty until explicit counter creation. Operations
+return structured statuses (`success`, `partial_success`, `skipped_known_bot`,
+`missing_counter`, `disabled_counter`, `missing_viewer`, `stream_unavailable`,
+`invalid_configuration`, `invalid_value`, `minimum_reached`, or
+`persistence_failed`).
+
+Automation exposes a single **Counter** category with **Increase**,
+**Decrease**, **Set**, and **Reset**. Each task selects one tracked value;
+shared is the beginner default, while viewer/current-broadcast choices remain
+available when the definition tracks them. Increase/Decrease default to `1`.
+Their Amount fields and Set's Value field accept an exact numeric literal or a
+single resolvable modern placeholder such as `{command.data}`,
+`{custom.some_number}`, or `{counter.other.stream}`. Invalid, unavailable, or
+non-numeric input fails the task without writing Counter state. Reset restores
+the definition's configured reset value. Counter tasks do not own triggers or
+outputs: triggers supply context, tasks mutate through `CounterService`, and
+later tasks read the registry provider.
+
+A Chat Command strips the recognized command and exposes the remaining raw
+text, with separator whitespace trimmed, as `command.data`. For example,
+`!counterset 4.5` can drive Counter -> Set with `{command.data}`, and
+`!coffee 0.5` can drive Counter -> Increase. No Counter-specific command logic
+or numbered argument Variables exist.
 
 The Counters management page is presented inside Hub's Twitch workspace. This
 is a navigation ownership choice only: definitions, named value files,
 transactional updates, and automation providers remain in
 `products/hub/counters/`.
+
+A future Set-task option to ask for a value when a manual/button/hotkey routine
+runs is intentionally deferred. Alpha does not introduce a generic runtime
+prompt framework for this use case.
 
 ### Twitch chat timeline
 
@@ -926,8 +962,8 @@ formats are accepted.
 | `automation/variables.json` | Hub | global values only; session/routine are volatile |
 | `twitch/commands.json` | Hub | commands, permissions, aliases, cooldowns, stats, default IDs, removed-default tombstones |
 | `twitch/channel-information.json` | Hub | versioned social links, social inclusion choices, schedule, rules, and server information used by commands and automation tasks |
-| `counters/index.json` | Hub | versioned custom-counter definitions and lightweight tracking metadata |
-| `counters/<counter_id>.json` | Hub | one atomic value document per custom counter; shared/current-stream and Twitch-user-ID keyed values |
+| `counters/index.json` | Hub | pre-alpha schema v2 definitions: stable ID, labels, scopes, numeric type, reset/minimum, and display precision |
+| `counters/<counter_id>.json` | Hub | schema v2 atomic values stored as exact decimal strings; shared/current-stream and Twitch-user-ID keyed values |
 | `twitch/event_triggers.json` | Hub | Twitch event/first-message trigger definitions |
 | `twitch/soundboard.json` | Hub | pages, buttons, routine IDs |
 | `twitch/soundboard-relay.json` | Hub | non-secret relay URL/channel/autoconnect |

@@ -16,7 +16,7 @@ from products.hub.counters.models import CounterDefinition
 from products.hub.counters.service import CounterService
 from products.hub.counters.store import CounterStore
 from products.hub.ui.automation_page import TaskEditorDialog
-from products.hub.ui.counters_page import CountersPage
+from products.hub.ui.counters_page import CounterDefinitionDialog, CountersPage
 
 
 class CountersPageTests(unittest.TestCase):
@@ -43,17 +43,16 @@ class CountersPageTests(unittest.TestCase):
         self.page.viewer_search.setText("nobody"); self.assertEqual(self.page.viewer_table.rowCount(), 0)
         self.page.search.setText("bonks"); self.assertEqual(self.page.list.count(), 0)
 
-    def test_task_editor_counter_dropdown_scopes_and_generated_prefix(self) -> None:
-        dialog = TaskEditorDialog("counter.update", counter_service=self.service, variables={"user_id": "111"})
-        fields = dialog.field_widgets["counter.update"]
+    def test_task_editor_counter_dropdown_scope_and_variable_amount(self) -> None:
+        dialog = TaskEditorDialog("counter.increase", counter_service=self.service, variables={"user_id": "111"})
+        fields = dialog.field_widgets["counter.increase"]
         self.assertIsInstance(fields["counter_id"], QComboBox)
         fields["counter_id"].setCurrentIndex(fields["counter_id"].findData("farts"))
+        fields["amount"].setText("{command.data}")
         values = dialog.values()
         self.assertEqual(values["config"]["counter_id"], "farts")
-        self.assertEqual(values["config"]["operation"], "increase")
-        self.assertEqual(values["config"]["output_prefix"], "farts")
-        viewers = fields["viewer_source"]
-        self.assertEqual([viewers.itemData(index) for index in range(viewers.count())], ["trigger", "none"])
+        self.assertEqual(values["config"]["scope"], "channel_total")
+        self.assertEqual(values["config"]["amount"], "{command.data}")
         dialog.deleteLater()
 
     def test_fresh_page_shows_empty_state_without_creating_storage(self) -> None:
@@ -70,8 +69,8 @@ class CountersPageTests(unittest.TestCase):
 
     def test_inline_create_cancel_does_not_create_counter(self) -> None:
         fresh = CounterService(CounterStore(Path(self.temp.name) / "inline" / "counters"))
-        dialog = TaskEditorDialog("counter.update", counter_service=fresh)
-        combo = dialog.field_widgets["counter.update"]["counter_id"]
+        dialog = TaskEditorDialog("counter.increase", counter_service=fresh)
+        combo = dialog.field_widgets["counter.increase"]["counter_id"]
         combo.setCurrentIndex(combo.findData("__create__"))
         with patch("products.hub.ui.automation_page.CounterDefinitionDialog.exec", return_value=0):
             dialog._create_inline_counter(combo)
@@ -80,11 +79,26 @@ class CountersPageTests(unittest.TestCase):
         dialog.deleteLater()
 
     def test_deleted_reference_loads_as_missing_counter(self) -> None:
-        task = TaskDefinition("task-1", "counter.get_value", "Read", {"counter_id": "deleted_counter", "scope": "channel_total"})
-        dialog = TaskEditorDialog("counter.get_value", task=task, counter_service=self.service)
-        combo = dialog.field_widgets["counter.get_value"]["counter_id"]
+        task = TaskDefinition("task-1", "counter.set_value", "Set", {"counter_id": "deleted_counter", "scope": "channel_total", "value": "1"})
+        dialog = TaskEditorDialog("counter.set_value", task=task, counter_service=self.service)
+        combo = dialog.field_widgets["counter.set_value"]["counter_id"]
         self.assertEqual(combo.currentData(), "deleted_counter")
         self.assertIn("Missing Counter", combo.currentText())
+        dialog.deleteLater()
+
+    def test_definition_dialog_configures_decimal_reset_and_precision(self) -> None:
+        dialog = CounterDefinitionDialog(self.service)
+        dialog.name.setText("Coffee Drank")
+        dialog.numeric_type.setCurrentIndex(dialog.numeric_type.findData("decimal"))
+        dialog.reset_value.setValue(1.25)
+        dialog.display_precision.setValue(1)
+        dialog.singular.setText("cup")
+        dialog.plural.setText("cups")
+        definition = dialog.values()
+        self.assertEqual(definition.counter_id, "coffee_drank")
+        self.assertEqual(definition.numeric_type, "decimal")
+        self.assertEqual(str(definition.reset_value), "1.25")
+        self.assertEqual(definition.display_precision, 1)
         dialog.deleteLater()
 
 

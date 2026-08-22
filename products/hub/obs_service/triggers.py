@@ -240,7 +240,7 @@ class ObsTriggerStore:
             "media": first("inputName"),
             "bits": "--", "viewers": "--", "tier": "--", "reward": "--",
             "reward_id": "--", "reward_cost": "--", "title": "--", "game": "--",
-            "uptime": "--", "followers": "--", "command": "--", "args": "--",
+            "uptime": "--", "followers": "--", "command": "--", "command_data": "--",
             "target": "--", "uses": "--",
         }
 
