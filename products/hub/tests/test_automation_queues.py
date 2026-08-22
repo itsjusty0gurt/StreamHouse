@@ -1,15 +1,27 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
 
-from products.hub.automation.models import TaskDefinition, TaskExecutionResult, TriggerEvent
+from products.hub.automation.models import (
+    DEFAULT_AUTOMATION_QUEUE_ID,
+    DEFAULT_AUTOMATION_QUEUE_NAME,
+    TaskDefinition,
+    TaskExecutionResult,
+    TriggerEvent,
+)
 from products.hub.automation.control_tasks import register_control_tasks
 from products.hub.automation.queues import AutomationQueueManager, AutomationQueueStore
 from products.hub.automation.routines import RoutineStore
 from products.hub.automation.service import AutomationService
 from products.hub.automation.tasks import TaskRegistry
+from products.hub.twitch.automation_triggers import (
+    KEYWORD_PHRASE_EVENT_TYPE,
+    TwitchEventTriggerStore,
+)
+from products.hub.twitch.commands import TwitchCommandTriggerStore
 
 
 class CaptureTask:
@@ -63,6 +75,152 @@ class AutomationQueueTests(unittest.TestCase):
 
     def event(self, user: str = "Viewer") -> TriggerEvent:
         return TriggerEvent("trigger", "test", "event", {"user": user})
+
+    def test_fresh_store_persists_one_stable_default_queue(self) -> None:
+        queues = self.queue_store.load()
+
+        self.assertTrue(self.queue_store.path.exists())
+        self.assertEqual(len(queues), 1)
+        self.assertEqual(queues[0].queue_id, DEFAULT_AUTOMATION_QUEUE_ID)
+        self.assertEqual(queues[0].name, DEFAULT_AUTOMATION_QUEUE_NAME)
+
+        reloaded = AutomationQueueStore(self.queue_store.path)
+        reloaded.load()
+        self.assertEqual(
+            [queue.queue_id for queue in reloaded.queues],
+            [DEFAULT_AUTOMATION_QUEUE_ID],
+        )
+
+    def test_default_queue_cannot_be_deleted_or_renamed(self) -> None:
+        self.assertFalse(self.queue_store.delete(DEFAULT_AUTOMATION_QUEUE_ID))
+        with self.assertRaisesRegex(ValueError, "cannot be renamed"):
+            self.queue_store.update(
+                DEFAULT_AUTOMATION_QUEUE_ID,
+                name="Something Else",
+            )
+        self.assertEqual(
+            self.queue_store.default().name,
+            DEFAULT_AUTOMATION_QUEUE_NAME,
+        )
+
+    def test_unassigned_manual_routine_runs_through_default_queue(self) -> None:
+        routine = self.routine_store.add("Default queued routine")
+        self.routine_store.add_task(
+            routine.routine_id,
+            task_type=self.capture.task_type,
+            name="Capture",
+        )
+        self.queue_store.update(DEFAULT_AUTOMATION_QUEUE_ID, paused=True)
+
+        result = self.service.run_routine(routine.routine_id, {"user": "Queued"})
+
+        self.assertEqual(routine.queue_id, DEFAULT_AUTOMATION_QUEUE_ID)
+        self.assertTrue(result.succeeded)
+        self.assertEqual(self.capture.users, [])
+        self.assertEqual(self.manager.count(DEFAULT_AUTOMATION_QUEUE_ID), 1)
+
+        self.queue_store.update(DEFAULT_AUTOMATION_QUEUE_ID, paused=False)
+        self.service.process_queues()
+        self.assertEqual(self.capture.users, ["Queued"])
+
+    def test_multiple_unassigned_routines_share_default_queue_order(self) -> None:
+        self.queue_store.update(DEFAULT_AUTOMATION_QUEUE_ID, paused=True)
+        for name in ("First routine", "Second routine"):
+            routine = self.routine_store.add(name, trigger_id="shared")
+            self.routine_store.add_task(
+                routine.routine_id,
+                task_type=self.capture.task_type,
+                name="Capture",
+            )
+
+        self.service.publish_trigger(
+            TriggerEvent("shared", "test", "event", {"user": "Viewer"})
+        )
+        self.assertEqual(self.manager.count(DEFAULT_AUTOMATION_QUEUE_ID), 2)
+
+        self.queue_store.update(DEFAULT_AUTOMATION_QUEUE_ID, paused=False)
+        self.service.process_queues()
+        self.service.process_queues()
+        self.assertEqual(self.capture.users, ["Viewer", "Viewer"])
+
+    def test_missing_custom_queue_assignment_normalizes_to_default(self) -> None:
+        custom = self.queue_store.add("Alerts")
+        routine = self.routine_store.add("Alert", queue_id=custom.queue_id)
+        self.queue_store.delete(custom.queue_id)
+
+        changed = self.routine_store.normalize_queue_assignments(
+            queue.queue_id for queue in self.queue_store.queues
+        )
+
+        self.assertEqual(changed, 1)
+        self.assertEqual(
+            self.routine_store.get(routine.routine_id).queue_id,
+            DEFAULT_AUTOMATION_QUEUE_ID,
+        )
+
+    def test_blank_pre_alpha_queue_assignment_is_rewritten_to_default(self) -> None:
+        self.routine_store.path.write_text(
+            json.dumps(
+                {
+                    "version": self.routine_store.VERSION,
+                    "groups": [],
+                    "routines": [
+                        {
+                            "routine_id": "old-routine",
+                            "name": "Old routine",
+                            "trigger_id": "old-trigger",
+                            "tasks": [],
+                            "queue_id": "",
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        self.routine_store.load()
+
+        self.assertEqual(
+            self.routine_store.get("old-routine").queue_id,
+            DEFAULT_AUTOMATION_QUEUE_ID,
+        )
+        saved = json.loads(self.routine_store.path.read_text(encoding="utf-8"))
+        self.assertEqual(
+            saved["routines"][0]["queue_id"],
+            DEFAULT_AUTOMATION_QUEUE_ID,
+        )
+
+    def test_command_keyword_and_ads_routines_use_default_queue(self) -> None:
+        command_store = TwitchCommandTriggerStore(
+            Path(self.temporary.name) / "commands.json",
+            self.routine_store,
+        )
+        command = command_store.configure_default("uptime")
+        event_store = TwitchEventTriggerStore(
+            Path(self.temporary.name) / "events.json",
+            self.routine_store,
+        )
+        keyword_routine = self.routine_store.add("Keyword")
+        event_store.add(
+            keyword_routine.routine_id,
+            KEYWORD_PHRASE_EVENT_TYPE,
+            filters={"phrase": "coffee", "match_type": "contains"},
+        )
+        ads_routine = self.routine_store.add("Ads Started")
+        event_store.add(ads_routine.routine_id, "ads.started")
+
+        self.assertEqual(
+            self.routine_store.get(command.routine_id).queue_id,
+            DEFAULT_AUTOMATION_QUEUE_ID,
+        )
+        self.assertEqual(
+            self.routine_store.get(keyword_routine.routine_id).queue_id,
+            DEFAULT_AUTOMATION_QUEUE_ID,
+        )
+        self.assertEqual(
+            self.routine_store.get(ads_routine.routine_id).queue_id,
+            DEFAULT_AUTOMATION_QUEUE_ID,
+        )
 
     def test_queue_settings_and_routine_assignment_persist(self) -> None:
         queue = self.queue_store.add(

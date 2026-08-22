@@ -7,6 +7,10 @@ from typing import Any, ClassVar, Mapping
 from uuid import uuid4
 
 
+DEFAULT_AUTOMATION_QUEUE_ID = "streamhouse.default.queue"
+DEFAULT_AUTOMATION_QUEUE_NAME = "Default Queue"
+
+
 @dataclass(frozen=True, slots=True)
 class TriggerEvent:
     SEGMENT_PATTERN: ClassVar[re.Pattern[str]] = re.compile(
@@ -82,7 +86,7 @@ class RoutineDefinition:
     group_id: str = ""
     description: str = ""
     additional_trigger_ids: list[str] = field(default_factory=list)
-    queue_id: str = ""
+    queue_id: str = DEFAULT_AUTOMATION_QUEUE_ID
 
     @classmethod
     def from_dict(cls, values: Mapping[str, Any]) -> RoutineDefinition:
@@ -107,7 +111,10 @@ class RoutineDefinition:
                 for value in values.get("additional_trigger_ids", [])
                 if str(value).strip()
             ],
-            queue_id=str(values.get("queue_id", "")),
+            queue_id=(
+                str(values.get("queue_id", "")).strip()
+                or DEFAULT_AUTOMATION_QUEUE_ID
+            ),
         )
 
     @property

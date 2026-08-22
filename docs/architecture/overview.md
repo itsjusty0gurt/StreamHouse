@@ -84,7 +84,8 @@ flowchart LR
 - **Task definition**: persisted configuration for one step in a routine.
 - **Task provider**: executable handler implementation registered for a task
   type in `TaskRegistry`.
-- **Queue**: optional serialized execution policy assigned to routines.
+- **Queue**: serialized execution policy assigned to every routine. The
+  system-owned Default Queue is used when no custom queue is selected.
 - **Event bus event**: in-process notification sent through `core.events.Events`;
   it is not the same thing as a persisted automation trigger.
 
@@ -380,7 +381,15 @@ engine or call Twitch directly.
 
 ### Queues
 
-Routines may reference an `AutomationQueueDefinition`. Queue policy supports:
+Every routine references an `AutomationQueueDefinition`. The system-owned
+**Default Queue** has the stable ID `streamhouse.default.queue`, is created and
+persisted automatically, cannot be renamed or deleted, and uses the same queue
+manager as every custom queue. New, imported, command-managed, Keyword/Phrase,
+Ads, and other trigger routines select it automatically unless the user chooses
+a custom queue. The routine editor therefore presents Default Queue as the
+beginner default rather than offering a direct-execution/no-queue mode.
+
+Queue policy supports:
 
 - pause/resume;
 - maximum pending length;
@@ -388,6 +397,12 @@ Routines may reference an `AutomationQueueDefinition`. Queue policy supports:
 - delay between completed items.
 
 Pending/current queue items are runtime-only. Queue definitions persist.
+Deleting a custom queue reassigns its routines to Default Queue; loading an
+empty or dangling pre-alpha assignment normalizes it to the same stable ID.
+Submission and claiming are one thread-safe operation so Qt-triggered routines
+and network-backed Chat Command workers preserve one-at-a-time queue behavior.
+Nested routines remain part of their parent execution and do not enqueue a
+second item.
 `AutomationService.process_queues()` is called periodically on the Qt thread so
 Qt-based tasks remain thread-safe.
 
@@ -990,9 +1005,9 @@ formats are accepted.
 | --- | --- | --- |
 | `config/settings.json` | Hub | `AppSettings`, validated/defaulted |
 | `ai/settings.json` | Streamhouse AI | model, endpoint, personality/language |
-| `automation/routines.json` | Hub | groups, routines, ordered tasks, trigger links |
+| `automation/routines.json` | Hub | groups, routines, ordered tasks, trigger links, and explicit queue assignments |
 | `automation/core_triggers.json` | Hub | application lifecycle bindings |
-| `automation/queues.json` | Hub | queue definitions; pending items are not persisted |
+| `automation/queues.json` | Hub | the system-owned Default Queue plus custom queue definitions; pending items are not persisted |
 | `automation/variables.json` | Hub | global values only; session/routine are volatile |
 | `twitch/commands.json` | Hub | configured commands, permissions, aliases, cooldowns, statistics, and default-template provenance; unconfigured templates are code-owned |
 | `twitch/channel-information.json` | Hub | versioned social links, social inclusion choices, schedule, rules, and server information used by commands and automation tasks |

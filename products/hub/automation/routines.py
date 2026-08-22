@@ -6,7 +6,12 @@ from pathlib import Path
 from typing import Any, Iterable
 from uuid import uuid4
 
-from products.hub.automation.models import RoutineDefinition, RoutineGroup, TaskDefinition
+from products.hub.automation.models import (
+    DEFAULT_AUTOMATION_QUEUE_ID,
+    RoutineDefinition,
+    RoutineGroup,
+    TaskDefinition,
+)
 from shared.streamhouse_runtime.json_store import atomic_write_json, load_json_with_backup
 from shared.streamhouse_runtime.paths import user_data_root
 
@@ -55,9 +60,16 @@ class RoutineStore:
             for value in values
             if isinstance(value, dict)
         ]
+        normalized_queues = any(
+            isinstance(value, dict)
+            and not str(value.get("queue_id", "")).strip()
+            for value in values
+        )
         self._validate_state(groups, routines)
         self.groups = groups
         self.routines = routines
+        if normalized_queues:
+            self._write(groups, routines)
         return list(self.routines)
 
     def save(self) -> None:
@@ -210,7 +222,7 @@ class RoutineStore:
         group_id: str = "",
         description: str = "",
         enabled: bool = True,
-        queue_id: str = "",
+        queue_id: str = DEFAULT_AUTOMATION_QUEUE_ID,
         tasks: Iterable[TaskDefinition] = (),
     ) -> RoutineDefinition:
         routine = RoutineDefinition(
@@ -221,7 +233,7 @@ class RoutineStore:
             enabled=bool(enabled),
             group_id=group_id,
             description=description.strip()[:500],
-            queue_id=queue_id.strip(),
+            queue_id=queue_id.strip() or DEFAULT_AUTOMATION_QUEUE_ID,
         )
         routines = deepcopy(self.routines)
         routines.append(routine)
@@ -256,7 +268,7 @@ class RoutineStore:
         if enabled is not None:
             routine.enabled = bool(enabled)
         if queue_id is not None:
-            routine.queue_id = queue_id.strip()
+            routine.queue_id = queue_id.strip() or DEFAULT_AUTOMATION_QUEUE_ID
         self._commit(deepcopy(self.groups), routines)
         return self.get(routine_id)  # type: ignore[return-value]
 
@@ -331,6 +343,20 @@ class RoutineStore:
         routines.remove(routine)
         self._commit(deepcopy(self.groups), routines)
         return True
+
+    def normalize_queue_assignments(self, valid_queue_ids: Iterable[str]) -> int:
+        """Replace empty or missing queue assignments with the Default Queue."""
+        valid = set(valid_queue_ids)
+        valid.add(DEFAULT_AUTOMATION_QUEUE_ID)
+        routines = deepcopy(self.routines)
+        changed = 0
+        for routine in routines:
+            if routine.queue_id not in valid:
+                routine.queue_id = DEFAULT_AUTOMATION_QUEUE_ID
+                changed += 1
+        if changed:
+            self._commit(deepcopy(self.groups), routines)
+        return changed
 
     # Tasks ------------------------------------------------------------------
 
@@ -649,6 +675,8 @@ class RoutineStore:
             raise ValueError("Routines require an ID and name.")
         if len(routine.name.strip()) > 100:
             raise ValueError("Routine names can contain at most 100 characters.")
+        if not routine.queue_id.strip():
+            raise ValueError("Routines require an automation queue.")
         trigger_ids = list(routine.trigger_ids)
         if len(trigger_ids) != len(set(trigger_ids)):
             raise ValueError("Routine trigger IDs must be unique.")

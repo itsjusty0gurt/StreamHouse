@@ -40,7 +40,12 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from products.hub.automation.models import AutomationExecutionResult, TaskDefinition, TriggerEvent
+from products.hub.automation.models import (
+    DEFAULT_AUTOMATION_QUEUE_ID,
+    AutomationExecutionResult,
+    TaskDefinition,
+    TriggerEvent,
+)
 from products.hub.automation.core_triggers import (
     CORE_TRIGGER_TYPES,
     CoreAutomationTrigger,
@@ -1957,6 +1962,8 @@ class QueueEditorDialog(QDialog):
         form = QFormLayout()
         self.name_edit = QLineEdit(queue.name if queue else "")
         self.name_edit.setPlaceholderText("Soundboard")
+        if queue is not None and queue.queue_id == DEFAULT_AUTOMATION_QUEUE_ID:
+            self.name_edit.setReadOnly(True)
         self.max_length_spin = QSpinBox()
         self.max_length_spin.setRange(1, 10_000)
         self.max_length_spin.setValue(queue.max_length if queue else 100)
@@ -2273,19 +2280,22 @@ class AutomationPage(QWidget):
         return self.queue_store.get(self._selected_queue_id())
 
     def _queue_snapshot(self) -> tuple:
-        return tuple(
-            (
-                queue.queue_id,
-                queue.name,
-                queue.paused,
-                queue.max_length,
-                queue.duplicate_policy,
-                queue.delay_seconds,
-                getattr(self.queue_manager.current.get(queue.queue_id), "item_id", ""),
-                tuple(item.item_id for item in self.queue_manager.pending.get(queue.queue_id, [])),
+        values = []
+        for queue in self.queue_store.queues:
+            current, pending = self.queue_manager.state(queue.queue_id)
+            values.append(
+                (
+                    queue.queue_id,
+                    queue.name,
+                    queue.paused,
+                    queue.max_length,
+                    queue.duplicate_policy,
+                    queue.delay_seconds,
+                    getattr(current, "item_id", ""),
+                    tuple(item.item_id for item in pending),
+                )
             )
-            for queue in self.queue_store.queues
-        )
+        return tuple(values)
 
     def _refresh_queues(self, selected_queue_id: str = "") -> None:
         selected_queue_id = selected_queue_id or self._selected_queue_id()
@@ -2315,7 +2325,9 @@ class AutomationPage(QWidget):
     def _show_queue(self, queue: AutomationQueueDefinition | None) -> None:
         enabled = queue is not None
         self.edit_queue_button.setEnabled(enabled)
-        self.delete_queue_button.setEnabled(enabled)
+        self.delete_queue_button.setEnabled(
+            enabled and queue.queue_id != DEFAULT_AUTOMATION_QUEUE_ID
+        )
         self.pause_queue_button.setEnabled(enabled)
         self.clear_queue_button.setEnabled(enabled)
         self.remove_queue_item_button.setEnabled(enabled)
@@ -2328,13 +2340,13 @@ class AutomationPage(QWidget):
             return
         self.queue_title_label.setText(queue.name)
         self.pause_queue_button.setText("Resume" if queue.paused else "Pause")
-        current = self.queue_manager.current.get(queue.queue_id)
+        current, pending = self.queue_manager.state(queue.queue_id)
         self.queue_status_label.setText(
             f"Current: {current.routine_name if current else 'None'}  •  "
             f"Limit: {queue.max_length}  •  Duplicates: {queue.duplicate_policy.title()}  •  "
             f"Delay: {queue.delay_seconds:g}s"
         )
-        for item in self.queue_manager.pending.get(queue.queue_id, []):
+        for item in pending:
             row = QListWidgetItem(item.routine_name)
             row.setData(Qt.ItemDataRole.UserRole, item.item_id)
             row.setToolTip(
@@ -2371,18 +2383,21 @@ class AutomationPage(QWidget):
 
     def _delete_queue(self) -> None:
         queue = self._selected_queue()
-        if queue is None:
+        if queue is None or queue.queue_id == DEFAULT_AUTOMATION_QUEUE_ID:
             return
         if QMessageBox.question(
             self,
             "Delete Queue",
-            f'Delete "{queue.name}"? Assigned routines will become Immediate.',
+            f'Delete "{queue.name}"? Assigned routines will use Default Queue.',
         ) != QMessageBox.StandardButton.Yes:
             return
         try:
             for routine in tuple(self.routine_store.routines):
                 if routine.queue_id == queue.queue_id:
-                    self.routine_store.update(routine.routine_id, queue_id="")
+                    self.routine_store.update(
+                        routine.routine_id,
+                        queue_id=DEFAULT_AUTOMATION_QUEUE_ID,
+                    )
             self.queue_manager.clear(queue.queue_id)
             self.queue_store.delete(queue.queue_id)
         except (OSError, ValueError) as error:
@@ -2900,8 +2915,6 @@ class AutomationPage(QWidget):
             issues.append(
                 "Owning trigger no longer exists; assign a new trigger or delete this routine"
             )
-        if routine.queue_id and self.queue_store.get(routine.queue_id) is None:
-            issues.append("Assigned automation queue no longer exists")
         if not routine.tasks:
             issues.append("Routine has no tasks")
         elif not any(task.enabled for task in routine.tasks):
@@ -2945,12 +2958,12 @@ class AutomationPage(QWidget):
         self.routine_title_label.setText(routine.name)
         trigger_count = self._routine_trigger_count(routine.routine_id)
         group = self.routine_store.get_group(routine.group_id)
-        queue = self.queue_store.get(routine.queue_id)
+        queue = self.queue_store.resolve(routine.queue_id)
         issues = self._routine_issues(routine, trigger_count)
         self.routine_summary_label.setText(
             f"{group.name if group else 'Ungrouped'}  •  {trigger_count} trigger(s)"
             f"  •  {len(routine.tasks)} task(s)"
-            f"  •  {queue.name if queue else 'Immediate'}"
+            f"  •  {queue.name}"
             + (f"  •  Warning: {issues[0]}" if issues else "  •  Ready")
         )
         self.routine_summary_label.setToolTip("\n".join(issues))
@@ -3058,10 +3071,11 @@ class AutomationPage(QWidget):
         index = self.settings_group_combo.findData(routine.group_id)
         self.settings_group_combo.setCurrentIndex(max(index, 0))
         self.settings_queue_combo.clear()
-        self.settings_queue_combo.addItem("Immediate (no queue)", "")
         for queue in self.queue_store.queues:
             self.settings_queue_combo.addItem(queue.name, queue.queue_id)
-        queue_index = self.settings_queue_combo.findData(routine.queue_id)
+        queue_index = self.settings_queue_combo.findData(
+            self.queue_store.resolve(routine.queue_id).queue_id
+        )
         self.settings_queue_combo.setCurrentIndex(max(queue_index, 0))
 
     def _resolve_group(self, name: str, group_id: str = "") -> str:

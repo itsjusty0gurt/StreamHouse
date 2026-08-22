@@ -12,7 +12,11 @@ from products.hub.automation.models import (
 from products.hub.automation.routines import RoutineStore
 from products.hub.automation.tasks import TaskRegistry
 from products.hub.automation.custom_variables import CustomVariableStore
-from products.hub.automation.queues import AutomationQueueManager, QueuedRoutine
+from products.hub.automation.queues import (
+    AutomationQueueManager,
+    AutomationQueueStore,
+    QueuedRoutine,
+)
 from products.hub.automation.variable_registry import VariableRegistry
 from products.hub.core.events import Events
 from shared.streamhouse_runtime.logger import Logger
@@ -32,7 +36,9 @@ class AutomationService:
         self.routine_store = routine_store
         self.task_registry = task_registry
         self.variable_store = variable_store or CustomVariableStore()
-        self.queue_manager = queue_manager
+        self.queue_manager = queue_manager or AutomationQueueManager(
+            AutomationQueueStore()
+        )
         self.variable_registry = variable_registry
         self._routine_stack: list[str] = []
         self.max_routine_depth = 10
@@ -57,21 +63,16 @@ class AutomationService:
         )
 
     def _publish_routine(self, routine, trigger: TriggerEvent) -> RoutineExecutionResult:
-        if not routine.queue_id or self.queue_manager is None:
-            return self._execute_routine(routine, trigger)
-        queue_was_busy = (
-            self.queue_manager.count(routine.queue_id) > 0
-            or routine.queue_id in self.queue_manager.current
-        )
-        queued = self.queue_manager.enqueue(
-            routine.queue_id,
+        queue = self.queue_manager.store.resolve(routine.queue_id)
+        queued, ready = self.queue_manager.submit(
+            queue.queue_id,
             routine.routine_id,
             routine.name,
             trigger,
         )
         Events.emit(
             "automation_queue_changed",
-            queue_id=routine.queue_id,
+            queue_id=queue.queue_id,
         )
         if not queued.accepted:
             ignored = queued.detail.startswith("Ignored duplicate")
@@ -80,11 +81,6 @@ class AutomationService:
                 succeeded=ignored,
                 detail=queued.detail,
             )
-        ready = (
-            None
-            if queue_was_busy
-            else self.queue_manager.take_ready(routine.queue_id)
-        )
         if ready is None:
             return RoutineExecutionResult(
                 routine_id=routine.routine_id,
@@ -112,9 +108,8 @@ class AutomationService:
             Events.emit("automation_queue_item_started", item=item)
             return self._execute_routine(routine, item.trigger)
         finally:
-            if self.queue_manager is not None:
-                self.queue_manager.complete(item.queue_id)
-                Events.emit("automation_queue_changed", queue_id=item.queue_id)
+            self.queue_manager.complete(item.queue_id)
+            Events.emit("automation_queue_changed", queue_id=item.queue_id)
 
     def process_queues(self) -> tuple[AutomationExecutionResult, ...]:
         """Run at most one ready item per queue.
@@ -122,8 +117,6 @@ class AutomationService:
         The UI calls this periodically on Qt's main thread so Qt-based tasks
         remain thread-safe while paused and delayed queues can build a backlog.
         """
-        if self.queue_manager is None:
-            return ()
         executions: list[AutomationExecutionResult] = []
         for queue in tuple(self.queue_manager.store.queues):
             item = self.queue_manager.take_ready(queue.queue_id)
@@ -160,7 +153,7 @@ class AutomationService:
         trigger = self._prepare_trigger(trigger)
         Events.emit("trigger_fired", trigger=trigger)
         Events.emit("trigger_fired.streamhouse.manual", trigger=trigger)
-        result = self._execute_routine(routine, trigger)
+        result = self._publish_routine(routine, trigger)
         return AutomationExecutionResult(
             event_id=trigger.event_id,
             trigger_id=trigger.trigger_id,

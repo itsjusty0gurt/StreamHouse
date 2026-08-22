@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 
 from products.hub.automation.core_triggers import CoreTriggerStore
+from products.hub.automation.models import DEFAULT_AUTOMATION_QUEUE_ID
 from products.hub.automation.routines import RoutineStore
 from products.hub.automation.tasks import TaskRegistry
 from products.hub.automation.transfer import export_routine, import_routine, validate_import
@@ -79,6 +80,7 @@ class AutomationTransferTests(unittest.TestCase):
         self.assertNotEqual(imported.routine_id, routine.routine_id)
         self.assertEqual(imported.name, routine.name)
         self.assertEqual(imported.description, routine.description)
+        self.assertEqual(imported.queue_id, DEFAULT_AUTOMATION_QUEUE_ID)
         self.assertEqual(imported.tasks[0].config, {"seconds": 2})
         self.assertNotEqual(imported.tasks[0].task_id, original_task.task_id)
         self.assertEqual(len(destination["core_store"].for_routine(imported.routine_id)), 1)

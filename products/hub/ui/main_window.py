@@ -472,7 +472,10 @@ class MainWindow(QMainWindow):
         try:
             self.automation_queue_store.load()
         except (OSError, ValueError, json.JSONDecodeError) as error:
-            self.automation_queue_store.queues = []
+            try:
+                self.automation_queue_store.reset()
+            except OSError:
+                pass
             Logger.warning(
                 f"Could not load automation queues: {error}",
                 source="AUTOMATION",
@@ -577,6 +580,7 @@ class MainWindow(QMainWindow):
             self.twitch_command_trigger_store.routine_store,
             self.task_registry,
             self.custom_variable_store,
+            self.automation_queue_manager,
             variable_registry=self.variable_registry,
         )
         self.soundboard_server = soundboard_server or SoundboardLocalServer(
@@ -623,6 +627,15 @@ class MainWindow(QMainWindow):
             Logger.warning(
                 f"Could not load custom Twitch commands: {error}",
                 source="TWITCH",
+            )
+        try:
+            routine_store.normalize_queue_assignments(
+                queue.queue_id for queue in self.automation_queue_store.queues
+            )
+        except OSError as error:
+            Logger.warning(
+                f"Could not normalize Automation queue assignments: {error}",
+                source="AUTOMATION",
             )
         try:
             self.twitch_event_trigger_store.load()

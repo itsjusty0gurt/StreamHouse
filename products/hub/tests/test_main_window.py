@@ -33,6 +33,7 @@ from products.hub.twitch.auth import TwitchAuthState
 from products.hub.twitch.chatter_history import ChatterHistoryStore, ChatterRecord
 from products.hub.automation.routines import RoutineStore
 from products.hub.automation.models import (
+    DEFAULT_AUTOMATION_QUEUE_ID,
     AutomationExecutionResult,
     RoutineExecutionResult,
     TaskExecutionResult,
@@ -368,6 +369,53 @@ class MainWindowTests(unittest.TestCase):
         self.assertEqual(
             page.settings_queue_combo.currentData(),
             queue.queue_id,
+        )
+
+    def test_default_queue_is_visible_protected_and_used_by_routine_editor(self) -> None:
+        page = self.window.automation_page
+        store = self.twitch_command_trigger_store.routine_store
+        routine = store.add("Beginner routine")
+
+        self.assertIs(
+            self.window.command_automation_service.queue_manager,
+            self.window.automation_queue_manager,
+        )
+
+        page.refresh(routine.routine_id)
+        page._refresh_queues(DEFAULT_AUTOMATION_QUEUE_ID)
+
+        self.assertEqual(page.queue_list.count(), 1)
+        self.assertIn("Default Queue", page.queue_list.item(0).text())
+        self.assertFalse(page.delete_queue_button.isEnabled())
+        self.assertEqual(
+            page.settings_queue_combo.currentData(),
+            DEFAULT_AUTOMATION_QUEUE_ID,
+        )
+        self.assertEqual(page.settings_queue_combo.currentText(), "Default Queue")
+        self.assertIn("Default Queue", page.routine_summary_label.text())
+
+    def test_deleting_custom_queue_reassigns_routines_to_default(self) -> None:
+        page = self.window.automation_page
+        queue = self.window.automation_queue_store.add("Alerts")
+        routine = self.twitch_command_trigger_store.routine_store.add(
+            "Alert routine",
+            queue_id=queue.queue_id,
+        )
+        page._refresh_queues(queue.queue_id)
+
+        with patch.object(
+            QMessageBox,
+            "question",
+            return_value=QMessageBox.StandardButton.Yes,
+        ):
+            page._delete_queue()
+
+        self.assertIsNone(self.window.automation_queue_store.get(queue.queue_id))
+        self.assertEqual(
+            self.twitch_command_trigger_store.routine_store.get(
+                routine.routine_id
+            ).queue_id,
+            DEFAULT_AUTOMATION_QUEUE_ID,
         )
 
     def test_task_add_menu_is_grouped_by_service(self) -> None:
