@@ -123,11 +123,16 @@ from products.hub.twitch.activity_history import (
 )
 from products.hub.twitch.chatter_history import ChatterHistoryStore
 from products.hub.twitch.commands import (
+    TwitchCommandPermission,
     TwitchCommandSetupState,
     TwitchCommandTrigger,
     TwitchCommandTriggerDispatcher,
     TwitchCommandTriggerOutcome,
     TwitchCommandTriggerStore,
+)
+from products.hub.twitch.default_commands import (
+    DefaultCommandDefinition,
+    default_command_definitions,
 )
 from products.hub.twitch.channel_information import (
     ChannelInformation,
@@ -619,21 +624,6 @@ class MainWindow(QMainWindow):
                 f"Could not load custom Twitch commands: {error}",
                 source="TWITCH",
             )
-        if self._owns_twitch_command_trigger_store:
-            try:
-                default_result = self.twitch_command_trigger_store.seed_default_commands()
-                if default_result.created:
-                    Logger.info(
-                        f"Installed {len(default_result.created)} default Twitch commands.",
-                        source="TWITCH",
-                    )
-                for conflict in default_result.conflicts:
-                    Logger.warning(conflict, source="TWITCH")
-            except (OSError, ValueError) as error:
-                Logger.warning(
-                    f"Could not install default Twitch commands: {error}",
-                    source="TWITCH",
-                )
         try:
             self.twitch_event_trigger_store.load()
         except (OSError, ValueError, json.JSONDecodeError) as error:
@@ -2250,7 +2240,6 @@ class MainWindow(QMainWindow):
         self.delete_twitch_command_button = QPushButton("Delete Selected")
         self.open_twitch_command_routine_button = QPushButton("Open Routine")
         self.reset_twitch_command_button = QPushButton("Reset to Default")
-        self.restore_twitch_commands_button = QPushButton("Restore Default Commands")
         self.configure_channel_information_button = QPushButton(
             "Configure Channel Information"
         )
@@ -2260,7 +2249,6 @@ class MainWindow(QMainWindow):
         actions.addWidget(self.delete_twitch_command_button)
         actions.addWidget(self.open_twitch_command_routine_button)
         actions.addWidget(self.reset_twitch_command_button)
-        actions.addWidget(self.restore_twitch_commands_button)
         actions.addWidget(self.configure_channel_information_button)
         actions.addStretch()
         layout.addLayout(actions)
@@ -2294,9 +2282,6 @@ class MainWindow(QMainWindow):
         )
         self.reset_twitch_command_button.clicked.connect(
             self._reset_twitch_command
-        )
-        self.restore_twitch_commands_button.clicked.connect(
-            self._restore_twitch_commands
         )
         self.configure_channel_information_button.clicked.connect(
             self._configure_selected_command
@@ -2432,81 +2417,132 @@ class MainWindow(QMainWindow):
             )
 
     def _refresh_twitch_commands(self, selected_trigger_id: str = "") -> None:
-        if not selected_trigger_id:
-            selected = self._selected_twitch_command()
-            selected_trigger_id = selected.trigger_id if selected else ""
+        selected_key = selected_trigger_id
+        if not selected_key:
+            selected_key = self._selected_twitch_command_key()
         table = self.twitch_commands_table
-        commands = self.twitch_command_trigger_store.ordered_triggers(
-            self.twitch_command_search_edit.text()
+        query = (
+            self.twitch_command_search_edit.text().strip().casefold().removeprefix("!")
             if hasattr(self, "twitch_command_search_edit")
             else ""
         )
-        table.setRowCount(len(commands))
+        configured_defaults = {
+            command.default_id: command
+            for command in self.twitch_command_trigger_store.triggers
+            if command.default_id
+        }
+        rows: list[
+            tuple[TwitchCommandTrigger | None, DefaultCommandDefinition | None]
+        ] = []
+        for definition in default_command_definitions():
+            command = configured_defaults.get(definition.default_id)
+            names = (command.name, *command.aliases) if command is not None else (definition.name,)
+            if query and query not in {"default", "template"} and not any(
+                query in name.casefold() for name in names
+            ):
+                continue
+            rows.append((command, definition))
+        rows.extend(
+            (command, None)
+            for command in self.twitch_command_trigger_store.ordered_triggers(query)
+            if not command.is_default
+        )
+        table.setRowCount(len(rows))
         selected_row = -1
-        for row, command in enumerate(commands):
-            requirement = self.twitch_command_trigger_store.setup_requirement(
-                command.default_id
-            )
-            state = (
-                self.twitch_command_trigger_store.setup_state(
-                    command, self.channel_information_store
-                ).value
-                if requirement
-                else "Enabled" if command.enabled else "Disabled"
-            )
+        for row, (command, definition) in enumerate(rows):
+            assert command is not None or definition is not None
+            default_id = command.default_id if command is not None else definition.default_id
+            requirement = self.twitch_command_trigger_store.setup_requirement(default_id)
+            if command is None:
+                state = "Not Configured"
+                row_key = f"template:{default_id}"
+                name = definition.name
+                aliases: list[str] = []
+                permission = TwitchCommandPermission.EVERYONE.value
+                global_cooldown = definition.global_cooldown_seconds
+                user_cooldown = definition.user_cooldown_seconds
+                uses = 0
+                source = "Default Template"
+            else:
+                state = (
+                    self.twitch_command_trigger_store.setup_state(
+                        command, self.channel_information_store
+                    ).value
+                    if requirement
+                    else "Enabled" if command.enabled else "Disabled"
+                )
+                row_key = command.trigger_id
+                name = command.name
+                aliases = command.aliases
+                permission = command.permission
+                global_cooldown = command.global_cooldown_seconds
+                user_cooldown = command.user_cooldown_seconds
+                uses = command.uses
+                source = "Default" if command.is_default else "Custom"
             values = (
                 state,
-                f"!{command.name}",
-                ", ".join(f"!{alias}" for alias in command.aliases),
-                command.permission.title(),
-                f"{command.global_cooldown_seconds}s",
-                f"{command.user_cooldown_seconds}s",
-                str(command.uses),
-                "Default" if command.is_default else "Custom",
+                f"!{name}",
+                ", ".join(f"!{alias}" for alias in aliases),
+                permission.title(),
+                f"{global_cooldown}s",
+                f"{user_cooldown}s",
+                str(uses),
+                source,
             )
             for column, value in enumerate(values):
                 item = QTableWidgetItem(value)
                 if column == 0:
                     item.setData(
                         Qt.ItemDataRole.UserRole,
-                        command.trigger_id,
+                        row_key,
                     )
                     if state == TwitchCommandSetupState.SETUP_REQUIRED.value:
                         item.setForeground(QColor("#d6a84b"))
                     elif state == TwitchCommandSetupState.CONFIGURATION_ERROR.value:
                         item.setForeground(QColor("#e06c75"))
                 table.setItem(row, column, item)
-            if command.trigger_id == selected_trigger_id:
+            if row_key == selected_key:
                 selected_row = row
         if selected_row >= 0:
             table.selectRow(selected_row)
-        default_count = sum(
+        configured_default_count = sum(
             command.is_default
             for command in self.twitch_command_trigger_store.triggers
         )
-        custom_count = len(self.twitch_command_trigger_store.triggers) - default_count
-        status = f"{default_count} default and {custom_count} custom command(s)."
-        if self.twitch_command_trigger_store.default_seed_conflicts:
-            status += " " + " ".join(
-                self.twitch_command_trigger_store.default_seed_conflicts
-            )
+        custom_count = len(self.twitch_command_trigger_store.triggers) - configured_default_count
+        template_count = len(default_command_definitions()) - configured_default_count
+        status = (
+            f"{configured_default_count} configured default, {custom_count} custom, "
+            f"and {template_count} available template command(s)."
+        )
         self.twitch_command_status_label.setText(status)
         self._update_twitch_command_actions()
 
-    def _selected_twitch_command(self) -> TwitchCommandTrigger | None:
+    def _selected_twitch_command_key(self) -> str:
         row = self.twitch_commands_table.currentRow()
         item = self.twitch_commands_table.item(row, 0) if row >= 0 else None
-        trigger_id = str(item.data(Qt.ItemDataRole.UserRole)) if item else ""
+        return str(item.data(Qt.ItemDataRole.UserRole) or "") if item else ""
+
+    def _selected_twitch_command(self) -> TwitchCommandTrigger | None:
+        trigger_id = self._selected_twitch_command_key()
         return (
             self.twitch_command_trigger_store.get(trigger_id)
-            if trigger_id
+            if trigger_id and not trigger_id.startswith("template:")
             else None
         )
 
+    def _selected_default_template_id(self) -> str:
+        key = self._selected_twitch_command_key()
+        return key.removeprefix("template:") if key.startswith("template:") else ""
+
     def _update_twitch_command_actions(self) -> None:
         command = self._selected_twitch_command()
+        template_id = self._selected_default_template_id()
         selected = command is not None
-        self.edit_twitch_command_button.setEnabled(selected)
+        self.edit_twitch_command_button.setEnabled(selected or bool(template_id))
+        self.edit_twitch_command_button.setText(
+            "Configure Selected" if template_id else "Edit Selected"
+        )
         self.toggle_twitch_command_button.setEnabled(selected)
         self.delete_twitch_command_button.setEnabled(selected)
         self.open_twitch_command_routine_button.setEnabled(selected)
@@ -2516,7 +2552,7 @@ class MainWindow(QMainWindow):
         requirement = (
             self.twitch_command_trigger_store.setup_requirement(command.default_id)
             if command is not None
-            else ""
+            else self.twitch_command_trigger_store.setup_requirement(template_id)
         )
         self.configure_channel_information_button.setEnabled(bool(requirement))
         self.toggle_twitch_command_button.setText(
@@ -2541,15 +2577,20 @@ class MainWindow(QMainWindow):
 
     def _configure_selected_command(self) -> None:
         command = self._selected_twitch_command()
-        if command is None:
+        default_id = (
+            command.default_id
+            if command is not None
+            else self._selected_default_template_id()
+        )
+        if not default_id:
             return
         requirement = self.twitch_command_trigger_store.setup_requirement(
-            command.default_id
+            default_id
         )
         if not requirement:
             return
         self.channel_tabs.setCurrentWidget(self.channel_information_page)
-        self.channel_information_page.focus_for_command(command.default_id)
+        self.channel_information_page.focus_for_command(default_id)
 
     def _open_twitch_command_routine(self) -> None:
         command = self._selected_twitch_command()
@@ -2577,25 +2618,6 @@ class MainWindow(QMainWindow):
         self._refresh_twitch_commands(reset.trigger_id)
         self.automation_page.refresh()
         self.twitch_command_status_label.setText(f"!{reset.name} reset to default.")
-
-    def _restore_twitch_commands(self) -> None:
-        try:
-            result = self.twitch_command_trigger_store.restore_default_commands()
-        except (OSError, ValueError) as error:
-            self.twitch_command_status_label.setText(
-                f"Could not restore default commands: {error}"
-            )
-            return
-        self._refresh_twitch_commands()
-        self.automation_page.refresh()
-        parts = []
-        if result.created:
-            parts.append("Restored " + ", ".join(f"!{name}" for name in result.created) + ".")
-        if result.conflicts:
-            parts.extend(result.conflicts)
-        self.twitch_command_status_label.setText(
-            " ".join(parts) if parts else "All default commands are already present."
-        )
 
     def _build_automation_page(self) -> None:
         self.automation_button = QPushButton("Automation")
@@ -2815,6 +2837,23 @@ class MainWindow(QMainWindow):
 
     def _edit_twitch_command(self) -> None:
         command = self._selected_twitch_command()
+        template_id = self._selected_default_template_id()
+        if command is None and template_id:
+            try:
+                command = self.twitch_command_trigger_store.configure_default(
+                    template_id
+                )
+            except (OSError, ValueError) as error:
+                self.twitch_command_status_label.setText(
+                    f"Could not configure command: {error}"
+                )
+                return
+            self._refresh_twitch_commands(command.trigger_id)
+            self.automation_page.refresh(command.routine_id)
+            self.twitch_command_status_label.setText(
+                f"!{command.name} configured. Its Automation routine is ready."
+            )
+            return
         if command is None:
             return
         dialog = TwitchCommandDialog(

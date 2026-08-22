@@ -143,12 +143,11 @@ class CounterStoreTests(unittest.TestCase):
         restored = CounterService(CounterStore(restore_root / "counters"))
         self.assertEqual(restored.get_values("farts").channel_total, 7)
 
-    def test_default_command_seed_and_restore_never_create_counters(self) -> None:
+    def test_configuring_default_command_never_creates_counters(self) -> None:
         root = Path(self.temp.name) / "defaults"
         routines = RoutineStore(root / "routines.json")
         commands = TwitchCommandTriggerStore(root / "commands.json", routines)
-        commands.seed_default_commands()
-        commands.restore_default_commands()
+        commands.configure_default("uptime")
         restarted = CounterService(CounterStore(root / "counters"))
         self.assertEqual(restarted.list_counters(), ())
         self.assertFalse((root / "counters").exists())

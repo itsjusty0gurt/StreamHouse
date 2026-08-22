@@ -86,12 +86,19 @@ These values are routine-scoped and never create `command.*` context. For
 `I think coffee is better than tea`, matching `coffee` yields `I think` and
 `is better than tea` as the before/after values.
 
-Built-in commands have stable default IDs. Startup seeds only missing defaults,
-never overwrites an existing default, and records deletion tombstones so a
-streamer's removed default stays removed. The Commands page can reset one
-existing default to its current definition or explicitly restore missing
-defaults. A custom command or alias occupying a default name is reported as a
-conflict and is never overwritten.
+Built-in command definitions are code-owned templates, not inactive routines.
+A fresh Hub displays them as **Not Configured** on the Commands page but does
+not persist a trigger or create an Automation routine. Explicitly configuring
+a template creates one normal managed command routine; deleting it returns the
+definition to template state. A configured default can be reset to its current
+template, while a custom command or alias occupying the template name is
+reported as a conflict and is never overwritten.
+
+Configured defaults and custom Chat Commands share the Automation **Commands**
+group. The group is created with the first configured command and removed when
+the last command routine is deleted, unless it contains another explicitly
+grouped routine. Editing command settings updates the existing trigger and
+routine rather than replacing their stable identities.
 
 Reusable information providers live in `products/hub/twitch/tasks.py`:
 
@@ -153,9 +160,11 @@ used by live traffic.
 Connection health is modeled separately from page widgets. It tracks auth,
 EventSub, missing scopes, Streamhouse AI refresh success, and endpoint-specific
 failures. Local JSON histories use atomic replacement plus one last-known-good
-backup. Command triggers persist at `twitch/commands.json`; their managed
-routines persist at `automation/routines.json`. Both are included in current
-Streamhouse Hub backups. Chatter records use the current version-six schema;
+backup. Configured command triggers persist at `twitch/commands.json`; their
+managed routines and the Commands group persist at
+`automation/routines.json`. Unconfigured built-in templates are not persisted
+in either file. Both stores are included in current Streamhouse Hub backups.
+Chatter records use the current version-six schema;
 malformed identities and unsupported local group values are discarded or
 normalized at the store boundary.
 

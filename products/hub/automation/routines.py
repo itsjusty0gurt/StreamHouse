@@ -459,6 +459,7 @@ class RoutineStore:
         trigger_id: str,
         name: str,
         managed_by: str,
+        group_id: str = "",
         task_type: str = "",
         task_name: str = "",
         task_config: dict[str, Any] | None = None,
@@ -479,6 +480,7 @@ class RoutineStore:
             name=self._clean_name(name),
             trigger_id=trigger_id.strip(),
             managed_by=managed_by,
+            group_id=group_id,
             tasks=tasks,
         )
         routines = deepcopy(self.routines)

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -53,6 +54,10 @@ class TwitchCommandTriggerStoreTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.temporary.cleanup()
+
+    def configure_defaults(self) -> None:
+        for definition in default_command_definitions():
+            self.store.configure_default(definition.default_id)
 
     def test_trigger_crud_round_trip_manages_its_routine_and_task(self) -> None:
         trigger = self.store.add(
@@ -392,16 +397,15 @@ class TwitchCommandTriggerStoreTests(unittest.TestCase):
             "Friendly Greeting",
         )
 
-    def test_defaults_seed_once_without_overwriting_customizations(self) -> None:
-        first = self.store.seed_default_commands()
-        self.assertEqual(
-            set(first.created),
-            {
-                "uptime", "followage", "accountage", "title", "game", "commands",
-                "discord", "socials", "youtube", "schedule", "rules", "server",
-            },
-        )
-        uptime = self.store.resolve("uptime")
+    def test_configuring_default_creates_one_stable_persistent_routine(self) -> None:
+        self.assertEqual(self.store.triggers, [])
+        self.assertEqual(self.routine_store.routines, [])
+        self.assertEqual(self.routine_store.groups, [])
+
+        uptime = self.store.configure_default("uptime")
+        original_routine_id = uptime.routine_id
+        self.assertIs(self.store.configure_default("uptime"), uptime)
+        self.assertEqual(len(self.routine_store.routines), 1)
         self.store.update(
             uptime.trigger_id,
             name="up",
@@ -417,19 +421,87 @@ class TwitchCommandTriggerStoreTests(unittest.TestCase):
             RoutineStore(self.routine_store.path),
         )
         loaded.load()
-        second = loaded.seed_default_commands()
 
-        self.assertEqual(second.created, ())
         customized = loaded.default("uptime")
+        self.assertEqual(len(loaded.triggers), 1)
+        self.assertEqual(len(loaded.routine_store.routines), 1)
+        self.assertEqual(len(loaded.routine_store.groups), 1)
+        self.assertEqual(loaded.routine_store.groups[0].name, "Commands")
+        self.assertEqual(customized.routine_id, original_routine_id)
+        self.assertEqual(
+            loaded.routine_store.get(customized.routine_id).group_id,
+            loaded.routine_store.groups[0].group_id,
+        )
         self.assertEqual(customized.name, "up")
         self.assertEqual(customized.aliases, ["uptime"])
         self.assertEqual(customized.permission, "subscriber")
         self.assertEqual(customized.global_cooldown_seconds, 42)
         self.assertEqual(loaded.response_for(customized), "My custom response")
 
-    def test_deleted_default_stays_deleted_until_explicit_restore(self) -> None:
-        self.store.seed_default_commands()
-        command = self.store.default("game")
+    def test_default_and_custom_commands_share_one_commands_group(self) -> None:
+        default = self.store.configure_default("uptime")
+        custom = self.store.add("coffee", "Coffee time")
+
+        self.assertEqual(len(self.routine_store.groups), 1)
+        group = self.routine_store.groups[0]
+        self.assertEqual(group.name, "Commands")
+        self.assertEqual(self.routine_store.get(default.routine_id).group_id, group.group_id)
+        self.assertEqual(self.routine_store.get(custom.routine_id).group_id, group.group_id)
+
+        original_routine_id = custom.routine_id
+        self.store.update(
+            custom.trigger_id,
+            name="coffee",
+            response="Coffee updated",
+            aliases=[],
+            permission="everyone",
+            global_cooldown_seconds=5,
+            user_cooldown_seconds=10,
+        )
+        self.assertEqual(custom.routine_id, original_routine_id)
+        self.store.set_enabled(custom.trigger_id, False)
+        self.assertIsNotNone(self.routine_store.get(original_routine_id))
+
+        self.store.delete(default.trigger_id)
+        self.assertEqual(len(self.routine_store.groups), 1)
+        self.store.delete(custom.trigger_id)
+        self.assertEqual(self.routine_store.groups, [])
+
+    def test_version_five_pristine_defaults_are_removed_but_custom_commands_survive(self) -> None:
+        custom = self.store.add("coffee", "Coffee time")
+        definition = next(iter(default_command_definitions()))
+        default_trigger = self.store._trigger_for(definition)
+        self.routine_store.routines.append(
+            self.store._routine_for(
+                definition,
+                group_id=self.routine_store.groups[0].group_id,
+            )
+        )
+        self.routine_store.save()
+        self.path.write_text(
+            json.dumps(
+                {
+                    "version": 5,
+                    "triggers": [asdict(custom), asdict(default_trigger)],
+                    "removed_default_ids": [],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        loaded = TwitchCommandTriggerStore(
+            self.path,
+            RoutineStore(self.routine_store.path),
+        )
+        loaded.load()
+
+        self.assertIsNotNone(loaded.resolve("coffee"))
+        self.assertIsNone(loaded.default(definition.default_id))
+        self.assertIsNone(loaded.routine_store.get(definition.routine_id))
+        self.assertEqual(json.loads(self.path.read_text(encoding="utf-8"))["version"], 6)
+
+    def test_deleted_default_returns_to_template_without_a_routine(self) -> None:
+        command = self.store.configure_default("game")
         self.assertTrue(self.store.delete(command.trigger_id))
 
         loaded = TwitchCommandTriggerStore(
@@ -437,24 +509,23 @@ class TwitchCommandTriggerStoreTests(unittest.TestCase):
             RoutineStore(self.routine_store.path),
         )
         loaded.load()
-        self.assertEqual(loaded.seed_default_commands().created, ())
         self.assertIsNone(loaded.default("game"))
+        self.assertIsNone(loaded.routine_store.get(command.routine_id))
+        self.assertEqual(loaded.routine_store.groups, [])
 
-        restored = loaded.restore_default_commands()
-        self.assertEqual(restored.created, ("game",))
-        self.assertIsNotNone(loaded.default("game"))
+        restored = loaded.configure_default("game")
+        self.assertEqual(restored.routine_id, command.routine_id)
 
     def test_default_name_conflict_is_reported_and_not_overwritten(self) -> None:
         custom = self.store.add("uptime", "Custom uptime")
 
-        result = self.store.seed_default_commands()
-
-        self.assertTrue(any("!uptime" in conflict for conflict in result.conflicts))
+        with self.assertRaisesRegex(ValueError, "!uptime"):
+            self.store.configure_default("uptime")
         self.assertIs(self.store.resolve("uptime"), custom)
         self.assertIsNone(self.store.default("uptime"))
 
     def test_reset_default_restores_current_trigger_and_routine_definition(self) -> None:
-        self.store.seed_default_commands()
+        self.store.configure_default("title")
         command = self.store.default("title")
         self.store.update(
             command.trigger_id,
@@ -487,7 +558,10 @@ class TwitchCommandTriggerStoreTests(unittest.TestCase):
         )
 
     def test_configured_defaults_start_disabled_and_derive_setup_states(self) -> None:
-        self.store.seed_default_commands()
+        for default_id in (
+            "discord", "socials", "youtube", "schedule", "rules", "server"
+        ):
+            self.store.configure_default(default_id)
         information_store = ChannelInformationStore(
             Path(self.temporary.name) / "channel-information.json"
         )
@@ -526,7 +600,7 @@ class TwitchCommandTriggerStoreTests(unittest.TestCase):
 
     def test_default_order_precedes_customs_even_after_rename_disable_and_filter(self) -> None:
         self.store.add("zebra", "Z")
-        self.store.seed_default_commands()
+        self.configure_defaults()
         self.store.add("alpha", "A")
         discord = self.store.default("discord")
         self.store.update(
@@ -557,7 +631,7 @@ class TwitchCommandTriggerStoreTests(unittest.TestCase):
         self.assertTrue(all(not command.is_default for command in filtered[first_custom:]))
 
     def test_reset_configured_default_restores_disabled_two_task_routine(self) -> None:
-        self.store.seed_default_commands()
+        self.store.configure_default("discord")
         discord = self.store.default("discord")
         self.store.set_enabled(discord.trigger_id, True)
         self.routine_store.add_task(
@@ -707,8 +781,7 @@ class TwitchCommandTriggerDispatcherTests(unittest.TestCase):
             self.assertEqual(self.dispatcher.evaluate(message(text)).outcome, outcome)
 
     def test_enabled_configured_default_is_rejected_before_tasks_when_data_is_missing(self) -> None:
-        self.store.seed_default_commands()
-        discord = self.store.default("discord")
+        discord = self.store.configure_default("discord")
         self.store.set_enabled(discord.trigger_id, True)
         information = ChannelInformationStore(
             Path(self.temporary.name) / "channel-information.json"

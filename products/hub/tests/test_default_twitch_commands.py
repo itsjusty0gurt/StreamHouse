@@ -13,6 +13,7 @@ from products.hub.automation.variable_providers import context_provider
 from products.hub.automation.variable_registry import VariableRegistry
 from products.hub.automation.value_tasks import register_value_tasks
 from products.hub.twitch.commands import TwitchCommandTriggerStore
+from products.hub.twitch.default_commands import default_command_definitions
 from products.hub.twitch.channel_information import (
     ChannelInformation,
     ChannelInformationStore,
@@ -80,7 +81,8 @@ class DefaultTwitchCommandTests(unittest.TestCase):
         root = Path(self.temporary.name)
         self.routines = RoutineStore(root / "routines.json")
         self.store = TwitchCommandTriggerStore(root / "commands.json", self.routines)
-        self.store.seed_default_commands()
+        for definition in default_command_definitions():
+            self.store.configure_default(definition.default_id)
         self.channel_information = ChannelInformationStore(
             root / "channel-information.json"
         )

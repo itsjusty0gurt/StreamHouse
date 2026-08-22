@@ -232,16 +232,20 @@ class ChannelInformationPage(QWidget):
             and self.command_store is not None
         ):
             command = self.command_store.default(self._enable_default_id)
-            if command is not None:
-                requirement = self.command_store.setup_requirement(command.default_id)
-                ready = (
-                    bool(self.store.usable_social_links())
-                    if requirement == "socials"
-                    else self.store.field_available(requirement)
+            requirement = self.command_store.setup_requirement(
+                self._enable_default_id
+            )
+            ready = (
+                bool(self.store.usable_social_links())
+                if requirement == "socials"
+                else self.store.field_available(requirement)
+            )
+            if ready:
+                command = command or self.command_store.configure_default(
+                    self._enable_default_id
                 )
-                if ready:
-                    self.command_store.set_enabled(command.trigger_id, True)
-                    enabled = True
+                self.command_store.set_enabled(command.trigger_id, True)
+                enabled = True
         self.load_values()
         self.status_label.setText(
             "Channel Information saved and command enabled."
@@ -254,12 +258,14 @@ class ChannelInformationPage(QWidget):
         requirement = TwitchCommandTriggerStore.setup_requirement(default_id)
         self._enable_default_id = default_id if requirement else ""
         command = self.command_store.default(default_id) if self.command_store else None
-        self.enable_after_saving_check.setVisible(bool(requirement and command and not command.enabled))
+        self.enable_after_saving_check.setVisible(
+            bool(requirement and (command is None or not command.enabled))
+        )
         self.enable_after_saving_check.setChecked(False)
         self.enable_after_saving_check.setText(
-            f"Enable !{command.name} after saving"
-            if command is not None
-            else "Enable command after saving"
+            f"Configure and enable !{default_id} after saving"
+            if command is None
+            else f"Enable !{command.name} after saving"
         )
         if requirement in self.social_rows:
             self.social_rows[requirement][1].setFocus()
@@ -271,4 +277,3 @@ class ChannelInformationPage(QWidget):
             self.rules_edit.setFocus()
         elif requirement == "server_info":
             self.server_info_edit.setFocus()
-

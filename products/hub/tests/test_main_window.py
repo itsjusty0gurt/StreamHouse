@@ -1165,16 +1165,48 @@ class MainWindowTests(unittest.TestCase):
         self.assertFalse(self.window.delete_twitch_command_button.isEnabled())
         self.assertFalse(self.window.reset_twitch_command_button.isEnabled())
 
-    def test_default_command_reset_and_restore_buttons_call_store_behaviour(self) -> None:
-        self.twitch_command_trigger_store.seed_default_commands()
+    def test_default_template_configures_one_routine_then_supports_reset(self) -> None:
         self.window._refresh_twitch_commands()
-        command = self.twitch_command_trigger_store.default("uptime")
+        self.assertEqual(self.twitch_command_trigger_store.routine_store.routines, [])
+        self.assertEqual(self.twitch_command_trigger_store.routine_store.groups, [])
         row = next(
             row
             for row in range(self.window.twitch_commands_table.rowCount())
             if self.window.twitch_commands_table.item(row, 1).text() == "!uptime"
         )
         self.window.twitch_commands_table.selectRow(row)
+        self.assertEqual(
+            self.window.twitch_commands_table.item(row, 0).text(),
+            "Not Configured",
+        )
+        self.assertEqual(
+            self.window.twitch_commands_table.item(row, 7).text(),
+            "Default Template",
+        )
+        self.assertEqual(self.window.edit_twitch_command_button.text(), "Configure Selected")
+        self.window.edit_twitch_command_button.click()
+
+        command = self.twitch_command_trigger_store.default("uptime")
+        self.assertIsNotNone(command)
+        self.assertEqual(len(self.twitch_command_trigger_store.routine_store.routines), 1)
+        self.assertEqual(
+            self.twitch_command_trigger_store.routine_store.groups[0].name,
+            "Commands",
+        )
+        command_group = next(
+            self.window.automation_page.routine_tree.topLevelItem(index)
+            for index in range(
+                self.window.automation_page.routine_tree.topLevelItemCount()
+            )
+            if self.window.automation_page.routine_tree.topLevelItem(index)
+            .text(0)
+            .startswith("Commands")
+        )
+        self.assertEqual(command_group.childCount(), 1)
+        self.assertEqual(
+            command_group.child(0).data(0, Qt.ItemDataRole.UserRole),
+            command.routine_id,
+        )
         self.assertTrue(self.window.reset_twitch_command_button.isEnabled())
 
         with patch.object(
@@ -1189,20 +1221,9 @@ class MainWindowTests(unittest.TestCase):
             self.window.reset_twitch_command_button.click()
         reset.assert_called_once_with(command.default_id)
 
-        game = self.twitch_command_trigger_store.default("game")
-        self.twitch_command_trigger_store.delete(game.trigger_id)
-        with patch.object(
-            self.twitch_command_trigger_store,
-            "restore_default_commands",
-            wraps=self.twitch_command_trigger_store.restore_default_commands,
-        ) as restore:
-            self.window.restore_twitch_commands_button.click()
-        restore.assert_called_once_with()
-        self.assertIsNotNone(self.twitch_command_trigger_store.default("game"))
-
     def test_configured_defaults_render_first_and_open_channel_information(self) -> None:
         self.twitch_command_trigger_store.add("alpha", "Hello")
-        self.twitch_command_trigger_store.seed_default_commands()
+        self.twitch_command_trigger_store.configure_default("discord")
         self.window._refresh_twitch_commands()
 
         names = [
@@ -1237,7 +1258,6 @@ class MainWindowTests(unittest.TestCase):
         )
 
     def test_command_filter_keeps_matching_defaults_before_customs(self) -> None:
-        self.twitch_command_trigger_store.seed_default_commands()
         self.twitch_command_trigger_store.add("socialparty", "Party")
         self.window.twitch_command_search_edit.setText("social")
 
@@ -1248,7 +1268,7 @@ class MainWindowTests(unittest.TestCase):
         self.assertEqual(names, ["!socials", "!socialparty"])
 
     def test_network_backed_command_runs_off_the_qt_thread(self) -> None:
-        self.twitch_command_trigger_store.seed_default_commands()
+        self.twitch_command_trigger_store.configure_default("uptime")
         started = Event()
         release = Event()
 

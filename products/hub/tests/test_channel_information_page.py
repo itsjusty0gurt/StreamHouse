@@ -28,7 +28,6 @@ class ChannelInformationPageTests(unittest.TestCase):
         self.commands = TwitchCommandTriggerStore(
             root / "commands.json", RoutineStore(root / "routines.json")
         )
-        self.commands.seed_default_commands()
         self.page = ChannelInformationPage(self.information, self.commands)
 
     def tearDown(self) -> None:
@@ -69,7 +68,6 @@ class ChannelInformationPageTests(unittest.TestCase):
         self.assertFalse(self.information.path.exists())
 
     def test_enable_after_save_is_explicit(self) -> None:
-        discord = self.commands.default("discord")
         self.page.focus_for_command("discord")
         include, edit, _error = self.page.social_rows["discord"]
         include.setChecked(True)
@@ -77,12 +75,15 @@ class ChannelInformationPageTests(unittest.TestCase):
 
         self.assertFalse(self.page.enable_after_saving_check.isChecked())
         self.page.save_button.click()
-        self.assertFalse(discord.enabled)
+        self.assertIsNone(self.commands.default("discord"))
 
         edit.setText("https://discord.gg/example-two")
         self.page.enable_after_saving_check.setChecked(True)
         self.page.save_button.click()
+        discord = self.commands.default("discord")
+        self.assertIsNotNone(discord)
         self.assertTrue(discord.enabled)
+        self.assertIsNotNone(self.commands.routine_store.get(discord.routine_id))
 
 
 if __name__ == "__main__":

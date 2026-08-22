@@ -598,7 +598,7 @@ Adding a task requires more than a handler. See **Adding an automation task**.
 
 | Provider | Store | Persisted file | Examples |
 | --- | --- | --- | --- |
-| Twitch commands | `TwitchCommandTriggerStore` | `twitch/commands.json` | `!command`, aliases, permissions, cooldowns, editable default provenance and removed-default tombstones |
+| Twitch commands | `TwitchCommandTriggerStore` | `twitch/commands.json` | configured `!command` triggers, aliases, permissions, cooldowns, statistics, and default-template provenance |
 | Twitch activity | `TwitchEventTriggerStore` | `twitch/event_triggers.json` | follow, sub, gift, cheer, raid, reward, online/offline |
 | Twitch first message | same as above | same | once per viewer per stream with offline grace reset |
 | Twitch Keyword / Phrase | same as above | same | Contains/Exact/Starts With/Ends With chat matching with case and whole-word controls |
@@ -618,6 +618,15 @@ data, and never manufactures `command.*`. Ads warnings are deduplicated per
 scheduled timestamp and reset when Twitch moves the schedule. Ads Ended is an
 estimated Hub event derived from the EventSub start time plus duration because
 Twitch does not publish a public ad-break-end EventSub event.
+
+Built-in Chat Command definitions remain code-owned templates until explicitly
+configured. Templates do not create trigger or routine records at startup.
+Configuring a built-in template or creating a custom command creates a normal
+managed Automation routine in the shared **Commands** group; edits preserve
+that routine's identity. The group is created on demand and removed when the
+last command routine is deleted. `twitch/commands.json` therefore stores only
+configured commands, while `automation/routines.json` owns their routines and
+grouping.
 
 ## Twitch subsystem
 
@@ -985,7 +994,7 @@ formats are accepted.
 | `automation/core_triggers.json` | Hub | application lifecycle bindings |
 | `automation/queues.json` | Hub | queue definitions; pending items are not persisted |
 | `automation/variables.json` | Hub | global values only; session/routine are volatile |
-| `twitch/commands.json` | Hub | commands, permissions, aliases, cooldowns, stats, default IDs, removed-default tombstones |
+| `twitch/commands.json` | Hub | configured commands, permissions, aliases, cooldowns, statistics, and default-template provenance; unconfigured templates are code-owned |
 | `twitch/channel-information.json` | Hub | versioned social links, social inclusion choices, schedule, rules, and server information used by commands and automation tasks |
 | `counters/index.json` | Hub | pre-alpha schema v2 definitions: stable ID, labels, scopes, numeric type, reset/minimum, and display precision |
 | `counters/<counter_id>.json` | Hub | schema v2 atomic values stored as exact decimal strings; shared/current-stream and Twitch-user-ID keyed values |
