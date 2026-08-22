@@ -11,6 +11,14 @@ from products.hub.core.migrations import migrate_payload
 from shared.streamhouse_runtime.paths import user_data_root
 
 
+LOCAL_CHATTER_GROUPS = frozenset({"", "Regulars", "Bots", "Viewers"})
+
+
+def _normalize_manual_group(value: Any) -> str:
+    group = str(value).strip()
+    return group if group in LOCAL_CHATTER_GROUPS else ""
+
+
 def _normalize_memory(values: dict[str, Any]) -> dict[str, Any]:
     """Fill structured-memory fields on legacy and current records."""
     memory = dict(values)
@@ -102,7 +110,7 @@ class ChatterRecord:
                 bool(values.get("memory_enabled", False))
                 and values.get("memory_consent") == "opted_in"
             ),
-            manual_group=str(values.get("manual_group", "")),
+            manual_group=_normalize_manual_group(values.get("manual_group", "")),
             memory_consent=str(values.get("memory_consent", "unknown")),
             memory_consented_at=str(values.get("memory_consented_at", "")),
             memory_consent_version=str(values.get("memory_consent_version", "")),
@@ -152,15 +160,27 @@ class ChatterHistoryStore:
         records = values.get("chatters", {})
         if not isinstance(records, dict):
             raise ValueError("Chatter history chatters must be an object.")
-        self.records = {
-            str(user_id): ChatterRecord.from_dict(record)
-            for user_id, record in records.items()
-            if isinstance(record, dict) and str(user_id)
-        }
-        # Rewriting once removes legacy viewer profiles that lack explicit
-        # consent; bots and explicit opt-in/opt-out preferences remain.
-        self.dirty = any(
-            record.memory_consent == "unknown" and not record.is_bot
+        loaded: dict[str, ChatterRecord] = {}
+        normalized = False
+        for raw_user_id, raw_record in records.items():
+            user_id = str(raw_user_id).strip()
+            if not isinstance(raw_record, dict) or not user_id:
+                normalized = True
+                continue
+            record = ChatterRecord.from_dict(raw_record)
+            if record.user_id != user_id:
+                normalized = True
+            record.user_id = user_id
+            if str(raw_record.get("manual_group", "")).strip() != record.manual_group:
+                normalized = True
+            loaded[user_id] = record
+        self.records = loaded
+        # Rewriting removes unconsented activity-only profiles while retaining
+        # Hub-owned group assignments, observed bots, and explicit consent.
+        self.dirty = normalized or any(
+            record.memory_consent == "unknown"
+            and not record.is_bot
+            and not record.manual_group
             for record in self.records.values()
         )
 
@@ -700,6 +720,8 @@ class ChatterHistoryStore:
         target.message_count += source.message_count
         target.snapshot_days += source.snapshot_days
         target.is_bot = target.is_bot or source.is_bot
+        if not target.manual_group:
+            target.manual_group = source.manual_group
         target.tags = list(dict.fromkeys(target.tags + source.tags))[:50]
         if source.private_notes:
             separator = "\n\n" if target.private_notes else ""
@@ -770,12 +792,11 @@ class ChatterHistoryStore:
 
     def is_bot(self, user_id: str) -> bool:
         record = self.records.get(user_id)
-        return bool(record and record.is_bot)
+        return bool(record and (record.is_bot or record.manual_group == "Bots"))
 
     def set_manual_group(self, user_id: str, group: str) -> None:
         """Override a chatter's local display group without changing Twitch roles."""
-        allowed = {"", "Regulars", "Bots", "Viewers"}
-        if group not in allowed:
+        if group not in LOCAL_CHATTER_GROUPS:
             raise ValueError(f"Unsupported local chatter group: {group}")
         record = self.records[user_id]
         record.manual_group = group
@@ -791,6 +812,7 @@ class ChatterHistoryStore:
                 for user_id, record in self.records.items()
                 if record.memory_consent in {"opted_in", "opted_out"}
                 or record.is_bot
+                or record.manual_group
             },
         }
         atomic_write_json(self.path, payload)

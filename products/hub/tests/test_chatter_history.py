@@ -71,21 +71,109 @@ class ChatterHistoryStoreTests(unittest.TestCase):
             restored.load()
             self.assertTrue(restored.is_bot("bot-1"))
 
-    def test_manual_display_group_persists(self) -> None:
+    def test_manual_groups_persist_without_memory_consent(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "chatters.json"
             store = ChatterHistoryStore(path)
             store.observe_message("1", "Viewer")
-            store.opt_in_memory("1", "Viewer")
             store.set_manual_group("1", "Regulars")
+            store.observe_message("2", "HelperBot")
+            store.set_manual_group("2", "Bots")
             store.save()
 
             restored = ChatterHistoryStore(path)
             restored.load()
             self.assertEqual(restored.records["1"].manual_group, "Regulars")
+            self.assertEqual(restored.records["2"].manual_group, "Bots")
+            self.assertTrue(restored.is_bot("2"))
+            self.assertEqual(len(restored.records), 2)
 
             with self.assertRaises(ValueError):
                 restored.set_manual_group("1", "Moderators")
+
+    def test_manual_group_removal_and_move_persist(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "chatters.json"
+            store = ChatterHistoryStore(path)
+            store.observe_message("1", "Viewer")
+            store.set_manual_group("1", "Bots")
+            store.save()
+
+            restored = ChatterHistoryStore(path)
+            restored.load()
+            restored.set_manual_group("1", "Viewers")
+            restored.save()
+
+            moved = ChatterHistoryStore(path)
+            moved.load()
+            self.assertEqual(moved.records["1"].manual_group, "Viewers")
+            self.assertFalse(moved.is_bot("1"))
+            moved.set_manual_group("1", "")
+            moved.save()
+
+            removed = ChatterHistoryStore(path)
+            removed.load()
+            self.assertNotIn("1", removed.records)
+
+    def test_twitch_refresh_updates_name_without_erasing_local_group(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "chatters.json"
+            store = ChatterHistoryStore(path)
+            store.observe_snapshot(
+                [{"user_id": "stable-id", "user_name": "OldName"}],
+                moderator_ids={"stable-id"},
+            )
+            store.set_manual_group("stable-id", "Bots")
+            store.observe_snapshot(
+                [{"user_id": "stable-id", "user_name": "NewName"}],
+                vip_ids={"stable-id"},
+            )
+            store.save()
+
+            restored = ChatterHistoryStore(path)
+            restored.load()
+            record = restored.records["stable-id"]
+            self.assertEqual(record.user_id, "stable-id")
+            self.assertEqual(record.user_name, "NewName")
+            self.assertEqual(record.roles, ["VIP"])
+            self.assertEqual(record.manual_group, "Bots")
+            self.assertTrue(restored.is_bot("stable-id"))
+
+    def test_load_uses_storage_key_as_identity_and_resets_bad_group(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "chatters.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "version": 6,
+                        "chatters": {
+                            "stable-id": {
+                                "user_id": "display-name-key",
+                                "user_name": "Viewer",
+                                "first_seen": "",
+                                "last_seen": "",
+                                "manual_group": "Unknown Group",
+                            },
+                            "": {"user_id": "invalid"},
+                            "bad-record": "not-an-object",
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            store = ChatterHistoryStore(path)
+            store.load()
+
+            self.assertEqual(list(store.records), ["stable-id"])
+            self.assertEqual(store.records["stable-id"].user_id, "stable-id")
+            self.assertEqual(store.records["stable-id"].manual_group, "")
+            self.assertTrue(store.dirty)
+            store.save()
+
+            cleaned = ChatterHistoryStore(path)
+            cleaned.load()
+            self.assertEqual(cleaned.records, {})
 
     def test_snapshot_persists_all_observed_roles(self) -> None:
         store = ChatterHistoryStore(Path("unused.json"))
@@ -225,6 +313,7 @@ class ChatterHistoryStoreTests(unittest.TestCase):
         store.observe_message("old", "OldName", session_id="one")
         store.observe_message("new", "NewName", session_id="two")
         store.update_profile("old", ("friend",), "Old note")
+        store.set_manual_group("old", "Bots")
 
         store.merge_records("old", "new")
 
@@ -233,6 +322,8 @@ class ChatterHistoryStoreTests(unittest.TestCase):
         self.assertEqual(merged.message_count, 2)
         self.assertEqual(set(merged.session_messages), {"one", "two"})
         self.assertEqual(merged.tags, ["friend"])
+        self.assertEqual(merged.manual_group, "Bots")
+        self.assertTrue(store.is_bot("new"))
 
     def test_engagement_streak_counts_consecutive_days(self) -> None:
         self.assertEqual(

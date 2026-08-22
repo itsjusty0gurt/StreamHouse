@@ -127,6 +127,11 @@ thread.
   bottom. Message menus provide reply/copy/user details plus service-backed
   delete, timeout, ban, and unban controls when OAuth scopes permit them. The
   User tab shows roles and recent messages from the current in-memory session.
+  Local Regulars/Bots/Viewers assignments are Hub-owned classifications stored
+  in `memory/twitch_chatters.json` by stable Twitch user ID. Twitch snapshot
+  refreshes update account names and roles without replacing those assignments.
+  The same saved Bots classification drives chat, memory, and counter bot
+  filtering; there is no separate known-bots list.
   Counters lives here because it is Twitch/stream interaction, while its store,
   service, and task providers remain under `products/hub/counters/`.
 - **Connections** contains independent broadcaster and optional bot OAuth
@@ -150,8 +155,9 @@ EventSub, missing scopes, Streamhouse AI refresh success, and endpoint-specific
 failures. Local JSON histories use atomic replacement plus one last-known-good
 backup. Command triggers persist at `twitch/commands.json`; their managed
 routines persist at `automation/routines.json`. Both are included in current
-Streamhouse Hub backups. Older chatter records migrate through defaulted
-version-three fields.
+Streamhouse Hub backups. Chatter records use the current version-six schema;
+malformed identities and unsupported local group values are discarded or
+normalized at the store boundary.
 
 The channel snapshot refresh reads Twitch's ad schedule with `channel:read:ads`.
 `AdsService` owns the single cached `AdsState`, including the next/last break,

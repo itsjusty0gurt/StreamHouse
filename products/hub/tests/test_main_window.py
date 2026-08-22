@@ -1937,7 +1937,7 @@ class MainWindowTests(unittest.TestCase):
         self.window.twitch_service.helix.get_chat_roles = Mock(
             return_value=({"1", "5"}, {"2"}, {"3"})
         )
-        self.window.known_bot_user_ids.add("5")
+        self.chatter_history_store.is_bot.side_effect = lambda user_id: user_id == "5"
         self.window.channel_snapshot_thread_pool.start = Mock(
             side_effect=lambda worker: worker.run()
         )
@@ -1980,6 +1980,7 @@ class MainWindowTests(unittest.TestCase):
             )
         )
         self.window._set_local_chatter_group("4", "Regulars")
+        self.chatter_history_store.save.assert_called()
         self.assertEqual(
             self.window.chatter_list.topLevelItem(4).child(0).text(0),
             "ViewerOne",
@@ -1990,6 +1991,35 @@ class MainWindowTests(unittest.TestCase):
         )
         self.assertEqual(self.window.ui.twitchAccountStatusLabel.text(), "testbot")
         self.assertTrue(self.window.ui.twitchSignOutButton.isEnabled())
+
+    def test_local_bot_classification_drives_chat_and_counter_filters(self) -> None:
+        self.chatter_history_store.records["bot-1"] = ChatterRecord(
+            user_id="bot-1",
+            user_name="HelperBot",
+            first_seen="2026-08-22T00:00:00+00:00",
+            last_seen="2026-08-22T00:00:00+00:00",
+            manual_group="Bots",
+        )
+        self.chatter_history_store.is_bot.side_effect = lambda user_id: bool(
+            self.chatter_history_store.records.get(user_id)
+            and self.chatter_history_store.records[user_id].manual_group == "Bots"
+        )
+        self.window._handle_twitch_first_message = Mock()
+        self.window._handle_twitch_keyword_phrase = Mock()
+
+        self.assertTrue(self.window.counter_service.bot_checker("bot-1"))
+        self.window.handle_twitch_message(
+            TwitchMessage(
+                username="HelperBot",
+                text="hello chat",
+                received_at=datetime.now(timezone.utc),
+                message_id="bot-message",
+                user_id="bot-1",
+            )
+        )
+
+        self.window._handle_twitch_first_message.assert_not_called()
+        self.window._handle_twitch_keyword_phrase.assert_not_called()
 
     def test_live_overview_cards_and_ad_manager_show_schedule(self) -> None:
         now = datetime.now(timezone.utc)
@@ -2378,8 +2408,10 @@ class MainWindowTests(unittest.TestCase):
                 last_seen="2026-07-13T00:00:00+00:00",
                 is_bot=user_id == "bot-1",
             )
-        self.window.known_bot_user_ids.add("bot-1")
-
+        self.chatter_history_store.is_bot.side_effect = lambda user_id: bool(
+            self.chatter_history_store.records.get(user_id)
+            and self.chatter_history_store.records[user_id].is_bot
+        )
         for user_id in ("streamer-1", "bot-1"):
             self.window.handle_twitch_message(
                 TwitchMessage(

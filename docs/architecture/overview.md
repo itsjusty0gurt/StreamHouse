@@ -994,7 +994,7 @@ formats are accepted.
 | `twitch/soundboard-relay.json` | Hub | non-secret relay URL/channel/autoconnect |
 | `obs/connection.json` | Hub | non-secret OBS host/port/autoconnect |
 | `obs/triggers.json` | Hub | OBS trigger definitions |
-| `memory/twitch_chatters.json` | Hub | consent-aware profiles, roles, timelines, memories |
+| `memory/twitch_chatters.json` | Hub | stable-Twitch-ID keyed consent-aware profiles, Twitch roles, Hub-owned local group assignments, timelines, and memories |
 | `memory/twitch_activity.json` | Hub | bounded activity feed history |
 | `memory/stream_sessions.json` | Hub | active/completed session analytics |
 | `training/examples.json` | Streamhouse AI | consent-based classifier examples |

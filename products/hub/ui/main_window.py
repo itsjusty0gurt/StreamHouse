@@ -486,7 +486,7 @@ class MainWindow(QMainWindow):
         self.counter_store = CounterStore(data_root / "counters")
         self.counter_service = CounterService(
             self.counter_store,
-            bot_checker=lambda user_id: user_id in getattr(self, "known_bot_user_ids", set()),
+            bot_checker=self.chatter_history.is_bot,
         )
         self.variable_registry = VariableRegistry()
         self.variable_registry.register(context_provider())
@@ -914,7 +914,6 @@ class MainWindow(QMainWindow):
 
         self.twitch_message_count = 0
         self.twitch_chat_has_content = False
-        self.known_bot_user_ids: set[str] = set()
         self.ui.twitchChatOutput.document().setMaximumBlockCount(1000)
         self.twitch_event_diagnostics: list[TwitchEventDiagnostic] = []
         self.ui.twitchEventResultCombo.addItems(
@@ -3556,7 +3555,7 @@ class MainWindow(QMainWindow):
             if self.twitch_bot_auth.token is not None
             else ""
         )
-        is_bot = any(
+        twitch_identified_bot = any(
             badge.set_id in {"bot", "verified-bot"}
             for badge in chat_message.badges
         ) or (
@@ -3571,7 +3570,7 @@ class MainWindow(QMainWindow):
                 chat_message.user_id,
                 chat_message.username,
                 chat_message.received_at,
-                is_bot=is_bot,
+                is_bot=twitch_identified_bot,
                 session_id=(
                     self.session_store.current.started_at
                     if self.session_store.current is not None
@@ -3580,8 +3579,9 @@ class MainWindow(QMainWindow):
             )
             if new_viewer:
                 self._refresh_memory_viewer_list()
-        if is_bot and chat_message.user_id:
-            self.known_bot_user_ids.add(chat_message.user_id)
+        is_bot = twitch_identified_bot or self.chatter_history.is_bot(
+            chat_message.user_id
+        )
         is_broadcaster = any(
             badge.set_id == "broadcaster"
             for badge in chat_message.badges
@@ -4078,15 +4078,13 @@ class MainWindow(QMainWindow):
             not user_id
             or user_id == self.twitch_service.broadcaster_user_id
             or is_bot
-            or user_id in self.known_bot_user_ids
         ):
             return
         record = self.chatter_history.records.get(user_id)
         if (
             record is None
             or not self.chatter_history.can_create_keynotes(user_id)
-            or record.is_bot
-            or record.manual_group == "Bots"
+            or self.chatter_history.is_bot(user_id)
         ):
             return
         text = " ".join(chat_message.text.strip().split())[:500]
@@ -4304,7 +4302,6 @@ class MainWindow(QMainWindow):
         if (
             not user_id
             or is_bot
-            or user_id in self.known_bot_user_ids
         ):
             return
         if not text:
@@ -6851,11 +6848,7 @@ class MainWindow(QMainWindow):
                 continue
             record = self.chatter_history.records.get(user_id)
             manual_group = record.manual_group if record else ""
-            is_bot = (
-                manual_group == "Bots"
-                or user_id in self.known_bot_user_ids
-                or self.chatter_history.is_bot(user_id)
-            )
+            is_bot = self.chatter_history.is_bot(user_id)
             if is_bot:
                 groups["Bots"].append((user_name, user_id))
             elif user_id in result.moderator_ids:
