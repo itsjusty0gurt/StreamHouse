@@ -31,7 +31,7 @@ class SettingsStoreTests(unittest.TestCase):
             twitch_chat_font_size=13,
             twitch_last_ad_duration=90,
             local_ai_enabled=True,
-            ai_companion_endpoint="http://localhost:8765",
+            streamhouse_ai_endpoint="http://localhost:8765",
             local_ai_endpoint="http://localhost:11434",
             local_ai_model="qwen3:14b",
             ai_viewer_memory_enabled=True,
@@ -67,6 +67,7 @@ class SettingsStoreTests(unittest.TestCase):
         self.settings_path.write_text(
             json.dumps(
                 {
+                    "_version": SettingsStore.VERSION,
                     "startup_page": "Unknown",
                     "log_level": "NOISY",
                     "ui_log_limit": 99_999,
@@ -76,7 +77,7 @@ class SettingsStoreTests(unittest.TestCase):
                     "twitch_chat_font_size": 100,
                     "twitch_last_ad_duration": 45,
                     "local_ai_enabled": "yes",
-                    "ai_companion_endpoint": "not-a-url",
+                    "streamhouse_ai_endpoint": "not-a-url",
                     "local_ai_endpoint": "not-a-url",
                     "local_ai_model": "",
                     "ai_viewer_memory_enabled": "yes",
@@ -117,7 +118,7 @@ class SettingsStoreTests(unittest.TestCase):
         self.assertEqual(settings.twitch_chat_font_size, 24)
         self.assertEqual(settings.twitch_last_ad_duration, 30)
         self.assertTrue(settings.local_ai_enabled)
-        self.assertEqual(settings.ai_companion_endpoint, "http://127.0.0.1:8765")
+        self.assertEqual(settings.streamhouse_ai_endpoint, "http://127.0.0.1:8765")
         self.assertEqual(settings.local_ai_endpoint, "http://127.0.0.1:11434")
         self.assertEqual(settings.local_ai_model, "qwen3:14b")
         self.assertFalse(settings.ai_viewer_memory_enabled)
@@ -163,13 +164,14 @@ class SettingsStoreTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.store.load()
 
-    def test_legacy_memories_startup_page_migrates_to_ai(self) -> None:
+    def test_discarded_pre_alpha_schema_is_rejected(self) -> None:
         self.settings_path.write_text(
-            json.dumps({"startup_page": "Memories"}),
+            json.dumps({"_version": 1, "startup_page": "Memories"}),
             encoding="utf-8",
         )
 
-        self.assertEqual(self.store.load().startup_page, "AI")
+        with self.assertRaisesRegex(ValueError, "discarded pre-alpha schema"):
+            self.store.load()
 
 
 if __name__ == "__main__":

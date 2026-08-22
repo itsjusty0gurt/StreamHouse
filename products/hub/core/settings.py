@@ -37,7 +37,7 @@ class AppSettings:
     twitch_chat_font_size: int = 10
     twitch_last_ad_duration: int = 30
     local_ai_enabled: bool = True
-    ai_companion_endpoint: str = "http://127.0.0.1:8765"
+    streamhouse_ai_endpoint: str = "http://127.0.0.1:8765"
     local_ai_endpoint: str = "http://127.0.0.1:11434"
     local_ai_model: str = "qwen3:14b"
     ai_viewer_memory_enabled: bool = False
@@ -79,8 +79,6 @@ class AppSettings:
         defaults = cls()
 
         startup_page = values.get("startup_page", defaults.startup_page)
-        if startup_page == "Memories":
-            startup_page = "AI"
         if startup_page not in cls.STARTUP_PAGES:
             startup_page = defaults.startup_page
 
@@ -136,14 +134,14 @@ class AppSettings:
         local_ai_enabled = values.get("local_ai_enabled", defaults.local_ai_enabled)
         if not isinstance(local_ai_enabled, bool):
             local_ai_enabled = defaults.local_ai_enabled
-        companion_endpoint = values.get(
-            "ai_companion_endpoint", defaults.ai_companion_endpoint
+        ai_endpoint = values.get(
+            "streamhouse_ai_endpoint", defaults.streamhouse_ai_endpoint
         )
-        if not isinstance(companion_endpoint, str) or not companion_endpoint.strip():
-            companion_endpoint = defaults.ai_companion_endpoint
-        companion_endpoint = companion_endpoint.strip().rstrip("/")[:500]
-        if not companion_endpoint.startswith(("http://", "https://")):
-            companion_endpoint = defaults.ai_companion_endpoint
+        if not isinstance(ai_endpoint, str) or not ai_endpoint.strip():
+            ai_endpoint = defaults.streamhouse_ai_endpoint
+        ai_endpoint = ai_endpoint.strip().rstrip("/")[:500]
+        if not ai_endpoint.startswith(("http://", "https://")):
+            ai_endpoint = defaults.streamhouse_ai_endpoint
         local_ai_endpoint = values.get(
             "local_ai_endpoint", defaults.local_ai_endpoint
         )
@@ -319,7 +317,7 @@ class AppSettings:
             twitch_chat_font_size=font_size,
             twitch_last_ad_duration=ad_duration,
             local_ai_enabled=local_ai_enabled,
-            ai_companion_endpoint=companion_endpoint,
+            streamhouse_ai_endpoint=ai_endpoint,
             local_ai_endpoint=local_ai_endpoint,
             local_ai_model=local_ai_model,
             ai_viewer_memory_enabled=viewer_memory_enabled,
@@ -350,6 +348,8 @@ class AppSettings:
 class SettingsStore:
     """Load and save Streamhouse Hub preferences as a small JSON document."""
 
+    VERSION = 2
+
     def __init__(self, path: Path | None = None) -> None:
         self.path = path or user_data_root() / "config" / "settings.json"
 
@@ -361,10 +361,14 @@ class SettingsStore:
 
         if not isinstance(values, dict):
             raise ValueError("Settings file must contain a JSON object.")
+        if int(values.get("_version", 0)) != self.VERSION:
+            raise ValueError(
+                "Hub settings use a discarded pre-alpha schema and must be reset."
+            )
 
         return AppSettings.from_dict(values)
 
     def save(self, settings: AppSettings) -> None:
         payload = asdict(settings)
-        payload["_version"] = 1
+        payload["_version"] = self.VERSION
         atomic_write_json(self.path, payload)

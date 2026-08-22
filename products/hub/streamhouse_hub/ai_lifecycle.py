@@ -12,7 +12,7 @@ class AIConnectionState(StrEnum):
 
 
 def is_ai_transport_failure(error: BaseException) -> bool:
-    """Return whether an error means the localhost companion disappeared."""
+    """Return whether an error means the localhost AI service disappeared."""
 
     current: BaseException | None = error
     seen: set[int] = set()

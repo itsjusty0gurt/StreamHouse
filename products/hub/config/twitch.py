@@ -26,7 +26,7 @@ TWITCH_BOT_SCOPES = (
     "user:bot",
 )
 
-TWITCH_COMPANION_SCOPES = frozenset(
+TWITCH_CHANNEL_SNAPSHOT_SCOPES = frozenset(
     {
         "moderator:read:chatters",
         "moderator:read:followers",

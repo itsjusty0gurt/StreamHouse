@@ -84,7 +84,7 @@ class TwitchHelixClientTests(unittest.TestCase):
         )
 
     @patch("products.hub.twitch.live.urlopen")
-    def test_companion_snapshot_includes_official_ad_schedule_fields(
+    def test_channel_snapshot_includes_official_ad_schedule_fields(
         self, open_url
     ) -> None:
         schedule = {
@@ -102,7 +102,7 @@ class TwitchHelixClientTests(unittest.TestCase):
                     "data": [
                         {
                             "game_name": "Science & Technology",
-                            "title": "Building Sally",
+                            "title": "Building Streamhouse",
                         }
                     ]
                 }
@@ -113,7 +113,7 @@ class TwitchHelixClientTests(unittest.TestCase):
             "access", "refresh", 999, ["channel:read:ads"]
         )
 
-        snapshot = TwitchHelixClient().get_companion_snapshot(
+        snapshot = TwitchHelixClient().get_channel_snapshot(
             "channel-1", token
         )
 

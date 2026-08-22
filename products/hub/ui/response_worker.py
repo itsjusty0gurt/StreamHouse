@@ -27,7 +27,7 @@ class ResponseDecisionWorker(QRunnable):
         self,
         messages: tuple[ResponseMessage, ...],
         recent_chat: tuple[dict[str, str], ...],
-        companion_endpoint: str,
+        ai_endpoint: str,
         endpoint: str,
         model: str,
         personality: str,
@@ -38,7 +38,7 @@ class ResponseDecisionWorker(QRunnable):
         super().__init__()
         self.messages = messages
         self.recent_chat = recent_chat
-        self.companion_endpoint = companion_endpoint
+        self.ai_endpoint = ai_endpoint
         self.endpoint = endpoint
         self.model = model
         self.personality = personality
@@ -51,7 +51,7 @@ class ResponseDecisionWorker(QRunnable):
     def run(self) -> None:
         try:
             decisions = StreamhouseAIClient(
-                self.companion_endpoint,
+                self.ai_endpoint,
                 timeout=65.0,
             ).decide(
                 self.messages,

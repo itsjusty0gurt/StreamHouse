@@ -12,7 +12,7 @@ from PySide6.QtWebEngineWidgets import QWebEngineView
 
 class _ChatPage(QWebEnginePage):
     def acceptNavigationRequest(self, url, navigation_type, is_main_frame):
-        if url.scheme() in {"streamhouse-chat-context", "sally-chat-context"}:
+        if url.scheme() == "streamhouse-chat-context":
             return False
         if navigation_type == QWebEnginePage.NavigationType.NavigationTypeLinkClicked:
             QDesktopServices.openUrl(url)
@@ -94,7 +94,7 @@ class TwitchChatView(QWebEngineView):
     def contextMenuEvent(self, event) -> None:
         request = self.lastContextMenuRequest()
         target = request.linkUrl() if request is not None else QUrl()
-        if target.scheme() in {"streamhouse-chat-context", "sally-chat-context"}:
+        if target.scheme() == "streamhouse-chat-context":
             query = QUrlQuery(target)
             user_id = query.queryItemValue("user_id")
             if user_id:

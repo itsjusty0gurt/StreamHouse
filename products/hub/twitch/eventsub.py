@@ -358,7 +358,7 @@ class LocalEventSubListener:
         )
         self._thread = Thread(
             target=self._serve,
-            name="SallyEventSubListener",
+            name="StreamhouseEventSubListener",
             daemon=True,
         )
         self._thread.start()

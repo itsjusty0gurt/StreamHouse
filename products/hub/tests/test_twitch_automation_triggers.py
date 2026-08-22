@@ -18,8 +18,8 @@ def twitch_event(event_type: str, event: dict) -> TwitchEvent:
         received_at=datetime.now(timezone.utc),
         message_id="event-1",
         broadcaster_user_id="1000",
-        broadcaster_user_login="sally",
-        broadcaster_user_name="Sally",
+        broadcaster_user_login="streamer",
+        broadcaster_user_name="Streamer",
         transport=TwitchEventTransport.SIMULATOR,
         payload={"event": event},
     )

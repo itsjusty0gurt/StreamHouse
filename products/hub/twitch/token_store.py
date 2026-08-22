@@ -26,7 +26,7 @@ class TwitchTokenStore:
 
     @classmethod
     def bot_account(cls) -> TwitchTokenStore:
-        """Return the independent encrypted store for Sally's chat identity."""
+        """Return the independent encrypted store for the bot chat identity."""
         return cls(user_data_root() / "twitch-bot-token.dat")
 
     @staticmethod
@@ -43,7 +43,7 @@ class TwitchTokenStore:
         output = _DataBlob()
         crypt32 = ctypes.windll.crypt32
         kernel32 = ctypes.windll.kernel32
-        # Machine-bound DPAPI remains decryptable when Sally is launched from
+        # Machine-bound DPAPI remains decryptable when Streamhouse is launched from
         # different desktop process contexts. The file itself remains inside
         # the current user's LocalAppData directory and inherits its ACL.
         cryptprotect_local_machine = 0x4

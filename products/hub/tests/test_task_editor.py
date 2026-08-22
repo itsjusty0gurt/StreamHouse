@@ -203,13 +203,13 @@ class TaskEditorTests(unittest.TestCase):
     def test_file_task_forms_expose_clear_options_without_json(self) -> None:
         read_dialog = TaskEditorDialog("core.file_random_line")
         read_fields = read_dialog.field_widgets["core.file_random_line"]
-        read_fields["path"].setText("C:/Sally/responses.txt")
-        read_fields["variable"].setText("sally_response")
+        read_fields["path"].setText("C:/Streamhouse/responses.txt")
+        read_fields["variable"].setText("command_response")
 
         read_config = read_dialog.values()["config"]
 
-        self.assertEqual(read_config["path"], "C:/Sally/responses.txt")
-        self.assertEqual(read_config["variable"], "sally_response")
+        self.assertEqual(read_config["path"], "C:/Streamhouse/responses.txt")
+        self.assertEqual(read_config["variable"], "command_response")
         self.assertTrue(read_config["ignore_blank_lines"])
         self.assertTrue(read_config["stop_on_failure"])
 
@@ -221,7 +221,7 @@ class TaskEditorTests(unittest.TestCase):
 
         write_dialog = TaskEditorDialog("core.file_write")
         write_fields = write_dialog.field_widgets["core.file_write"]
-        write_fields["path"].setText("C:/Sally/activity.txt")
+        write_fields["path"].setText("C:/Streamhouse/activity.txt")
         write_fields["text"].setPlainText("{user.display_name} redeemed {event.reward}")
         write_fields["mode"].setCurrentIndex(
             write_fields["mode"].findData("overwrite")

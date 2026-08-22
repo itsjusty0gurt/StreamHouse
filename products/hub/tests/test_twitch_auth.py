@@ -21,7 +21,7 @@ class TwitchTokenStoreTests(unittest.TestCase):
                 expires_at=123.0,
                 scopes=["user:read:chat"],
                 user_id="42",
-                login="sallybot",
+                login="testbot",
             )
 
             store.save(expected)
@@ -85,7 +85,7 @@ class TwitchAuthServiceTests(unittest.TestCase):
             999,
             ["user:read:chat"],
             user_id="42",
-            login="sallybot",
+            login="testbot",
         )
         client = Mock()
         client.validate.return_value = token
@@ -117,7 +117,7 @@ class TwitchAuthServiceTests(unittest.TestCase):
             9999,
             ["user:read:chat"],
             user_id="42",
-            login="sallybot",
+            login="testbot",
         )
         client = Mock()
         client.refresh.return_value = new_token
@@ -189,7 +189,7 @@ class TwitchAuthServiceTests(unittest.TestCase):
         self,
         _open: Mock,
     ) -> None:
-        token = TwitchToken("access", "refresh", 9999, [], login="sallybot")
+        token = TwitchToken("access", "refresh", 9999, [], login="testbot")
         service, client, store = self._device_service(
             self._device_error("authorization_pending"),
             token,
@@ -207,7 +207,7 @@ class TwitchAuthServiceTests(unittest.TestCase):
         self,
         _open: Mock,
     ) -> None:
-        token = TwitchToken("access", "refresh", 9999, [], login="sallybot")
+        token = TwitchToken("access", "refresh", 9999, [], login="testbot")
         service, client, _store = self._device_service(
             self._device_error("slow_down"),
             token,

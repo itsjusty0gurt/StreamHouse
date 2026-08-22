@@ -111,7 +111,7 @@ from shared.streamhouse_shared.protocol import PROTOCOL_VERSION
 from products.hub.core.window_state import WindowStateStore
 from products.hub.config.twitch import (
     TWITCH_BOT_SCOPES,
-    TWITCH_COMPANION_SCOPES,
+    TWITCH_CHANNEL_SNAPSHOT_SCOPES,
     TWITCH_SCOPES,
 )
 from products.hub.twitch.catalog import EVENTSUB_SUBSCRIPTIONS, EventSubSubscription
@@ -163,9 +163,9 @@ from products.hub.ui.twitch_bridge import TwitchEventBridge
 from products.hub.twitch.chat_entries import TwitchChatEntry
 from products.hub.ui.structured_twitch_chat_view import TwitchChatView
 from products.hub.ui.twitch_command_dialog import TwitchCommandDialog
-from products.hub.ui.companion_worker import (
-    CompanionRefreshResult,
-    CompanionRefreshWorker,
+from products.hub.ui.channel_snapshot_worker import (
+    ChannelSnapshotResult,
+    ChannelSnapshotWorker,
 )
 from products.hub.ui.command_worker import (
     CommandExecutionWorker,
@@ -675,15 +675,15 @@ class MainWindow(QMainWindow):
             )
         self.auto_upgrade_permissions = auto_upgrade_permissions
         self.permission_upgrade_started = False
-        self.companion_thread_pool = QThreadPool(self)
-        self.companion_thread_pool.setMaxThreadCount(1)
+        self.channel_snapshot_thread_pool = QThreadPool(self)
+        self.channel_snapshot_thread_pool.setMaxThreadCount(1)
         self.command_thread_pool = QThreadPool(self)
         self.command_thread_pool.setMaxThreadCount(1)
         self._command_workers: set[CommandExecutionWorker] = set()
-        self.companion_refresh_request_id = 0
-        self.companion_refresh_in_flight = False
-        self.companion_warning_cache: set[str] = set()
-        self.last_companion_result: CompanionRefreshResult | None = None
+        self.channel_snapshot_request_id = 0
+        self.channel_snapshot_in_flight = False
+        self.channel_snapshot_warning_cache: set[str] = set()
+        self.last_channel_snapshot: ChannelSnapshotResult | None = None
         self.memory_reasoning_thread_pool = QThreadPool(self)
         self.memory_reasoning_thread_pool.setMaxThreadCount(1)
         self.memory_message_buffers: dict[
@@ -755,7 +755,7 @@ class MainWindow(QMainWindow):
         self.ui.twitchDisconnectButton.hide()
         self.ui.twitchChannelEdit.setReadOnly(True)
         self._build_developer_dock()
-        self._build_stream_companion()
+        self._build_channel_workspace()
         self._build_ai_page()
         self._build_automation_page()
         self._build_counters_page()
@@ -971,10 +971,10 @@ class MainWindow(QMainWindow):
             self.twitch_bot_auth.maintain
         )
         self.auth_maintenance_timer.start()
-        self.companion_refresh_timer = QTimer(self)
-        self.companion_refresh_timer.setInterval(60_000)
-        self.companion_refresh_timer.timeout.connect(self.refresh_stream_companion)
-        self.companion_refresh_timer.start()
+        self.channel_snapshot_timer = QTimer(self)
+        self.channel_snapshot_timer.setInterval(60_000)
+        self.channel_snapshot_timer.timeout.connect(self.refresh_channel_snapshot)
+        self.channel_snapshot_timer.start()
         self.stream_overview_timer = QTimer(self)
         self.stream_overview_timer.setInterval(1_000)
         self.stream_overview_timer.timeout.connect(
@@ -1311,7 +1311,7 @@ class MainWindow(QMainWindow):
         )
         self.developer_dock.hide()
 
-    def _build_stream_companion(self) -> None:
+    def _build_channel_workspace(self) -> None:
         self.connections_button = QPushButton("Connections")
         self.connections_button.setCheckable(True)
         self.ui.verticalLayout.insertWidget(2, self.connections_button)
@@ -1380,7 +1380,7 @@ class MainWindow(QMainWindow):
             self._schedule_obs_connection_save
         )
         self._handle_obs_status_changed(self.obs_service.state, "Disconnected")
-        bot_account_group = QGroupBox("Sally Chat Account")
+        bot_account_group = QGroupBox("Bot Chat Account")
         self.twitch_bot_account_group = bot_account_group
         bot_account_layout = QFormLayout(bot_account_group)
         self.twitch_bot_account_status_label = QLabel("Not signed in")
@@ -1394,7 +1394,7 @@ class MainWindow(QMainWindow):
         bot_actions.addWidget(self.twitch_bot_sign_in_button)
         bot_actions.addWidget(self.twitch_bot_sign_out_button)
         bot_account_help = QLabel(
-            "Optional. When connected, Sally reads and sends chat as this "
+            "Optional. When connected, Hub reads and sends chat as this "
             "separate Twitch account. Channel controls continue using your "
             "broadcaster account. On Twitch's activation page, make sure the "
             "browser is signed into the bot account."
@@ -1411,7 +1411,7 @@ class MainWindow(QMainWindow):
         self.health_auth_label = QLabel("Signed out")
         self.health_token_label = QLabel("Not available")
         self.health_eventsub_label = QLabel("Stopped")
-        self.health_companion_label = QLabel("Never")
+        self.health_channel_snapshot_label = QLabel("Never")
         self.health_permissions_label = QLabel("Unknown")
         self.health_permissions_label.setWordWrap(True)
         self.health_error_label = QLabel("None")
@@ -1421,7 +1421,7 @@ class MainWindow(QMainWindow):
         health_layout.addRow("Authentication", self.health_auth_label)
         health_layout.addRow("Token expiry", self.health_token_label)
         health_layout.addRow("EventSub", self.health_eventsub_label)
-        health_layout.addRow("Companion refresh", self.health_companion_label)
+        health_layout.addRow("Channel refresh", self.health_channel_snapshot_label)
         health_layout.addRow("Missing permissions", self.health_permissions_label)
         health_layout.addRow("Last issue", self.health_error_label)
         health_layout.addRow("", self.health_retry_button)
@@ -1517,16 +1517,16 @@ class MainWindow(QMainWindow):
             self.ad_length_combo.addItem(f"{seconds}s ad", seconds)
         self.run_ad_button = QPushButton("Run Ad")
         self.snooze_ad_button = QPushButton("Snooze Ad")
-        self.update_companion_permissions_button = QPushButton(
+        self.update_channel_permissions_button = QPushButton(
             "Enable Stream Tools"
         )
-        self.update_companion_permissions_button.setToolTip(
+        self.update_channel_permissions_button.setToolTip(
             "Adds permissions for stream stats, chatters, roles, and ad schedule monitoring."
         )
-        self.update_companion_permissions_button.clicked.connect(
+        self.update_channel_permissions_button.clicked.connect(
             self.twitch_auth.sign_in
         )
-        self.update_companion_permissions_button.hide()
+        self.update_channel_permissions_button.hide()
         self.run_ad_button.setEnabled(False)
         self.snooze_ad_button.setEnabled(False)
         self.run_ad_button.setToolTip(
@@ -1540,7 +1540,7 @@ class MainWindow(QMainWindow):
         ad_footer.addWidget(self.ad_length_combo)
         ad_footer.addWidget(self.run_ad_button)
         ad_footer.addWidget(self.snooze_ad_button)
-        ad_footer.addWidget(self.update_companion_permissions_button)
+        ad_footer.addWidget(self.update_channel_permissions_button)
         ad_layout.addLayout(ad_footer)
         self.ui.twitchPageLayout.insertWidget(2, ad_manager)
         self.ui.twitchPageLayout.removeWidget(stats)
@@ -2060,17 +2060,17 @@ class MainWindow(QMainWindow):
         self.ai_remote_stack.addWidget(disconnected)
         self.ai_remote_stack.addWidget(dashboard)
         layout.addWidget(self.ai_remote_stack, 1)
-        self.ai_companion_health_pool = QThreadPool(self)
-        self.ai_companion_health_pool.setMaxThreadCount(1)
-        self.ai_companion_health_in_flight = False
-        self.ai_remote_connect_button.clicked.connect(self._check_ai_companion)
-        self.ai_remote_refresh_button.clicked.connect(self._check_ai_companion)
-        self.ai_remote_endpoint_edit.returnPressed.connect(self._check_ai_companion)
+        self.ai_health_pool = QThreadPool(self)
+        self.ai_health_pool.setMaxThreadCount(1)
+        self.ai_health_in_flight = False
+        self.ai_remote_connect_button.clicked.connect(self._check_streamhouse_ai)
+        self.ai_remote_refresh_button.clicked.connect(self._check_streamhouse_ai)
+        self.ai_remote_endpoint_edit.returnPressed.connect(self._check_streamhouse_ai)
 
     @Slot()
-    def _check_ai_companion(self) -> None:
+    def _check_streamhouse_ai(self) -> None:
         if (
-            self.ai_companion_health_in_flight
+            self.ai_health_in_flight
             or self.ai_lifecycle.state is not AIConnectionState.VERIFYING
         ):
             self.ai_remote_connection_detail.setText(
@@ -2080,15 +2080,15 @@ class MainWindow(QMainWindow):
         endpoint = self.ai_lifecycle.endpoint
         if not endpoint:
             return
-        self.ai_companion_health_in_flight = True
+        self.ai_health_in_flight = True
         self.ai_remote_connection_detail.setText("Connecting…")
         worker = StreamhouseAIHealthWorker(endpoint, self.ai_lifecycle.generation)
-        worker.signals.completed.connect(self._apply_ai_companion_health)
-        self.ai_companion_health_pool.start(worker)
+        worker.signals.completed.connect(self._apply_streamhouse_ai_health)
+        self.ai_health_pool.start(worker)
 
     @Slot(object)
-    def _apply_ai_companion_health(self, result: StreamhouseAIHealthResult) -> None:
-        self.ai_companion_health_in_flight = False
+    def _apply_streamhouse_ai_health(self, result: StreamhouseAIHealthResult) -> None:
+        self.ai_health_in_flight = False
         if (
             result.generation != self.ai_lifecycle.generation
             or self.ai_lifecycle.state is not AIConnectionState.VERIFYING
@@ -2118,8 +2118,8 @@ class MainWindow(QMainWindow):
                 except OSError as error:
                     self.ai_lifecycle.transport_failed(error)
                     return
-        if endpoint and endpoint != self.settings.ai_companion_endpoint:
-            self.settings = replace(self.settings, ai_companion_endpoint=endpoint)
+        if endpoint and endpoint != self.settings.streamhouse_ai_endpoint:
+            self.settings = replace(self.settings, streamhouse_ai_endpoint=endpoint)
             try:
                 self.settings_store.save(self.settings)
             except OSError:
@@ -2173,7 +2173,7 @@ class MainWindow(QMainWindow):
         self.ai_remote_connection_detail.setText(
             "Streamhouse AI found; connecting..."
         )
-        self._check_ai_companion()
+        self._check_streamhouse_ai()
 
     @property
     def ai_connection_state(self) -> AIConnectionState:
@@ -2208,7 +2208,7 @@ class MainWindow(QMainWindow):
         introduction = QLabel(
             "Chat commands trigger editable automation routines locally. A command "
             "can optionally send a response through the configured bot account; "
-            "it does not invoke Sally's AI reasoning."
+            "it does not invoke Streamhouse AI reasoning."
         )
         introduction.setWordWrap(True)
         layout.addWidget(introduction)
@@ -2947,8 +2947,8 @@ class MainWindow(QMainWindow):
 
     def _variable_twitch_values(self) -> dict[str, object]:
         snapshot = (
-            self.last_companion_result.snapshot
-            if getattr(self, "last_companion_result", None) is not None
+            self.last_channel_snapshot.snapshot
+            if getattr(self, "last_channel_snapshot", None) is not None
             else {}
         )
         stream = snapshot.get("stream")
@@ -2972,8 +2972,8 @@ class MainWindow(QMainWindow):
 
     def _twitch_command_context(self) -> dict[str, str]:
         snapshot = (
-            self.last_companion_result.snapshot
-            if self.last_companion_result is not None
+            self.last_channel_snapshot.snapshot
+            if self.last_channel_snapshot is not None
             else {}
         )
         stream = snapshot.get("stream")
@@ -3295,7 +3295,7 @@ class MainWindow(QMainWindow):
         if self.ui.settingsStatusLabel.text() == "Settings saved.":
             self.ai_personality_status_label.setText(
                 "Personality saved to Streamhouse AI."
-                if getattr(self, "last_companion_settings_saved", False)
+                if getattr(self, "last_ai_settings_saved", False)
                 else "Saved locally; Streamhouse AI is currently unavailable."
             )
 
@@ -3329,8 +3329,8 @@ class MainWindow(QMainWindow):
     ) -> None:
         previous_auth_state = self._last_twitch_auth_state
         self._last_twitch_auth_state = state
-        self.companion_refresh_request_id += 1
-        self.companion_refresh_in_flight = False
+        self.channel_snapshot_request_id += 1
+        self.channel_snapshot_in_flight = False
         signed_in = state is TwitchAuthState.SIGNED_IN
         waiting = state is TwitchAuthState.WAITING
         missing_scopes = (
@@ -3338,8 +3338,8 @@ class MainWindow(QMainWindow):
             if signed_in
             else set()
         )
-        missing_companion_scopes = (
-            self.twitch_auth.missing_scopes(TWITCH_COMPANION_SCOPES)
+        missing_channel_snapshot_scopes = (
+            self.twitch_auth.missing_scopes(TWITCH_CHANNEL_SNAPSHOT_SCOPES)
             if signed_in
             else set()
         )
@@ -3347,8 +3347,8 @@ class MainWindow(QMainWindow):
         self.channel_points_page.auth_changed()
         self.twitch_health.missing_scopes = set(missing_scopes)
         self._refresh_twitch_health()
-        self.update_companion_permissions_button.setVisible(
-            signed_in and bool(missing_companion_scopes)
+        self.update_channel_permissions_button.setVisible(
+            signed_in and bool(missing_channel_snapshot_scopes)
         )
         self.ui.twitchAccountStatusLabel.setText(detail)
         self.ui.twitchSignInButton.setEnabled(
@@ -3394,7 +3394,7 @@ class MainWindow(QMainWindow):
             ):
                 self.connect_twitch()
             if previous_auth_state is not TwitchAuthState.SIGNED_IN:
-                self.refresh_stream_companion()
+                self.refresh_channel_snapshot()
 
     @Slot(object, str)
     def handle_twitch_bot_auth_changed(
@@ -5119,7 +5119,7 @@ class MainWindow(QMainWindow):
             else:
                 self.current_memory_stream_id = ""
                 self.training_notice_attempt_context = ""
-            self.refresh_stream_companion()
+            self.refresh_channel_snapshot()
             return
         entry = format_twitch_activity(twitch_event)
         if entry is None:
@@ -5401,7 +5401,7 @@ class MainWindow(QMainWindow):
         self.local_ai_enabled_check = QCheckBox(
             "Use Streamhouse AI when available"
         )
-        self.ai_companion_endpoint_edit = QLineEdit()
+        self.streamhouse_ai_endpoint_edit = QLineEdit()
         self.local_ai_endpoint_edit = QLineEdit()
         self.local_ai_model_edit = QLineEdit()
         self.local_ai_test_button = QPushButton("Test Streamhouse AI")
@@ -5473,7 +5473,7 @@ class MainWindow(QMainWindow):
         self.ai_training_notice_edit = QLineEdit()
         self.ai_training_notice_edit.setMaxLength(500)
         layout.addRow("Enabled", self.local_ai_enabled_check)
-        layout.addRow("Companion", self.ai_companion_endpoint_edit)
+        layout.addRow("Streamhouse AI", self.streamhouse_ai_endpoint_edit)
         layout.addRow("Ollama", self.local_ai_endpoint_edit)
         layout.addRow("Model", self.local_ai_model_edit)
         layout.addRow("Viewer memory system", self.ai_viewer_memory_check)
@@ -5567,23 +5567,23 @@ class MainWindow(QMainWindow):
         model = self.local_ai_model_edit.text().strip()
         if model not in status.models:
             self.local_ai_status_label.setText(
-                f"Companion connected; model {model} is not installed"
+                f"Streamhouse AI connected; model {model} is not installed"
             )
             return
         self.local_ai_status_label.setText(
-            f"Companion ready: {model} ({len(status.models)} local model(s))"
+            f"Streamhouse AI ready: {model} ({len(status.models)} local model(s))"
         )
         for remote_store in (self.training_store, self.test_report_store):
             configure = getattr(remote_store, "configure", None)
             connect = getattr(remote_store, "connect", None)
             try:
                 if callable(configure):
-                    configure(self.ai_companion_endpoint_edit.text().strip())
+                    configure(self.streamhouse_ai_endpoint_edit.text().strip())
                 if callable(connect):
                     connect()
             except OSError as error:
                 Logger.warning(
-                    f"Could not refresh Companion data: {error}", source="AI"
+                    f"Could not refresh Streamhouse AI data: {error}", source="AI"
                 )
         self._refresh_training_examples()
         self._refresh_ai_test_report()
@@ -5605,8 +5605,8 @@ class MainWindow(QMainWindow):
             settings.twitch_chat_font_size
         )
         self.local_ai_enabled_check.setChecked(settings.local_ai_enabled)
-        self.ai_remote_endpoint_edit.setText(settings.ai_companion_endpoint)
-        self.ai_companion_endpoint_edit.setText(settings.ai_companion_endpoint)
+        self.ai_remote_endpoint_edit.setText(settings.streamhouse_ai_endpoint)
+        self.streamhouse_ai_endpoint_edit.setText(settings.streamhouse_ai_endpoint)
         self.local_ai_endpoint_edit.setText(settings.local_ai_endpoint)
         self.local_ai_model_edit.setText(settings.local_ai_model)
         self.ai_viewer_memory_check.setChecked(settings.ai_viewer_memory_enabled)
@@ -5678,7 +5678,7 @@ class MainWindow(QMainWindow):
             twitch_chat_font_size=self.ui.twitchChatFontSizeSpin.value(),
             twitch_last_ad_duration=self.settings.twitch_last_ad_duration,
             local_ai_enabled=self.local_ai_enabled_check.isChecked(),
-            ai_companion_endpoint=self.ai_companion_endpoint_edit.text(),
+            streamhouse_ai_endpoint=self.streamhouse_ai_endpoint_edit.text(),
             local_ai_endpoint=self.local_ai_endpoint_edit.text(),
             local_ai_model=self.local_ai_model_edit.text(),
             ai_viewer_memory_enabled=self.ai_viewer_memory_check.isChecked(),
@@ -6453,38 +6453,38 @@ class MainWindow(QMainWindow):
         self.connections_button.setChecked(True)
 
     @Slot()
-    def refresh_stream_companion(self) -> None:
+    def refresh_channel_snapshot(self) -> None:
         token = self.twitch_auth.token
         broadcaster_id = self.twitch_service.broadcaster_user_id
         if (
             token is None
             or not broadcaster_id
-            or self.companion_refresh_in_flight
+            or self.channel_snapshot_in_flight
         ):
             return
-        self.companion_refresh_request_id += 1
-        request_id = self.companion_refresh_request_id
-        worker = CompanionRefreshWorker(
+        self.channel_snapshot_request_id += 1
+        request_id = self.channel_snapshot_request_id
+        worker = ChannelSnapshotWorker(
             request_id,
             self.twitch_service.helix,
             broadcaster_id,
             token,
             fetch_followers=not self.followers_backfilled,
         )
-        worker.signals.completed.connect(self._apply_companion_refresh)
-        worker.signals.failed.connect(self._companion_refresh_failed)
-        self.companion_refresh_in_flight = True
-        self.companion_thread_pool.start(worker)
+        worker.signals.completed.connect(self._apply_channel_snapshot)
+        worker.signals.failed.connect(self._channel_snapshot_failed)
+        self.channel_snapshot_in_flight = True
+        self.channel_snapshot_thread_pool.start(worker)
 
     @Slot(object)
-    def _apply_companion_refresh(
+    def _apply_channel_snapshot(
         self,
-        result: CompanionRefreshResult,
+        result: ChannelSnapshotResult,
     ) -> None:
-        if result.request_id != self.companion_refresh_request_id:
+        if result.request_id != self.channel_snapshot_request_id:
             return
-        self.last_companion_result = result
-        self.companion_refresh_in_flight = False
+        self.last_channel_snapshot = result
+        self.channel_snapshot_in_flight = False
         snapshot = result.snapshot
         stream = snapshot.get("stream")
         next_stream_id = ""
@@ -6504,13 +6504,13 @@ class MainWindow(QMainWindow):
         if self.session_tracker.observe_stream(snapshot.get("stream")):
             self._refresh_session_history()
         current_warnings = set(result.warnings)
-        for warning in sorted(current_warnings - self.companion_warning_cache):
+        for warning in sorted(current_warnings - self.channel_snapshot_warning_cache):
             Logger.warning(
-                f"Stream companion section unavailable ({warning})",
+                f"Channel snapshot data unavailable ({warning})",
                 source="TWITCH",
             )
-        self.companion_warning_cache = current_warnings
-        self.twitch_health.companion_succeeded(result.warnings)
+        self.channel_snapshot_warning_cache = current_warnings
+        self.twitch_health.channel_snapshot_succeeded(result.warnings)
         self._refresh_twitch_health()
         if any("401" in warning for warning in current_warnings):
             self.twitch_auth.recover_unauthorized()
@@ -6823,7 +6823,7 @@ class MainWindow(QMainWindow):
 
     def _apply_chatter_groups(
         self,
-        result: CompanionRefreshResult,
+        result: ChannelSnapshotResult,
     ) -> None:
         self.chatter_list.clear()
         if not result.can_read_chatters:
@@ -7110,8 +7110,8 @@ class MainWindow(QMainWindow):
             return
         self.chatter_history.set_manual_group(user_id, group)
         self.chatter_history.save()
-        if self.last_companion_result is not None:
-            self._apply_chatter_groups(self.last_companion_result)
+        if self.last_channel_snapshot is not None:
+            self._apply_chatter_groups(self.last_channel_snapshot)
         self._refresh_memory_viewer_list()
 
     def _run_moderation_action(
@@ -7344,32 +7344,32 @@ class MainWindow(QMainWindow):
         )
 
     @Slot(int, str)
-    def _companion_refresh_failed(
+    def _channel_snapshot_failed(
         self,
         request_id: int,
         message: str,
     ) -> None:
-        if request_id != self.companion_refresh_request_id:
+        if request_id != self.channel_snapshot_request_id:
             return
-        self.companion_refresh_in_flight = False
-        self.twitch_health.companion_failed(message)
+        self.channel_snapshot_in_flight = False
+        self.twitch_health.channel_snapshot_failed(message)
         self._refresh_twitch_health()
         if "401" in message and self.twitch_auth.recover_unauthorized():
             Logger.info(
-                "Recovering Twitch login after companion API authorization failed.",
+                "Recovering Twitch login after channel API authorization failed.",
                 source="TWITCH",
             )
             return
         Logger.warning(
-            f"Could not refresh stream companion: {message}",
+            f"Could not refresh channel snapshot: {message}",
             source="TWITCH",
         )
 
     @Slot()
     def _retry_twitch_health(self) -> None:
-        self.companion_warning_cache.clear()
+        self.channel_snapshot_warning_cache.clear()
         self.twitch_auth.maintain()
-        self.refresh_stream_companion()
+        self.refresh_channel_snapshot()
         self.statusBar().showMessage("Retrying Twitch services...", 5000)
 
     def _refresh_twitch_health(self) -> None:
@@ -7394,9 +7394,9 @@ class MainWindow(QMainWindow):
         self.health_eventsub_label.setText(
             self.twitch_health.eventsub_state
         )
-        self.health_companion_label.setText(
+        self.health_channel_snapshot_label.setText(
             TwitchHealth.elapsed_text(
-                self.twitch_health.last_companion_success
+                self.twitch_health.last_channel_snapshot_success
             )
         )
         missing = sorted(self.twitch_health.missing_scopes)
@@ -7404,7 +7404,7 @@ class MainWindow(QMainWindow):
             ", ".join(missing) if missing else "All requested permissions"
         )
         self.health_error_label.setText(
-            self.twitch_health.last_companion_error or "None"
+            self.twitch_health.last_channel_snapshot_error or "None"
         )
 
     @Slot()
@@ -7449,7 +7449,7 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(
                 str(result.get("message") or "Commercial started."), 8000
             )
-            QTimer.singleShot(1_000, self.refresh_stream_companion)
+            QTimer.singleShot(1_000, self.refresh_channel_snapshot)
         except Exception as error:
             self.handle_twitch_error(f"Could not start commercial: {error}")
 
@@ -7513,7 +7513,7 @@ class MainWindow(QMainWindow):
             return
 
         self.settings = settings
-        self.last_companion_settings_saved = False
+        self.last_ai_settings_saved = False
         try:
             if self.ai_lifecycle.state is not AIConnectionState.READY:
                 raise RuntimeError("Streamhouse AI is not connected")
@@ -7529,7 +7529,7 @@ class MainWindow(QMainWindow):
                     "allow_strong_profanity": settings.ai_allow_strong_profanity,
                 }
             )
-            self.last_companion_settings_saved = True
+            self.last_ai_settings_saved = True
         except (OSError, RuntimeError) as error:
             if isinstance(error, OSError):
                 self.ai_lifecycle.transport_failed(error)
@@ -7607,12 +7607,12 @@ class MainWindow(QMainWindow):
             "authentication": self.twitch_health.auth_state,
             "connection": self.twitch_health.connection_state,
             "eventsub": self.twitch_health.eventsub_state,
-            "last_companion_success": (
-                self.twitch_health.last_companion_success.isoformat()
-                if self.twitch_health.last_companion_success
+            "last_channel_snapshot_success": (
+                self.twitch_health.last_channel_snapshot_success.isoformat()
+                if self.twitch_health.last_channel_snapshot_success
                 else None
             ),
-            "last_companion_error": self.twitch_health.last_companion_error,
+            "last_channel_snapshot_error": self.twitch_health.last_channel_snapshot_error,
             "missing_scopes": sorted(self.twitch_health.missing_scopes),
         }
         try:
@@ -7643,14 +7643,14 @@ class MainWindow(QMainWindow):
                 f"Could not save anonymous AI test diagnostics: {error}",
                 source="AI",
             )
-        self.companion_refresh_request_id += 1
-        self.companion_thread_pool.clear()
-        self.companion_thread_pool.waitForDone(2_000)
+        self.channel_snapshot_request_id += 1
+        self.channel_snapshot_thread_pool.clear()
+        self.channel_snapshot_thread_pool.waitForDone(2_000)
         self.command_thread_pool.clear()
         self.command_thread_pool.waitForDone(2_000)
         self._command_workers.clear()
-        self.ai_companion_health_pool.clear()
-        self.ai_companion_health_pool.waitForDone(2_000)
+        self.ai_health_pool.clear()
+        self.ai_health_pool.waitForDone(2_000)
         self.channel_points_page.shutdown()
         self.soundboard_page.shutdown()
         self.memory_reasoning_thread_pool.clear()

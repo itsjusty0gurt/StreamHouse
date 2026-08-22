@@ -19,7 +19,7 @@ from products.ai.streamhouse_ai.settings import StreamhouseAISettingsStore
 from shared.streamhouse_shared.models import ResponseDecision
 
 
-class CompanionRemoteStoreTests(unittest.TestCase):
+class StreamhouseAIRemoteStoreTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary_directory = tempfile.TemporaryDirectory()
         root = Path(self.temporary_directory.name)
@@ -43,7 +43,7 @@ class CompanionRemoteStoreTests(unittest.TestCase):
         self.thread.join(timeout=2.0)
         self.temporary_directory.cleanup()
 
-    def test_training_records_are_owned_by_companion(self) -> None:
+    def test_training_records_are_owned_by_streamhouse_ai(self) -> None:
         store = StreamhouseAITrainingStore(self.endpoint, self.lifecycle)
         store.connect()
         example_id = store.capture(
@@ -66,7 +66,7 @@ class CompanionRemoteStoreTests(unittest.TestCase):
         self.assertEqual(len(store.examples), 1)
         self.assertTrue(store.label(example_id, "direct"))
 
-    def test_test_report_is_owned_by_companion(self) -> None:
+    def test_test_report_is_owned_by_streamhouse_ai(self) -> None:
         store = StreamhouseAITestReportStore(self.endpoint, self.lifecycle)
         store.connect()
         store.record(
@@ -81,7 +81,7 @@ class CompanionRemoteStoreTests(unittest.TestCase):
         self.assertEqual(summary["total"], 1)
         self.assertEqual(summary["sent"], 1)
 
-    def test_model_and_personality_settings_are_owned_by_companion(self) -> None:
+    def test_model_and_personality_settings_are_owned_by_streamhouse_ai(self) -> None:
         client = StreamhouseAIClient(self.endpoint)
         updated = client.update_settings(
             {

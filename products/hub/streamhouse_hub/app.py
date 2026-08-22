@@ -17,7 +17,6 @@ from products.hub.core.resources import resource_path
 from shared.streamhouse_runtime.paths import smoke_test_enabled
 from shared.streamhouse_runtime.qt_settings import (
     HUB_APPLICATION_NAME,
-    LEGACY_HUB_APPLICATION_NAME,
     ORGANIZATION_NAME,
     streamhouse_qsettings,
 )
@@ -117,15 +116,7 @@ def run() -> None:
         auth=twitch_auth,
         bot_auth=twitch_bot_auth,
     )
-    window_settings, migrated_qt_values = streamhouse_qsettings(
-        HUB_APPLICATION_NAME,
-        LEGACY_HUB_APPLICATION_NAME,
-    )
-    if migrated_qt_values:
-        Logger.info(
-            f"Migrated {migrated_qt_values} Hub UI preference(s).",
-            source="DATA",
-        )
+    window_settings = streamhouse_qsettings(HUB_APPLICATION_NAME)
     window = MainWindow(
         twitch_service=twitch_service,
         twitch_auth=twitch_auth,

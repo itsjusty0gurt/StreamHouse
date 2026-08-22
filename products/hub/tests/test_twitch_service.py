@@ -54,7 +54,7 @@ class TwitchServiceTests(unittest.TestCase):
             expires_at=999,
             scopes=["user:read:chat"],
             user_id="bot-1",
-            login="sallybot",
+            login="testbot",
         )
         auth = Mock(token=token)
         helix = Mock()
@@ -106,7 +106,7 @@ class TwitchServiceTests(unittest.TestCase):
             999,
             ["user:read:chat", "user:write:chat", "user:bot"],
             user_id="bot-1",
-            login="sallybot",
+            login="testbot",
         )
         helix = Mock()
         helix.get_user.return_value = {"id": "channel-1"}
@@ -121,7 +121,7 @@ class TwitchServiceTests(unittest.TestCase):
             self.assertTrue(service.connect("streamer"))
             service._receive_live_welcome("session-1")
             service._receive_activity_welcome("activity-session-1")
-            self.assertTrue(service.send_message("Hello from Sally"))
+            self.assertTrue(service.send_message("Hello from the bot"))
 
             helix.create_chat_subscriptions.assert_called_once_with(
                 "session-1", "channel-1", "bot-1", bot
@@ -134,7 +134,7 @@ class TwitchServiceTests(unittest.TestCase):
             )
             self.assertEqual(socket_type.return_value.open.call_count, 2)
             helix.send_chat_message.assert_called_once_with(
-                "channel-1", "bot-1", "Hello from Sally", bot
+                "channel-1", "bot-1", "Hello from the bot", bot
             )
             self.assertTrue(
                 service.send_message("Hello from streamer", as_bot=False)
@@ -158,7 +158,7 @@ class TwitchServiceTests(unittest.TestCase):
             999,
             ["user:read:chat", "user:write:chat"],
             user_id="same-1",
-            login="sallybot",
+            login="testbot",
         )
         helix = Mock()
         helix.get_user.return_value = {"id": "same-1"}
@@ -173,7 +173,7 @@ class TwitchServiceTests(unittest.TestCase):
             lambda message: errors.append(message),
         )
 
-        self.assertFalse(service.connect("sallybot"))
+        self.assertFalse(service.connect("testbot"))
         self.assertIn("same Twitch account", errors[0])
 
     def test_chat_moderation_notification_emits_notice(self) -> None:
@@ -239,7 +239,7 @@ class TwitchServiceTests(unittest.TestCase):
             999,
             ["user:write:chat"],
             user_id="bot-1",
-            login="sallybot",
+            login="testbot",
         )
         helix = Mock()
         helix.send_chat_message.return_value = "message-1"
@@ -268,7 +268,7 @@ class TwitchServiceTests(unittest.TestCase):
             broadcaster,
         )
 
-    def test_custom_rewards_mark_only_sally_owned_rewards_manageable(self) -> None:
+    def test_custom_rewards_mark_only_hub_managed_rewards_manageable(self) -> None:
         token = TwitchToken(
             "access",
             "refresh",
@@ -279,10 +279,10 @@ class TwitchServiceTests(unittest.TestCase):
         helix = Mock()
         helix.get_custom_rewards.side_effect = (
             [
-                {"id": "sally-1", "title": "Hydrate", "cost": 500},
+                {"id": "hub-1", "title": "Hydrate", "cost": 500},
                 {"id": "other-1", "title": "Stretch", "cost": 750},
             ],
-            [{"id": "sally-1", "title": "Hydrate", "cost": 500}],
+            [{"id": "hub-1", "title": "Hydrate", "cost": 500}],
         )
         service = TwitchService(auth=Mock(token=token), helix=helix)
 

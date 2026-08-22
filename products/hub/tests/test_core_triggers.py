@@ -18,7 +18,7 @@ class CoreTriggerStoreTests(unittest.TestCase):
         self.temporary.cleanup()
 
     def test_round_trip_links_lifecycle_trigger_to_routine(self) -> None:
-        routine = self.routines.add("Start Sally")
+        routine = self.routines.add("Start Stream")
         trigger = self.store.add(routine.routine_id, "application.started")
 
         loaded_routines = RoutineStore(self.routines.path)

@@ -7,17 +7,17 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtWidgets import QApplication
 
 from products.hub.twitch.auth import TwitchToken
-from products.hub.ui.companion_worker import CompanionRefreshWorker
+from products.hub.ui.channel_snapshot_worker import ChannelSnapshotWorker
 
 
-class CompanionRefreshWorkerTests(unittest.TestCase):
+class ChannelSnapshotWorkerTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.application = QApplication.instance() or QApplication([])
 
     def test_collects_snapshot_chatters_and_roles(self) -> None:
         helix = Mock()
-        helix.get_companion_snapshot.return_value = {"stream": None}
+        helix.get_channel_snapshot.return_value = {"stream": None}
         helix.get_chatters.return_value = [
             {"user_id": "1", "user_name": "Viewer"}
         ]
@@ -36,7 +36,7 @@ class CompanionRefreshWorkerTests(unittest.TestCase):
             login="streamer",
         )
         completed = Mock()
-        worker = CompanionRefreshWorker(7, helix, "42", token)
+        worker = ChannelSnapshotWorker(7, helix, "42", token)
         worker.signals.completed.connect(completed)
 
         worker.run()
@@ -49,7 +49,7 @@ class CompanionRefreshWorkerTests(unittest.TestCase):
 
     def test_reports_errors_without_raising(self) -> None:
         helix = Mock()
-        helix.get_companion_snapshot.side_effect = RuntimeError("offline")
+        helix.get_channel_snapshot.side_effect = RuntimeError("offline")
         token = TwitchToken(
             access_token="token",
             refresh_token="",
@@ -59,7 +59,7 @@ class CompanionRefreshWorkerTests(unittest.TestCase):
             login="streamer",
         )
         failed = Mock()
-        worker = CompanionRefreshWorker(3, helix, "42", token)
+        worker = ChannelSnapshotWorker(3, helix, "42", token)
         worker.signals.failed.connect(failed)
 
         worker.run()
@@ -69,7 +69,7 @@ class CompanionRefreshWorkerTests(unittest.TestCase):
 
     def test_optional_chatter_failure_preserves_snapshot(self) -> None:
         helix = Mock()
-        helix.get_companion_snapshot.return_value = {
+        helix.get_channel_snapshot.return_value = {
             "stream": None,
             "followers": 10,
             "subscribers": None,
@@ -85,7 +85,7 @@ class CompanionRefreshWorkerTests(unittest.TestCase):
             "streamer",
         )
         completed = Mock()
-        worker = CompanionRefreshWorker(9, helix, "42", token)
+        worker = ChannelSnapshotWorker(9, helix, "42", token)
         worker.signals.completed.connect(completed)
 
         worker.run()

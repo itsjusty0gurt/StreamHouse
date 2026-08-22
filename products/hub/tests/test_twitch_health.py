@@ -5,11 +5,11 @@ from products.hub.twitch.health import TwitchHealth
 
 
 class TwitchHealthTests(unittest.TestCase):
-    def test_companion_result_tracks_success_and_warning(self) -> None:
+    def test_channel_snapshot_tracks_success_and_warning(self) -> None:
         health = TwitchHealth()
-        health.companion_succeeded(("followers: unauthorized",))
-        self.assertIsNotNone(health.last_companion_success)
-        self.assertIn("followers", health.last_companion_error)
+        health.channel_snapshot_succeeded(("followers: unauthorized",))
+        self.assertIsNotNone(health.last_channel_snapshot_success)
+        self.assertIn("followers", health.last_channel_snapshot_error)
 
     def test_elapsed_text_is_human_readable(self) -> None:
         value = datetime.now(timezone.utc) - timedelta(minutes=5)

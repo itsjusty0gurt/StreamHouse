@@ -522,9 +522,6 @@ class PythonScriptTask:
             ),
         }
         environment.update(generated)
-        # Temporary aliases preserve existing trusted local scripts.
-        for name, value in generated.items():
-            environment["SALLY_" + name.removeprefix("STREAMHOUSE_")] = value
         for key, value in context.items():
             safe_key = "".join(
                 character if character.isalnum() else "_"
@@ -532,7 +529,6 @@ class PythonScriptTask:
             ).strip("_")
             if safe_key:
                 environment[f"STREAMHOUSE_{safe_key}"] = value
-                environment[f"SALLY_{safe_key}"] = value
         return environment
 
     @classmethod

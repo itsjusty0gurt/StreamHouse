@@ -48,18 +48,26 @@ class StreamhouseAIWindowTests(unittest.TestCase):
             self.assertIs(self.window.page_stack.currentWidget(), self.window.pages[name])
             self.assertTrue(self.window.navigation_buttons[name].isChecked())
 
-    def test_personality_and_model_are_saved_by_companion(self) -> None:
+    def test_personality_and_model_are_saved_by_streamhouse_ai(self) -> None:
         self.window._show_page("Settings")
         self.window.model_edit.setText("qwen3:8b")
-        self.window._save_companion_settings()
+        self.window._save_ai_settings()
         self.window._show_page("Personality")
         self.window.personality_edit.setPlainText("Dry and concise.")
-        self.window._save_companion_settings()
+        self.window._save_ai_settings()
         self.assertEqual(self.window.reasoning_service.settings.model, "qwen3:8b")
         self.assertEqual(
             self.window.reasoning_service.settings.personality,
             "Dry and concise.",
         )
+
+    def test_discarded_pre_alpha_settings_schema_is_rejected(self) -> None:
+        path = self.window.settings_store.path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('{"_version":1,"model":"old"}', encoding="utf-8")
+
+        with self.assertRaisesRegex(ValueError, "discarded pre-alpha schema"):
+            self.window.settings_store.load()
 
     def test_portrait_mode_moves_navigation_to_the_top(self) -> None:
         self.window._apply_responsive_layout(True)

@@ -57,9 +57,9 @@ class AutomationLogicTests(unittest.TestCase):
         )
 
     def test_condition_comparisons_render_variables(self) -> None:
-        context = {"automation.score": "12", "automation.name": "Sally"}
+        context = {"automation.score": "12", "automation.name": "Streamhouse"}
         self.assertTrue(evaluate_condition("{automation.score}", "greater_than", "10", context))
-        self.assertTrue(evaluate_condition("{automation.name}", "equals_ignore_case", "sally", context))
+        self.assertTrue(evaluate_condition("{automation.name}", "equals_ignore_case", "streamhouse", context))
         self.assertTrue(evaluate_condition("automation.score", "exists", "", context))
         self.assertTrue(evaluate_condition("automation.missing", "not_exists", "", context))
 

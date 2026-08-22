@@ -16,7 +16,6 @@ from products.hub.twitch.commands import TwitchCommandTriggerStore
 
 
 FORMAT = "streamhouse.automation.routine"
-LEGACY_FORMAT = "sally.automation.routine"
 VERSION = 1
 
 
@@ -95,7 +94,7 @@ def validate_import(
     command_store: TwitchCommandTriggerStore,
 ) -> None:
     if (
-        payload.get("format") not in {FORMAT, LEGACY_FORMAT}
+        payload.get("format") != FORMAT
         or int(payload.get("version", 0)) != VERSION
     ):
         raise ValueError("This is not a supported Streamhouse routine file.")

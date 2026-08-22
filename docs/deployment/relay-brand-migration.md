@@ -28,6 +28,11 @@ when both names are supplied. Conflicts and legacy-only use emit one structured,
 value-free warning per process/browser session. Current documentation, UI, and
 generated bundles do not advertise legacy names.
 
+Operational check on 2026-08-21: the old relay `/health` endpoint returned
+`{"status":"ok"}`, while the expected modern hostname returned HTTP 404. The
+modern deployment and cutover gates are therefore not complete, so the isolated
+wire compatibility and old Render entry-point shim must remain.
+
 ## Render transition
 
 Do not synchronize the updated blueprint against the production workspace until

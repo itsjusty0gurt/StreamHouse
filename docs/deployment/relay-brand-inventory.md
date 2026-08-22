@@ -47,11 +47,9 @@ production criteria in `relay-brand-migration.md` are satisfied.
 - `docs/deployment/relay-brand-migration.md` and the relay section of
   `docs/architecture/overview.md`: clearly labeled transition documentation.
 
-`shared/streamhouse_shared/protocol.py` and its architecture documentation use
-`X-Sally-Protocol` for the separate local Streamhouse AI protocol migration.
-That is historical compatibility outside the relay contract. It remains in the
-current implementation but is transitional pre-alpha debt, not a preservation
-requirement; remove it when active Hub and AI consumers use the current header.
+The separate local Streamhouse AI protocol now accepts only
+`X-Streamhouse-Protocol`; its pre-rebrand header and version fallback have been
+removed. Relay compatibility is the only active generic Sally-named contract.
 
 ## Intentional Sally AI or Twitch-bot identity
 
@@ -64,38 +62,33 @@ requirement; remove it when active Hub and AI consumers use the current header.
   and `products/ai/tests/test_training_store.py`.
 - Sally-specific chat, memory, training, and separate bot identity:
   `products/hub/core/settings.py`, `products/hub/twitch/commands.py`,
-  `products/hub/twitch/eventsub.py`, `products/hub/twitch/service.py`,
-  `products/hub/twitch/simulator.py`, `products/hub/twitch/token_store.py`,
+  `products/hub/twitch/simulator.py`,
   `products/hub/ui/main_window.py`, `products/hub/ui/mainwindow.ui`,
-  `products/hub/ui/generated/ui_mainwindow.py`, and
-  `products/hub/ui/twitch_chat_view.py`, plus their Hub tests.
+  `products/hub/ui/generated/ui_mainwindow.py`, plus their Hub tests.
 - Sally character artwork retained intentionally:
   `shared/assets/sally-icon.svg`, `shared/assets/sally-icon.png`, and
   `shared/assets/sally-icon.ico`. Current relay/Extension tooling no longer uses
   these files.
-- Sally-named sample text and fixtures in Hub automation modules/tests are
-  character-facing examples, not relay branding.
+- Remaining Sally-named sample text and fixtures exercise character-facing
+  behavior rather than generic infrastructure.
 
-## Historical migration support or fixtures
+## Removed internal pre-alpha compatibility
 
-This section inventories current or historical files; it does not grant them
-ongoing support status. Under `docs/architecture/development-policy.md`, local
-Sally-era migration code and fixtures should be removed when no external,
-security, or post-Alpha requirement justifies them. The deployed relay shim is
-the operational exception described below.
+The final pre-alpha purge removed the internal compatibility paths formerly
+listed here:
 
-- Legacy data/QSettings/backup paths: `shared/streamhouse_runtime/paths.py`,
-  `shared/streamhouse_runtime/qt_settings.py`, `products/hub/core/backup.py`,
-  `products/hub/streamhouse_hub/app.py`, `tests/integration/test_paths.py`, and
-  release branding/icon tests.
-- Legacy automation formats and environment aliases:
-  `products/hub/automation/transfer.py`, `products/hub/automation/core_tasks.py`,
-  related automation UI/tests, and `.sally-routine.json` fixtures.
-- Legacy local AI protocol compatibility: `shared/streamhouse_shared/protocol.py`,
-  `shared/streamhouse_shared/presence_protocol.py`, shared models/policy, and
-  integration protocol/remote-store tests.
-- `.gitignore` and historical changelog/release-checklist references describe
-  old files, data roots, or migration behavior; they are not active branding.
+- Sally-era data-root/environment fallbacks and recursive local-data copying;
+- Sally-era QSettings application stores and Hub window-title discovery;
+- pre-rebrand automation routine/task formats and Python environment aliases;
+- the pre-rebrand local AI protocol header/version path;
+- old chat-context URL schemes, backup filename globs, and generic Companion
+  service/settings names.
+
+Private development data that depends on those paths must be reset. Twitch
+token storage under the current Streamhouse data root was not changed.
+
+## External deployment shim
+
 - `twitch_extension/relay_server.py` is a neutral thin import shim retained only
   for the old Render dashboard start command.
 

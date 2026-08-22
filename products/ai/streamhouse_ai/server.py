@@ -11,8 +11,6 @@ from products.ai.engine.response_engine import ResponseDecisionEngine
 from products.ai.engine.test_report import AITestReportStore
 from products.ai.engine.training_store import TrainingStore
 from shared.streamhouse_shared.protocol import (
-    LEGACY_PROTOCOL_HEADER,
-    LEGACY_PROTOCOL_VERSION,
     PROTOCOL_HEADER,
     PROTOCOL_VERSION,
     buffered_message_from_dict,
@@ -252,11 +250,7 @@ def create_server(
                 if operation is None:
                     self._send(404, {"error": "Unknown endpoint."})
                     return
-                payload = operation(body)
-                if requested_version == LEGACY_PROTOCOL_VERSION:
-                    payload = dict(payload)
-                    payload["protocol_version"] = LEGACY_PROTOCOL_VERSION
-                self._send(200, payload)
+                self._send(200, operation(body))
             except Exception as error:
                 self._send(500, {"error": str(error)})
 
@@ -267,12 +261,6 @@ def create_server(
             current = self.headers.get(PROTOCOL_HEADER)
             if current == str(PROTOCOL_VERSION):
                 return PROTOCOL_VERSION
-            legacy = self.headers.get(LEGACY_PROTOCOL_HEADER)
-            if legacy in {
-                str(LEGACY_PROTOCOL_VERSION),
-                str(PROTOCOL_VERSION),
-            }:
-                return int(legacy)
             return None
 
         def _send(self, status: int, payload: dict[str, Any]) -> None:

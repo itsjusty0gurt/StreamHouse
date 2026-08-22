@@ -17,10 +17,11 @@ not the name of the complete Streamhouse ecosystem.
 
 The implementation, packages, executables, and local protocol now use
 Streamhouse product names. The GitHub repository remains `SallyAIBot`; changing
-that external repository identifier is outside the application rebrand.
-Generic SallyBot-era infrastructure is transitional pre-alpha debt, not a
-compatibility requirement. Sally names remain current only where they refer to
-the AI personality/character or another deliberately Sally-specific concept.
+that external repository identifier is outside the application rebrand. Active
+internal generic infrastructure no longer uses SallyBot-era names. The hosted
+relay retains a narrowly isolated external compatibility contract until the
+deployment runbook's removal gates are met. All other current Sally names refer
+to the AI personality/character or another deliberately Sally-specific concept.
 
 ## Product status
 

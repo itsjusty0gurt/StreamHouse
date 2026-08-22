@@ -57,7 +57,7 @@ from products.hub.twitch.models import (
 )
 from products.hub.ui.main_window import MainWindow
 from shared.streamhouse_shared.protocol import PROTOCOL_VERSION
-from products.hub.ui.companion_worker import CompanionRefreshResult
+from products.hub.ui.channel_snapshot_worker import ChannelSnapshotResult
 from products.hub.ui.memory_worker import MemoryExtractionResult
 from products.hub.ui.response_worker import ResponseBatchResult
 from products.hub.ui.streamhouse_ai_worker import StreamhouseAIHealthResult
@@ -73,7 +73,7 @@ class MainWindowTests(unittest.TestCase):
 
     def setUp(self) -> None:
         self.original_logger = Logger._logger
-        Logger._logger = logging.Logger("SallyUItest", logging.DEBUG)
+        Logger._logger = logging.Logger("StreamhouseUITest", logging.DEBUG)
 
         self.settings_patch = patch(
             "products.hub.ui.main_window.SettingsStore.load",
@@ -181,8 +181,8 @@ class MainWindowTests(unittest.TestCase):
             self.assertEqual(self.window.statusBar().currentMessage(), "")
 
     def test_streamhouse_ai_presence_is_event_driven(self) -> None:
-        self.assertFalse(hasattr(self.window, "ai_companion_health_timer"))
-        with patch.object(self.window, "_check_ai_companion") as connect:
+        self.assertFalse(hasattr(self.window, "ai_health_timer"))
+        with patch.object(self.window, "_check_streamhouse_ai") as connect:
             self.window._handle_streamhouse_ai_presence(
                 PROTOCOL_VERSION,
                 9123,
@@ -202,7 +202,7 @@ class MainWindowTests(unittest.TestCase):
 
     def test_hub_starts_with_ai_disconnected(self) -> None:
         self.assertTrue(self.window.settings.local_ai_enabled)
-        self.assertTrue(self.window.settings.ai_companion_endpoint)
+        self.assertTrue(self.window.settings.streamhouse_ai_endpoint)
         self.assertIs(
             self.window.ai_connection_state,
             AIConnectionState.DISCONNECTED,
@@ -212,12 +212,12 @@ class MainWindowTests(unittest.TestCase):
 
     def test_ai_presence_verifies_then_becomes_ready(self) -> None:
         self.window.ai_lifecycle.disconnect()
-        with patch.object(self.window, "_check_ai_companion"):
+        with patch.object(self.window, "_check_streamhouse_ai"):
             self.window._handle_streamhouse_ai_presence(PROTOCOL_VERSION, 9123)
         generation = self.window.ai_connection_generation
         self.assertIs(self.window.ai_connection_state, AIConnectionState.VERIFYING)
 
-        self.window._apply_ai_companion_health(
+        self.window._apply_streamhouse_ai_health(
             StreamhouseAIHealthResult(
                 StreamhouseAIStatus(True, PROTOCOL_VERSION),
                 {},
@@ -229,12 +229,12 @@ class MainWindowTests(unittest.TestCase):
 
     def test_stale_health_result_cannot_restore_ready(self) -> None:
         self.window.ai_lifecycle.disconnect()
-        with patch.object(self.window, "_check_ai_companion"):
+        with patch.object(self.window, "_check_streamhouse_ai"):
             self.window._handle_streamhouse_ai_presence(PROTOCOL_VERSION, 9123)
         stale_generation = self.window.ai_connection_generation
         self.window._handle_streamhouse_ai_presence(PROTOCOL_VERSION, 0)
 
-        self.window._apply_ai_companion_health(
+        self.window._apply_streamhouse_ai_health(
             StreamhouseAIHealthResult(
                 StreamhouseAIStatus(True, PROTOCOL_VERSION),
                 {},
@@ -831,14 +831,14 @@ class MainWindowTests(unittest.TestCase):
             started.routine_id,
             task_type="twitch.send_chat_message",
             name="Started",
-            config={"message": "Sally started", "as_bot": True},
+            config={"message": "Hub started", "as_bot": True},
         )
         closing = store.add("On closing")
         store.add_task(
             closing.routine_id,
             task_type="twitch.send_chat_message",
             name="Closing",
-            config={"message": "Sally closing", "as_bot": True},
+            config={"message": "Hub closing", "as_bot": True},
         )
         self.window.core_trigger_store.add(
             started.routine_id, "application.started"
@@ -856,8 +856,8 @@ class MainWindowTests(unittest.TestCase):
         self.assertEqual(
             self.window.twitch_service.send_message.call_args_list,
             [
-                unittest.mock.call("Sally started", as_bot=True),
-                unittest.mock.call("Sally closing", as_bot=True),
+                unittest.mock.call("Hub started", as_bot=True),
+                unittest.mock.call("Hub closing", as_bot=True),
             ],
         )
         self.assertEqual(len(self.window.automation_page.history), 2)
@@ -1009,7 +1009,7 @@ class MainWindowTests(unittest.TestCase):
             global_cooldown_seconds=0,
             user_cooldown_seconds=0,
         )
-        self.window.twitch_service.channel = "sallychannel"
+        self.window.twitch_service.channel = "streamhousechannel"
         self.window.twitch_service.send_message = Mock(return_value=True)
         self.window._queue_response_decision = Mock()
 
@@ -1025,7 +1025,7 @@ class MainWindowTests(unittest.TestCase):
         )
 
         self.window.twitch_service.send_message.assert_called_once_with(
-            "Hello Viewer! Welcome to sallychannel.",
+            "Hello Viewer! Welcome to streamhousechannel.",
             as_bot=True,
         )
         self.assertEqual(command.uses, 1)
@@ -1038,7 +1038,7 @@ class MainWindowTests(unittest.TestCase):
             global_cooldown_seconds=0,
             user_cooldown_seconds=0,
         )
-        self.window.last_companion_result = CompanionRefreshResult(
+        self.window.last_channel_snapshot = ChannelSnapshotResult(
             request_id=1,
             snapshot={
                 "stream": None,
@@ -1274,7 +1274,7 @@ class MainWindowTests(unittest.TestCase):
             (0, 0, 0, 0),
         )
 
-    def test_page_titles_are_hidden_and_companion_uses_compact_layout(self) -> None:
+    def test_page_titles_are_hidden_and_channel_workspace_uses_compact_layout(self) -> None:
         for title in (
             self.window.ui.dashboardTitleLabel,
             self.window.ui.twitchTitleLabel,
@@ -1405,13 +1405,13 @@ class MainWindowTests(unittest.TestCase):
             routine.routine_id,
             "InputMuteStateChanged",
         )
-        self.window.last_companion_result = CompanionRefreshResult(
+        self.window.last_channel_snapshot = ChannelSnapshotResult(
             request_id=1,
             snapshot={
                 "stream": None,
                 "channel": {
                     "game_name": "Science & Technology",
-                    "title": "Building Sally",
+                    "title": "Building Streamhouse",
                 },
             },
         )
@@ -1437,7 +1437,7 @@ class MainWindowTests(unittest.TestCase):
             return_value=(True, True)
         )
         self.window.settings_store.save = Mock()
-        self.window.refresh_stream_companion = Mock()
+        self.window.refresh_channel_snapshot = Mock()
         event = TwitchEvent(
             subscription_type="stream.online",
             version="1",
@@ -1464,7 +1464,7 @@ class MainWindowTests(unittest.TestCase):
             self.window.settings.ai_training_notice_stream_id,
             "stream-42",
         )
-        self.assertEqual(self.window.refresh_stream_companion.call_count, 2)
+        self.assertEqual(self.window.refresh_channel_snapshot.call_count, 2)
 
     def test_log_buttons_feed_the_ui(self) -> None:
         self.window.ui.testInfoButton.click()
@@ -1650,17 +1650,17 @@ class MainWindowTests(unittest.TestCase):
         self.window.twitch_bot_auth.token = Mock(
             scopes=["user:read:chat", "user:write:chat", "user:bot"],
             user_id="bot-1",
-            login="sallybot",
+            login="testbot",
         )
 
         self.window.handle_twitch_bot_auth_changed(
             TwitchAuthState.SIGNED_IN,
-            "sallybot",
+            "testbot",
         )
 
         self.assertEqual(
             self.window.twitch_bot_account_status_label.text(),
-            "@sallybot",
+            "@testbot",
         )
         self.assertFalse(self.window.twitch_bot_sign_in_button.isEnabled())
         self.assertTrue(self.window.twitch_bot_sign_out_button.isEnabled())
@@ -1668,8 +1668,8 @@ class MainWindowTests(unittest.TestCase):
         self.window.response_decision_thread_pool.start = Mock()
         self.window.handle_twitch_message(
             TwitchMessage(
-                username="sallybot",
-                text="A message Sally just sent",
+                username="testbot",
+                text="A message the bot just sent",
                 received_at=datetime.now(timezone.utc),
                 message_id="bot-message-1",
                 user_id="bot-1",
@@ -1702,12 +1702,12 @@ class MainWindowTests(unittest.TestCase):
             user_id="42",
         )
         self.window.twitch_service.connect = Mock(return_value=True)
-        self.window.refresh_stream_companion = Mock()
+        self.window.refresh_channel_snapshot = Mock()
         self.window.twitch_auth.sign_in = Mock()
 
         self.window.handle_twitch_auth_changed(
             TwitchAuthState.SIGNED_IN,
-            "sallybot",
+            "testbot",
         )
         QTest.qWait(150)
 
@@ -1717,13 +1717,13 @@ class MainWindowTests(unittest.TestCase):
             "Update Permissions",
         )
         self.assertFalse(
-            self.window.update_companion_permissions_button.isHidden()
+            self.window.update_channel_permissions_button.isHidden()
         )
         self.window.twitch_auth.sign_in.assert_called_once_with()
 
         self.window.handle_twitch_auth_changed(
             TwitchAuthState.SIGNED_IN,
-            "sallybot",
+            "testbot",
         )
         self.application.processEvents()
         self.window.twitch_auth.sign_in.assert_called_once_with()
@@ -1755,7 +1755,7 @@ class MainWindowTests(unittest.TestCase):
             "Twitch: Connected to #mychannel",
         )
 
-    def test_connections_are_on_separate_page_from_companion(self) -> None:
+    def test_connections_are_on_separate_page_from_channel_workspace(self) -> None:
         self.window.show_connections()
 
         self.assertIs(
@@ -1819,7 +1819,7 @@ class MainWindowTests(unittest.TestCase):
         self.window.obs_service.current_mute_state.assert_not_called()
         self.assertEqual(resolved, {})
 
-    def test_companion_refresh_updates_stream_stats_and_chatters(self) -> None:
+    def test_channel_snapshot_updates_stream_stats_and_chatters(self) -> None:
         token = Mock(
             user_id="42",
             scopes=[
@@ -1831,7 +1831,7 @@ class MainWindowTests(unittest.TestCase):
         )
         self.window.twitch_auth.token = token
         self.window.twitch_service.broadcaster_user_id = "42"
-        self.window.twitch_service.helix.get_companion_snapshot = Mock(
+        self.window.twitch_service.helix.get_channel_snapshot = Mock(
             return_value={"stream": None, "followers": 123, "subscribers": 7}
         )
         self.window.twitch_service.helix.get_chatters = Mock(
@@ -1848,11 +1848,11 @@ class MainWindowTests(unittest.TestCase):
             return_value=({"1", "5"}, {"2"}, {"3"})
         )
         self.window.known_bot_user_ids.add("5")
-        self.window.companion_thread_pool.start = Mock(
+        self.window.channel_snapshot_thread_pool.start = Mock(
             side_effect=lambda worker: worker.run()
         )
 
-        self.window.refresh_stream_companion()
+        self.window.refresh_channel_snapshot()
         self.application.processEvents()
 
         self.assertEqual(self.window.stream_live_label.text(), "OFFLINE")
@@ -1896,9 +1896,9 @@ class MainWindowTests(unittest.TestCase):
         )
         self.window.handle_twitch_auth_changed(
             TwitchAuthState.SIGNED_IN,
-            "sallybot",
+            "testbot",
         )
-        self.assertEqual(self.window.ui.twitchAccountStatusLabel.text(), "sallybot")
+        self.assertEqual(self.window.ui.twitchAccountStatusLabel.text(), "testbot")
         self.assertTrue(self.window.ui.twitchSignOutButton.isEnabled())
 
     def test_live_overview_cards_and_ad_manager_show_schedule(self) -> None:
@@ -1910,9 +1910,9 @@ class MainWindowTests(unittest.TestCase):
                 "channel:edit:commercial",
             ]
         )
-        self.window._apply_companion_refresh(
-            CompanionRefreshResult(
-                request_id=self.window.companion_refresh_request_id,
+        self.window._apply_channel_snapshot(
+            ChannelSnapshotResult(
+                request_id=self.window.channel_snapshot_request_id,
                 snapshot={
                     "stream": {
                         "id": "stream-1",
@@ -3080,7 +3080,7 @@ class MainWindowTests(unittest.TestCase):
 
         self.window.handle_twitch_auth_changed(TwitchAuthState.SIGNED_IN, "channel")
         self.window.handle_twitch_bot_auth_changed(
-            TwitchAuthState.SIGNED_IN, "sallybot"
+            TwitchAuthState.SIGNED_IN, "testbot"
         )
 
         self.window.twitch_service.disconnect.assert_not_called()
@@ -3147,10 +3147,10 @@ class MainWindowTests(unittest.TestCase):
         self.window._start_next_response_batch()
         self.window.response_decision_thread_pool.start.assert_not_called()
 
-        with patch.object(self.window, "_check_ai_companion"):
+        with patch.object(self.window, "_check_streamhouse_ai"):
             self.window._handle_streamhouse_ai_presence(PROTOCOL_VERSION, 9123)
         generation = self.window.ai_connection_generation
-        self.window._apply_ai_companion_health(
+        self.window._apply_streamhouse_ai_health(
             StreamhouseAIHealthResult(
                 StreamhouseAIStatus(True, PROTOCOL_VERSION), {}, generation
             )

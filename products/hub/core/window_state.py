@@ -32,7 +32,7 @@ class WindowStateStore:
                 available = screen.availableGeometry()
                 window.move(available.topLeft())
         splitter = window.findChild(QSplitter, "twitchChannelSplitter")
-        splitter_state = self.settings.value("window/companion_splitter")
+        splitter_state = self.settings.value("window/channel_splitter")
         if splitter is not None and isinstance(splitter_state, QByteArray):
             splitter.restoreState(splitter_state)
         memories_splitter = window.findChild(QSplitter, "memoriesSplitter")
@@ -90,7 +90,7 @@ class WindowStateStore:
         splitter = window.findChild(QSplitter, "twitchChannelSplitter")
         if splitter is not None:
             self.settings.setValue(
-                "window/companion_splitter",
+                "window/channel_splitter",
                 splitter.saveState(),
             )
         memories_splitter = window.findChild(QSplitter, "memoriesSplitter")

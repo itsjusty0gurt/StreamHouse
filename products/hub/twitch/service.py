@@ -298,7 +298,7 @@ class TwitchService:
         return True
 
     def send_pinned_message(self, text: str) -> tuple[bool, bool]:
-        """Send as Sally, then pin with the broadcaster's authorization."""
+        """Send through the bot account, then pin as the broadcaster."""
 
         clean_text = text.strip()
         if self.state is not TwitchConnectionState.CONNECTED:

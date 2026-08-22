@@ -1,3 +1,2 @@
 HUB_WINDOW_TITLE = "Streamhouse Hub"
-LEGACY_HUB_WINDOW_TITLE = "Sally Bot"
 STREAMHOUSE_AI_PRESENCE_MESSAGE = "StreamhouseAIPresence.v2"

@@ -77,10 +77,7 @@ class BackupManager:
 
     def latest(self) -> Path | None:
         archives = sorted(
-            (
-                *self.backup_directory.glob("streamhouse-*.zip"),
-                *self.backup_directory.glob("sally-*.zip"),
-            ),
+            self.backup_directory.glob("streamhouse-*.zip"),
             key=lambda path: path.stat().st_mtime,
         )
         return archives[-1] if archives else None
@@ -123,10 +120,7 @@ class BackupManager:
         clean_id = user_id.strip()
         clean_name = user_name.strip().casefold()
         changed_archives = 0
-        archives = (
-            *self.backup_directory.glob("streamhouse-*.zip"),
-            *self.backup_directory.glob("sally-*.zip"),
-        )
+        archives = tuple(self.backup_directory.glob("streamhouse-*.zip"))
         for archive in archives:
             changed = False
             temporary = archive.with_suffix(archive.suffix + ".tmp")

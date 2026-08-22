@@ -85,9 +85,8 @@ class AutomationTransferTests(unittest.TestCase):
         self.assertEqual(len(destination["obs_store"].for_routine(imported.routine_id)), 1)
 
     def test_import_rejects_unavailable_task_before_creating_routine(self) -> None:
-        # Existing exported files remain importable during the rebrand.
         payload = {
-            "format": "sally.automation.routine",
+            "format": "streamhouse.automation.routine",
             "version": 1,
             "routine": {
                 "name": "Unavailable",

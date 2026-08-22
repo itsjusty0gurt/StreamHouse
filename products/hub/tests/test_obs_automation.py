@@ -170,7 +170,7 @@ class ObsTaskTests(unittest.TestCase):
         self.service = FakeObsService()
         self.registry = TaskRegistry()
         register_obs_tasks(self.registry, self.service)
-        self.trigger = TriggerEvent("manual", "sally", "manual", {})
+        self.trigger = TriggerEvent("manual", "test", "manual", {})
 
     def run_task(self, task_type: str, config: dict) -> bool:
         task = TaskDefinition("task", task_type, task_type, config)
@@ -220,7 +220,7 @@ class ObsTaskTests(unittest.TestCase):
     def test_text_and_image_sources_use_overlay_input_settings(self) -> None:
         self.trigger = TriggerEvent(
             "manual",
-            "sally",
+            "test",
             "manual",
             {"stream.category": "Portal 2", "automation.image": "C:/art/portal.png"},
         )
@@ -262,7 +262,7 @@ class CoreTaskTests(unittest.TestCase):
         cls.application = QApplication.instance() or QApplication([])
 
     def test_delay_and_immediate_service_wait(self) -> None:
-        trigger = TriggerEvent("manual", "sally", "manual", {})
+        trigger = TriggerEvent("manual", "test", "manual", {})
         delay = TaskDefinition("delay", "core.delay", "Delay", {"seconds": 0})
         wait = TaskDefinition("wait", "core.wait_for_service", "Wait", {"service": "obs", "timeout_seconds": 1})
         self.assertTrue(DelayTask().execute(delay, trigger).succeeded)
@@ -281,7 +281,7 @@ class CoreTaskTests(unittest.TestCase):
 
         result = RandomDelayTask(rng=rng, wait=waited.append).execute(
             task,
-            TriggerEvent("manual", "sally", "manual", {}),
+            TriggerEvent("manual", "test", "manual", {}),
         )
 
         self.assertTrue(result.succeeded)
@@ -377,7 +377,7 @@ class CoreTaskTests(unittest.TestCase):
                 outputs.append(output)
                 return output
 
-            trigger = TriggerEvent("manual", "sally", "manual", {})
+            trigger = TriggerEvent("manual", "test", "manual", {})
             task = TaskDefinition(
                 "audio",
                 "core.play_audio",
@@ -402,7 +402,7 @@ class CoreTaskTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "sound.txt"
             path.write_text("fake", encoding="utf-8")
-            trigger = TriggerEvent("manual", "sally", "manual", {})
+            trigger = TriggerEvent("manual", "test", "manual", {})
             task = TaskDefinition(
                 "audio",
                 "core.play_audio",

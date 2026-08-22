@@ -2,7 +2,7 @@
 
 > Canonical implementation map for maintainers and coding agents.
 >
-> Last verified: 2026-07-31 against version `0.1.0`.
+> Last verified: 2026-08-21 against version `0.1.0`.
 > Update this file when a change moves ownership, adds a persisted format,
 > changes an inter-process contract, or introduces a new service/trigger/task.
 
@@ -140,8 +140,8 @@ Dependency direction is enforced by ownership and package audits:
 
 ### Streamhouse Hub
 
-`products/hub/hub_main.py` performs legacy data migration, configures logging,
-and calls `products.hub.streamhouse_hub.app.run()`.
+`products/hub/hub_main.py` configures logging and calls
+`products.hub.streamhouse_hub.app.run()`.
 
 `products/hub/streamhouse_hub/app.py`:
 
@@ -200,7 +200,7 @@ on a worker. A zero port is the disconnect notification.
 Hub owns one `AIConnectionLifecycle` shared by its AI workers and remote-store
 facades. It starts `DISCONNECTED`; a valid presence message moves it to
 `VERIFYING`, and only a successful health and protocol check moves it to
-`READY`. Only `READY` permits companion requests. Disconnect notifications and
+`READY`. Only `READY` permits Streamhouse AI requests. Disconnect notifications and
 localhost transport failures increment the lifecycle generation, clear queued
 AI work, and make in-flight results stale. Hub waits for another presence
 announcement instead of retrying a saved endpoint.
@@ -247,8 +247,8 @@ but does not emit another signed-in transition or restart chat/EventSub.
 Twitch transport, OBS, or `products/ai/engine/`.
 
 `shared/streamhouse_runtime/` contains infrastructure that both executable
-entry points require before product composition: data-root migration, logging,
-atomic JSON helpers, QSettings migration, and the release version. It must not
+entry points require before product composition: data-root selection, logging,
+atomic JSON helpers, QSettings creation, and the release version. It must not
 import either product package.
 
 ### Important current compromise
@@ -502,7 +502,7 @@ Handlers are registered in `MainWindow` with one stable lowercase task type.
 | OBS | `products/hub/obs_service/tasks.py` | scenes, sources, inputs, filters, media, outputs, hotkeys, raw request |
 
 Counter definitions and values remain Hub implementation. `CounterService`
-uses the real stream ID cached by the Twitch companion refresh; it never
+uses the real stream ID cached by the Twitch channel snapshot refresh; it never
 creates a process-lifetime or offline stand-in stream. Each named counter has
 an independent read-modify-write lock and atomic JSON replacement, so selected
 scopes commit as one task transaction without serializing unrelated counters.
@@ -537,9 +537,8 @@ selected structured entry, while reply/copy/user details and moderation are
 coordinated by `MainWindow`. Twitch calls continue through
 `TwitchService.moderate_user()` and its Helix client.
 
-Python-script tasks expose trigger context through `STREAMHOUSE_*` environment
-variables. Temporary `SALLY_*` aliases are also emitted so existing trusted
-local scripts continue to work; new scripts must use Streamhouse names.
+Python-script tasks expose trigger context only through `STREAMHOUSE_*`
+environment variables.
 
 Adding a task requires more than a handler. See **Adding an automation task**.
 
@@ -657,12 +656,9 @@ request IDs and callbacks rather than blocking the UI waiting for OBS.
 `StreamhouseAIClient` is synchronous by design and must be used only in worker
 threads. Every request includes `X-Streamhouse-Protocol`.
 
-`PROTOCOL_VERSION` is `2`. New clients emit only
-`X-Streamhouse-Protocol`. The v2 server currently accepts the transitional
-`X-Sally-Protocol` header with version 1 because the route payloads are still
-compatible; unsupported versions receive a clear HTTP 409 mismatch response.
-This private pre-alpha header path is not an Alpha compatibility requirement.
-The `/v1/...` routes remain product-neutral.
+`PROTOCOL_VERSION` is `2`. Clients and the server use only
+`X-Streamhouse-Protocol`; missing or unsupported versions receive a clear HTTP
+409 mismatch response. The `/v1/...` routes remain product-neutral.
 
 Current routes:
 
@@ -899,43 +895,31 @@ Use these rules:
 `core.paths.user_data_root()` currently resolves:
 
 1. `STREAMHOUSE_DATA_DIR` when set (tests/smoke isolation);
-2. legacy `SALLY_DATA_DIR` as a temporary fallback, with a deprecation warning;
-3. `%LOCALAPPDATA%\Streamhouse`;
-4. a temporary `Streamhouse` directory if app data is unwritable.
+2. `%LOCALAPPDATA%\Streamhouse`;
+3. a temporary `Streamhouse` directory if app data is unwritable.
 
-Both entry points currently call `migrate_legacy_user_data()` before loading settings or
-credentials. With the normal default root, it recursively copies every missing
-file from `%LOCALAPPDATA%\SallyAI` into `%LOCALAPPDATA%\Streamhouse`. Existing
-destination files are never overwritten, the legacy tree is never deleted,
-DPAPI files are copied opaquely, and interrupted migrations are safe to retry.
-Explicit data-directory overrides skip automatic copying from the real user
-profile so tests and smoke runs remain isolated.
+Sally-era data roots and environment aliases are not read or migrated. Private
+pre-alpha data may be reset. Twitch token storage remains under the current
+Streamhouse root and is otherwise unchanged.
 
-Qt application metadata now uses organization `Streamhouse` with application
-names `Streamhouse Hub` and `Streamhouse AI`. `core.qt_settings` copies missing
-values from the legacy `Sally AI`/`Sally Bot` and
-`Sally AI`/`Sally AI Companion` QSettings stores without overwriting new state.
-This currently preserves geometry, dock, splitter, and related UI preferences.
-These Sally-era local-data and UI-state paths are transitional implementation,
-not pre-alpha compatibility requirements. Remove or rename generic obsolete
-infrastructure when active code has moved; development state may be reset.
-Preserve encrypted Twitch tokens when easy, but token storage may also reset if
-clean architecture requires it. Secret-handling rules always remain mandatory.
+Qt application metadata and QSettings use organization `Streamhouse` with
+application names `Streamhouse Hub` and `Streamhouse AI`. Sally-era QSettings
+stores are not copied. Current window-state keys use product/domain names.
 
 JSON stores use `atomic_write_json()` and `load_json_with_backup()`: write to a
 temporary file, keep an adjacent `.bak`, then replace atomically.
 
 Routine exports use `streamhouse.automation.routine` and the
 `.streamhouse-routine.json` extension. Task clipboard payloads use
-`streamhouse.automation.task`. Imports currently accept the transitional
-legacy `sally.automation.*` identifiers and `.sally-routine.json` files.
+`streamhouse.automation.task`. No pre-rebrand import identifiers or filename
+formats are accepted.
 
 ### Main files
 
 | Relative path | Owner | Notes |
 | --- | --- | --- |
 | `config/settings.json` | Hub | `AppSettings`, validated/defaulted |
-| `companion/settings.json` | Streamhouse AI | model, endpoint, personality/language; relative path retained during root migration |
+| `ai/settings.json` | Streamhouse AI | model, endpoint, personality/language |
 | `automation/routines.json` | Hub | groups, routines, ordered tasks, trigger links |
 | `automation/core_triggers.json` | Hub | application lifecycle bindings |
 | `automation/queues.json` | Hub | queue definitions; pending items are not persisted |
@@ -1198,17 +1182,9 @@ Keep public config free of local paths and routine internals.
   so Hub cannot reliably suppress the unban action or show moderation history.
   Moderation API requests are service-owned, but the current coordinator call
   is synchronous and should move to a focused worker before adding bulk tools.
-- `Companion` remains in several internal Twitch snapshot/health identifiers.
-  In that context it means the stream-companion refresh, not the Sally
-  character. `SALLY_*` environment aliases, old QSettings application names,
-  the legacy Hub window title, and the historical `companion/settings.json`
-  path remain as transitional rebrand debt. They are not Alpha requirements;
-  future cleanup should remove or rename generic Sally-era infrastructure once
-  active consumers use Streamhouse names.
 - The registry intentionally exposes only already-cached Twitch and OBS state.
   Follow/subscription profile state, OBS recording/profile/scene-collection
-  values, mathematical expressions, and bulk migration of every legacy flat
-  task output are deferred provider work.
+  values, and mathematical expressions are deferred provider work.
 
 ## Non-goals and future extension points
 

@@ -30,7 +30,7 @@ class FileTaskTests(unittest.TestCase):
 
     def test_read_text_handles_utf8_bom_and_sets_routine_variable(self) -> None:
         path = self.root / "lines.txt"
-        path.write_text("Hello Sally!", encoding="utf-8-sig")
+        path.write_text("Hello Streamhouse!", encoding="utf-8-sig")
 
         result = self.execute(
             "core.file_read",
@@ -38,7 +38,7 @@ class FileTaskTests(unittest.TestCase):
         )
 
         self.assertTrue(result.succeeded)
-        self.assertEqual(self.context["automation.file_text"], "Hello Sally!")
+        self.assertEqual(self.context["automation.file_text"], "Hello Streamhouse!")
 
     def test_random_line_ignores_blanks(self) -> None:
         path = self.root / "responses.txt"

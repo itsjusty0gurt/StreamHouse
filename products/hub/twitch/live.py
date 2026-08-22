@@ -485,7 +485,7 @@ class TwitchHelixClient:
         with urlopen(request, timeout=15):
             pass
 
-    def get_companion_snapshot(self, broadcaster_id: str, token: TwitchToken) -> dict:
+    def get_channel_snapshot(self, broadcaster_id: str, token: TwitchToken) -> dict:
         headers = self._headers(token)
         stream_payload = self._read_json(Request(
             f"{self.STREAMS_URL}?{urlencode({'user_id': broadcaster_id})}", headers=headers

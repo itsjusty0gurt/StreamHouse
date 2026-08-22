@@ -81,15 +81,15 @@ Reusable information providers live in `products/hub/twitch/tasks.py`:
   stays within the configured Twitch message budget.
 
 `core.format_duration` and `core.select_text` provide reusable formatting and
-conditional response selection. Every output is routine-scoped and registered
-with the generated-variable catalog so later task editors show friendly,
+conditional response selection. Every output is routine-scoped and described
+by typed temporary-output definitions so later task editors show friendly,
 insertable values. Network-backed command routines run on a single Qt worker;
 the completion signal performs command statistics and UI updates on the main
 thread.
 
 ## UI responsibilities
 
-- **Your Channel** is the current stream companion. Its current top-level tabs
+- **Your Channel** is the current Hub channel workspace. Its current top-level tabs
   are Chat, Analytics, Soundboard, Channel Information, Commands, Channel
   Points, Counters, and User. Session data is
   currently presented within Analytics. Chat includes the overview, grouped
@@ -109,7 +109,7 @@ thread.
 - **Logs > Twitch Events** contains searchable raw EventSub diagnostics and
   sanitized payload details.
 - **Developer Tools** contains message and event simulators.
-- The companion splitter, activity filter, window geometry, and dock state are
+- The channel splitter, activity filter, window geometry, and dock state are
   restored with `products/hub/core/window_state.py`.
 
 ## Simulation
@@ -128,7 +128,7 @@ routines persist at `automation/routines.json`. Both are included in current
 Streamhouse Hub backups. Older chatter records migrate through defaulted
 version-three fields.
 
-The stream companion reads Twitch's ad schedule with `channel:read:ads` and
+The channel snapshot refresh reads Twitch's ad schedule with `channel:read:ads` and
 shows the next break and duration, the last break, remaining pre-roll-free
 time, available snoozes, and the next snooze refresh. A one-second local timer
 updates countdowns between the normal one-minute Helix refreshes. Running and

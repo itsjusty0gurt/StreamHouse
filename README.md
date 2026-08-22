@@ -75,9 +75,9 @@ Independent outputs:
 - `release\StreamhouseHub-0.1.0-windows-x64.zip`
 - `release\StreamhouseAI-0.1.0-windows-x64.zip`
 
-Current user data lives under `%LOCALAPPDATA%\Streamhouse`. Some Sally-era
-migration and environment fallbacks still exist as transitional implementation,
-not as guaranteed pre-alpha compatibility. New work uses
-`STREAMHOUSE_DATA_DIR` and `STREAMHOUSE_SMOKE_TEST`; obsolete fallbacks should be
-removed when their active consumers have been migrated. Encrypted Twitch-token
-preservation is preferred when easy, but it must not constrain clean design.
+Current user data lives under `%LOCALAPPDATA%\Streamhouse`. Development and
+smoke overrides use `STREAMHOUSE_DATA_DIR` and `STREAMHOUSE_SMOKE_TEST` only.
+Pre-alpha Sally-era local data, settings, routines, and environment aliases are
+not loaded or migrated. Encrypted Twitch tokens already stored under the
+Streamhouse data root are unchanged by this cleanup; preserving older token
+locations is not a compatibility requirement.

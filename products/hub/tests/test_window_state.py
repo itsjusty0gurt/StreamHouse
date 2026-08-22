@@ -17,7 +17,6 @@ from PySide6.QtWidgets import (
 )
 
 from products.hub.core.window_state import WindowStateStore
-from shared.streamhouse_runtime.qt_settings import migrate_qsettings_values
 
 
 class WindowStateStoreTests(unittest.TestCase):
@@ -49,38 +48,7 @@ class WindowStateStoreTests(unittest.TestCase):
                 )
             )
 
-    def test_legacy_qt_values_copy_without_overwriting_streamhouse_values(
-        self,
-    ) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            legacy = QSettings(
-                str(root / "legacy.ini"),
-                QSettings.Format.IniFormat,
-            )
-            destination = QSettings(
-                str(root / "streamhouse.ini"),
-                QSettings.Format.IniFormat,
-            )
-            legacy.setValue("window/main_geometry", b"legacy-geometry")
-            legacy.setValue("window/layout_mode", "portrait")
-            destination.setValue("window/layout_mode", "landscape")
-
-            copied = migrate_qsettings_values(destination, legacy)
-            copied_again = migrate_qsettings_values(destination, legacy)
-
-            self.assertEqual(copied, 1)
-            self.assertEqual(copied_again, 0)
-            self.assertEqual(
-                destination.value("window/main_geometry"),
-                b"legacy-geometry",
-            )
-            self.assertEqual(
-                destination.value("window/layout_mode"),
-                "landscape",
-            )
-
-    def test_companion_layout_round_trip(self) -> None:
+    def test_channel_layout_round_trip(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             settings = QSettings(
                 str(Path(directory) / "window.ini"),

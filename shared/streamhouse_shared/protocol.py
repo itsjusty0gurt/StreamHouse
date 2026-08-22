@@ -12,9 +12,7 @@ from shared.streamhouse_shared.models import (
 
 
 PROTOCOL_VERSION = 2
-LEGACY_PROTOCOL_VERSION = 1
 PROTOCOL_HEADER = "X-Streamhouse-Protocol"
-LEGACY_PROTOCOL_HEADER = "X-Sally-Protocol"
 
 
 def response_message_to_dict(message: ResponseMessage) -> dict[str, Any]:

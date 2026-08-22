@@ -77,20 +77,6 @@ class PythonScriptTaskTests(unittest.TestCase):
         self.assertEqual(payload["context"]["channel"], "samplechannel")
         self.assertEqual(payload["argument"], "Test Viewer")
 
-    def test_existing_scripts_receive_temporary_sally_environment_aliases(
-        self,
-    ) -> None:
-        environment = PythonScriptTask._environment(self.trigger)
-
-        self.assertEqual(
-            environment["SALLY_TRIGGER_CONTEXT"],
-            environment["STREAMHOUSE_TRIGGER_CONTEXT"],
-        )
-        self.assertEqual(
-            environment["SALLY_USER"],
-            environment["STREAMHOUSE_USER"],
-        )
-
     def test_nonzero_exit_can_stop_or_continue_the_routine(self) -> None:
         script = self.root / "failure.py"
         script.write_text("raise SystemExit(4)\n", encoding="utf-8")

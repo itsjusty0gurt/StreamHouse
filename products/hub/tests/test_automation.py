@@ -345,7 +345,7 @@ class AutomationServiceTests(unittest.TestCase):
 
         self.assertEqual(self.store.get_group(group.group_id).name, "Original")
 
-    def test_version_one_routine_file_migrates_without_losing_tasks(self) -> None:
+    def test_discarded_pre_alpha_routine_schema_is_rejected(self) -> None:
         self.store.path.write_text(
             json.dumps(
                 {
@@ -370,13 +370,8 @@ class AutomationServiceTests(unittest.TestCase):
             encoding="utf-8",
         )
 
-        self.store.load()
-
-        saved = json.loads(self.store.path.read_text(encoding="utf-8"))
-        self.assertEqual(saved["version"], 4)
-        self.assertEqual(saved["groups"], [])
-        self.assertEqual(saved["routines"][0]["routine_id"], "legacy-routine")
-        self.assertEqual(saved["routines"][0]["tasks"][0]["task_id"], "legacy-task")
+        with self.assertRaisesRegex(ValueError, "discarded pre-alpha schema"):
+            self.store.load()
 
 
 class SendTwitchChatMessageTaskTests(unittest.TestCase):

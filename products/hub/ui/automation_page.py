@@ -614,7 +614,7 @@ class TaskEditorDialog(QDialog):
     SCHEMAS: dict[str, tuple[dict[str, object], ...]] = {
         "twitch.send_chat_message": (
             {"key": "message", "label": "Message", "kind": "multiline", "default": "", "required": True, "placeholder": "Hello {user.display_name}!"},
-            {"key": "as_bot", "label": "", "kind": "bool", "default": True, "text": "Send through Sally's bot account"},
+            {"key": "as_bot", "label": "", "kind": "bool", "default": True, "text": "Send through the configured bot account"},
         ),
         "twitch.send_pinned_message": (
             {"key": "message", "label": "Message", "kind": "multiline", "default": "", "required": True, "placeholder": "Important message for {user.display_name}"},
@@ -728,7 +728,7 @@ class TaskEditorDialog(QDialog):
             {"key": "target", "label": "File, folder, or URL", "kind": "target", "default": "", "required": True, "placeholder": "https://twitch.tv or C:/path"},
         ),
         "core.show_notification": (
-            {"key": "title", "label": "Title", "kind": "text", "default": "Sally", "required": True, "placeholder": "Stream reminder"},
+            {"key": "title", "label": "Title", "kind": "text", "default": "Streamhouse Hub", "required": True, "placeholder": "Stream reminder"},
             {"key": "message", "label": "Message", "kind": "multiline", "default": "", "required": True, "placeholder": "{user.display_name} triggered a reminder"},
             {"key": "icon", "label": "Icon", "kind": "choice", "default": "information", "choices": (("Information", "information"), ("Warning", "warning"), ("Critical", "critical"), ("No icon", "none"))},
             {"key": "duration_seconds", "label": "Display duration", "kind": "number", "default": 5, "minimum": 1, "maximum": 60, "suffix": " seconds"},
@@ -1034,8 +1034,7 @@ class TaskEditorDialog(QDialog):
                 "Trusted local code: this script runs outside Streamhouse Hub and has the "
                 "same access to your computer as your user account. Only run "
                 "scripts you trust. Trigger values are provided through arguments "
-                "and STREAMHOUSE_* environment variables. Legacy SALLY_* "
-                "aliases are temporarily included for existing scripts."
+                "and STREAMHOUSE_* environment variables."
             )
             warning.setObjectName("pythonScriptWarning")
             warning.setWordWrap(True)
@@ -3118,7 +3117,7 @@ class AutomationPage(QWidget):
             self,
             "Export Routine",
             f"{safe_name or 'streamhouse-routine'}.streamhouse-routine.json",
-            "Streamhouse routine files (*.streamhouse-routine.json);;Legacy Sally routine files (*.sally-routine.json);;JSON files (*.json)",
+            "Streamhouse routine files (*.streamhouse-routine.json);;JSON files (*.json)",
         )
         if not filename:
             return
@@ -3143,7 +3142,7 @@ class AutomationPage(QWidget):
             self,
             "Import Routine",
             "",
-            "Streamhouse routine files (*.streamhouse-routine.json);;Legacy Sally routine files (*.sally-routine.json);;JSON files (*.json)",
+            "Streamhouse routine files (*.streamhouse-routine.json);;JSON files (*.json)",
         )
         if not filename:
             return
@@ -3866,8 +3865,7 @@ class AutomationPage(QWidget):
             return None
         if (
             not isinstance(payload, dict)
-            or payload.get("format")
-            not in {"streamhouse.automation.task", "sally.automation.task"}
+            or payload.get("format") != "streamhouse.automation.task"
             or int(payload.get("version", 0)) != 1
             or not isinstance(payload.get("task"), dict)
         ):

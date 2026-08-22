@@ -4,7 +4,6 @@ import sys
 
 from shared.streamhouse_shared.presence_protocol import (
     HUB_WINDOW_TITLE,
-    LEGACY_HUB_WINDOW_TITLE,
     STREAMHOUSE_AI_PRESENCE_MESSAGE,
 )
 
@@ -55,9 +54,7 @@ class WindowsHubPresenceNotifier:
             self.connected = True
             return True
         self._window_handle = int(
-            self._user32.FindWindowW(None, HUB_WINDOW_TITLE)
-            or self._user32.FindWindowW(None, LEGACY_HUB_WINDOW_TITLE)
-            or 0
+            self._user32.FindWindowW(None, HUB_WINDOW_TITLE) or 0
         )
         if not self._window_handle:
             self.connected = False

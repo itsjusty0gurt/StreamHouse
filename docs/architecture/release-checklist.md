@@ -23,8 +23,8 @@ the saved-data compatibility baseline.
    - `dist\StreamhouseAI\StreamhouseAI.exe`
 8. Verify Hub starts with AI absent, AI starts with Hub absent, and discovery
    succeeds when both applications are running.
-9. Verify new data is written beneath `%LOCALAPPDATA%\Streamhouse`; do not make
-   Sally-era local-data or UI-state migration a pre-alpha release requirement.
+9. Verify new data is written beneath `%LOCALAPPDATA%\Streamhouse`; Sally-era
+   local-data and UI-state stores must not be loaded or migrated.
 10. Prefer preserving encrypted Twitch tokens when easy, but permit an
     authentication reset if required by a cleaner design. Verify that no token,
     OAuth credential, or other secret appears in logs, artifacts, tests, or
@@ -39,12 +39,11 @@ the saved-data compatibility baseline.
     - `StreamhouseAI-<version>-windows-x64.zip`
     - `StreamhouseAI-<version>-windows-x64.zip.sha256`
 
-Before Alpha, obsolete local environment aliases, protocol headers, QSettings
-identifiers, data readers, and migration paths should not survive merely to
-preserve development state. Externally deployed relay compatibility is governed
-by `docs/deployment/relay-brand-migration.md` and remains until its operational
-removal conditions are satisfied. New builds and documentation use Streamhouse
-names.
+Obsolete local environment aliases, protocol headers, QSettings identifiers,
+data readers, and migration paths have been removed. Externally deployed relay
+compatibility is governed by `docs/deployment/relay-brand-migration.md` and
+remains until its operational removal conditions are satisfied. New builds and
+documentation use Streamhouse names.
 
 Approved product icons live under `shared/assets/streamhouse-icons/`. Confirm
 Hub uses the `H` icon and Streamhouse AI uses the `AI` icon in both Qt and the

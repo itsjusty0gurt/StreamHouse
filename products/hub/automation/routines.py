@@ -34,9 +34,11 @@ class RoutineStore:
         payload = load_json_with_backup(self.path)
         if not isinstance(payload, dict):
             raise ValueError("Routines must contain a JSON object.")
-        version = int(payload.get("version", 1))
-        if version > self.VERSION:
-            raise ValueError("Routine data is newer than this app.")
+        version = int(payload.get("version", 0))
+        if version != self.VERSION:
+            raise ValueError(
+                "Routine data uses a discarded pre-alpha schema and must be reset."
+            )
         raw_groups = payload.get("groups", [])
         values = payload.get("routines", [])
         if not isinstance(raw_groups, list):
@@ -56,8 +58,6 @@ class RoutineStore:
         self._validate_state(groups, routines)
         self.groups = groups
         self.routines = routines
-        if version < self.VERSION:
-            self.save()
         return list(self.routines)
 
     def save(self) -> None:
