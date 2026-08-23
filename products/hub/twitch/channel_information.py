@@ -64,11 +64,13 @@ def normalize_multiline_text(value: object) -> str:
 class SocialLink:
     enabled_in_socials: bool = False
     url: str = ""
+    expose_as_variable: bool = False
 
     @classmethod
     def from_dict(cls, values: Mapping[str, Any]) -> SocialLink:
         return cls(
             enabled_in_socials=bool(values.get("enabled_in_socials", False)),
+            expose_as_variable=bool(values.get("expose_as_variable", False)),
             url=normalize_social_url(values.get("url", "")),
         )
 
@@ -81,8 +83,11 @@ def _default_social_links() -> dict[str, SocialLink]:
 class ChannelInformation:
     social_links: dict[str, SocialLink] = field(default_factory=_default_social_links)
     schedule: str = ""
+    expose_schedule: bool = False
     rules: str = ""
+    expose_rules: bool = False
     server_info: str = ""
+    expose_server_info: bool = False
 
     @classmethod
     def from_dict(cls, values: Mapping[str, Any]) -> ChannelInformation:
@@ -100,13 +105,16 @@ class ChannelInformation:
         return cls(
             social_links=links,
             schedule=normalize_multiline_text(values.get("schedule", "")),
+            expose_schedule=bool(values.get("expose_schedule", False)),
             rules=normalize_multiline_text(values.get("rules", "")),
+            expose_rules=bool(values.get("expose_rules", False)),
             server_info=normalize_multiline_text(values.get("server_info", "")),
+            expose_server_info=bool(values.get("expose_server_info", False)),
         )
 
 
 class ChannelInformationStore:
-    VERSION = 1
+    VERSION = 2
 
     def __init__(self, path: Path | None = None) -> None:
         self.path = path or user_data_root() / "twitch" / "channel-information.json"
@@ -122,11 +130,14 @@ class ChannelInformationStore:
             if not isinstance(payload, dict):
                 raise ValueError("Channel Information must contain a JSON object.")
             try:
-                version = int(payload.get("version", 1))
+                version = int(payload.get("version", 0))
             except (TypeError, ValueError) as error:
                 raise ValueError("Channel Information has an invalid schema version.") from error
-            if version > self.VERSION:
-                raise ValueError("Channel Information data is newer than this app.")
+            if version != self.VERSION:
+                raise ValueError(
+                    f"Unsupported Channel Information version {version}; "
+                    f"expected {self.VERSION}."
+                )
             self.information = ChannelInformation.from_dict(payload)
             return self.snapshot()
 
@@ -149,6 +160,12 @@ class ChannelInformationStore:
         with self._lock:
             return deepcopy(self.information)
 
+    def update_live(self, information: ChannelInformation) -> ChannelInformation:
+        """Publish an unsaved UI draft for immediate runtime resolution."""
+        with self._lock:
+            self.information = ChannelInformation.from_dict(asdict(information))
+            return self.snapshot()
+
     def field_value(self, field_id: str) -> str:
         clean = str(field_id).strip().casefold()
         with self._lock:
@@ -161,9 +178,17 @@ class ChannelInformationStore:
         raise ValueError("Unknown Channel Information field.")
 
     def field_available(self, field_id: str) -> bool:
-        try:
-            return bool(self.field_value(field_id))
-        except ValueError:
+        clean = str(field_id).strip().casefold()
+        with self._lock:
+            if clean == "discord_url":
+                link = self.information.social_links["discord"]
+                return bool(link.expose_as_variable and link.url)
+            if clean == "youtube_url":
+                link = self.information.social_links["youtube"]
+                return bool(link.expose_as_variable and link.url)
+            if clean in {"schedule", "rules", "server_info"}:
+                exposed = bool(getattr(self.information, f"expose_{clean}"))
+                return exposed and bool(str(getattr(self.information, clean)).strip())
             return False
 
     def usable_social_links(self) -> tuple[tuple[str, str], ...]:

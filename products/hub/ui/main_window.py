@@ -62,6 +62,7 @@ from products.hub.automation.service import AutomationService
 from products.hub.automation.custom_variables import CustomVariableStore
 from products.hub.automation.variable_providers import (
     AdsVariableProvider,
+    ChannelInformationVariableProvider,
     CounterVariableProvider,
     CustomVariableProvider,
     context_provider,
@@ -508,6 +509,9 @@ class MainWindow(QMainWindow):
         )
         self.variable_registry.register(
             AdsVariableProvider(lambda: self.ads_service.state.values())
+        )
+        self.variable_registry.register(
+            ChannelInformationVariableProvider(self.channel_information_store)
         )
         self.variable_registry.register(
             CustomVariableProvider(self.custom_variable_store)

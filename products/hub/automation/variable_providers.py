@@ -11,6 +11,79 @@ from products.hub.automation.variable_registry import (
     VariableSnapshot,
 )
 from products.hub.counters.service import CounterService
+from products.hub.twitch.channel_information import (
+    SOCIAL_SERVICES,
+    ChannelInformationStore,
+)
+
+
+class ChannelInformationVariableProvider:
+    """Expose explicitly enabled Hub-owned channel configuration."""
+
+    source = "Channel Information"
+    _OTHER_FIELDS = (
+        ("channel.schedule", "Schedule", "Configured channel schedule.", "schedule"),
+        ("channel.rules", "Channel Rules", "Configured channel rules.", "rules"),
+        (
+            "serverinfo.details",
+            "Server Information",
+            "Configured server name, address, or joining instructions.",
+            "server_info",
+        ),
+    )
+
+    def __init__(self, store: ChannelInformationStore) -> None:
+        self.store = store
+
+    def definitions(self) -> tuple[VariableDefinition, ...]:
+        information = self.store.snapshot()
+        definitions: list[VariableDefinition] = []
+        for service_id, label in SOCIAL_SERVICES:
+            link = information.social_links[service_id]
+            if link.expose_as_variable and link.url:
+                definitions.append(
+                    VariableDefinition(
+                        name=f"socials.{service_id}",
+                        display_name=label,
+                        description=f"Configured {label} social link.",
+                        data_type=VariableDataType.TEXT,
+                        source=self.source,
+                        category="Socials",
+                        preview_value=link.url,
+                    )
+                )
+        for name, display_name, description, field_id in self._OTHER_FIELDS:
+            if getattr(information, f"expose_{field_id}") and str(
+                getattr(information, field_id)
+            ).strip():
+                definitions.append(
+                    VariableDefinition(
+                        name=name,
+                        display_name=display_name,
+                        description=description,
+                        data_type=VariableDataType.TEXT,
+                        source=self.source,
+                        category=name.split(".", 1)[0].title(),
+                        preview_value=getattr(information, field_id),
+                    )
+                )
+        return tuple(definitions)
+
+    def resolve(self, name: str, _context: Mapping[str, object]) -> VariableSnapshot:
+        definition = next(item for item in self.definitions() if item.name == name)
+        information = self.store.snapshot()
+        if name.startswith("socials."):
+            value = information.social_links[name.split(".", 1)[1]].url
+        else:
+            field_id = next(
+                field for candidate, _display, _description, field in self._OTHER_FIELDS
+                if candidate == name
+            )
+            value = getattr(information, field_id)
+        return VariableSnapshot(definition, value, bool(str(value).strip()))
+
+    def set_value(self, name: str, value: object) -> VariableSnapshot:
+        raise PermissionError(f'Variable "{name}" is read-only.')
 
 
 class CustomVariableProvider:

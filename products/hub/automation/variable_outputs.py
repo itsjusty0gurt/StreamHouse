@@ -95,7 +95,6 @@ def _output_availability(task_type: str) -> VariableAvailability:
 STATIC_OUTPUTS = {
     "twitch.resolve_user": ("target_user_id", "target_login", "target_display_name", "account_created_at", "user_lookup_status"),
     "twitch.get_stream_information": ("stream_status", "is_live", "stream_started_at", "stream_title", "stream_category", "stream_id", "stream_viewers", "stream_game_id"),
-    "twitch.get_channel_information": ("channel_info_status", "title_status", "category_status", "stream_title", "stream_category", "stream_game_id"),
     "twitch.get_follow_relationship": ("is_following", "followed_at", "follow_status", "channel_display_name"),
     "twitch.build_command_list": ("command_list", "command_list_status"),
 }
@@ -113,7 +112,6 @@ OUTPUT_CONFIG_KEYS = {
     "core.file_count_lines": "variable",
     "core.format_duration": "output_variable",
     "core.select_text": "output_variable",
-    "twitch.get_channel_information_field": "output_variable",
 }
 
 
@@ -124,8 +122,8 @@ def output_config_key(task_type: str) -> str:
 def _output_definition_names(task_type: str, config: Mapping[str, object]) -> tuple[str, ...]:
     if task_type in STATIC_OUTPUTS:
         return tuple(automation_output_name(name) for name in STATIC_OUTPUTS[task_type])
-    if task_type in {"twitch.get_channel_information_field", "twitch.build_social_links_message"}:
-        default = str(config.get("field", "")) if task_type.endswith("_field") else "social_links_message"
+    if task_type == "twitch.build_social_links_message":
+        default = "social_links_message"
         base = output_id(config.get("output_variable") or default)
         return tuple(
             automation_output_name(name)

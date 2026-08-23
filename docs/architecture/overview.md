@@ -426,7 +426,8 @@ owning provider supports writes. Valid types are `text`, `integer`, `number`,
 malformed names, duplicate names, provider collisions, alias collisions, and
 alias loops are rejected. Reserved built-in namespaces currently include
 `stream`, `user`, `chat`, `command`, `keyword`, `event`, `counter`, `obs`,
-`hub`, `custom`, `automation`, `ads`, and `soundboard`.
+`hub`, `custom`, `automation`, `ads`, `soundboard`, `channel`, `socials`, and
+`serverinfo`.
 Current providers expose:
 
 - cached Twitch stream values: `stream.title`, `stream.category`,
@@ -438,6 +439,8 @@ Current providers expose:
   `keyword.before`, and `keyword.after`;
 - cached and calculated Twitch ad state as `ads.*`, plus contextual
   `ads.requester.*` values when an Ads Started event supplies them;
+- explicitly exposed Hub-owned Channel Information as `channel.schedule`,
+  `channel.rules`, `socials.<service>`, and `serverinfo.details`;
 - stable shared counter totals as `counter.<counter_id>.stream` and contextual
   lifetime viewer totals as `counter.<counter_id>.viewer`;
 - the observed OBS program scene as `obs.current_scene`;
@@ -497,6 +500,15 @@ registering temporary values. Same-name temporary outputs retain deterministic
 task-order overwrite behavior. Counter tasks do not manufacture outputs: later
 tasks read the refreshed `counter.<id>.stream` or `.viewer` provider value.
 
+`ChannelInformationVariableProvider` reads the same thread-safe configuration
+store used by **Your Channel > Channel Information**. Each optional field has a
+separate **Expose as Variable** choice; unchecked or blank values do not publish
+definitions. Valid text edits update the store's in-memory draft immediately,
+so resolution and the picker reflect the current text without waiting for Save
+or restart. Save persists both values and exposure choices. **Include in
+!socials** remains an independent formatting choice. Automation reads this
+Hub-owned state directly through Variables rather than Get tasks.
+
 Output-producing task editors store a validated leaf ID such as `random_line`
 and show its canonical placeholder, `{automation.random_line}`, beside the
 field. A flat `{random_line}` placeholder is invalid. The task editor and
@@ -532,7 +544,7 @@ Handlers are registered in `MainWindow` with one stable lowercase task type.
 | Logic | `products/hub/automation/logic_tasks.py` | break, input, random number/choice, if/else, switch, while |
 | Files | `products/hub/automation/file_tasks.py` | read text/random/specific lines, write, existence, line count |
 | Control | `products/hub/automation/control_tasks.py` | enable/disable routines/tasks, pause/clear queues |
-| Twitch | `products/hub/twitch/tasks.py` | chat/pinned chat, ads, moderation, redemption results, user/stream/channel/follow lookups, enabled-command lists, Hub-owned Channel Information fields and social-message building |
+| Twitch | `products/hub/twitch/tasks.py` | chat/pinned chat, ads, moderation, redemption results, user/stream/follow lookups, enabled-command lists, and social-message building |
 | Counters | `products/hub/counters/tasks.py` | four mutation tasks: Increase, Decrease, Set, and Reset; amounts/values accept numeric literals or modern Variables |
 | OBS | `products/hub/obs_service/tasks.py` | scenes, sources, inputs, filters, media, outputs, hotkeys, raw request |
 
@@ -1010,7 +1022,7 @@ formats are accepted.
 | `automation/queues.json` | Hub | the system-owned Default Queue plus custom queue definitions; pending items are not persisted |
 | `automation/variables.json` | Hub | global values only; session/routine are volatile |
 | `twitch/commands.json` | Hub | configured commands, permissions, aliases, cooldowns, statistics, and default-template provenance; unconfigured templates are code-owned |
-| `twitch/channel-information.json` | Hub | versioned social links, social inclusion choices, schedule, rules, and server information used by commands and automation tasks |
+| `twitch/channel-information.json` | Hub | pre-alpha schema v2 social links, separate social-message inclusion and Variable-exposure choices, schedule, rules, and server information |
 | `counters/index.json` | Hub | pre-alpha schema v2 definitions: stable ID, labels, scopes, numeric type, reset/minimum, and display precision |
 | `counters/<counter_id>.json` | Hub | schema v2 atomic values stored as exact decimal strings; shared/current-stream and Twitch-user-ID keyed values |
 | `twitch/event_triggers.json` | Hub | Twitch EventSub, first-message, Keyword/Phrase, and Ads trigger definitions |

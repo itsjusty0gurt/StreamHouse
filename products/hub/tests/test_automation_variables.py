@@ -126,18 +126,6 @@ class AutomationVariableTests(unittest.TestCase):
         )
         self.assertEqual(
             tuple(item.name for item in generated_output_definitions(
-                "twitch.get_channel_information_field",
-                {"field": "discord_url"},
-            )),
-            (
-                "automation.discord_url",
-                "automation.discord_url_status",
-                "automation.channel_information_available",
-                "automation.channel_information_status",
-            ),
-        )
-        self.assertEqual(
-            tuple(item.name for item in generated_output_definitions(
                 "twitch.build_social_links_message",
                 {},
             )),

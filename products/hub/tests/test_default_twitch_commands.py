@@ -9,7 +9,11 @@ from products.hub.automation.models import TriggerEvent
 from products.hub.automation.routines import RoutineStore
 from products.hub.automation.service import AutomationService
 from products.hub.automation.tasks import TaskRegistry
-from products.hub.automation.variable_providers import context_provider
+from products.hub.automation.variable_providers import (
+    ChannelInformationVariableProvider,
+    context_provider,
+    runtime_provider,
+)
 from products.hub.automation.variable_registry import VariableRegistry
 from products.hub.automation.value_tasks import register_value_tasks
 from products.hub.twitch.commands import TwitchCommandTriggerStore
@@ -90,6 +94,21 @@ class DefaultTwitchCommandTests(unittest.TestCase):
         self.twitch = FakeTwitchInformationService()
         self.variable_registry = VariableRegistry()
         self.variable_registry.register(context_provider())
+        self.variable_registry.register(
+            runtime_provider(
+                lambda: {
+                    "title": str((self.twitch.channel or {}).get("title", "")),
+                    "category": str((self.twitch.channel or {}).get("game_name", "")),
+                    "connected": True,
+                },
+                obs_connected=lambda: False,
+                obs_scene=lambda: "",
+                hub_uptime=lambda: "1 minute",
+            )
+        )
+        self.variable_registry.register(
+            ChannelInformationVariableProvider(self.channel_information)
+        )
         self.registry = TaskRegistry()
         register_twitch_tasks(
             self.registry,
@@ -197,12 +216,16 @@ class DefaultTwitchCommandTests(unittest.TestCase):
             self.run_command("accountage", target="targetviewer"),
         )
 
-    def test_title_and_game_work_from_channel_information_offline(self) -> None:
+    def test_title_and_game_use_cached_stream_variables(self) -> None:
         self.assertEqual(self.run_command("title"), "Current title: Building Streamhouse")
         self.assertEqual(self.run_command("game"), "We're currently streaming Science & Technology.")
         self.twitch.channel = {"title": "Offline title", "game_name": "", "game_id": ""}
         self.assertEqual(self.run_command("title"), "Current title: Offline title")
-        self.assertEqual(self.run_command("game"), "No Twitch category is currently set.")
+        command = self.store.resolve("game")
+        result = self.automation.publish_trigger(
+            TriggerEvent(command.trigger_id, "twitch", "command", {"user": "TestViewer"})
+        )
+        self.assertFalse(result.succeeded)
 
     def test_commands_excludes_disabled_and_respects_permissions(self) -> None:
         game = self.store.resolve("game")
@@ -229,14 +252,17 @@ class DefaultTwitchCommandTests(unittest.TestCase):
     def test_channel_information_commands_use_configured_values(self) -> None:
         information = ChannelInformation(
             schedule="Tuesday and Thursday at 7 PM",
+            expose_schedule=True,
             rules="Be kind. No spoilers.",
+            expose_rules=True,
             server_info="Example Realm — play.example.com",
+            expose_server_info=True,
         )
         information.social_links["discord"] = SocialLink(
-            True, "https://discord.gg/example"
+            True, "https://discord.gg/example", True
         )
         information.social_links["youtube"] = SocialLink(
-            True, "https://youtube.com/@example"
+            True, "https://youtube.com/@example", True
         )
         information.social_links["tiktok"] = SocialLink(
             False, "https://tiktok.com/@example"
@@ -286,7 +312,7 @@ class DefaultTwitchCommandTests(unittest.TestCase):
         self.assertFalse(result.succeeded)
         self.assertEqual(self.twitch.messages, [])
         detail = result.routine_results[0].task_results[0].detail
-        self.assertIn("Configure Discord URL", detail)
+        self.assertIn("socials.discord", detail)
 
 
 if __name__ == "__main__":

@@ -31,6 +31,9 @@ RESERVED_NAMESPACES = frozenset(
         "target",
         "ads",
         "soundboard",
+        "channel",
+        "socials",
+        "serverinfo",
     }
 )
 

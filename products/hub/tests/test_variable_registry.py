@@ -16,6 +16,7 @@ from products.hub.automation.routines import RoutineStore
 from products.hub.automation.service import AutomationService
 from products.hub.automation.tasks import TaskRegistry
 from products.hub.automation.variable_providers import (
+    ChannelInformationVariableProvider,
     CounterVariableProvider,
     CustomVariableProvider,
     context_provider,
@@ -31,6 +32,11 @@ from products.hub.automation.variable_registry import (
 from products.hub.counters.models import CounterDefinition
 from products.hub.counters.service import CounterService
 from products.hub.counters.store import CounterStore
+from products.hub.twitch.channel_information import (
+    ChannelInformation,
+    ChannelInformationStore,
+    SocialLink,
+)
 from products.hub.ui.variable_picker import VariablePickerDialog
 from products.hub.ui.variables_page import VariablesPage
 from products.hub.ui.automation_page import TaskEditorDialog
@@ -89,6 +95,56 @@ def test_contextual_resolution_and_safe_placeholder_rendering() -> None:
     assert registry.resolve("keyword.before", keyword).display_value == "I think"
     assert not registry.resolve("keyword.match", command).available
     assert not registry.resolve("command.data", keyword).available
+
+
+def test_channel_information_definitions_follow_exposure_and_live_state() -> None:
+    with TemporaryDirectory() as temporary:
+        store = ChannelInformationStore(Path(temporary) / "channel-information.json")
+        store.load()
+        registry = VariableRegistry()
+        registry.register(ChannelInformationVariableProvider(store))
+
+        assert registry.definition("socials.discord") is None
+        information = ChannelInformation(
+            schedule="Friday at 8 PM",
+            expose_schedule=True,
+            rules="Be kind.",
+            expose_rules=False,
+            server_info="play.example.com",
+            expose_server_info=True,
+        )
+        information.social_links["discord"] = SocialLink(
+            False, "https://discord.gg/example", True
+        )
+        store.update_live(information)
+
+        assert registry.resolve("socials.discord").display_value == "https://discord.gg/example"
+        assert registry.resolve("channel.schedule").display_value == "Friday at 8 PM"
+        assert registry.resolve("serverinfo.details").display_value == "play.example.com"
+        assert registry.definition("channel.rules") is None
+        assert registry.definition("channel.schedule").preview_value == "Friday at 8 PM"
+        assert {item.name for item in registry.definitions()} == {
+            "socials.discord", "channel.schedule", "serverinfo.details"
+        }
+
+        app = QApplication.instance() or QApplication([])
+        picker = VariablePickerDialog(registry)
+        picker.search_edit.setText("socials.discord")
+        assert picker.selected_placeholder() == "{socials.discord}"
+        picker.close()
+        app.processEvents()
+
+        information.social_links["discord"].url = "https://discord.gg/updated"
+        information.social_links["discord"].expose_as_variable = False
+        information.expose_rules = True
+        store.update_live(information)
+        assert registry.definition("socials.discord") is None
+        assert registry.resolve("channel.rules").display_value == "Be kind."
+        assert "twitch.get_channel_information" not in TaskEditorDialog.LABELS
+        assert "twitch.get_channel_information_field" not in TaskEditorDialog.SCHEMAS
+        assert generated_output_definitions(
+            "twitch.get_channel_information_field", {"field": "discord_url"}
+        ) == ()
 
 
 def test_custom_metadata_type_persistence_deletion_and_reserved_names() -> None:

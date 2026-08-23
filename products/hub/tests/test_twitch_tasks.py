@@ -176,7 +176,7 @@ class TwitchTaskTests(unittest.TestCase):
         self.assertIn(("title", "Playing Portal 2 with Viewer"), self.service.calls)
         self.assertIn(("category", "Portal 2"), self.service.calls)
 
-    def test_channel_information_tasks_generate_values_and_status(self) -> None:
+    def test_social_links_message_uses_selected_channel_information(self) -> None:
         information = ChannelInformation(schedule="Friday at 8 PM")
         information.social_links["discord"] = SocialLink(
             True, "https://discord.gg/example"
@@ -186,23 +186,6 @@ class TwitchTaskTests(unittest.TestCase):
         )
         self.channel_information.save(information)
 
-        self.assertTrue(
-            self.execute(
-                "twitch.get_channel_information_field",
-                {"field": "schedule"},
-            )
-        )
-        self.assertEqual(self.trigger.context["automation.schedule"], "Friday at 8 PM")
-        self.assertEqual(self.trigger.context["automation.schedule_status"], "available")
-        self.assertEqual(self.trigger.context["automation.channel_information_available"], "true")
-        self.assertTrue(
-            self.execute(
-                "twitch.get_channel_information_field",
-                {"field": "schedule", "output_variable": "next_stream"},
-            )
-        )
-        self.assertEqual(self.trigger.context["automation.next_stream"], "Friday at 8 PM")
-        self.assertEqual(self.trigger.context["automation.next_stream_status"], "available")
         self.assertTrue(
             self.execute(
                 "twitch.build_social_links_message",
@@ -215,21 +198,7 @@ class TwitchTaskTests(unittest.TestCase):
         )
         self.assertNotIn("YouTube", self.trigger.context["automation.social_links_message"])
 
-    def test_unavailable_channel_information_and_missing_templates_never_send(self) -> None:
-        self.assertFalse(
-            self.execute(
-                "twitch.get_channel_information_field",
-                {"field": "discord_url"},
-            )
-        )
-        self.assertEqual(self.trigger.context["automation.discord_url_status"], "unavailable")
-        self.assertFalse(
-            self.execute(
-                "twitch.send_chat_message",
-                {"message": "Join: {automation.discord_url}", "as_bot": True},
-            )
-        )
-        self.assertEqual(self.service.calls, [])
+    def test_unavailable_social_message_never_sends(self) -> None:
         checked_blank = ChannelInformation()
         checked_blank.social_links["discord"] = SocialLink(True, "")
         self.channel_information.save(checked_blank)

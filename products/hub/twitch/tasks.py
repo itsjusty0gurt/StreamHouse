@@ -14,10 +14,7 @@ from products.hub.automation.variable_registry import (
     render_placeholders,
     validate_placeholders,
 )
-from products.hub.twitch.channel_information import (
-    CHANNEL_INFORMATION_FIELD_LABELS,
-    ChannelInformationStore,
-)
+from products.hub.twitch.channel_information import ChannelInformationStore
 from products.hub.twitch.service import TwitchService
 from shared.streamhouse_runtime.logger import Logger
 
@@ -133,10 +130,8 @@ TWITCH_TASK_LABELS = {
     SendTwitchChatMessageTask.task_type: "Twitch — Send chat message",
     "twitch.resolve_user": "Twitch — Resolve user",
     "twitch.get_stream_information": "Twitch — Get stream information",
-    "twitch.get_channel_information": "Twitch — Get channel information",
     "twitch.get_follow_relationship": "Twitch — Get follow relationship",
     "twitch.build_command_list": "Twitch — Build command list",
-    "twitch.get_channel_information_field": "Twitch — Get Channel Information field",
     "twitch.build_social_links_message": "Twitch — Build social links message",
     "twitch.send_pinned_message": "Twitch — Send and pin chat message",
     "twitch.run_commercial": "Twitch — Run commercial",
@@ -151,9 +146,7 @@ TWITCH_INFORMATION_TASK_TYPES = frozenset(
     {
         "twitch.resolve_user",
         "twitch.get_stream_information",
-        "twitch.get_channel_information",
         "twitch.get_follow_relationship",
-        "twitch.get_channel_information_field",
         "twitch.build_social_links_message",
     }
 )
@@ -273,53 +266,6 @@ class GetStreamInformationTask:
         return _task_result(task, "Retrieved live Twitch stream information.")
 
 
-class GetChannelInformationTask:
-    task_type = "twitch.get_channel_information"
-
-    def __init__(self, service: TwitchService) -> None:
-        self.service = service
-
-    def execute(self, task: TaskDefinition, trigger: TriggerEvent) -> TaskExecutionResult:
-        context = _mutable_context(trigger)
-        _publish(context,
-            {
-                "channel_info_status": "error",
-                "title_status": "error",
-                "category_status": "error",
-                "stream_title": "",
-                "stream_category": "",
-                "stream_game_id": "",
-            }
-        )
-        try:
-            channel = self.service.get_channel_information()
-        except (HTTPError, URLError, OSError, ValueError) as error:
-            Logger.warning(f"Could not retrieve Twitch channel information: {error}", source="TWITCH")
-            return _task_result(task, "Twitch channel information is unavailable.")
-        if not channel:
-            _publish(context,
-                {
-                    "channel_info_status": "unavailable",
-                    "title_status": "unavailable",
-                    "category_status": "unset",
-                }
-            )
-            return _task_result(task, "Twitch channel information was empty.")
-        title = str(channel.get("title", "")).strip()
-        category = str(channel.get("game_name", "")).strip()
-        _publish(context,
-            {
-                "channel_info_status": "available",
-                "title_status": "available" if title else "unavailable",
-                "category_status": "set" if category else "unset",
-                "stream_title": title,
-                "stream_category": category,
-                "stream_game_id": str(channel.get("game_id", "")),
-            }
-        )
-        return _task_result(task, "Retrieved Twitch channel information.")
-
-
 class GetFollowRelationshipTask:
     task_type = "twitch.get_follow_relationship"
 
@@ -419,59 +365,6 @@ class BuildCommandListTask:
         _set_output(context, "command_list", ", ".join(selected))
         _set_output(context, "command_list_status", "available" if selected else "empty")
         return _task_result(task, f"Listed {len(selected)} enabled Twitch commands.")
-
-
-class GetChannelInformationFieldTask:
-    task_type = "twitch.get_channel_information_field"
-
-    def __init__(self, store_provider: Callable[[], ChannelInformationStore]) -> None:
-        self.store_provider = store_provider
-
-    @staticmethod
-    def output_name(config: Mapping[str, object]) -> str:
-        field_id = str(config.get("field", "")).strip().casefold()
-        requested = str(config.get("output_variable", "")).strip()
-        return automation_output_name(requested or field_id)
-
-    def execute(self, task: TaskDefinition, trigger: TriggerEvent) -> TaskExecutionResult:
-        context = _mutable_context(trigger)
-        field_id = str(task.config.get("field", "")).strip().casefold()
-        label = CHANNEL_INFORMATION_FIELD_LABELS.get(field_id)
-        if label is None:
-            return _task_result(task, "Choose a valid Channel Information field.", False)
-        try:
-            output_name = self.output_name(task.config)
-        except ValueError as error:
-            return _task_result(task, str(error), False)
-        context.update(
-            {
-                output_name: "",
-                automation_output_name(output_name, "status"): "unavailable",
-                automation_output_name("channel_information_available"): "false",
-                automation_output_name("channel_information_status"): "unavailable",
-            }
-        )
-        try:
-            value = self.store_provider().field_value(field_id)
-        except (OSError, ValueError) as error:
-            _set_output(context, "channel_information_status", "error")
-            context[automation_output_name(output_name, "status")] = "error"
-            return _task_result(task, f"Could not read {label}: {error}", False)
-        if not value:
-            return _task_result(
-                task,
-                f"Configure {label} in Twitch > Channel Information before running this task.",
-                False,
-            )
-        context.update(
-            {
-                output_name: value,
-                automation_output_name(output_name, "status"): "available",
-                automation_output_name("channel_information_available"): "true",
-                automation_output_name("channel_information_status"): "available",
-            }
-        )
-        return _task_result(task, f"Loaded {label} from Channel Information.")
 
 
 class BuildSocialLinksMessageTask:
@@ -627,21 +520,17 @@ def register_twitch_tasks(
     registry.register(SendTwitchChatMessageTask(service, variable_registry))
     registry.register(ResolveTwitchUserTask(service))
     registry.register(GetStreamInformationTask(service))
-    registry.register(GetChannelInformationTask(service))
     registry.register(GetFollowRelationshipTask(service))
     registry.register(BuildCommandListTask(command_provider or (lambda: None)))
     information_provider = channel_information_provider or ChannelInformationStore
-    registry.register(GetChannelInformationFieldTask(information_provider))
     registry.register(BuildSocialLinksMessageTask(information_provider))
     for task_type in TWITCH_TASK_LABELS:
         if task_type not in {
             SendTwitchChatMessageTask.task_type,
             ResolveTwitchUserTask.task_type,
             GetStreamInformationTask.task_type,
-            GetChannelInformationTask.task_type,
             GetFollowRelationshipTask.task_type,
             BuildCommandListTask.task_type,
-            GetChannelInformationFieldTask.task_type,
             BuildSocialLinksMessageTask.task_type,
         }:
             task_service = (

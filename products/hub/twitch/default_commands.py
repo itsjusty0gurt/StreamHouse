@@ -77,13 +77,6 @@ def _channel_information_command(
         (
             _task(
                 command,
-                "channel-information",
-                "twitch.get_channel_information_field",
-                f"Get {field.replace('_', ' ').title()}",
-                {"field": field},
-            ),
-            _task(
-                command,
                 "send",
                 "twitch.send_chat_message",
                 "Send Twitch chat response",
@@ -185,34 +178,20 @@ def default_command_definitions() -> tuple[DefaultCommandDefinition, ...]:
         "title",
         "title",
         (
-            _task("title", "channel", "twitch.get_channel_information", "Get channel information", {}),
-            _select(
-                "title",
-                "{automation.title_status}",
-                {
-                    "available": "Current title: {automation.stream_title}",
-                    "unavailable": "No Twitch stream title is currently set.",
-                    "error": "I couldn't retrieve the stream title right now.",
-                },
+            _task(
+                "title", "send", "twitch.send_chat_message", "Send Twitch chat response",
+                {"message": "Current title: {stream.title}", "as_bot": True},
             ),
-            _send("title"),
         ),
     )
     game = DefaultCommandDefinition(
         "game",
         "game",
         (
-            _task("game", "channel", "twitch.get_channel_information", "Get channel information", {}),
-            _select(
-                "game",
-                "{automation.category_status}",
-                {
-                    "set": "We're currently streaming {automation.stream_category}.",
-                    "unset": "No Twitch category is currently set.",
-                    "error": "I couldn't retrieve the Twitch category right now.",
-                },
+            _task(
+                "game", "send", "twitch.send_chat_message", "Send Twitch chat response",
+                {"message": "We're currently streaming {stream.category}.", "as_bot": True},
             ),
-            _send("game"),
         ),
     )
     commands = DefaultCommandDefinition(
@@ -241,7 +220,7 @@ def default_command_definitions() -> tuple[DefaultCommandDefinition, ...]:
         user_cooldown_seconds=30,
     )
     discord = _channel_information_command(
-        "discord", "discord_url", "Join the Discord: {automation.discord_url}"
+        "discord", "discord_url", "Join the Discord: {socials.discord}"
     )
     socials = DefaultCommandDefinition(
         "socials",
@@ -268,16 +247,16 @@ def default_command_definitions() -> tuple[DefaultCommandDefinition, ...]:
         setup_requirement="socials",
     )
     youtube = _channel_information_command(
-        "youtube", "youtube_url", "YouTube: {automation.youtube_url}"
+        "youtube", "youtube_url", "YouTube: {socials.youtube}"
     )
     schedule = _channel_information_command(
-        "schedule", "schedule", "Schedule: {automation.schedule}"
+        "schedule", "schedule", "Schedule: {channel.schedule}"
     )
     rules = _channel_information_command(
-        "rules", "rules", "Channel rules: {automation.rules}"
+        "rules", "rules", "Channel rules: {channel.rules}"
     )
     server = _channel_information_command(
-        "server", "server_info", "Server information: {automation.server_info}"
+        "server", "server_info", "Server information: {serverinfo.details}"
     )
     return (
         uptime,

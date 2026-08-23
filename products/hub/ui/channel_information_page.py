@@ -37,7 +37,10 @@ class ChannelInformationPage(QWidget):
         super().__init__(parent)
         self.store = store
         self.command_store = command_store
-        self.social_rows: dict[str, tuple[QCheckBox, QLineEdit, QLabel]] = {}
+        self.social_rows: dict[
+            str, tuple[QCheckBox, QLineEdit, QCheckBox, QLabel]
+        ] = {}
+        self.other_expose_checks: dict[str, QCheckBox] = {}
         self._enable_default_id = ""
         self._loading = False
         self._build_ui()
@@ -61,12 +64,15 @@ class ChannelInformationPage(QWidget):
         grid.addWidget(QLabel("Include"), 0, 0)
         grid.addWidget(QLabel("Service"), 0, 1)
         grid.addWidget(QLabel("Link"), 0, 2)
+        grid.addWidget(QLabel("Expose as Variable"), 0, 3)
         for row, (service_id, label) in enumerate(SOCIAL_SERVICES, start=1):
             include = QCheckBox()
             include.setObjectName(f"channelInformationInclude{service_id.title()}")
             edit = QLineEdit()
             edit.setObjectName(f"channelInformation{service_id.title()}Url")
             edit.setPlaceholderText("https://")
+            expose = QCheckBox()
+            expose.setObjectName(f"channelInformationExpose{service_id.title()}")
             error = QLabel()
             error.setObjectName(f"channelInformation{service_id.title()}Error")
             error.setStyleSheet("color: #e5a84b;")
@@ -74,10 +80,12 @@ class ChannelInformationPage(QWidget):
             grid.addWidget(include, row, 0)
             grid.addWidget(QLabel(label), row, 1)
             grid.addWidget(edit, row, 2)
-            grid.addWidget(error, row, 3)
-            self.social_rows[service_id] = include, edit, error
+            grid.addWidget(expose, row, 3)
+            grid.addWidget(error, row, 4)
+            self.social_rows[service_id] = include, edit, expose, error
             include.toggled.connect(self._values_changed)
             edit.textChanged.connect(self._values_changed)
+            expose.toggled.connect(self._values_changed)
         grid.setColumnStretch(2, 1)
         social_layout.addLayout(grid)
         preview_title = QLabel("!socials preview")
@@ -100,18 +108,25 @@ class ChannelInformationPage(QWidget):
         self.server_info_edit = self._multiline_editor(
             "channelInformationServer", "Server name, address, or joining instructions"
         )
-        for row, (label, editor, dependency) in enumerate(
+        for row, (field_id, label, editor, dependency) in enumerate(
             (
-                ("Schedule", self.schedule_edit, "Used by !schedule"),
-                ("Rules", self.rules_edit, "Used by !rules"),
-                ("Server Information", self.server_info_edit, "Used by !server"),
+                ("schedule", "Schedule", self.schedule_edit, "Used by !schedule"),
+                ("rules", "Rules", self.rules_edit, "Used by !rules"),
+                ("server_info", "Server Information", self.server_info_edit, "Used by !server"),
             )
         ):
             heading = QLabel(f"{label}\n{dependency}")
             heading.setWordWrap(True)
             other_layout.addWidget(heading, row, 0)
             other_layout.addWidget(editor, row, 1)
+            expose = QCheckBox("Expose as Variable")
+            expose.setObjectName(
+                f"channelInformationExpose{field_id.title().replace('_', '')}"
+            )
+            other_layout.addWidget(expose, row, 2)
+            self.other_expose_checks[field_id] = expose
             editor.textChanged.connect(self._values_changed)
+            expose.toggled.connect(self._values_changed)
         other_layout.setColumnStretch(1, 1)
         layout.addWidget(other_group)
 
@@ -144,14 +159,20 @@ class ChannelInformationPage(QWidget):
     def load_values(self) -> None:
         self._loading = True
         information = self.store.snapshot()
-        for service_id, (include, edit, error) in self.social_rows.items():
+        for service_id, (include, edit, expose, error) in self.social_rows.items():
             link = information.social_links[service_id]
             include.setChecked(link.enabled_in_socials)
             edit.setText(link.url)
+            expose.setChecked(link.expose_as_variable)
             error.clear()
         self.schedule_edit.setPlainText(information.schedule)
         self.rules_edit.setPlainText(information.rules)
         self.server_info_edit.setPlainText(information.server_info)
+        self.other_expose_checks["schedule"].setChecked(information.expose_schedule)
+        self.other_expose_checks["rules"].setChecked(information.expose_rules)
+        self.other_expose_checks["server_info"].setChecked(
+            information.expose_server_info
+        )
         self._loading = False
         self.save_button.setEnabled(False)
         self.status_label.clear()
@@ -162,12 +183,35 @@ class ChannelInformationPage(QWidget):
             return
         self.save_button.setEnabled(True)
         self.status_label.setText("Unsaved changes")
+        self.store.update_live(self._live_candidate())
         self._refresh_preview()
+
+    def _live_candidate(self) -> ChannelInformation:
+        links: dict[str, SocialLink] = {}
+        for service_id, (include, edit, expose, _error) in self.social_rows.items():
+            try:
+                url = normalize_social_url(edit.text())
+            except ValueError:
+                url = ""
+            links[service_id] = SocialLink(
+                enabled_in_socials=include.isChecked(),
+                url=url,
+                expose_as_variable=expose.isChecked(),
+            )
+        return ChannelInformation(
+            social_links=links,
+            schedule=normalize_multiline_text(self.schedule_edit.toPlainText()),
+            expose_schedule=self.other_expose_checks["schedule"].isChecked(),
+            rules=normalize_multiline_text(self.rules_edit.toPlainText()),
+            expose_rules=self.other_expose_checks["rules"].isChecked(),
+            server_info=normalize_multiline_text(self.server_info_edit.toPlainText()),
+            expose_server_info=self.other_expose_checks["server_info"].isChecked(),
+        )
 
     def _candidate(self, *, show_errors: bool) -> ChannelInformation | None:
         links: dict[str, SocialLink] = {}
         valid = True
-        for service_id, (include, edit, error) in self.social_rows.items():
+        for service_id, (include, edit, expose, error) in self.social_rows.items():
             try:
                 url = normalize_social_url(edit.text())
                 message = ""
@@ -180,21 +224,28 @@ class ChannelInformationPage(QWidget):
                 valid = False
             if show_errors or message:
                 error.setText(message)
-            links[service_id] = SocialLink(include.isChecked(), url)
+            links[service_id] = SocialLink(
+                enabled_in_socials=include.isChecked(),
+                url=url,
+                expose_as_variable=expose.isChecked(),
+            )
         if not valid:
             return None
         return ChannelInformation(
             social_links=links,
             schedule=normalize_multiline_text(self.schedule_edit.toPlainText()),
+            expose_schedule=self.other_expose_checks["schedule"].isChecked(),
             rules=normalize_multiline_text(self.rules_edit.toPlainText()),
+            expose_rules=self.other_expose_checks["rules"].isChecked(),
             server_info=normalize_multiline_text(self.server_info_edit.toPlainText()),
+            expose_server_info=self.other_expose_checks["server_info"].isChecked(),
         )
 
     def _refresh_preview(self) -> None:
         parts: list[str] = []
         seen: set[str] = set()
         for service_id, label in SOCIAL_SERVICES:
-            include, edit, _error = self.social_rows[service_id]
+            include, edit, _expose, _error = self.social_rows[service_id]
             if not include.isChecked():
                 continue
             try:

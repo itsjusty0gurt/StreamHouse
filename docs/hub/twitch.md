@@ -100,17 +100,36 @@ the last command routine is deleted, unless it contains another explicitly
 grouped routine. Editing command settings updates the existing trigger and
 routine rather than replacing their stable identities.
 
-Reusable information providers live in `products/hub/twitch/tasks.py`:
+Reusable Twitch lookup tasks live in `products/hub/twitch/tasks.py`:
 
 - Resolve User produces the target ID, login, display name, account creation
   time, and a controlled lookup status.
 - Get Stream Information produces live/offline/error status, start time, title,
   category, stream ID, and viewer count.
-- Get Channel Information produces title and category even while offline.
 - Get Follow Relationship distinguishes following, not following, missing
   permission, broadcaster-self, missing-user, and API-failure outcomes.
 - Build Command List returns enabled commands visible to the invoking viewer and
   stays within the configured Twitch message budget.
+
+Information Hub already owns does not need an Automation Get task. Cached
+Twitch title/category state resolves through `stream.title` and
+`stream.category`. Optional values configured in **Your Channel > Channel
+Information** can be published with their independent **Expose as Variable**
+checkboxes:
+
+- `channel.schedule` and `channel.rules`;
+- `socials.discord`, `socials.youtube`, `socials.tiktok`, `socials.instagram`,
+  `socials.bluesky`, `socials.twitter`, `socials.facebook`, and
+  `socials.website`;
+- `serverinfo.details` for the current combined server description/address.
+
+Unchecked or blank fields do not publish definitions. Valid edits update live
+resolution immediately; Save persists the value and exposure choice for the
+next launch. The social **Include** checkbox remains separate and controls only
+the formatted `!socials` message. Default Channel Information commands use
+these canonical Variables directly; obsolete pre-alpha routines containing the
+removed Get tasks are rejected/reset rather than supported by a compatibility
+path.
 
 `core.format_duration` and `core.select_text` provide reusable formatting and
 conditional response selection. Every output is routine-scoped and described

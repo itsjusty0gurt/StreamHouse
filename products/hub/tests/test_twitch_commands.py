@@ -551,8 +551,6 @@ class TwitchCommandTriggerStoreTests(unittest.TestCase):
         self.assertEqual(
             [task.task_type for task in self.routine_store.get(reset.routine_id).tasks],
             [
-                "twitch.get_channel_information",
-                "core.select_text",
                 "twitch.send_chat_message",
             ],
         )
@@ -579,7 +577,7 @@ class TwitchCommandTriggerStoreTests(unittest.TestCase):
         discord = self.store.default("discord")
         information = ChannelInformation()
         information.social_links["discord"] = SocialLink(
-            False, "https://discord.gg/example"
+            False, "https://discord.gg/example", True
         )
         information_store.save(information)
         self.assertEqual(
@@ -648,7 +646,6 @@ class TwitchCommandTriggerStoreTests(unittest.TestCase):
         self.assertEqual(
             [task.task_type for task in self.routine_store.get(reset.routine_id).tasks],
             [
-                "twitch.get_channel_information_field",
                 "twitch.send_chat_message",
             ],
         )
@@ -798,7 +795,7 @@ class TwitchCommandTriggerDispatcherTests(unittest.TestCase):
         )
         configured = ChannelInformation()
         configured.social_links["discord"] = SocialLink(
-            False, "https://discord.gg/example"
+            False, "https://discord.gg/example", True
         )
         information.save(configured)
         self.assertEqual(

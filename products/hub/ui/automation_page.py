@@ -736,16 +736,11 @@ class TaskEditorDialog(QDialog):
             {"key": "reference", "label": "User ID or login", "kind": "text", "default": "{command.target}", "required": True, "placeholder": "{command.target}, {user.id}, @username, or a Twitch ID"},
         ),
         "twitch.get_stream_information": (),
-        "twitch.get_channel_information": (),
         "twitch.get_follow_relationship": (
             {"key": "user_id", "label": "Target user ID", "kind": "text", "default": "{automation.target_user_id}", "required": True},
         ),
         "twitch.build_command_list": (
             {"key": "maximum_characters", "label": "Maximum characters", "kind": "number", "default": 440, "minimum": 50, "maximum": 480},
-        ),
-        "twitch.get_channel_information_field": (
-            {"key": "field", "label": "Field", "kind": "choice", "default": "discord_url", "choices": (("Discord URL", "discord_url"), ("YouTube URL", "youtube_url"), ("Schedule", "schedule"), ("Rules", "rules"), ("Server Information", "server_info"))},
-            {"key": "output_variable", "label": "Optional output name", "kind": "text", "default": "", "placeholder": "Blank uses the standard field name"},
         ),
         "twitch.build_social_links_message": (
             {"key": "maximum_characters", "label": "Maximum characters", "kind": "number", "default": 480, "minimum": 50, "maximum": 480},
@@ -4420,10 +4415,8 @@ class AutomationPage(QWidget):
             "twitch.update_redemption": "Fulfills or refunds a redemption",
             "twitch.resolve_user": "Retrieves a Twitch user's public account information",
             "twitch.get_stream_information": "Reads the broadcaster's current live-stream information",
-            "twitch.get_channel_information": "Reads the broadcaster's title and category",
             "twitch.get_follow_relationship": "Checks whether a user follows the broadcaster",
             "twitch.build_command_list": "Builds a concise list of enabled commands",
-            "twitch.get_channel_information_field": "Reads a reusable Hub-owned Channel Information value",
             "twitch.build_social_links_message": "Builds a concise message from checked, valid social links",
             "core.format_duration": "Formats dates or seconds as a readable duration",
             "core.select_text": "Selects response text from a value-to-text map",
