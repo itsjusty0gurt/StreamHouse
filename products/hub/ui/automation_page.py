@@ -77,6 +77,7 @@ from products.hub.counters.tasks import COUNTER_TASK_LABELS
 from products.hub.automation.transfer import export_routine, import_routine, validate_import
 from products.hub.automation.variable_outputs import (
     generated_output_definitions,
+    has_temporary_outputs,
     output_config_key,
     output_id,
 )
@@ -2618,59 +2619,48 @@ class AutomationPage(QWidget):
         )
         intro.setWordWrap(True)
         layout.addWidget(intro)
+        self.task_library_search_edit = QLineEdit()
+        self.task_library_search_edit.setObjectName("taskLibrarySearch")
+        self.task_library_search_edit.setPlaceholderText("Search tasks…")
+        self.task_library_search_edit.setClearButtonEnabled(True)
+        layout.addWidget(self.task_library_search_edit)
         self.task_library_tree = QTreeWidget()
+        self.task_library_tree.setObjectName("taskLibraryTree")
         self.task_library_tree.setHeaderLabels(("Service / task", "Status"))
-        for service_name, tasks in (
-            ("Twitch", TWITCH_TASK_LABELS),
-            ("Counters", COUNTER_TASK_LABELS),
-            ("Core", CORE_TASK_LABELS),
-            ("OBS", OBS_TASK_LABELS),
-        ):
-            service = QTreeWidgetItem((service_name, ""))
-            service.setExpanded(True)
-            scripts = None
-            variables = None
-            logic = None
-            files = None
-            if service_name == "Core":
-                scripts = QTreeWidgetItem(("Scripts", ""))
-                scripts.setExpanded(True)
-                service.addChild(scripts)
-                variables = QTreeWidgetItem(("Variables", ""))
-                variables.setExpanded(True)
-                service.addChild(variables)
-                logic = QTreeWidgetItem(("Logic", ""))
-                logic.setExpanded(True)
-                service.addChild(logic)
-                files = QTreeWidgetItem(("Files", ""))
-                files.setExpanded(True)
-                service.addChild(files)
-            for task_type, label in tasks.items():
-                task = QTreeWidgetItem((label.split("—")[-1].strip(), "Available"))
-                task.setData(0, Qt.ItemDataRole.UserRole, task_type)
-                if task_type == "core.run_python_script" and scripts is not None:
-                    scripts.addChild(task)
-                elif (
-                    task_type in VARIABLE_MANAGEMENT_TASK_TYPES
-                    and variables is not None
-                ):
-                    variables.addChild(task)
-                elif task_type in LOGIC_TASK_LABELS and logic is not None:
-                    logic.addChild(task)
-                elif task_type in FILE_TASK_TYPES and files is not None:
-                    files.addChild(task)
-                else:
-                    service.addChild(task)
-            self.task_library_tree.addTopLevelItem(service)
-        for service in ("Voice", "Timer", "AI", "Vision"):
-            self.task_library_tree.addTopLevelItem(
-                QTreeWidgetItem((service, "Future provider"))
-            )
-        layout.addWidget(self.task_library_tree)
+        layout.addWidget(self.task_library_tree, 1)
+
+        reference = QGroupBox("Task Reference")
+        reference_layout = QVBoxLayout(reference)
+        self.task_library_title_label = QLabel("Select a task")
+        self.task_library_title_label.setObjectName("taskLibraryReferenceTitle")
+        title_font = self.task_library_title_label.font()
+        title_font.setBold(True)
+        self.task_library_title_label.setFont(title_font)
+        self.task_library_description_label = QLabel(
+            "Select a task to see what it does before adding it to a routine."
+        )
+        self.task_library_description_label.setObjectName(
+            "taskLibraryReferenceDescription"
+        )
+        self.task_library_description_label.setWordWrap(True)
+        self.task_library_facts_label = QLabel()
+        self.task_library_facts_label.setObjectName("taskLibraryReferenceFacts")
+        self.task_library_facts_label.setWordWrap(True)
+        reference_layout.addWidget(self.task_library_title_label)
+        reference_layout.addWidget(self.task_library_description_label)
+        reference_layout.addWidget(self.task_library_facts_label)
+        layout.addWidget(reference)
         self.tabs.addTab(page, "Task Library")
+        self.task_library_search_edit.textChanged.connect(
+            lambda _text: self._refresh_task_library()
+        )
+        self.task_library_tree.itemSelectionChanged.connect(
+            self._show_task_library_reference
+        )
         self.task_library_tree.itemDoubleClicked.connect(
             self._add_library_task
         )
+        self._refresh_task_library()
 
     def _build_history_tab(self) -> None:
         page = QWidget()
@@ -4263,22 +4253,96 @@ class AutomationPage(QWidget):
         self._add_task(task_type)
 
     def _refresh_task_library(self) -> None:
-        # Provider availability is static for this process, but this keeps the
-        # task library honest if services register later in startup.
+        selected = self.task_library_tree.currentItem()
+        selected_type = (
+            str(selected.data(0, Qt.ItemDataRole.UserRole) or "")
+            if selected is not None
+            else ""
+        )
+        query = self.task_library_search_edit.text().strip().casefold()
         available = set(self.task_registry.registered_types())
-        pending = [
-            self.task_library_tree.topLevelItem(index)
-            for index in range(self.task_library_tree.topLevelItemCount())
-        ]
-        while pending:
-            item = pending.pop()
-            pending.extend(item.child(index) for index in range(item.childCount()))
-            task_type = item.data(0, Qt.ItemDataRole.UserRole)
-            if task_type:
-                item.setText(
-                    1,
-                    "Available" if task_type in available else "Unavailable",
+        self.task_library_tree.blockSignals(True)
+        self.task_library_tree.clear()
+        categories: dict[str, QTreeWidgetItem] = {}
+        selected_item = None
+        for metadata in self.task_registry.visible_metadata():
+            searchable = " ".join(
+                (
+                    metadata.label,
+                    metadata.short_description,
+                    metadata.category,
+                    metadata.task_type,
                 )
+            ).casefold()
+            if query and query not in searchable:
+                continue
+            parent = None
+            path = ""
+            for category in metadata.category.split("/"):
+                path = f"{path}/{category.strip()}" if path else category.strip()
+                category_item = categories.get(path)
+                if category_item is None:
+                    category_item = QTreeWidgetItem((category.strip(), ""))
+                    category_item.setExpanded(True)
+                    if parent is None:
+                        self.task_library_tree.addTopLevelItem(category_item)
+                    else:
+                        parent.addChild(category_item)
+                    categories[path] = category_item
+                parent = category_item
+            task_item = QTreeWidgetItem(
+                (
+                    metadata.label,
+                    "Available"
+                    if metadata.task_type in available
+                    else "Unavailable",
+                )
+            )
+            task_item.setData(
+                0,
+                Qt.ItemDataRole.UserRole,
+                metadata.task_type,
+            )
+            if parent is None:
+                self.task_library_tree.addTopLevelItem(task_item)
+            else:
+                parent.addChild(task_item)
+            if metadata.task_type == selected_type:
+                selected_item = task_item
+        if not query:
+            for service in ("Voice", "Timer", "AI", "Vision"):
+                self.task_library_tree.addTopLevelItem(
+                    QTreeWidgetItem((service, "Future provider"))
+                )
+        self.task_library_tree.blockSignals(False)
+        if selected_item is not None:
+            self.task_library_tree.setCurrentItem(selected_item)
+        else:
+            self._show_task_library_reference()
+
+    def _show_task_library_reference(self) -> None:
+        item = self.task_library_tree.currentItem()
+        task_type = (
+            str(item.data(0, Qt.ItemDataRole.UserRole) or "")
+            if item is not None
+            else ""
+        )
+        metadata = self.task_registry.metadata(task_type)
+        if metadata is None:
+            self.task_library_title_label.setText("Select a task")
+            self.task_library_description_label.setText(
+                "Select a task to see what it does before adding it to a routine."
+            )
+            self.task_library_facts_label.clear()
+            return
+        self.task_library_title_label.setText(metadata.label)
+        self.task_library_description_label.setText(
+            metadata.short_description.strip() or "No description is available yet."
+        )
+        facts = [f"Category: {metadata.category.replace('/', ' › ')}"]
+        if has_temporary_outputs(metadata.task_type):
+            facts.append("Output: routine-scoped automation.* for later tasks")
+        self.task_library_facts_label.setText("  •  ".join(facts))
 
     def _output_definitions_before(
         self,

@@ -13,9 +13,13 @@ from products.hub.automation.models import (
 )
 from products.hub.automation.routines import RoutineStore
 from products.hub.automation.service import AutomationService
-from products.hub.automation.tasks import TaskRegistry
+from products.hub.automation.task_catalog import BUILTIN_TASK_METADATA
+from products.hub.automation.tasks import TaskMetadata, TaskRegistry
+from products.hub.automation.core_tasks import CORE_TASK_LABELS
+from products.hub.counters.tasks import COUNTER_TASK_LABELS
+from products.hub.obs_service.tasks import OBS_TASK_LABELS
 from products.hub.core.events import Events
-from products.hub.twitch.tasks import SendTwitchChatMessageTask
+from products.hub.twitch.tasks import SendTwitchChatMessageTask, TWITCH_TASK_LABELS
 
 
 class ExampleTask:
@@ -117,6 +121,40 @@ class AutomationServiceTests(unittest.TestCase):
         self.assertIn(
             "No task provider",
             result.routine_results[0].task_results[0].detail,
+        )
+
+    def test_builtin_visible_tasks_have_complete_reference_metadata(self) -> None:
+        registry = TaskRegistry(BUILTIN_TASK_METADATA)
+        expected = set().union(
+            TWITCH_TASK_LABELS,
+            COUNTER_TASK_LABELS,
+            CORE_TASK_LABELS,
+            OBS_TASK_LABELS,
+        )
+
+        self.assertEqual(
+            {metadata.task_type for metadata in registry.visible_metadata()},
+            expected,
+        )
+        self.assertEqual(registry.missing_descriptions(), ())
+        self.assertEqual(len(registry.visible_metadata()), 68)
+        self.assertIsNone(registry.metadata("twitch.get_channel_information"))
+
+    def test_registry_reports_missing_description_without_rejecting_metadata(self) -> None:
+        registry = TaskRegistry(
+            (
+                TaskMetadata(
+                    task_type="test.missing_description",
+                    label="Missing description",
+                    short_description="",
+                    category="Tests",
+                ),
+            )
+        )
+
+        self.assertEqual(
+            registry.missing_descriptions(),
+            ("test.missing_description",),
         )
 
     def test_manual_run_executes_one_selected_routine(self) -> None:

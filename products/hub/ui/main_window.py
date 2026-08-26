@@ -82,6 +82,7 @@ from products.hub.automation.core_tasks import (
     WaitForServiceTask,
 )
 from products.hub.automation.tasks import TaskRegistry
+from products.hub.automation.task_catalog import BUILTIN_TASK_METADATA
 from products.hub.automation.variable_tasks import RunRoutineTask, register_variable_tasks
 from products.hub.automation.control_tasks import register_control_tasks
 from products.hub.automation.logic_tasks import register_logic_tasks
@@ -527,7 +528,7 @@ class MainWindow(QMainWindow):
             )
         )
         self.twitch_command_trigger_store.variable_registry = self.variable_registry
-        self.task_registry = TaskRegistry()
+        self.task_registry = TaskRegistry(BUILTIN_TASK_METADATA)
         register_twitch_tasks(
             self.task_registry,
             self.twitch_service,

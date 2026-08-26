@@ -167,6 +167,18 @@ def output_config_key(task_type: str) -> str:
     return OUTPUT_CONFIG_KEYS.get(str(task_type).strip().casefold(), "")
 
 
+def has_temporary_outputs(task_type: str) -> bool:
+    """Return whether a task type can publish routine-scoped automation.* data."""
+    normalized = str(task_type).strip().casefold()
+    return (
+        normalized in STATIC_OUTPUTS
+        or normalized == "twitch.build_social_links_message"
+        or normalized in OUTPUT_CONFIG_KEYS
+        and normalized
+        not in {"core.create_global_variable", "core.create_session_variable"}
+    )
+
+
 def _output_definition_names(task_type: str, config: Mapping[str, object]) -> tuple[str, ...]:
     if task_type in STATIC_OUTPUTS:
         return tuple(automation_output_name(name) for name in STATIC_OUTPUTS[task_type])

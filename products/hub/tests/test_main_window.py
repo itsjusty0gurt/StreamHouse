@@ -32,6 +32,7 @@ from products.hub.core.settings import AppSettings
 from products.hub.twitch.auth import TwitchAuthState
 from products.hub.twitch.chatter_history import ChatterHistoryStore, ChatterRecord
 from products.hub.automation.routines import RoutineStore
+from products.hub.automation.tasks import TaskMetadata
 from products.hub.automation.models import (
     DEFAULT_AUTOMATION_QUEUE_ID,
     AutomationExecutionResult,
@@ -1138,6 +1139,84 @@ class MainWindowTests(unittest.TestCase):
             1,
         )
         self.assertTrue(self.window.create_backup_button.isEnabled())
+
+    def test_task_library_shows_and_searches_registry_descriptions(self) -> None:
+        page = self.window.automation_page
+        self.assertEqual(
+            {
+                metadata.task_type
+                for metadata in self.window.task_registry.visible_metadata()
+            },
+            set(self.window.task_registry.registered_types()),
+        )
+
+        def task_item(task_type: str):
+            pending = [
+                page.task_library_tree.topLevelItem(index)
+                for index in range(page.task_library_tree.topLevelItemCount())
+            ]
+            while pending:
+                item = pending.pop()
+                pending.extend(
+                    item.child(index) for index in range(item.childCount())
+                )
+                if item.data(0, Qt.ItemDataRole.UserRole) == task_type:
+                    return item
+            return None
+
+        for task_type, expected_text in (
+            ("twitch.send_chat_message", "Twitch chat"),
+            ("counter.increase", "selected Counter"),
+            ("obs.set_program_scene", "OBS program scene"),
+            ("core.file_read", "automation.* output"),
+        ):
+            item = task_item(task_type)
+            self.assertIsNotNone(item)
+            page.task_library_tree.setCurrentItem(item)
+            self.application.processEvents()
+            self.assertIn(
+                expected_text,
+                page.task_library_description_label.text(),
+            )
+        self.assertTrue(page.task_library_description_label.wordWrap())
+        self.assertIn(
+            "routine-scoped automation.*",
+            page.task_library_facts_label.text(),
+        )
+
+        category = page.task_library_tree.topLevelItem(0)
+        page.task_library_tree.setCurrentItem(category)
+        self.assertEqual(page.task_library_title_label.text(), "Select a task")
+
+        page.task_library_search_edit.setText("configured chat account")
+        self.application.processEvents()
+        self.assertIsNotNone(task_item("twitch.send_chat_message"))
+        self.assertIsNone(task_item("counter.increase"))
+
+    def test_task_library_missing_description_has_safe_fallback(self) -> None:
+        page = self.window.automation_page
+        self.window.task_registry.register_metadata(
+            TaskMetadata(
+                task_type="test.missing_description",
+                label="Missing description",
+                short_description="",
+                category="Tests",
+            )
+        )
+        page._refresh_task_library()
+        tests_category = next(
+            page.task_library_tree.topLevelItem(index)
+            for index in range(page.task_library_tree.topLevelItemCount())
+            if page.task_library_tree.topLevelItem(index).text(0) == "Tests"
+        )
+        item = tests_category.child(0)
+
+        page.task_library_tree.setCurrentItem(item)
+
+        self.assertEqual(
+            page.task_library_description_label.text(),
+            "No description is available yet.",
+        )
 
     def test_custom_twitch_command_sends_as_bot_and_skips_ai_reasoning(self) -> None:
         command = self.twitch_command_trigger_store.add(
