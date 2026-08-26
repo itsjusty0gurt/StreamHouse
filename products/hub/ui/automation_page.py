@@ -2701,6 +2701,7 @@ class AutomationPage(QWidget):
         self.variables_page = VariablesPage(
             self.variable_registry,
             self.automation_service.variable_store,
+            self.routine_store,
             self.tabs,
         )
         self.variables_page.variables_changed.connect(self.refresh)

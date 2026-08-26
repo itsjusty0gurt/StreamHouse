@@ -171,6 +171,7 @@ class CounterVariableProvider:
                         availability=VariableAvailability.CONTEXTUAL,
                         writable=False,
                         required_context=("user.id",),
+                        context_label="Viewer context",
                     ),
                 )
             )
@@ -349,6 +350,19 @@ CONTEXT_PREVIEW = {
 }
 
 
+def _context_presentation(name: str) -> tuple[str, str]:
+    namespace = name.split(".", 1)[0]
+    return {
+        "user": ("User", "Viewer context"),
+        "chat": ("Chat", "Twitch chat trigger"),
+        "command": ("Command", "Chat Command routine"),
+        "keyword": ("Keyword / Phrase", "Keyword / Phrase routine"),
+        "ads": ("Ads", "Ads Started"),
+        "event": ("Twitch Event", "Matching Twitch event"),
+        "obs": ("OBS", "Matching OBS event"),
+    }.get(namespace, (namespace.title(), "Matching trigger context"))
+
+
 def context_provider() -> CallbackVariableProvider:
     definitions = tuple(
         VariableDefinition(
@@ -357,10 +371,11 @@ def context_provider() -> CallbackVariableProvider:
             description=description,
             data_type=data_type,
             source="Twitch Context",
-            category=name.split(".", 1)[0].title(),
+            category=_context_presentation(name)[0],
             availability=VariableAvailability.CONTEXTUAL,
             required_context=tuple(_aliases),
             preview_value=CONTEXT_PREVIEW.get(name),
+            context_label=_context_presentation(name)[1],
         )
         for name, display, description, data_type, _aliases in CONTEXT_DEFINITIONS
     )

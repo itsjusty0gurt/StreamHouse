@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
+from dataclasses import dataclass
 
+from products.hub.automation.models import RoutineDefinition
 from products.hub.automation.variable_registry import (
     VariableAvailability,
     VariableDataType,
@@ -78,9 +80,55 @@ def generated_output_definitions(
                 availability=availability,
                 writable=availability is VariableAvailability.GLOBAL,
                 preview_value=_preview_value(data_type),
+                context_label="Current routine after its producing task",
             )
         )
     return tuple(definitions)
+
+
+@dataclass(frozen=True, slots=True)
+class ConfiguredOutputReference:
+    definition: VariableDefinition
+    routine_id: str
+    routine_name: str
+    routine_enabled: bool
+    task_id: str
+    task_name: str
+    task_number: int
+    task_enabled: bool
+
+
+def configured_output_references(
+    routines: Iterable[RoutineDefinition],
+) -> tuple[ConfiguredOutputReference, ...]:
+    """Describe configured routine outputs without registering them globally."""
+    references: list[ConfiguredOutputReference] = []
+    for routine in routines:
+        for task_number, task in enumerate(routine.tasks, start=1):
+            definitions = generated_output_definitions(
+                task.task_type,
+                task.config,
+                source=task.name,
+            )
+            for definition in definitions:
+                if (
+                    definition.availability is not VariableAvailability.TEMPORARY
+                    or not definition.name.startswith("automation.")
+                ):
+                    continue
+                references.append(
+                    ConfiguredOutputReference(
+                        definition=definition,
+                        routine_id=routine.routine_id,
+                        routine_name=routine.name,
+                        routine_enabled=routine.enabled,
+                        task_id=task.task_id,
+                        task_name=task.name,
+                        task_number=task_number,
+                        task_enabled=task.enabled,
+                    )
+                )
+    return tuple(references)
 
 
 def _output_availability(task_type: str) -> VariableAvailability:

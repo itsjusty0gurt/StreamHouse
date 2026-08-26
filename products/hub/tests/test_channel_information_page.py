@@ -121,6 +121,56 @@ class ChannelInformationPageTests(unittest.TestCase):
         expose.setChecked(False)
         self.assertIsNone(registry.definition("socials.discord"))
 
+    def test_resize_keeps_typography_stable_and_reflows_controls(self) -> None:
+        self.page.show()
+        self.page.resize(900, 700)
+        self.application.processEvents()
+        body_size = self.page.font().pointSizeF()
+        editor_size = self.page.rules_edit.font().pointSizeF()
+        wide_editor_width = self.page.rules_edit.width()
+        self.assertFalse(self.page.property("compactLayout"))
+
+        self.page.resize(420, 520)
+        self.application.processEvents()
+
+        self.assertEqual(self.page.size().toTuple(), (420, 520))
+        self.assertTrue(self.page.property("compactLayout"))
+        self.assertEqual(self.page.font().pointSizeF(), body_size)
+        self.assertEqual(self.page.rules_edit.font().pointSizeF(), editor_size)
+        self.assertGreater(self.page.rules_edit.width(), 300)
+        self.assertGreaterEqual(self.page.rules_edit.height(), 72)
+        self.assertGreater(self.page.scroll_area.verticalScrollBar().maximum(), 0)
+        self.assertEqual(self.page.scroll_area.horizontalScrollBar().maximum(), 0)
+        include, edit, expose, _error = self.page.social_rows["discord"]
+        for control in (include, edit, expose):
+            self.assertTrue(control.isEnabled())
+        for control in (include, edit, expose, self.page.save_button):
+            self.assertTrue(control.isVisible())
+
+        self.page.resize(900, 700)
+        self.application.processEvents()
+        self.assertFalse(self.page.property("compactLayout"))
+        self.assertEqual(self.page.font().pointSizeF(), body_size)
+        self.assertEqual(self.page.rules_edit.font().pointSizeF(), editor_size)
+        self.assertGreater(self.page.rules_edit.width(), wide_editor_width - 5)
+
+    def test_long_text_uses_editor_and_page_scrolling(self) -> None:
+        self.page.rules_edit.setPlainText("\n".join(f"Rule {index}" for index in range(40)))
+        self.page.show()
+        self.page.resize(420, 360)
+        self.application.processEvents()
+
+        self.assertTrue(self.page.property("compactLayout"))
+        self.assertTrue(self.page.socials_preview_label.wordWrap())
+        self.assertGreater(
+            self.page.rules_edit.verticalScrollBar().maximum(),
+            0,
+        )
+        self.assertGreater(
+            self.page.scroll_area.verticalScrollBar().maximum(),
+            0,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

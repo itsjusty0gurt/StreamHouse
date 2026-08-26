@@ -66,6 +66,7 @@ class VariableDefinition:
     required_context: tuple[str, ...] = ()
     preview_value: Any | None = None
     alias_of: str = ""
+    context_label: str = ""
 
     def __post_init__(self) -> None:
         name = self.name.strip().casefold()
@@ -92,6 +93,7 @@ class VariableDefinition:
                 )
             ),
         )
+        object.__setattr__(self, "context_label", self.context_label.strip())
 
     @property
     def placeholder(self) -> str:
@@ -100,6 +102,15 @@ class VariableDefinition:
     @property
     def is_alias(self) -> bool:
         return bool(self.alias_of)
+
+    @property
+    def lifetime_label(self) -> str:
+        if self.availability in {
+            VariableAvailability.CONTEXTUAL,
+            VariableAvailability.TEMPORARY,
+        }:
+            return "Routine"
+        return "Global"
 
 
 @dataclass(frozen=True, slots=True)
@@ -212,6 +223,7 @@ class VariableRegistry:
             required_context=canonical.required_context,
             preview_value=canonical.preview_value,
             alias_of=canonical.name,
+            context_label=canonical.context_label,
         )
         self._aliases[clean_name] = alias
         # Rebuild now so collisions and accidental alias chains fail immediately.

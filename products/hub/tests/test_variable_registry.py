@@ -21,7 +21,10 @@ from products.hub.automation.variable_providers import (
     CustomVariableProvider,
     context_provider,
 )
-from products.hub.automation.variable_outputs import generated_output_definitions
+from products.hub.automation.variable_outputs import (
+    configured_output_references,
+    generated_output_definitions,
+)
 from products.hub.automation.variable_registry import (
     CallbackVariableProvider,
     VariableAvailability,
@@ -283,6 +286,35 @@ def test_generated_task_outputs_have_typed_temporary_metadata() -> None:
     assert by_name["automation.stream_started_at"].data_type is VariableDataType.DATETIME
 
 
+def test_configured_output_references_are_routine_and_order_aware() -> None:
+    with TemporaryDirectory() as temporary:
+        routines = RoutineStore(Path(temporary) / "routines.json")
+        routine = routines.add("Welcome routine")
+        producer = routines.add_task(
+            routine.routine_id,
+            task_type="core.file_random_line",
+            name="Choose welcome line",
+            config={"variable": "random_line"},
+        )
+        routines.add_task(
+            routine.routine_id,
+            task_type="twitch.send_chat_message",
+            name="Send welcome",
+            config={"message": "{automation.random_line}"},
+        )
+
+        references = configured_output_references(routines.routines)
+        reference = next(
+            item for item in references
+            if item.definition.name == "automation.random_line"
+        )
+        assert reference.routine_name == "Welcome routine"
+        assert reference.task_name == "Choose welcome line"
+        assert reference.task_number == 1
+        assert reference.task_id == producer.task_id
+        assert reference.definition.lifetime_label == "Routine"
+
+
 def test_pre_alpha_custom_variable_schema_is_rejected_for_reset() -> None:
     with TemporaryDirectory() as temporary:
         path = Path(temporary) / "variables.json"
@@ -357,7 +389,9 @@ def test_variables_page_and_picker_search_canonical_names() -> None:
         assert picker.selected_placeholder() == "{custom.game_mode}"
         picker.search_edit.setText("user.id")
         assert picker.selected_placeholder() == "{user.id}"
-        assert picker.table.item(0, 4).text() == "Unavailable — Contextual"
+        assert picker.table.item(0, 4).text() == "Not currently available"
+        assert picker.table.item(0, 5).text() == "Viewer context"
+        assert picker.table.item(0, 6).text() == "Routine"
         editor = TaskEditorDialog(
             "twitch.send_chat_message",
             variable_registry=registry,
@@ -388,5 +422,128 @@ def test_variables_page_and_picker_search_canonical_names() -> None:
         condition_editor.close()
         editor.close()
         picker.close()
+        page.close()
+    application.processEvents()
+
+
+def test_variables_page_lists_contextual_definitions_without_fake_values() -> None:
+    application = QApplication.instance() or QApplication([])
+    with TemporaryDirectory() as temporary:
+        store = CustomVariableStore(Path(temporary) / "variables.json")
+        store.load()
+        registry = VariableRegistry()
+        registry.register(context_provider())
+        page = VariablesPage(registry, store)
+
+        names = {
+            page.table.item(row, 0).text(): row
+            for row in range(page.table.rowCount())
+        }
+        assert len(names) == page.table.rowCount()
+        expected = {
+            "command.name",
+            "command.data",
+            "keyword.message",
+            "keyword.match",
+            "keyword.before",
+            "keyword.after",
+            "ads.requester.id",
+            "ads.requester.name",
+        }
+        assert expected <= names.keys()
+        for name in expected:
+            row = names[name]
+            assert page.table.item(row, 1).text() == "Not currently available"
+            assert page.table.item(row, 4).text() == "Not currently available"
+            assert page.table.item(row, 6).text() == "Routine"
+
+        command_row = names["command.data"]
+        assert page.table.item(command_row, 5).text() == "Chat Command routine"
+        page.table.selectRow(command_row)
+        assert "Context: Chat Command routine" in page.details_label.text()
+        assert "Requires: Chat Command routine" in page.details_label.text()
+        assert "Lifetime: Routine" in page.details_label.text()
+
+        page.search_edit.setText("Keyword / Phrase")
+        assert page.table.rowCount() == 4
+        page.search_edit.setText("requester")
+        assert page.table.rowCount() == 2
+        page.search_edit.setText("viewer")
+        assert any(
+            page.table.item(row, 0).text() == "user.id"
+            for row in range(page.table.rowCount())
+        )
+        assert registry.aliases() == ()
+        page.close()
+    application.processEvents()
+
+
+def test_variables_page_refreshes_dynamic_providers() -> None:
+    application = QApplication.instance() or QApplication([])
+    with TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        custom_store = CustomVariableStore(root / "variables.json")
+        custom_store.load()
+        counter_service = CounterService(CounterStore(root / "counters"))
+        channel_store = ChannelInformationStore(root / "channel-information.json")
+        channel_store.load()
+        registry = VariableRegistry()
+        registry.register(CounterVariableProvider(counter_service))
+        registry.register(ChannelInformationVariableProvider(channel_store))
+        page = VariablesPage(registry, custom_store)
+        assert page.table.rowCount() == 0
+
+        counter_service.create_counter(definition())
+        information = ChannelInformation()
+        information.social_links["discord"] = SocialLink(
+            False, "https://discord.gg/example", True
+        )
+        channel_store.update_live(information)
+        page.refresh()
+        names = {
+            page.table.item(row, 0).text()
+            for row in range(page.table.rowCount())
+        }
+        assert "counter.deaths.stream" in names
+        assert "counter.deaths.viewer" in names
+        assert "socials.discord" in names
+
+        counter_service.delete_counter("deaths")
+        information.social_links["discord"].expose_as_variable = False
+        channel_store.update_live(information)
+        page.refresh()
+        assert page.table.rowCount() == 0
+        page.close()
+    application.processEvents()
+
+
+def test_variables_page_tracks_configured_routine_outputs() -> None:
+    application = QApplication.instance() or QApplication([])
+    with TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        custom_store = CustomVariableStore(root / "variables.json")
+        custom_store.load()
+        routines = RoutineStore(root / "routines.json")
+        routine = routines.add("Welcome routine")
+        producer = routines.add_task(
+            routine.routine_id,
+            task_type="core.file_random_line",
+            name="Choose welcome line",
+            config={"variable": "random_line"},
+        )
+        page = VariablesPage(VariableRegistry(), custom_store, routines)
+        page.search_edit.setText("automation.random_line")
+        assert page.table.rowCount() == 1
+        assert page.table.item(0, 0).text() == "automation.random_line"
+        assert page.table.item(0, 1).text() == "Not currently available"
+        assert page.table.item(0, 5).text() == "Welcome routine"
+        assert page.table.item(0, 6).text() == "Routine"
+        page.table.selectRow(0)
+        assert "Generated by: Choose welcome line" in page.details_label.text()
+        assert "Available: After task 1" in page.details_label.text()
+
+        routines.delete_task(routine.routine_id, producer.task_id)
+        page.refresh()
+        assert page.table.rowCount() == 0
         page.close()
     application.processEvents()

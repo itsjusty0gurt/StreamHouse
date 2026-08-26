@@ -86,6 +86,12 @@ These values are routine-scoped and never create `command.*` context. For
 `I think coffee is better than tea`, matching `coffee` yields `I think` and
 `is better than tea` as the before/after values.
 
+The Automation **Variables** reference keeps Command, Keyword / Phrase, Ads
+Started requester, and other contextual definitions discoverable even outside
+a live routine. Their current value remains explicitly unavailable until the
+matching trigger context exists; the page shows their provider-owned context
+requirement and Routine lifetime rather than inventing global values.
+
 Built-in command definitions are code-owned templates, not inactive routines.
 A fresh Hub displays them as **Not Configured** on the Commands page but does
 not persist a trigger or create an Automation routine. Explicitly configuring

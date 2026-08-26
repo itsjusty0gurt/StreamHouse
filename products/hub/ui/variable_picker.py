@@ -40,7 +40,7 @@ class VariablePickerDialog(QDialog):
         self.context = dict(context or {})
         self.extra_definitions = extra_definitions
         self.setWindowTitle("Choose Variable")
-        self.resize(760, 480)
+        self.resize(940, 500)
         layout = QVBoxLayout(self)
         filters = QHBoxLayout()
         self.search_edit = QLineEdit()
@@ -58,9 +58,18 @@ class VariablePickerDialog(QDialog):
         filters.addWidget(self.source_combo)
         filters.addWidget(self.category_combo)
         layout.addLayout(filters)
-        self.table = QTableWidget(0, 6)
+        self.table = QTableWidget(0, 8)
         self.table.setHorizontalHeaderLabels(
-            ("Name", "Value / Preview", "Source", "Type", "Availability", "Access")
+            (
+                "Name",
+                "Value / Preview",
+                "Source",
+                "Type",
+                "Status",
+                "Context",
+                "Lifetime",
+                "Access",
+            )
         )
         self.table.horizontalHeader().setStretchLastSection(True)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
@@ -96,7 +105,14 @@ class VariablePickerDialog(QDialog):
         for snapshot in self._snapshots():
             definition = snapshot.definition
             searchable = " ".join(
-                (definition.name, definition.display_name, definition.description)
+                (
+                    definition.name,
+                    definition.display_name,
+                    definition.description,
+                    definition.source,
+                    definition.category,
+                    definition.context_label,
+                )
             ).casefold()
             if needle and needle not in searchable:
                 continue
@@ -115,15 +131,24 @@ class VariablePickerDialog(QDialog):
             self.table.setItem(row, 1, QTableWidgetItem(value))
             self.table.setItem(row, 2, QTableWidgetItem(definition.source))
             self.table.setItem(row, 3, QTableWidgetItem(definition.data_type.value.title()))
-            availability = (
-                definition.availability.value.title()
-                if snapshot.available
-                else f"Unavailable — {definition.availability.value.title()}"
+            self.table.setItem(
+                row,
+                4,
+                QTableWidgetItem(
+                    "Available" if snapshot.available else "Not currently available"
+                ),
             )
-            self.table.setItem(row, 4, QTableWidgetItem(availability))
             self.table.setItem(
                 row,
                 5,
+                QTableWidgetItem(definition.context_label or "—"),
+            )
+            self.table.setItem(
+                row, 6, QTableWidgetItem(definition.lifetime_label)
+            )
+            self.table.setItem(
+                row,
+                7,
                 QTableWidgetItem(
                     "Read/write" if definition.writable else "Read-only"
                 ),
@@ -172,16 +197,16 @@ class VariablePickerDialog(QDialog):
             self.details_label.clear()
             return
         definition = snapshot.definition
-        availability = definition.availability.value.title()
         access = "Read/write" if definition.writable else "Read-only"
-        requirement = (
-            f" Requires {', '.join(definition.required_context)}."
-            if definition.required_context and not snapshot.available
-            else ""
-        )
-        self.details_label.setText(
-            f"{definition.description}\n{availability} - {access}.{requirement}"
-        )
+        details = [
+            definition.description,
+            f"Context: {definition.context_label or '—'}",
+            f"Lifetime: {definition.lifetime_label}",
+            f"Access: {access}",
+        ]
+        if definition.context_label and not snapshot.available:
+            details.append(f"Requires: {definition.context_label}")
+        self.details_label.setText("\n".join(details))
 
     def _copy(self) -> None:
         from PySide6.QtWidgets import QApplication

@@ -420,8 +420,9 @@ resolution, placeholder, alias, and write-routing layer for modern Hub
 variables. Canonical names use `namespace.name` or deeper dotted scopes such as
 `counter.<stable_id>.viewer`. `VariableDefinition` records the canonical name,
 display name, description, type, source, category, availability, required
-context, optional default and preview values, alias status, and whether the
-owning provider supports writes. Valid types are `text`, `integer`, `number`,
+context keys, a provider-owned human-readable context label, optional default
+and preview values, alias status, and whether the owning provider supports
+writes. Valid types are `text`, `integer`, `number`,
 `boolean`, and ISO-8601 `datetime`. Providers are registered by `MainWindow`;
 malformed names, duplicate names, provider collisions, alias collisions, and
 alias loops are rejected. Reserved built-in namespaces currently include
@@ -479,10 +480,19 @@ display label. Stream and viewer scope are explicit: `counter.<id>.stream` and
 triggering viewer's stable Twitch user ID. Without that context it is explicitly
 unavailable and does not substitute the shared value or create a viewer entry.
 
-The Automation **Variables** tab provides search/source filtering plus name,
-value, source, type, availability, and access metadata, copy actions, and
-custom-variable creation/edit/delete. Generic canonical aliases may be hidden
-from normal browsing, but no pre-alpha compatibility aliases are registered.
+The Automation **Variables** tab is a definition reference as well as a live
+value view. It always lists registry definitions, including contextual
+`command.*`, `keyword.*`, `ads.requester.*`, viewer/chat/user, and OBS event
+definitions when no matching routine is running. **Current Value** and
+**Status** distinguish a known definition from a value that is presently
+available; the page never substitutes preview data for a live value. Compact
+Context and Lifetime columns use provider metadata such as **Chat Command
+routine**, **Keyword / Phrase routine**, **Ads Started**, **Viewer context**,
+and **Routine**. Search covers canonical name, display name, description,
+source, category, and context label. Source filtering, copy actions, and
+custom-variable creation/edit/delete remain available. Generic canonical
+aliases may be hidden from normal browsing, but no pre-alpha compatibility
+aliases are registered.
 Custom records persist
 in `automation/variables.json` using atomic replacement and now include `text`,
 `integer`, `number`, `boolean`, or ISO-8601 `datetime` metadata plus an optional
@@ -499,6 +509,16 @@ type, source task, lifetime, description, and preview without globally
 registering temporary values. Same-name temporary outputs retain deterministic
 task-order overwrite behavior. Counter tasks do not manufacture outputs: later
 tasks read the refreshed `counter.<id>.stream` or `.viewer` provider value.
+
+The Variables page also derives read-only configured-output references from
+the current `RoutineStore` using the same
+`generated_output_definitions()` metadata as task editors. A reference shows
+the canonical `automation.<name>`, producing task, routine, and the task number
+after which it can exist. These references refresh after routine/task changes
+and disappear when the producer is removed. They are not registered as global
+variables, do not alter runtime resolution, and never imply a current value.
+The task editor's Variable Picker remains the enforcement point for task-order
+visibility: only outputs from earlier tasks are offered.
 
 `ChannelInformationVariableProvider` reads the same thread-safe configuration
 store used by **Your Channel > Channel Information**. Each optional field has a
