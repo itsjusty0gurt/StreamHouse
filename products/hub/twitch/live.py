@@ -589,13 +589,58 @@ class TwitchHelixClient:
         body = json.dumps({"broadcaster_id": broadcaster_id, "length": length}).encode()
         headers = self._headers(token)
         headers["Content-Type"] = "application/json"
-        payload = self._read_json(Request(self.COMMERCIAL_URL, data=body, headers=headers, method="POST"))
-        return (payload.get("data") or [{}])[0]
+        try:
+            payload = self._read_json(
+                Request(
+                    self.COMMERCIAL_URL,
+                    data=body,
+                    headers=headers,
+                    method="POST",
+                )
+            )
+        except HTTPError as error:
+            self._raise_ads_api_error("start the commercial", error)
+        return self._ads_result(payload, "commercial")
 
     def snooze_ad(self, broadcaster_id: str, token: TwitchToken) -> dict:
         url = f"{self.SNOOZE_AD_URL}?{urlencode({'broadcaster_id': broadcaster_id})}"
-        payload = self._read_json(Request(url, data=b"", headers=self._headers(token), method="POST"))
-        return (payload.get("data") or [{}])[0]
+        try:
+            payload = self._read_json(
+                Request(
+                    url,
+                    data=b"",
+                    headers=self._headers(token),
+                    method="POST",
+                )
+            )
+        except HTTPError as error:
+            self._raise_ads_api_error("snooze the next ad", error)
+        return self._ads_result(payload, "ad action")
+
+    @staticmethod
+    def _ads_result(payload: dict[str, Any], action: str) -> dict[str, Any]:
+        values = payload.get("data")
+        if (
+            not isinstance(values, list)
+            or not values
+            or not isinstance(values[0], dict)
+        ):
+            raise ValueError(f"Twitch returned no result for the {action}.")
+        return values[0]
+
+    @staticmethod
+    def _raise_ads_api_error(action: str, error: HTTPError) -> None:
+        detail = ""
+        try:
+            payload = json.loads(error.read().decode("utf-8", errors="replace"))
+            if isinstance(payload, dict):
+                detail = str(payload.get("message") or "").strip()
+        except (OSError, json.JSONDecodeError):
+            pass
+        raise ValueError(
+            f"Twitch could not {action} (HTTP {error.code})"
+            + (f": {detail}" if detail else ".")
+        ) from error
 
     def get_custom_rewards(
         self,

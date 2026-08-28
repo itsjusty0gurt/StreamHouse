@@ -28,6 +28,7 @@ class AdsDomainEvent:
 class AdsState:
     channel_live: bool = False
     schedule_available: bool = False
+    schedule_error: str = ""
     next_at: datetime | None = None
     next_duration: int = 0
     last_at: datetime | None = None
@@ -83,9 +84,11 @@ class AdsService:
         value: object,
         *,
         now: datetime | None = None,
+        error: str = "",
     ) -> None:
         current = _aware(now or datetime.now(timezone.utc))
         self.state.schedule_available = isinstance(value, Mapping)
+        self.state.schedule_error = str(error).strip()
         schedule = value if isinstance(value, Mapping) else {}
         if not self.state.schedule_available:
             self.state.next_duration = 0

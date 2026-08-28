@@ -32,6 +32,7 @@ try {
     }
 
     $qtRoot = Join-Path $projectRoot "dist\StreamhouseHub\_internal\PySide6"
+    $internalRoot = Join-Path $projectRoot "dist\StreamhouseHub\_internal"
     $qtResources = Join-Path $qtRoot "resources"
     $qtQml = Join-Path $qtRoot "qml"
     $qtLocales = Join-Path $qtRoot "translations\qtwebengine_locales"
@@ -48,6 +49,17 @@ try {
             $_.Name -ne "en-US.pak"
         } | Remove-Item -Force
     }
+    # PyInstaller may discover Poppler's versioned ICU implementation from the
+    # build host PATH while resolving Qt6Core's Windows ICU dependency. That
+    # DLL does not export the compatibility procedures Qt requests and makes
+    # the packaged app fail while importing PySide6.QtCore. Windows supplies
+    # the correct System32 compatibility DLL; do not shadow it in the package.
+    $foreignIcu = Join-Path $internalRoot "icuuc.dll"
+    if (Test-Path -LiteralPath $foreignIcu) {
+        Remove-Item -LiteralPath $foreignIcu -Force
+    }
+    Get-ChildItem -LiteralPath $internalRoot -Filter "icudt*.dll" -File | `
+        Remove-Item -Force
     Write-Host "Streamhouse Hub created at dist\StreamhouseHub\StreamhouseHub.exe"
 }
 finally {

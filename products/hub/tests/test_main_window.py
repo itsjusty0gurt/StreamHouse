@@ -1499,6 +1499,37 @@ class MainWindowTests(unittest.TestCase):
 
         self.window_state_store.save.assert_called_once_with(self.window)
 
+    def test_window_screen_fit_is_attached_without_replacing_native_frame(self) -> None:
+        import sys
+
+        self.window.show()
+        self.application.processEvents()
+        self.assertIs(self.window.window_geometry._handle, self.window.windowHandle())
+        if sys.platform == "win32":
+            self.assertFalse(self.window.windowFlags() & Qt.WindowType.FramelessWindowHint)
+        self.assertTrue(self.window.screen().availableGeometry().contains(
+            self.window.frameGeometry()))
+
+    def test_native_drag_notifications_only_defer_geometry_correction(self) -> None:
+        import ctypes
+        import sys
+        from ctypes import wintypes
+        from shiboken6 import VoidPtr
+
+        if sys.platform != "win32":
+            self.skipTest("Windows native move loop")
+        message = wintypes.MSG()
+        message.message = 0x0231  # WM_ENTERSIZEMOVE
+        pointer = VoidPtr(ctypes.addressof(message))
+        self.window.nativeEvent(b"windows_generic_MSG", pointer)
+        self.assertTrue(self.window.window_geometry._interactive_move)
+        self.window.window_geometry.request_fit()
+        self.assertFalse(self.window.window_geometry._fit_timer.isActive())
+        message.message = 0x0232  # WM_EXITSIZEMOVE
+        self.window.nativeEvent(b"windows_generic_MSG", pointer)
+        self.assertFalse(self.window.window_geometry._interactive_move)
+        self.assertTrue(self.window.window_geometry._fit_timer.isActive())
+
     def test_navigation_buttons_are_square_edged_and_flush(self) -> None:
         style = self.window.ui.navigationFrame.styleSheet()
 
@@ -2253,6 +2284,81 @@ class MainWindowTests(unittest.TestCase):
             "42", 90, self.window.twitch_auth.token
         )
         self.assertFalse(self.window.run_ad_button.isEnabled())
+
+    def test_ads_permissions_are_actionable_inside_ad_manager(self) -> None:
+        self.window._last_twitch_auth_state = TwitchAuthState.SIGNED_IN
+        self.window.twitch_auth.token = Mock(scopes=["channel:read:ads"])
+
+        self.window.handle_twitch_auth_changed(
+            TwitchAuthState.SIGNED_IN, "streamer"
+        )
+        self.window.stream_is_live = True
+        self.window._update_ad_control_state()
+
+        self.assertFalse(
+            self.window.update_channel_permissions_button.isHidden()
+        )
+        self.assertEqual(
+            self.window.update_channel_permissions_button.text(), "Enable Ads"
+        )
+        self.assertIn(
+            "channel:edit:commercial", self.window.run_ad_button.toolTip()
+        )
+        self.assertIn(
+            "channel:manage:ads", self.window.snooze_ad_button.toolTip()
+        )
+
+    def test_broadcaster_reauthorization_reopens_eventsub_connection(self) -> None:
+        self.window._last_twitch_auth_state = TwitchAuthState.WAITING
+        self.window.twitch_auth.token = Mock(
+            scopes=[
+                "channel:read:ads",
+                "channel:manage:ads",
+                "channel:edit:commercial",
+            ]
+        )
+        self.window.twitch_service.state = TwitchConnectionState.CONNECTED
+        self.window.twitch_service.channel = "streamer"
+        self.window.twitch_service.disconnect = Mock()
+        self.window.connect_twitch = Mock()
+        self.window.refresh_channel_snapshot = Mock()
+
+        self.window.handle_twitch_auth_changed(
+            TwitchAuthState.SIGNED_IN, "streamer"
+        )
+
+        self.window.twitch_service.disconnect.assert_called_once_with()
+        self.window.connect_twitch.assert_called_once_with()
+        self.window.refresh_channel_snapshot.assert_called_once_with()
+
+    def test_ad_schedule_api_failure_has_compact_visible_status(self) -> None:
+        self.window.stream_is_live = True
+        self.window.twitch_auth.token = Mock(scopes=["channel:read:ads"])
+
+        self.window._apply_channel_snapshot(
+            ChannelSnapshotResult(
+                request_id=self.window.channel_snapshot_request_id,
+                snapshot={"stream": {"id": "stream-1"}, "ad_schedule": None},
+                warnings=("ad schedule: HTTP Error 403: Forbidden",),
+            )
+        )
+
+        self.assertEqual(self.window.ad_next_label.text(), "Ad schedule error")
+        self.assertIn("see Logs", self.window.ad_detail_label.text())
+
+    def test_ad_worker_failure_is_visible_from_chat_workspace(self) -> None:
+        worker = Mock()
+
+        self.window._ads_action_failed(
+            worker,
+            "commercial",
+            "Twitch could not start the commercial (HTTP 400): channel offline",
+        )
+
+        self.assertIn(
+            "Could not start commercial", self.window.ad_detail_label.text()
+        )
+        self.assertIn("channel offline", self.window.ad_detail_label.text())
 
     def test_twitch_event_viewer_filters_details_and_clears(self) -> None:
         self.window.ui.twitchChannelEdit.setText("channel")

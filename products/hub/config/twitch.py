@@ -26,6 +26,14 @@ TWITCH_BOT_SCOPES = (
     "user:bot",
 )
 
+TWITCH_AD_SCOPES = frozenset(
+    {
+        "channel:read:ads",
+        "channel:manage:ads",
+        "channel:edit:commercial",
+    }
+)
+
 TWITCH_CHANNEL_SNAPSHOT_SCOPES = frozenset(
     {
         "moderator:read:chatters",

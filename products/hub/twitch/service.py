@@ -56,6 +56,12 @@ class TwitchService:
         self.local_listener = LocalEventSubListener(self.webhook_processor)
         self.live_socket: TwitchEventSubSocket | None = None
         self.activity_socket: TwitchEventSubSocket | None = None
+        # Pin the identities selected when the sockets open. Twitch auth
+        # restore completes asynchronously, so looking the tokens up again in
+        # a later welcome callback can otherwise mix broadcaster and bot
+        # subscriptions on the same WebSocket session.
+        self._live_chat_token = None
+        self._activity_token = None
         self.broadcaster_user_id = ""
         self.broadcaster_display_name = ""
         self.badge_urls: dict[tuple[str, str], str] = {}
@@ -164,8 +170,10 @@ class TwitchService:
             on_error=self._receive_live_error,
             on_bus_event=self._publish_bus_event,
         )
+        self._live_chat_token = self._chat_token()
+        self._activity_token = token
         self.live_socket.open()
-        chat_token = self._chat_token()
+        chat_token = self._live_chat_token
         if (
             chat_token is not None
             and token.user_id
@@ -192,8 +200,8 @@ class TwitchService:
         return True
 
     def _receive_live_welcome(self, session_id: str) -> None:
-        broadcaster_token = self.auth.token if self.auth is not None else None
-        chat_token = self._chat_token()
+        broadcaster_token = self._activity_token
+        chat_token = self._live_chat_token
         if chat_token is None or not chat_token.user_id:
             self._report_error("The Twitch sign-in is missing its user identity.")
             return
@@ -224,7 +232,7 @@ class TwitchService:
         )
 
     def _receive_activity_welcome(self, session_id: str) -> None:
-        token = self.auth.token if self.auth is not None else None
+        token = self._activity_token
         if token is None or not token.user_id:
             Logger.warning(
                 "Channel activity EventSub is missing broadcaster identity.",
@@ -357,13 +365,18 @@ class TwitchService:
     def badge_url(self, set_id: str, badge_id: str) -> str:
         return self.badge_urls.get((set_id, badge_id), "")
 
-    def _broadcaster_credentials(self):
+    def _broadcaster_credentials(self, required_scope: str = ""):
         token = self.auth.token if self.auth is not None else None
         broadcaster_id = self.broadcaster_user_id or (
             token.user_id if token is not None else ""
         )
         if token is None or not broadcaster_id:
             raise ValueError("Sign in with your channel account first.")
+        if required_scope and required_scope not in set(token.scopes):
+            raise ValueError(
+                "Reconnect Twitch to grant the required permission: "
+                f"{required_scope}."
+            )
         return broadcaster_id, token
 
     def get_custom_rewards(self) -> list[TwitchCustomReward]:
@@ -420,13 +433,17 @@ class TwitchService:
         )
 
     def run_commercial(self, length: int) -> dict:
-        broadcaster_id, token = self._broadcaster_credentials()
+        broadcaster_id, token = self._broadcaster_credentials(
+            "channel:edit:commercial"
+        )
         return self.helix.start_commercial(
             broadcaster_id, min(max(int(length), 30), 180), token
         )
 
     def snooze_next_ad(self) -> dict:
-        broadcaster_id, token = self._broadcaster_credentials()
+        broadcaster_id, token = self._broadcaster_credentials(
+            "channel:manage:ads"
+        )
         return self.helix.snooze_ad(broadcaster_id, token)
 
     def update_stream_title(self, title: str) -> None:
@@ -584,6 +601,8 @@ class TwitchService:
             self.activity_socket.close()
             self.activity_socket.deleteLater()
             self.activity_socket = None
+        self._live_chat_token = None
+        self._activity_token = None
         self.local_listener.stop()
         self.channel = ""
         self.broadcaster_user_id = ""

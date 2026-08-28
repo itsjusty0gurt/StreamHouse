@@ -151,6 +151,71 @@ class TwitchServiceTests(unittest.TestCase):
         finally:
             service.disconnect()
 
+    @patch("products.hub.twitch.service.TwitchEventSubSocket")
+    def test_welcome_keeps_identity_selected_when_socket_opened(
+        self, socket_type: Mock
+    ) -> None:
+        broadcaster = TwitchToken(
+            "broadcaster-access",
+            "refresh",
+            999,
+            ["user:read:chat", "channel:read:ads"],
+            user_id="channel-1",
+            login="streamer",
+        )
+        bot = TwitchToken(
+            "bot-access",
+            "refresh",
+            999,
+            ["user:read:chat", "user:bot"],
+            user_id="bot-1",
+            login="testbot",
+        )
+        bot_auth = Mock(token=None)
+        helix = Mock()
+        helix.get_user.return_value = {"id": "channel-1"}
+        helix.get_badge_urls.return_value = {}
+        service = TwitchService(
+            auth=Mock(token=broadcaster),
+            bot_auth=bot_auth,
+            helix=helix,
+        )
+
+        try:
+            self.assertTrue(service.connect("streamer"))
+            bot_auth.token = bot  # Bot restore finishes before Twitch welcomes.
+            service._receive_live_welcome("session-1")
+
+            helix.create_chat_subscriptions.assert_called_once_with(
+                "session-1", "channel-1", "channel-1", broadcaster
+            )
+            helix.create_activity_subscriptions.assert_called_once_with(
+                "session-1", "channel-1", "channel-1", broadcaster
+            )
+            self.assertEqual(socket_type.return_value.open.call_count, 1)
+        finally:
+            service.disconnect()
+
+    def test_ads_actions_require_broadcaster_ads_scopes(self) -> None:
+        token = TwitchToken(
+            "access",
+            "refresh",
+            999,
+            [],
+            user_id="channel-1",
+            login="streamer",
+        )
+        helix = Mock()
+        service = TwitchService(auth=Mock(token=token), helix=helix)
+        service.broadcaster_user_id = "channel-1"
+
+        with self.assertRaisesRegex(ValueError, "channel:edit:commercial"):
+            service.run_commercial(60)
+        with self.assertRaisesRegex(ValueError, "channel:manage:ads"):
+            service.snooze_next_ad()
+        helix.start_commercial.assert_not_called()
+        helix.snooze_ad.assert_not_called()
+
     def test_same_account_cannot_fill_broadcaster_and_bot_slots(self) -> None:
         token = TwitchToken(
             "access",

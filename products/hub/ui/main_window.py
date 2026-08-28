@@ -111,7 +111,9 @@ from products.hub.streamhouse_hub.ai_lifecycle import (
 )
 from shared.streamhouse_shared.protocol import PROTOCOL_VERSION
 from products.hub.core.window_state import WindowStateStore
+from products.hub.core.window_geometry import WindowGeometryController
 from products.hub.config.twitch import (
+    TWITCH_AD_SCOPES,
     TWITCH_BOT_SCOPES,
     TWITCH_CHANNEL_SNAPSHOT_SCOPES,
     TWITCH_SCOPES,
@@ -972,6 +974,7 @@ class MainWindow(QMainWindow):
         self.window_state_store.restore(self)
         self._responsive_ready = True
         self._update_responsive_layout(force=True)
+        self.window_geometry = WindowGeometryController(self)
         self.auth_maintenance_timer = QTimer(self)
         self.auth_maintenance_timer.setInterval(30 * 60 * 1000)
         self.auth_maintenance_timer.timeout.connect(self.twitch_auth.maintain)
@@ -2140,12 +2143,23 @@ class MainWindow(QMainWindow):
         self._start_next_response_batch()
 
     def nativeEvent(self, event_type, message):
-        if _STREAMHOUSE_AI_PRESENCE_MESSAGE_ID:
+        if sys.platform == "win32":
             native_message = ctypes.cast(
                 int(message),
                 ctypes.POINTER(wintypes.MSG),
             ).contents
-            if native_message.message == _STREAMHOUSE_AI_PRESENCE_MESSAGE_ID:
+            geometry = getattr(self, "window_geometry", None)
+            if geometry is not None:
+                # Observe the native move loop only; Qt/Windows still processes
+                # these messages and owns sizing, snapping and DPI changes.
+                if native_message.message == 0x0231:  # WM_ENTERSIZEMOVE
+                    geometry.begin_interactive_move()
+                elif native_message.message == 0x0232:  # WM_EXITSIZEMOVE
+                    geometry.end_interactive_move()
+            if (
+                _STREAMHOUSE_AI_PRESENCE_MESSAGE_ID
+                and native_message.message == _STREAMHOUSE_AI_PRESENCE_MESSAGE_ID
+            ):
                 self._handle_streamhouse_ai_presence(
                     int(native_message.wParam),
                     int(native_message.lParam),
@@ -3391,12 +3405,23 @@ class MainWindow(QMainWindow):
             if signed_in
             else set()
         )
+        missing_ad_scopes = (
+            self.twitch_auth.missing_scopes(TWITCH_AD_SCOPES)
+            if signed_in
+            else set()
+        )
         self.twitch_health.auth_state = state.value
         self.channel_points_page.auth_changed()
         self.twitch_health.missing_scopes = set(missing_scopes)
         self._refresh_twitch_health()
         self.update_channel_permissions_button.setVisible(
-            signed_in and bool(missing_channel_snapshot_scopes)
+            signed_in
+            and bool(missing_channel_snapshot_scopes | missing_ad_scopes)
+        )
+        self.update_channel_permissions_button.setText(
+            "Enable Ads"
+            if missing_ad_scopes
+            else "Enable Stream Tools"
         )
         self.ui.twitchAccountStatusLabel.setText(detail)
         self.ui.twitchSignInButton.setEnabled(
@@ -3435,13 +3460,19 @@ class MainWindow(QMainWindow):
                 f"Send a message as @{detail}"
             )
             self.twitch_status_bar_label.setText(f"Twitch: @{detail}")
-            if (
-                previous_auth_state is not TwitchAuthState.SIGNED_IN
-                and self.twitch_service.state
-                is not TwitchConnectionState.CONNECTED
-            ):
-                self.connect_twitch()
             if previous_auth_state is not TwitchAuthState.SIGNED_IN:
+                if (
+                    self.twitch_service.state
+                    is TwitchConnectionState.CONNECTED
+                    and self.twitch_service.channel
+                ):
+                    # Reauthorization may add EventSub scopes. Reopen the
+                    # connection so Twitch receives the updated subscriptions
+                    # immediately instead of waiting for an app restart.
+                    channel = self.twitch_service.channel
+                    self.twitch_service.disconnect()
+                    self.ui.twitchChannelEdit.setText(channel)
+                self.connect_twitch()
                 self.refresh_channel_snapshot()
 
     @Slot(object, str)
@@ -6649,7 +6680,18 @@ class MainWindow(QMainWindow):
             if subscribers is None
             else f"{int(subscribers):,}"
         )
-        self._apply_ad_schedule(snapshot.get("ad_schedule"))
+        ad_schedule_error = next(
+            (
+                warning.partition(":")[2].strip()
+                for warning in result.warnings
+                if warning.casefold().startswith("ad schedule:")
+            ),
+            "",
+        )
+        self._apply_ad_schedule(
+            snapshot.get("ad_schedule"),
+            error=ad_schedule_error,
+        )
         self._update_stream_overview_clock()
         self._apply_chatter_groups(result)
         if result.followers:
@@ -6665,8 +6707,8 @@ class MainWindow(QMainWindow):
             self.followers_backfilled = True
             self._refresh_memory_viewer_list()
 
-    def _apply_ad_schedule(self, value: object) -> None:
-        self.ads_service.apply_schedule(value)
+    def _apply_ad_schedule(self, value: object, *, error: str = "") -> None:
+        self.ads_service.apply_schedule(value, error=error)
 
     @Slot()
     def _update_stream_overview_clock(self) -> None:
@@ -6685,20 +6727,6 @@ class MainWindow(QMainWindow):
         scopes = set(token.scopes) if token is not None else set()
         can_read_schedule = "channel:read:ads" in scopes
         state = self.ads_service.state
-        if not self.stream_is_live:
-            self.ad_next_label.setText("Channel offline")
-            self.ad_detail_label.setText("Ad schedule available while live")
-            self.ad_snooze_status_label.setText("Snoozes —")
-            self._update_ad_control_state(now)
-            return
-        if not can_read_schedule:
-            self.ad_next_label.setText("Enable ad schedule access")
-            self.ad_detail_label.setText(
-                "Update Twitch permissions to monitor ads"
-            )
-            self.ad_snooze_status_label.setText("Snoozes —")
-            self._update_ad_control_state(now)
-            return
         if state.in_progress and state.ends_at is not None:
             remaining = max(int((state.ends_at - now).total_seconds()), 0)
             self.ad_next_label.setText(
@@ -6718,9 +6746,31 @@ class MainWindow(QMainWindow):
             )
             self._update_ad_control_state(now)
             return
+        if not self.stream_is_live:
+            self.ad_next_label.setText("Channel offline")
+            self.ad_detail_label.setText("Ad schedule available while live")
+            self.ad_snooze_status_label.setText("Snoozes —")
+            self._update_ad_control_state(now)
+            return
+        if not can_read_schedule:
+            self.ad_next_label.setText("Enable ad schedule access")
+            self.ad_detail_label.setText(
+                "Update Twitch permissions to monitor ads"
+            )
+            self.ad_snooze_status_label.setText("Snoozes —")
+            self._update_ad_control_state(now)
+            return
         if not state.schedule_available:
-            self.ad_next_label.setText("Ad schedule unavailable")
-            self.ad_detail_label.setText("Waiting for Twitch ad schedule data")
+            self.ad_next_label.setText(
+                "Ad schedule error"
+                if state.schedule_error
+                else "Ad schedule unavailable"
+            )
+            self.ad_detail_label.setText(
+                "Twitch rejected the schedule request; see Logs"
+                if state.schedule_error
+                else "Waiting for Twitch ad schedule data"
+            )
             self.ad_snooze_status_label.setText("Snoozes —")
             self._update_ad_control_state(now)
             return
@@ -6748,6 +6798,16 @@ class MainWindow(QMainWindow):
                 f" • Next in {self._clock_text(int((state.snooze_refresh_at - now).total_seconds()))}"
             )
         self.ad_snooze_status_label.setText(snooze_text)
+        missing_actions = (TWITCH_AD_SCOPES - scopes) - {"channel:read:ads"}
+        if missing_actions:
+            unavailable = []
+            if "channel:edit:commercial" in missing_actions:
+                unavailable.append("Run Ads")
+            if "channel:manage:ads" in missing_actions:
+                unavailable.append("Snooze")
+            self.ad_detail_label.setText(
+                "Reconnect Twitch to enable " + " and ".join(unavailable)
+            )
         self._update_ad_control_state(now)
 
     def _update_ad_control_state(self, now: datetime | None = None) -> None:
@@ -6759,10 +6819,11 @@ class MainWindow(QMainWindow):
             state.manual_retry_until is None
             or state.manual_retry_until <= current
         )
+        can_run_ads = "channel:edit:commercial" in scopes
         self.run_ad_button.setEnabled(
             not self.ads_action_in_flight
             and self.stream_is_live
-            and "channel:edit:commercial" in scopes
+            and can_run_ads
             and retry_ready
         )
         if not retry_ready and state.manual_retry_until is not None:
@@ -6773,6 +6834,10 @@ class MainWindow(QMainWindow):
             self.run_ad_button.setToolTip(
                 f"Another commercial can run in {self._clock_text(remaining)}."
             )
+        elif not can_run_ads:
+            self.run_ad_button.setToolTip(
+                "Reconnect Twitch to grant channel:edit:commercial."
+            )
         else:
             self.run_ad_button.setToolTip(
                 "Requires channel:edit:commercial and an eligible live channel."
@@ -6780,14 +6845,20 @@ class MainWindow(QMainWindow):
         schedule_known = (
             "channel:read:ads" in scopes and state.schedule_available
         )
+        can_snooze_ads = "channel:manage:ads" in scopes
         self.snooze_ad_button.setEnabled(
             not self.ads_action_in_flight
             and self.stream_is_live
-            and "channel:manage:ads" in scopes
+            and can_snooze_ads
             and (
                 not schedule_known
                 or (state.next_at is not None and state.snooze_count > 0)
             )
+        )
+        self.snooze_ad_button.setToolTip(
+            "Requires an upcoming scheduled ad and an available snooze."
+            if can_snooze_ads
+            else "Reconnect Twitch to grant channel:manage:ads."
         )
 
     @staticmethod
@@ -7543,7 +7614,11 @@ class MainWindow(QMainWindow):
         self._ads_workers.discard(worker)
         self.ads_action_in_flight = False
         label = "start commercial" if action == "commercial" else "snooze ad"
-        self.handle_twitch_error(f"Could not {label}: {error}")
+        message = f"Could not {label}: {error}"
+        self.handle_twitch_error(message)
+        self.ad_detail_label.setText(message)
+        self.statusBar().showMessage(message, 12_000)
+        Logger.warning(message, source="TWITCH")
         self._update_ad_control_state()
 
     @Slot()

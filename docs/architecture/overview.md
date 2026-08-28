@@ -130,9 +130,10 @@ Dependency direction is enforced by ownership and package audits:
 - Hub may import `shared.*`, but never `products.ai.engine` or the AI server.
 - AI may import `shared.*`, but never `products.hub`.
 - Shared code imports neither product.
-- Shared Qt presentation components live in `shared/streamhouse_ui/`; both
-  desktop products install its frameless title bar while retaining independent
-  navigation, pages, window-state persistence, and product behavior.
+- Shared Qt presentation components live in `shared/streamhouse_ui/`. Hub uses
+  the native Windows frame (including native snap/maximize); AI uses the shared
+  frameless title bar. Navigation, pages and window-state persistence remain
+  product-owned.
 - The lightweight Hub AI client and remote-store adapters live in
   `products/hub/streamhouse_hub/`; the protocol DTOs live in
   `shared/streamhouse_shared/`.
@@ -994,6 +995,39 @@ logic or network protocol code in it.
 
 New pages must remain usable in both orientations and should use scroll areas
 when controls would otherwise be crushed.
+
+### Hub window geometry on Windows
+
+`products/hub/core/window_state.py` retains Qt `QSettings` geometry/state
+storage. Valid saved normal geometry is preserved; oversized, partially hidden
+or disconnected-display geometry is clamped to an available display's work
+area, choosing the largest overlap or the primary screen when fully offscreen.
+
+`products/hub/core/window_geometry.py` owns normal-window screen-fit correction.
+`MainWindow` installs its `WindowGeometryController` after restoring settings.
+The controller follows `QWindow.screenChanged` and the current screen's work
+area/DPI notifications, and checks again on show or return from maximized.
+It uses `availableGeometry`, including taskbar reservations, and fits the whole
+frame while applying client geometry atomically. It never expands the window,
+rescales fonts, changes layout settings or repeatedly subtracts frame borders.
+Same-screen user moves/resizes are not continuously overridden.
+
+All correction runs on the Qt UI thread. A single queued, coalesced check lets
+Qt finish updating native frame metrics; there is no monitor polling.
+`MainWindow.nativeEvent` observes only `WM_ENTERSIZEMOVE` / `WM_EXITSIZEMOVE`
+for geometry purposes, deferring a pending screen correction until the native
+drag ends. These notifications are still passed to Qt. There are no custom
+hit-test, maximize, work-area or `WM_DPICHANGED` implementations. Coordinates
+and frame margins remain Qt logical units, including on mixed-DPI monitors.
+Maximized, minimized and fullscreen geometry stays under Qt/Windows control;
+restoring to normal schedules a fit on the destination display.
+
+Focused regression tests are in `test_window_geometry.py`, `test_window_state.py`
+and `test_main_window.py`. Packaged acceptance still requires an actual
+ultrawide-to-1080p drag, repeated returns without growth/shrinkage, mixed scaling,
+native maximize/restore, and close/reopen on the destination display. The
+existing minimum usable layout size is unchanged; work areas smaller than that
+minimum are not a substitute for a separate small-screen content-layout task.
 
 ## Threading and UI safety
 
