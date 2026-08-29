@@ -249,6 +249,20 @@ def _timestamp(value: object) -> datetime | None:
     text = str(value or "").strip()
     if not text:
         return None
+    # Live Helix Ads responses use Unix seconds (and zero for no timestamp),
+    # while EventSub and the documented Ads examples use RFC3339 strings.
+    # Both are current Twitch wire formats, not saved-data compatibility.
+    try:
+        seconds = int(text)
+    except ValueError:
+        pass
+    else:
+        if seconds <= 0:
+            return None
+        try:
+            return datetime.fromtimestamp(seconds, tz=timezone.utc)
+        except (OverflowError, OSError, ValueError):
+            return None
     try:
         return _aware(datetime.fromisoformat(text.replace("Z", "+00:00")))
     except ValueError:

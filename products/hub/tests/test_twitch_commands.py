@@ -577,7 +577,7 @@ class TwitchCommandTriggerStoreTests(unittest.TestCase):
         discord = self.store.default("discord")
         information = ChannelInformation()
         information.social_links["discord"] = SocialLink(
-            False, "https://discord.gg/example", True
+            False, "https://discord.gg/example"
         )
         information_store.save(information)
         self.assertEqual(
@@ -795,7 +795,7 @@ class TwitchCommandTriggerDispatcherTests(unittest.TestCase):
         )
         configured = ChannelInformation()
         configured.social_links["discord"] = SocialLink(
-            False, "https://discord.gg/example", True
+            False, "https://discord.gg/example"
         )
         information.save(configured)
         self.assertEqual(

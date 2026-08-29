@@ -52,6 +52,47 @@ class AdsServiceTests(unittest.TestCase):
         self.assertEqual(values["snooze_count"], 2)
         self.assertFalse(values["in_progress"])
 
+    def test_live_helix_unix_timestamps_drive_countdowns_and_cooldown(self) -> None:
+        source = self.schedule(seconds=301)
+        source["last_ad_at"] = (self.now - timedelta(minutes=2)).isoformat()
+        for encode in (int, str):
+            with self.subTest(encoding=encode):
+                schedule = dict(source)
+                for name in ("next_ad_at", "last_ad_at", "snooze_refresh_at"):
+                    schedule[name] = encode(int(datetime.fromisoformat(schedule[name]).timestamp()))
+                self.service.apply_schedule(schedule, now=self.now)
+                values = self.service.state.values(self.now)
+                self.assertEqual(values["next_in"], 301)
+                self.assertEqual(values["snooze_refresh_in"], 900)
+                self.assertEqual(values["manual_retry_after"], 360)
+        events = self.service.tick(self.now + timedelta(seconds=1))
+        self.assertEqual([event.event_type for event in events], ["ads.warning.5_minutes"])
+
+    def test_unix_snooze_response_reschedules_warning(self) -> None:
+        self.service.apply_schedule(self.schedule(seconds=301), now=self.now)
+        self.service.tick(self.now + timedelta(seconds=1))
+        self.client.snooze_result = {
+            "next_ad_at": int((self.now + timedelta(seconds=601)).timestamp()),
+            "snooze_refresh_at": int((self.now + timedelta(minutes=30)).timestamp()),
+            "snooze_count": 1,
+        }
+        self.service.snooze(now=self.now + timedelta(seconds=2))
+        self.assertEqual(self.service.state.values(self.now)["next_in"], 601)
+        events = self.service.tick(self.now + timedelta(seconds=301))
+        self.assertEqual([event.event_type for event in events], ["ads.warning.5_minutes"])
+
+    def test_missing_and_invalid_ad_times_are_unavailable_not_epoch_dates(self) -> None:
+        for value in (0, "0", -1, "-1", None, "", "invalid", 10**30, True):
+            with self.subTest(value=value):
+                self.service.apply_schedule({
+                    "next_ad_at": value,
+                    "last_ad_at": value,
+                    "snooze_refresh_at": value,
+                }, now=self.now)
+                self.assertIsNone(self.service.state.next_at)
+                self.assertIsNone(self.service.state.last_at)
+                self.assertIsNone(self.service.state.snooze_refresh_at)
+
     def test_warnings_fire_once_and_reset_for_a_snoozed_schedule(self) -> None:
         self.service.apply_schedule(self.schedule(seconds=301), now=self.now)
 

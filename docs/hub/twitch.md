@@ -95,7 +95,7 @@ requirement and Routine lifetime rather than inventing global values.
 Built-in command definitions are code-owned templates, not inactive routines.
 A fresh Hub displays them as **Not Configured** on the Commands page but does
 not persist a trigger or create an Automation routine. Explicitly configuring
-a template creates one normal managed command routine; deleting it returns the
+a template (including committing its social setup) creates one normal managed command routine; deleting it returns the
 definition to template state. A configured default can be reset to its current
 template, while a custom command or alias occupying the template name is
 reported as a conflict and is never overwritten.
@@ -119,9 +119,8 @@ Reusable Twitch lookup tasks live in `products/hub/twitch/tasks.py`:
 
 Information Hub already owns does not need an Automation Get task. Cached
 Twitch title/category state resolves through `stream.title` and
-`stream.category`. Optional values configured in **Your Channel > Channel
-Information** can be published with their independent **Expose as Variable**
-checkboxes:
+`stream.category`. Values configured in **Your Channel > Channel Information**
+always have read-only Text definitions through `ChannelInformationVariableProvider`:
 
 - `channel.schedule` and `channel.rules`;
 - `socials.discord`, `socials.youtube`, `socials.tiktok`, `socials.instagram`,
@@ -129,13 +128,43 @@ checkboxes:
   `socials.website`;
 - `serverinfo.details` for the current combined server description/address.
 
-Unchecked or blank fields do not publish definitions. Valid edits update live
-resolution immediately; Save persists the value and exposure choice for the
-next launch. The social **Include** checkbox remains separate and controls only
-the formatted `!socials` message. Default Channel Information commands use
-these canonical Variables directly; obsolete pre-alpha routines containing the
-removed Get tasks are rejected/reset rather than supported by a compatibility
-path.
+Unconfigured values resolve to empty text; they remain discoverable in the
+Variables page and Picker. There are no exposure flags or aliases.
+
+Each social row has a draft link, **Include in !socials**, and **Update**.
+Update is enabled only when the draft text or inclusion differs from the saved
+row. Typing and toggling Include do not change Variables or command responses.
+Update validates with the existing link rules (outer trimming, optional HTTPS
+prefix, no internal whitespace), commits the whole row, and synchronizes its
+managed commands. Empty links are valid unconfigured values, even if Include
+remains checked. Other rows' drafts are preserved. Schedule, Rules, and Server
+Information retain their separate **Save Other Information** action; their
+Variables also resolve committed, not draft, text.
+
+The existing per-social templates are `!discord` and `!youtube`. A committed
+non-empty link configures/enables that default automatically, independently of
+Include. `!socials` is configured/enabled when at least one committed non-empty
+link is included. `build_social_links_message` composes only those saved links,
+deduplicates them in service order, and observes the Twitch message budget.
+Edits retain trigger/routine identity, tasks, and the single **Commands** group.
+Clearing setup disables an existing managed default without deleting its
+routine; restoring setup re-enables it. An unconfigured default remains a
+template. Custom commands and aliases are never overwritten, and routines that
+read a social Variable are never deleted by social setup.
+
+The command store prepares changes using the normal default-template factories.
+`ChannelInformationStore.save` writes the prepared routine/command files and
+configuration before publishing the committed value. On an ordinary write
+failure, already-written files and their backups are restored; the page keeps
+the draft and displays a row error. This is not a cross-file, crash-recovery
+database transaction: interruption/power loss during a multi-file write remains
+a persistence limitation. The current pre-alpha Channel Information schema is
+v3, without exposure fields; older development schemas are rejected/reset, not
+migrated. Twitch authentication is unrelated and unchanged.
+
+Default Channel Information commands use these canonical Variables directly;
+obsolete pre-alpha routines containing removed Get tasks are rejected/reset
+rather than supported by a compatibility path.
 
 `core.format_duration` and `core.select_text` provide reusable formatting and
 conditional response selection. Every output is routine-scoped and described
@@ -200,8 +229,19 @@ break timing. The compact Ad Manager remains on the Chat tab and shows the next
 or active countdown, next duration, snooze count/refresh, a remembered
 30–180-second commercial duration (180 seconds by default), Run Ads, and
 Snooze. It intentionally has no preroll-free progress bar or separate Ads
-settings workspace. API operations run on the existing Qt worker pattern and
+settings workspace; a compact `Preroll-free` time readout uses the same cached
+state. Unknown/offline values display a dash rather than an invented countdown.
+Live Helix Ads responses use Unix-second timestamps (zero means unavailable),
+while EventSub and Twitch's documented examples use RFC3339. `AdsService`
+normalizes these external wire formats to UTC before calculating countdowns,
+warnings, cooldowns and snooze refresh times.
+API operations run on the existing Qt worker pattern and
 call `AdsService`, not Helix from the widget.
+
+Stream online/offline EventSub notifications update stream status and Ads
+controls immediately, then request a fresh snapshot. A snapshot requested
+before that transition cannot overwrite it. The normal periodic snapshot path
+still detects live state when Hub connects to an already-live channel.
 
 With `channel:read:ads`, Hub subscribes to `channel.ad_break.begin`. The service
 retains Twitch's start time, duration, automatic/manual flag, and requester

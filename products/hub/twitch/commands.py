@@ -12,7 +12,7 @@ from uuid import uuid4
 
 from products.hub.automation.variable_outputs import generated_output_definitions
 from products.hub.automation.variable_registry import VariableDefinition, VariableRegistry
-from products.hub.automation.models import RoutineDefinition, TriggerEvent
+from products.hub.automation.models import RoutineDefinition, RoutineGroup, TriggerEvent
 from products.hub.automation.routines import RoutineStore
 from shared.streamhouse_runtime.json_store import atomic_write_json, load_json_with_backup
 from shared.streamhouse_runtime.paths import user_data_root
@@ -20,7 +20,10 @@ from products.hub.twitch.models import TwitchMessage
 from products.hub.twitch.tasks import SendTwitchChatMessageTask
 from products.hub.twitch.channel_information import (
     CHANNEL_INFORMATION_FIELD_LABELS,
+    SOCIAL_SERVICE_LABELS,
     ChannelInformationStore,
+    SocialLink,
+    normalize_social_url,
 )
 from products.hub.twitch.default_commands import (
     DefaultCommandDefinition,
@@ -407,6 +410,78 @@ class TwitchCommandTriggerStore:
         if conflict:
             raise ValueError(conflict)
         return self._install_default(definition)
+
+    def commit_social(
+        self,
+        information_store: ChannelInformationStore,
+        service_id: str,
+        url: str,
+        include: bool,
+    ) -> None:
+        """Commit one row and its setup-driven defaults without publishing drafts.
+
+        Prepare with the normal template factories. Keep configured routines and
+        custom commands intact; an empty field disables its managed default.
+        """
+        if service_id not in SOCIAL_SERVICE_LABELS:
+            raise ValueError("Unknown social service.")
+        information = information_store.snapshot()
+        information.social_links[service_id] = SocialLink(include, normalize_social_url(url))
+        triggers = deepcopy(self.triggers)
+        routines = deepcopy(self.routine_store.routines)
+        groups = deepcopy(self.routine_store.groups)
+        for definition in default_command_definitions():
+            requirement = definition.setup_requirement
+            if requirement not in {f"{service_id}_url", "socials"}:
+                continue
+            ready = (
+                any(link.url and link.enabled_in_socials for link in information.social_links.values())
+                if requirement == "socials"
+                else bool(information.social_links[service_id].url)
+            )
+            trigger = next(
+                (item for item in triggers if item.default_id == definition.default_id), None
+            )
+            if trigger is None and not ready:
+                continue
+            if trigger is None:
+                # A custom command (including an alias) owns its name. Never
+                # replace it just because a Channel Information field changes.
+                occupant = self.resolve(definition.name)
+                if occupant is not None:
+                    continue
+                conflict = self._default_conflict(definition)
+                if conflict:
+                    raise ValueError(conflict)
+                group = next(
+                    (item for item in groups
+                     if item.name.casefold() == self.COMMANDS_GROUP_NAME.casefold()), None
+                )
+                if group is None:
+                    group = RoutineGroup(uuid4().hex, self.COMMANDS_GROUP_NAME)
+                    groups.append(group)
+                trigger = self._trigger_for(definition)
+                self._validate_trigger(trigger)
+                routines.append(self._routine_for(definition, group_id=group.group_id))
+                triggers.append(trigger)
+            trigger.enabled = ready
+        self.routine_store._validate_state(groups, routines)
+        related_files = {}
+        if groups != self.routine_store.groups or routines != self.routine_store.routines:
+            related_files[self.routine_store.path] = {
+                "version": self.routine_store.VERSION,
+                "groups": [asdict(item) for item in groups],
+                "routines": [asdict(item) for item in routines],
+            }
+        if triggers != self.triggers:
+            related_files[self.path] = {
+                "version": self.VERSION,
+                "triggers": [asdict(item) for item in triggers],
+            }
+        information_store.save(information, related_files=related_files)
+        self.triggers = triggers
+        self.routine_store.groups = groups
+        self.routine_store.routines = routines
 
     def reset_default(self, default_id: str) -> TwitchCommandTrigger:
         definition = self._default_definition(default_id)

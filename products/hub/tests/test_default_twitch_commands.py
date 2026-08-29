@@ -16,7 +16,10 @@ from products.hub.automation.variable_providers import (
 )
 from products.hub.automation.variable_registry import VariableRegistry
 from products.hub.automation.value_tasks import register_value_tasks
-from products.hub.twitch.commands import TwitchCommandTriggerStore
+from products.hub.twitch.commands import (
+    TwitchCommandTriggerStore, TwitchCommandTriggerDispatcher, TwitchCommandTriggerOutcome,
+)
+from products.hub.twitch.models import TwitchMessage
 from products.hub.twitch.default_commands import default_command_definitions
 from products.hub.twitch.channel_information import (
     ChannelInformation,
@@ -252,17 +255,14 @@ class DefaultTwitchCommandTests(unittest.TestCase):
     def test_channel_information_commands_use_configured_values(self) -> None:
         information = ChannelInformation(
             schedule="Tuesday and Thursday at 7 PM",
-            expose_schedule=True,
             rules="Be kind. No spoilers.",
-            expose_rules=True,
             server_info="Example Realm — play.example.com",
-            expose_server_info=True,
         )
         information.social_links["discord"] = SocialLink(
-            True, "https://discord.gg/example", True
+            True, "https://discord.gg/example"
         )
         information.social_links["youtube"] = SocialLink(
-            True, "https://youtube.com/@example", True
+            True, "https://youtube.com/@example"
         )
         information.social_links["tiktok"] = SocialLink(
             False, "https://tiktok.com/@example"
@@ -300,19 +300,15 @@ class DefaultTwitchCommandTests(unittest.TestCase):
         self.enable("discord")
         command = self.store.resolve("discord")
 
-        result = self.automation.publish_trigger(
-            TriggerEvent(
-                command.trigger_id,
-                "twitch",
-                "command",
-                {"user": "TestViewer", "viewer_permission": "everyone"},
-            )
+        dispatcher = TwitchCommandTriggerDispatcher(
+            self.store, channel_information=self.channel_information
         )
-
-        self.assertFalse(result.succeeded)
+        result = dispatcher.evaluate(TwitchMessage(
+            username="TestViewer", text="!discord", received_at=datetime.now(timezone.utc),
+            user_id="2", user_login="testviewer",
+        ))
+        self.assertEqual(result.outcome, TwitchCommandTriggerOutcome.CONFIGURATION_ERROR)
         self.assertEqual(self.twitch.messages, [])
-        detail = result.routine_results[0].task_results[0].detail
-        self.assertIn("socials.discord", detail)
 
 
 if __name__ == "__main__":

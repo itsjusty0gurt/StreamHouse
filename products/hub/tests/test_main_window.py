@@ -1380,9 +1380,31 @@ class MainWindowTests(unittest.TestCase):
             self.window.channel_tabs.currentWidget(),
             self.window.channel_information_page,
         )
-        self.assertFalse(
+        self.assertTrue(
             self.window.channel_information_page.enable_after_saving_check.isHidden()
         )
+
+    def test_social_update_refreshes_commands_routines_and_variables_together(self) -> None:
+        page = self.window.channel_information_page
+        include, edit, update, _error = page.social_rows["discord"]
+        include.setChecked(True)
+        edit.setText("discord.gg/example")
+        self.assertIsNone(self.twitch_command_trigger_store.default("discord"))
+        with patch.object(self.window.automation_page, "refresh",
+                          wraps=self.window.automation_page.refresh) as refresh:
+            update.click()
+            refresh.assert_called_once()
+        table = self.window.twitch_commands_table
+        states = {table.item(row, 1).text(): table.item(row, 0).text()
+                  for row in range(table.rowCount())}
+        self.assertEqual(states["!discord"], "Enabled")
+        self.assertEqual(states["!socials"], "Enabled")
+        command = self.twitch_command_trigger_store.default("discord")
+        routine = self.twitch_command_trigger_store.routine_store.get(command.routine_id)
+        self.assertEqual(self.twitch_command_trigger_store.routine_store.get_group(routine.group_id).name,
+                         "Commands")
+        self.assertEqual(self.window.variable_registry.resolve("socials.discord").value,
+                         "https://discord.gg/example")
 
     def test_command_filter_keeps_matching_defaults_before_customs(self) -> None:
         self.twitch_command_trigger_store.add("socialparty", "Party")
@@ -2245,6 +2267,68 @@ class MainWindowTests(unittest.TestCase):
         self.assertFalse(hasattr(self.window, "ad_schedule_progress"))
         self.assertTrue(self.window.run_ad_button.isEnabled())
         self.assertTrue(self.window.snooze_ad_button.isEnabled())
+
+    def test_ads_live_snapshot_from_real_worker_enables_controls(self) -> None:
+        now = datetime.now(timezone.utc)
+        self.window.twitch_auth.token = Mock(user_id="42", scopes=[
+            "channel:read:ads", "channel:manage:ads", "channel:edit:commercial",
+        ])
+        self.window.twitch_service.broadcaster_user_id = "42"
+        helix = Mock()
+        helix.get_channel_snapshot.return_value = {
+            "stream": {"id": "test-stream", "started_at": now.isoformat(), "viewer_count": 7},
+            "ad_schedule": {
+                "next_ad_at": int((now + timedelta(minutes=10)).timestamp()),
+                "last_ad_at": 0,
+                "snooze_refresh_at": int((now + timedelta(minutes=20)).timestamp()),
+                "snooze_count": 2, "duration": 180, "preroll_free_time": 300,
+            },
+        }
+        self.window.twitch_service.helix = helix
+        self.window.refresh_channel_snapshot()
+        deadline = monotonic() + 3
+        while self.window.channel_snapshot_in_flight and monotonic() < deadline:
+            QTest.qWait(10)
+        self.assertFalse(self.window.channel_snapshot_in_flight)
+        self.assertTrue(self.window.stream_is_live)
+        self.assertEqual(self.window.stream_viewers_label.text(), "7")
+        self.assertIn("Next ads in -", self.window.ad_next_label.text())
+        self.assertIn("Next in", self.window.ad_snooze_status_label.text())
+        self.assertNotIn("—", self.window.ad_preroll_label.text())
+        self.assertIn(self.window.ad_preroll_label.text(), (
+            "Preroll-free: 05:00", "Preroll-free: 04:59", "Preroll-free: 04:58",
+        ))
+        self.assertTrue(self.window.run_ad_button.isEnabled())
+        self.assertTrue(self.window.snooze_ad_button.isEnabled())
+
+    def test_stream_events_update_ads_without_waiting_for_old_refresh(self) -> None:
+        self.window.twitch_auth.token = Mock(scopes=[
+            "channel:read:ads", "channel:manage:ads", "channel:edit:commercial",
+        ])
+        self.window.refresh_channel_snapshot = Mock()
+        for event_type, is_live in (("stream.online", True), ("stream.offline", False)):
+            with self.subTest(event_type=event_type):
+                old_request = self.window.channel_snapshot_request_id
+                self.window.channel_snapshot_in_flight = True
+                event = TwitchEvent(
+                    subscription_type=event_type, version="1",
+                    received_at=datetime.now(timezone.utc), message_id=event_type,
+                    broadcaster_user_id="42", broadcaster_user_login="test",
+                    broadcaster_user_name="Test", transport=TwitchEventTransport.WEBSOCKET,
+                    payload={"event": {"id": "stream", "started_at": datetime.now(timezone.utc).isoformat()}},
+                )
+                self.window.handle_twitch_activity(event)
+                self.assertEqual(self.window.stream_is_live, is_live)
+                self.assertEqual(self.window.run_ad_button.isEnabled(), is_live)
+                self.assertEqual(self.window.snooze_ad_button.isEnabled(), is_live)
+                self.window._apply_channel_snapshot(ChannelSnapshotResult(
+                    request_id=old_request,
+                    snapshot={"stream": None if is_live else {"id": "old-stream"}},
+                ))
+                self.assertEqual(self.window.stream_is_live, is_live)
+                self.assertEqual(self.window.run_ad_button.isEnabled(), is_live)
+                if not is_live:
+                    self.assertEqual(self.window.ad_preroll_label.text(), "Preroll-free: —")
 
     def test_stream_session_duration_uses_hours_and_minutes(self) -> None:
         self.session_store.sessions = [

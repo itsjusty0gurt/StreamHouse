@@ -70,7 +70,7 @@ class ChannelInformationStoreTests(unittest.TestCase):
             self.store.load()
 
         self.path.write_text(json.dumps({"version": 1}), encoding="utf-8")
-        with self.assertRaisesRegex(ValueError, "expected 2"):
+        with self.assertRaisesRegex(ValueError, "expected 3"):
             self.store.load()
 
     def test_link_validation_is_permissive_but_blocks_spaces_and_line_breaks(self) -> None:

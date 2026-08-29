@@ -100,34 +100,31 @@ def test_contextual_resolution_and_safe_placeholder_rendering() -> None:
     assert not registry.resolve("command.data", keyword).available
 
 
-def test_channel_information_definitions_follow_exposure_and_live_state() -> None:
+def test_channel_information_definitions_always_exist_and_follow_committed_state() -> None:
     with TemporaryDirectory() as temporary:
         store = ChannelInformationStore(Path(temporary) / "channel-information.json")
         store.load()
         registry = VariableRegistry()
         registry.register(ChannelInformationVariableProvider(store))
 
-        assert registry.definition("socials.discord") is None
+        assert registry.resolve("socials.discord").value == ""
         information = ChannelInformation(
             schedule="Friday at 8 PM",
-            expose_schedule=True,
             rules="Be kind.",
-            expose_rules=False,
             server_info="play.example.com",
-            expose_server_info=True,
         )
         information.social_links["discord"] = SocialLink(
-            False, "https://discord.gg/example", True
+            False, "https://discord.gg/example"
         )
-        store.update_live(information)
+        store.save(information)
 
         assert registry.resolve("socials.discord").display_value == "https://discord.gg/example"
         assert registry.resolve("channel.schedule").display_value == "Friday at 8 PM"
         assert registry.resolve("serverinfo.details").display_value == "play.example.com"
-        assert registry.definition("channel.rules") is None
+        assert registry.resolve("channel.rules").value == "Be kind."
         assert registry.definition("channel.schedule").preview_value == "Friday at 8 PM"
         assert {item.name for item in registry.definitions()} == {
-            "socials.discord", "channel.schedule", "serverinfo.details"
+            *(f"socials.{name}" for name in ("discord", "youtube", "tiktok", "instagram", "bluesky", "twitter", "facebook", "website")), "channel.schedule", "channel.rules", "serverinfo.details"
         }
 
         app = QApplication.instance() or QApplication([])
@@ -138,10 +135,8 @@ def test_channel_information_definitions_follow_exposure_and_live_state() -> Non
         app.processEvents()
 
         information.social_links["discord"].url = "https://discord.gg/updated"
-        information.social_links["discord"].expose_as_variable = False
-        information.expose_rules = True
-        store.update_live(information)
-        assert registry.definition("socials.discord") is None
+        store.save(information)
+        assert registry.resolve("socials.discord").value == "https://discord.gg/updated"
         assert registry.resolve("channel.rules").display_value == "Be kind."
         assert "twitch.get_channel_information" not in TaskEditorDialog.LABELS
         assert "twitch.get_channel_information_field" not in TaskEditorDialog.SCHEMAS
@@ -491,14 +486,14 @@ def test_variables_page_refreshes_dynamic_providers() -> None:
         registry.register(CounterVariableProvider(counter_service))
         registry.register(ChannelInformationVariableProvider(channel_store))
         page = VariablesPage(registry, custom_store)
-        assert page.table.rowCount() == 0
+        assert page.table.rowCount() == 11
 
         counter_service.create_counter(definition())
         information = ChannelInformation()
         information.social_links["discord"] = SocialLink(
-            False, "https://discord.gg/example", True
+            False, "https://discord.gg/example"
         )
-        channel_store.update_live(information)
+        channel_store.save(information)
         page.refresh()
         names = {
             page.table.item(row, 0).text()
@@ -509,10 +504,10 @@ def test_variables_page_refreshes_dynamic_providers() -> None:
         assert "socials.discord" in names
 
         counter_service.delete_counter("deaths")
-        information.social_links["discord"].expose_as_variable = False
-        channel_store.update_live(information)
+        information.social_links["discord"].url = ""
+        channel_store.save(information)
         page.refresh()
-        assert page.table.rowCount() == 0
+        assert page.table.rowCount() == 11
         page.close()
     application.processEvents()
 

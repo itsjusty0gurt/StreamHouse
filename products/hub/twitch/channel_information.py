@@ -64,13 +64,11 @@ def normalize_multiline_text(value: object) -> str:
 class SocialLink:
     enabled_in_socials: bool = False
     url: str = ""
-    expose_as_variable: bool = False
 
     @classmethod
     def from_dict(cls, values: Mapping[str, Any]) -> SocialLink:
         return cls(
             enabled_in_socials=bool(values.get("enabled_in_socials", False)),
-            expose_as_variable=bool(values.get("expose_as_variable", False)),
             url=normalize_social_url(values.get("url", "")),
         )
 
@@ -83,11 +81,8 @@ def _default_social_links() -> dict[str, SocialLink]:
 class ChannelInformation:
     social_links: dict[str, SocialLink] = field(default_factory=_default_social_links)
     schedule: str = ""
-    expose_schedule: bool = False
     rules: str = ""
-    expose_rules: bool = False
     server_info: str = ""
-    expose_server_info: bool = False
 
     @classmethod
     def from_dict(cls, values: Mapping[str, Any]) -> ChannelInformation:
@@ -105,16 +100,13 @@ class ChannelInformation:
         return cls(
             social_links=links,
             schedule=normalize_multiline_text(values.get("schedule", "")),
-            expose_schedule=bool(values.get("expose_schedule", False)),
             rules=normalize_multiline_text(values.get("rules", "")),
-            expose_rules=bool(values.get("expose_rules", False)),
             server_info=normalize_multiline_text(values.get("server_info", "")),
-            expose_server_info=bool(values.get("expose_server_info", False)),
         )
 
 
 class ChannelInformationStore:
-    VERSION = 2
+    VERSION = 3
 
     def __init__(self, path: Path | None = None) -> None:
         self.path = path or user_data_root() / "twitch" / "channel-information.json"
@@ -141,30 +133,51 @@ class ChannelInformationStore:
             self.information = ChannelInformation.from_dict(payload)
             return self.snapshot()
 
-    def save(self, information: ChannelInformation | None = None) -> ChannelInformation:
+    def save(
+        self,
+        information: ChannelInformation | None = None,
+        *,
+        related_files: Mapping[Path, dict] | None = None,
+    ) -> ChannelInformation:
+        """Commit configuration and prepared managed-command files together.
+
+        Publish no runtime value until all writes succeed. Ordinary I/O failures
+        restore already-written files (including their recovery backups).
+        """
         with self._lock:
             candidate = ChannelInformation.from_dict(
                 asdict(information if information is not None else self.information)
             )
-            atomic_write_json(
-                self.path,
-                {
-                    "version": self.VERSION,
-                    **asdict(candidate),
-                },
-            )
+            writes = dict(related_files or {})
+            writes[self.path] = {"version": self.VERSION, **asdict(candidate)}
+            previous = {
+                path: path.read_bytes() if path.exists() else None
+                for target in writes
+                for path in (target, target.with_suffix(target.suffix + ".bak"))
+            }
+            attempted: list[Path] = []
+            try:
+                for path, payload in writes.items():
+                    attempted.append(path)
+                    atomic_write_json(path, payload)
+            except OSError:
+                for target in reversed(attempted):
+                    for path in (target, target.with_suffix(target.suffix + ".bak")):
+                        content = previous[path]
+                        if content is None:
+                            path.unlink(missing_ok=True)
+                        elif not path.exists() or path.read_bytes() != content:
+                            temporary = path.with_suffix(path.suffix + ".restore")
+                            temporary.write_bytes(content)
+                            temporary.replace(path)
+                    target.with_suffix(target.suffix + ".tmp").unlink(missing_ok=True)
+                raise
             self.information = candidate
             return self.snapshot()
 
     def snapshot(self) -> ChannelInformation:
         with self._lock:
             return deepcopy(self.information)
-
-    def update_live(self, information: ChannelInformation) -> ChannelInformation:
-        """Publish an unsaved UI draft for immediate runtime resolution."""
-        with self._lock:
-            self.information = ChannelInformation.from_dict(asdict(information))
-            return self.snapshot()
 
     def field_value(self, field_id: str) -> str:
         clean = str(field_id).strip().casefold()
@@ -182,13 +195,12 @@ class ChannelInformationStore:
         with self._lock:
             if clean == "discord_url":
                 link = self.information.social_links["discord"]
-                return bool(link.expose_as_variable and link.url)
+                return bool(link.url)
             if clean == "youtube_url":
                 link = self.information.social_links["youtube"]
-                return bool(link.expose_as_variable and link.url)
+                return bool(link.url)
             if clean in {"schedule", "rules", "server_info"}:
-                exposed = bool(getattr(self.information, f"expose_{clean}"))
-                return exposed and bool(str(getattr(self.information, clean)).strip())
+                return bool(str(getattr(self.information, clean)).strip())
             return False
 
     def usable_social_links(self) -> tuple[tuple[str, str], ...]:

@@ -450,7 +450,7 @@ Current providers expose:
   `keyword.before`, and `keyword.after`;
 - cached and calculated Twitch ad state as `ads.*`, plus contextual
   `ads.requester.*` values when an Ads Started event supplies them;
-- explicitly exposed Hub-owned Channel Information as `channel.schedule`,
+- automatically available Hub-owned Channel Information as `channel.schedule`,
   `channel.rules`, `socials.<service>`, and `serverinfo.details`;
 - stable shared counter totals as `counter.<counter_id>.stream` and contextual
   lifetime viewer totals as `counter.<counter_id>.viewer`;
@@ -531,13 +531,23 @@ The task editor's Variable Picker remains the enforcement point for task-order
 visibility: only outputs from earlier tasks are offered.
 
 `ChannelInformationVariableProvider` reads the same thread-safe configuration
-store used by **Your Channel > Channel Information**. Each optional field has a
-separate **Expose as Variable** choice; unchecked or blank values do not publish
-definitions. Valid text edits update the store's in-memory draft immediately,
-so resolution and the picker reflect the current text without waiting for Save
-or restart. Save persists both values and exposure choices. **Include in
-!socials** remains an independent formatting choice. Automation reads this
-Hub-owned state directly through Variables rather than Get tasks.
+store used by **Your Channel > Channel Information**. All eight `socials.*`
+definitions, `channel.schedule`, `channel.rules`, and `serverinfo.details`
+always exist; unconfigured fields resolve to empty text. There are no exposure
+flags. Social text/Include controls are UI-only drafts until that row's
+**Update** action. `TwitchCommandTriggerStore.commit_social` stages changes
+using the normal managed-template factories, then `ChannelInformationStore.save`
+persists the configuration and prepared command/routine files before publication.
+Ordinary write failures restore previously written files and backups without
+publishing the draft. Cross-file power-loss recovery is not provided.
+The page refreshes command/routine/Variable views only after success.
+**Include in !socials** controls composition, not Variable availability or the
+per-social command. Existing `!discord`/`!youtube` defaults are activated by
+non-empty committed links; `!socials` requires at least one included non-empty
+link. Clearing required setup disables the managed default while preserving
+identity; custom commands are untouched. Schedule/Rules/Server Information use
+their existing separate Save workflow, also with committed-only resolution.
+Automation reads this Hub-owned state through Variables rather than Get tasks.
 
 Output-producing task editors store a validated leaf ID such as `random_line`
 and show its canonical placeholder, `{automation.random_line}`, beside the
@@ -678,6 +688,8 @@ Twitch does not publish a public ad-break-end EventSub event.
 
 Built-in Chat Command definitions remain code-owned templates until explicitly
 configured. Templates do not create trigger or routine records at startup.
+Committing social setup can configure/enable its existing default and `!socials`
+without visiting Commands; clearing setup disables those managed defaults.
 Configuring a built-in template or creating a custom command creates a normal
 managed Automation routine in the shared **Commands** group; edits preserve
 that routine's identity. The group is created on demand and removed when the
@@ -727,6 +739,13 @@ payloads into typed models from `products/hub/twitch/models.py`.
 Accepted chat becomes `TwitchMessage`; non-chat notifications become
 `TwitchEvent`. Raw diagnostic records remain separate from the human activity
 feed.
+
+Stream online/offline notifications update the operational live state and Ads
+controls immediately; snapshot requests predating that transition are ignored.
+Periodic channel snapshots continue to detect already-live channels and supply
+viewer counts and ad schedules. `AdsService` normalizes both observed Helix Unix
+seconds and documented/EventSub RFC3339 timestamps to UTC. Its cached preroll
+time is shown as compact text on Chat, not as a progress bar.
 
 ### Message handling in MainWindow
 
@@ -1085,7 +1104,7 @@ formats are accepted.
 | `automation/queues.json` | Hub | the system-owned Default Queue plus custom queue definitions; pending items are not persisted |
 | `automation/variables.json` | Hub | global values only; session/routine are volatile |
 | `twitch/commands.json` | Hub | configured commands, permissions, aliases, cooldowns, statistics, and default-template provenance; unconfigured templates are code-owned |
-| `twitch/channel-information.json` | Hub | pre-alpha schema v2 social links, separate social-message inclusion and Variable-exposure choices, schedule, rules, and server information |
+| `twitch/channel-information.json` | Hub | pre-alpha schema v3 committed social links/inclusion, schedule, rules, and server information; automatic Variables with no exposure flags; older development schemas reset |
 | `counters/index.json` | Hub | pre-alpha schema v2 definitions: stable ID, labels, scopes, numeric type, reset/minimum, and display precision |
 | `counters/<counter_id>.json` | Hub | schema v2 atomic values stored as exact decimal strings; shared/current-stream and Twitch-user-ID keyed values |
 | `twitch/event_triggers.json` | Hub | Twitch EventSub, first-message, Keyword/Phrase, and Ads trigger definitions |

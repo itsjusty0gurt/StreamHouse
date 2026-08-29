@@ -1503,8 +1503,18 @@ class MainWindow(QMainWindow):
         ad_layout.addLayout(ad_header)
         self.ad_detail_label = QLabel("Waiting for Twitch ad state")
         self.ad_detail_label.setObjectName("adDetailLabel")
+        self.ad_detail_label.setWordWrap(True)
         self.ad_detail_label.setStyleSheet("color:#adadb8;")
-        ad_layout.addWidget(self.ad_detail_label)
+        ad_details = QHBoxLayout()
+        ad_details.addWidget(self.ad_detail_label, 1)
+        self.ad_preroll_label = QLabel("Preroll-free: —")
+        self.ad_preroll_label.setObjectName("adPrerollLabel")
+        self.ad_preroll_label.setToolTip(
+            "Twitch's reported remaining time without preroll ads."
+        )
+        self.ad_preroll_label.setStyleSheet("color:#adadb8;")
+        ad_details.addWidget(self.ad_preroll_label)
+        ad_layout.addLayout(ad_details)
         ad_footer = QHBoxLayout()
         self.ad_footer_layout = ad_footer
         ad_length_label = QLabel("Ad Length:")
@@ -2339,12 +2349,16 @@ class MainWindow(QMainWindow):
             self.channel_tabs,
         )
         self.channel_information_page.saved.connect(
-            self._refresh_twitch_commands
+            self._channel_information_saved
         )
         self.channel_tabs.addTab(
             self.channel_information_page,
             "Channel Information",
         )
+
+    def _channel_information_saved(self) -> None:
+        self._refresh_twitch_commands()
+        self.automation_page.refresh()
 
     def _build_channel_points_tab(self) -> None:
         self.channel_points_page = ChannelPointsPage(
@@ -5209,6 +5223,18 @@ class MainWindow(QMainWindow):
             "stream.online",
             "stream.offline",
         }:
+            # EventSub knows the transition now. Do not leave operational
+            # controls offline while a channel/community refresh is pending.
+            # Results requested before this event must not undo it.
+            self.channel_snapshot_request_id += 1
+            self.channel_snapshot_in_flight = False
+            live_event = twitch_event.payload.get("event", {})
+            is_live = twitch_event.subscription_type == "stream.online"
+            self._apply_stream_live_state(
+                live_event if is_live and isinstance(live_event, dict) else None
+            )
+            self._apply_ad_schedule(None)
+            self._update_stream_overview_clock()
             if self.session_tracker.observe_event(
                 twitch_event.subscription_type
             ):
@@ -6653,21 +6679,7 @@ class MainWindow(QMainWindow):
             self.twitch_auth.recover_unauthorized()
         if isinstance(stream, dict):
             self._maybe_announce_training_capture()
-            self.stream_is_live = True
-            self.stream_live_label.setText("LIVE")
-            self.stream_status_card.set_accent("#ff4f64")
-            self.stream_viewers_label.setText(
-                f"{int(stream.get('viewer_count', 0)):,}"
-            )
-            self.stream_started_at = self._parse_twitch_timestamp(
-                stream.get("started_at")
-            )
-        else:
-            self.stream_is_live = False
-            self.stream_started_at = None
-            self.stream_live_label.setText("OFFLINE")
-            self.stream_status_card.set_accent("#8c8cff")
-            self.stream_viewers_label.setText("0")
+        self._apply_stream_live_state(stream)
         followers = snapshot.get("followers")
         self.stream_followers_label.setText(
             "—"
@@ -6707,6 +6719,21 @@ class MainWindow(QMainWindow):
             self.followers_backfilled = True
             self._refresh_memory_viewer_list()
 
+    def _apply_stream_live_state(self, stream: object) -> None:
+        self.stream_is_live = isinstance(stream, dict)
+        self.stream_live_label.setText("LIVE" if self.stream_is_live else "OFFLINE")
+        self.stream_status_card.set_accent(
+            "#ff4f64" if self.stream_is_live else "#8c8cff"
+        )
+        if isinstance(stream, dict):
+            self.stream_started_at = self._parse_twitch_timestamp(stream.get("started_at"))
+            # EventSub does not carry viewer counts; the snapshot supplies them.
+            if "viewer_count" in stream:
+                self.stream_viewers_label.setText(f"{int(stream['viewer_count']):,}")
+        else:
+            self.stream_started_at = None
+            self.stream_viewers_label.setText("0")
+
     def _apply_ad_schedule(self, value: object, *, error: str = "") -> None:
         self.ads_service.apply_schedule(value, error=error)
 
@@ -6727,6 +6754,12 @@ class MainWindow(QMainWindow):
         scopes = set(token.scopes) if token is not None else set()
         can_read_schedule = "channel:read:ads" in scopes
         state = self.ads_service.state
+        preroll = state.values(now)["preroll_free_time"]
+        self.ad_preroll_label.setText(
+            f"Preroll-free: {self._clock_text(preroll or 0)}"
+            if self.stream_is_live and can_read_schedule and state.schedule_available
+            else "Preroll-free: —"
+        )
         if state.in_progress and state.ends_at is not None:
             remaining = max(int((state.ends_at - now).total_seconds()), 0)
             self.ad_next_label.setText(
@@ -6838,6 +6871,8 @@ class MainWindow(QMainWindow):
             self.run_ad_button.setToolTip(
                 "Reconnect Twitch to grant channel:edit:commercial."
             )
+        elif not self.stream_is_live:
+            self.run_ad_button.setToolTip("Available when Twitch reports your channel live.")
         else:
             self.run_ad_button.setToolTip(
                 "Requires channel:edit:commercial and an eligible live channel."

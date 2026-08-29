@@ -18,7 +18,7 @@ from products.hub.twitch.channel_information import (
 
 
 class ChannelInformationVariableProvider:
-    """Expose explicitly enabled Hub-owned channel configuration."""
+    """Always describe Hub-owned fields; resolve committed text, including empty text."""
 
     source = "Channel Information"
     _OTHER_FIELDS = (
@@ -40,33 +40,29 @@ class ChannelInformationVariableProvider:
         definitions: list[VariableDefinition] = []
         for service_id, label in SOCIAL_SERVICES:
             link = information.social_links[service_id]
-            if link.expose_as_variable and link.url:
-                definitions.append(
-                    VariableDefinition(
-                        name=f"socials.{service_id}",
-                        display_name=label,
-                        description=f"Configured {label} social link.",
-                        data_type=VariableDataType.TEXT,
-                        source=self.source,
-                        category="Socials",
-                        preview_value=link.url,
-                    )
+            definitions.append(
+                VariableDefinition(
+                    name=f"socials.{service_id}",
+                    display_name=label,
+                    description=f"Configured {label} social link.",
+                    data_type=VariableDataType.TEXT,
+                    source=self.source,
+                    category="Socials",
+                    preview_value=link.url,
                 )
+            )
         for name, display_name, description, field_id in self._OTHER_FIELDS:
-            if getattr(information, f"expose_{field_id}") and str(
-                getattr(information, field_id)
-            ).strip():
-                definitions.append(
-                    VariableDefinition(
-                        name=name,
-                        display_name=display_name,
-                        description=description,
-                        data_type=VariableDataType.TEXT,
-                        source=self.source,
-                        category=name.split(".", 1)[0].title(),
-                        preview_value=getattr(information, field_id),
-                    )
+            definitions.append(
+                VariableDefinition(
+                    name=name,
+                    display_name=display_name,
+                    description=description,
+                    data_type=VariableDataType.TEXT,
+                    source=self.source,
+                    category=name.split(".", 1)[0].title(),
+                    preview_value=getattr(information, field_id),
                 )
+            )
         return tuple(definitions)
 
     def resolve(self, name: str, _context: Mapping[str, object]) -> VariableSnapshot:
@@ -80,7 +76,7 @@ class ChannelInformationVariableProvider:
                 if candidate == name
             )
             value = getattr(information, field_id)
-        return VariableSnapshot(definition, value, bool(str(value).strip()))
+        return VariableSnapshot(definition, value, True)
 
     def set_value(self, name: str, value: object) -> VariableSnapshot:
         raise PermissionError(f'Variable "{name}" is read-only.')
