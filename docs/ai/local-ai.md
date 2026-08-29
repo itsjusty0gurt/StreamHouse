@@ -83,13 +83,14 @@ known viewer close the active Sally turn. The feature, cooldown, and minimum
 chat activity are configurable in Settings.
 
 Reply drafts and ignore decisions appear under the current **AI > Reply
-Review** UI, where the streamer can send, edit, or dismiss them. Automatic
-sending is experimental and off by default. If explicitly enabled, Hub only
-sends fresh, high-confidence Sally drafts while Twitch chat is connected, and
-enforces a configurable minimum gap between replies. Stale model results are
-retained for review but cannot be auto-sent. The decision queue and recent-chat
-context remain in Hub RAM and are discarded when the current Streamhouse Hub process
-closes.
+Review** UI, where the streamer can send, edit, or dismiss retained results.
+Hub automatically sends fresh model-approved replies that satisfy its required
+reply/interjection gates while Twitch chat is connected. Unsolicited co-host
+interjections remain separately disabled by default and use the configured
+confidence, activity, and cooldown gates. Stale or rejected results remain
+available for review but are not sent. The decision queue and recent-chat
+context remain in Hub RAM and are discarded when the current Streamhouse Hub
+process closes.
 
 The current **AI > Personality** UI stores the streamer's custom voice and
 behavior guidance for Sally.

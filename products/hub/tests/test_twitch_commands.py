@@ -467,38 +467,36 @@ class TwitchCommandTriggerStoreTests(unittest.TestCase):
         self.store.delete(custom.trigger_id)
         self.assertEqual(self.routine_store.groups, [])
 
-    def test_version_five_pristine_defaults_are_removed_but_custom_commands_survive(self) -> None:
-        custom = self.store.add("coffee", "Coffee time")
-        definition = next(iter(default_command_definitions()))
-        default_trigger = self.store._trigger_for(definition)
-        self.routine_store.routines.append(
-            self.store._routine_for(
-                definition,
-                group_id=self.routine_store.groups[0].group_id,
-            )
-        )
-        self.routine_store.save()
+    def test_version_five_seeded_defaults_are_rejected_before_alpha(self) -> None:
         self.path.write_text(
             json.dumps(
                 {
                     "version": 5,
-                    "triggers": [asdict(custom), asdict(default_trigger)],
+                    "triggers": [],
                     "removed_default_ids": [],
                 }
             ),
             encoding="utf-8",
         )
 
+        with self.assertRaisesRegex(ValueError, "discarded pre-alpha schema"):
+            self.store.load()
+        self.assertEqual(self.store.triggers, [])
+
+    def test_current_schema_does_not_accept_old_command_id_identity(self) -> None:
+        command = self.store.add("coffee", "Coffee time")
+        payload = json.loads(self.path.read_text(encoding="utf-8"))
+        payload["triggers"][0]["command_id"] = payload["triggers"][0].pop(
+            "trigger_id"
+        )
+        self.path.write_text(json.dumps(payload), encoding="utf-8")
+
         loaded = TwitchCommandTriggerStore(
             self.path,
             RoutineStore(self.routine_store.path),
         )
-        loaded.load()
-
-        self.assertIsNotNone(loaded.resolve("coffee"))
-        self.assertIsNone(loaded.default(definition.default_id))
-        self.assertIsNone(loaded.routine_store.get(definition.routine_id))
-        self.assertEqual(json.loads(self.path.read_text(encoding="utf-8"))["version"], 6)
+        self.assertEqual(loaded.load(), [])
+        self.assertIsNone(loaded.resolve(command.name))
 
     def test_deleted_default_returns_to_template_without_a_routine(self) -> None:
         command = self.store.configure_default("game")

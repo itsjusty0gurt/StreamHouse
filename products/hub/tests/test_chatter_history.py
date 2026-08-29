@@ -33,6 +33,8 @@ class ChatterHistoryStoreTests(unittest.TestCase):
 
             restored = ChatterHistoryStore(path)
             restored.load()
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(payload["version"], ChatterHistoryStore.VERSION)
             record = restored.records["1"]
             self.assertEqual(record.message_count, 1)
             self.assertEqual(record.snapshot_days, 1)
@@ -59,6 +61,52 @@ class ChatterHistoryStoreTests(unittest.TestCase):
             store = ChatterHistoryStore(path)
             with self.assertRaises(ValueError):
                 store.load()
+
+    def test_obsolete_schema_is_rejected_before_alpha(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "chatters.json"
+            path.write_text(
+                json.dumps({"version": 5, "chatters": {}}),
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "discarded pre-alpha schema"):
+                ChatterHistoryStore(path).load()
+
+    def test_old_memory_shape_is_discarded_not_normalized(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "chatters.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "version": ChatterHistoryStore.VERSION,
+                        "chatters": {
+                            "stable-id": {
+                                "user_id": "stable-id",
+                                "user_name": "Viewer",
+                                "first_seen": "2026-08-01T00:00:00+00:00",
+                                "last_seen": "2026-08-01T00:00:00+00:00",
+                                "memory_consent": "opted_in",
+                                "memory_enabled": True,
+                                "memories": [
+                                    {
+                                        "id": "old-memory",
+                                        "text": "Missing current typed metadata",
+                                        "created_at": "2026-08-01T00:00:00+00:00",
+                                    }
+                                ],
+                            }
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            store = ChatterHistoryStore(path)
+            store.load()
+
+            self.assertEqual(store.records["stable-id"].memories, [])
+            self.assertTrue(store.dirty)
 
     def test_bot_identity_persists(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

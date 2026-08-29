@@ -21,11 +21,13 @@ compatibility from the Sally AI character and Sally's separate Twitch bot.
 - `products/hub/soundboard/relay.py`: new/default Hub configuration is the
   modern hostname; all ordinary requests already use modern routes/headers.
 
-## Temporary compatibility shims
+## Isolated external wire compatibility
 
-These are the only intentional relay-infrastructure Sally names. They belong to
-`relay-compat-v1` and may be removed no earlier than version `0.3.0` after the
-production criteria in `relay-brand-migration.md` are satisfied.
+These are the only intentional generic relay-infrastructure Sally names. They
+belong to the externally deployed `relay-compat-v1` wire contract and may be
+removed no earlier than version `0.3.0` after the production criteria in
+`relay-brand-migration.md` are satisfied. They are not internal Streamhouse
+architecture and must not be copied into new code.
 
 - `shared/streamhouse_runtime/relay_config.py`: centralized fallback constants
   for `SALLY_RELAY_BASE`, `SALLY_RELAY_KEYS`, `SALLY_RELAY_DB`, and the old

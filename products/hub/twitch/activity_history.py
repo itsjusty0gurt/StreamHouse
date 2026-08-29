@@ -6,7 +6,6 @@ from pathlib import Path
 from typing import Any
 
 from shared.streamhouse_runtime.json_store import atomic_write_json, load_json_with_backup
-from products.hub.core.migrations import migrate_payload
 from shared.streamhouse_runtime.paths import user_data_root
 
 
@@ -58,6 +57,7 @@ class PersistedActivity:
 
 
 class ActivityHistoryStore:
+    VERSION = 2
     LIMIT = 200
     MINUTE_MS = 60_000
     HOUR_MS = 60 * MINUTE_MS
@@ -75,7 +75,10 @@ class ActivityHistoryStore:
         values = load_json_with_backup(self.path)
         if not isinstance(values, dict):
             raise ValueError("Activity history must contain a JSON object.")
-        values = migrate_payload("activity", values)
+        if int(values.get("version", 0)) != self.VERSION:
+            raise ValueError(
+                "Activity history uses a discarded pre-alpha schema and must be reset."
+            )
         raw_entries = values.get("events", [])
         if not isinstance(raw_entries, list):
             raise ValueError("Activity history events must be a list.")
@@ -97,21 +100,13 @@ class ActivityHistoryStore:
         del self.entries[self.LIMIT :]
         self.save()
 
-    def delete_user(self, user_id: str, user_name: str = "") -> int:
-        """Remove activity associated with a viewer, including legacy name-only rows."""
+    def delete_user(self, user_id: str) -> int:
+        """Remove activity associated with a stable Twitch user ID."""
         clean_id = user_id.strip()
-        clean_name = user_name.strip().casefold()
         retained = [
             entry
             for entry in self.entries
-            if not (
-                (clean_id and entry.user_id == clean_id)
-                or (
-                    clean_name
-                    and not entry.user_id
-                    and entry.text.casefold().startswith(clean_name + " ")
-                )
-            )
+            if not (clean_id and entry.user_id == clean_id)
         ]
         removed = len(self.entries) - len(retained)
         if removed:
@@ -139,7 +134,7 @@ class ActivityHistoryStore:
 
     def save(self) -> None:
         payload = {
-            "version": 1,
+            "version": self.VERSION,
             "events": [asdict(entry) for entry in self.entries],
         }
         atomic_write_json(self.path, payload)

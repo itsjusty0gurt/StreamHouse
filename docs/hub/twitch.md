@@ -13,12 +13,19 @@ dependencies are defined in the
 - The broadcaster and optional bot identities use separate encrypted
   token files. The broadcaster token owns channel analytics and moderation;
   the bot token reads and sends chat as the bot account.
+- Ads schedule/EventSub and action scopes belong to the broadcaster identity:
+  `channel:read:ads`, `channel:manage:ads`, and
+  `channel:edit:commercial`. Missing Ads scopes are presented as an actionable
+  broadcaster reauthorization requirement, not as a bot-login problem.
 - The broadcaster grants `channel:bot`. The bot login requests
   `user:read:chat`, `user:write:chat`, and `user:bot`.
 - Existing tokens survive application and EventSub disconnects. Only explicit
   sign-out deletes credentials.
 - When Hub adds scopes, it starts an upgrade flow once and Twitch asks the
   user to approve the additional access.
+- After broadcaster reauthorization, Hub reopens the broadcaster EventSub
+  connection so subscriptions are created on the newly authorized,
+  identity-pinned socket.
 
 ## Live transport
 
@@ -176,8 +183,8 @@ thread.
 ## UI responsibilities
 
 - **Your Channel** is the current Hub channel workspace. Its current top-level tabs
-  are Chat, Analytics, Soundboard, Channel Information, Commands, Channel
-  Points, Counters, and User. Session data is
+  are Chat, Analytics, Commands, Channel Information, Channel Points,
+  Soundboard, Counters, and User. Session data is
   currently presented within Analytics. Chat includes the overview, grouped
   chatters, Activity Feed, and eligible ad controls. The broadcaster is
   excluded from the grouped chatter total. Chat and the chatter list share
@@ -214,13 +221,19 @@ used by live traffic.
 Connection health is modeled separately from page widgets. It tracks auth,
 EventSub, missing scopes, Streamhouse AI refresh success, and endpoint-specific
 failures. Local JSON histories use atomic replacement plus one last-known-good
-backup. Configured command triggers persist at `twitch/commands.json`; their
+backup. Configured command triggers persist in the exact current v6 schema at
+`twitch/commands.json`; their
 managed routines and the Commands group persist at
 `automation/routines.json`. Unconfigured built-in templates are not persisted
-in either file. Both stores are included in current Streamhouse Hub backups.
-Chatter records use the current version-six schema;
+in either file. The private-development v5 seeded-default format is rejected,
+not migrated. Both stores are included in current Streamhouse Hub backups.
+Chatter records require the current version-six schema;
 malformed identities and unsupported local group values are discarded or
-normalized at the store boundary.
+normalized at the store boundary. Activity history requires schema v2 and uses
+stable Twitch user IDs for viewer deletion; stream-session history requires
+schema v1 while preserving a current incomplete session across a restart.
+Older private-development schemas are rejected/reset. These history files
+retain same-schema last-known-good backup recovery.
 
 The channel snapshot refresh reads Twitch's ad schedule with `channel:read:ads`.
 `AdsService` owns the single cached `AdsState`, including the next/last break,
@@ -276,10 +289,12 @@ activity subscriptions Hub currently establishes with Twitch.
 
 A trigger may optionally match exact EventSub payload fields. Dot notation
 addresses nested fields, for example `reward.id` or `reward.title`. Matching is
-case-insensitive. The normalized task context includes `{event_type}`, `{user}`,
-`{message}`, `{input}`, `{amount}`, `{bits}`, `{viewers}`, `{tier}`, `{reward}`,
-`{reward_id}`, and `{reward_cost}` in addition to the existing Twitch message
-variables. Live traffic and Developer Simulation enter the same routing path.
+case-insensitive. Source adapters may carry raw keys internally, but
+user-facing templates use the registry's canonical dotted definitions, such as
+`{event.type}`, `{user.display_name}`, `{chat.message}`, `{event.input}`,
+`{event.amount}`, `{event.bits}`, `{event.viewers}`, `{event.tier}`,
+`{event.reward}`, `{event.reward_id}`, and `{event.reward_cost}`. Live traffic
+and Developer Simulation enter the same routing path.
 
 The Twitch trigger tree also provides an Ads category with 5-, 3-, 2-, and
 1-minute warnings, Ads Started, and Ads Ended. Warning state belongs to

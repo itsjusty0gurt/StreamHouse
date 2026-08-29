@@ -2,7 +2,7 @@
 
 > Canonical implementation map for maintainers and coding agents.
 >
-> Last verified: 2026-08-22 against version `0.1.0`.
+> Last verified: 2026-08-29 against version `0.1.0`.
 > Update this file when a change moves ownership, adds a persisted format,
 > changes an inter-process contract, or introduces a new service/trigger/task.
 
@@ -278,13 +278,26 @@ When moving an AI feature, separate:
 - each listener exception is logged and isolated;
 - `emit()` calls subscribers on the emitting thread.
 
-Because callbacks are synchronous, a bus subscriber must not perform slow
-network/model work directly. It also must not mutate Qt widgets if the event may
-originate on a non-UI thread.
+`Events.emit()` invokes every subscriber synchronously on the **emitting
+thread**. The bus does not switch to Qt's UI thread. Handlers should therefore
+remain fast, and isolating/logging one subscriber's exception does not make
+cross-thread widget access safe.
 
-`ui.twitch_bridge.TwitchQtBridge` is the main thread boundary for Twitch:
-bus callbacks emit Qt signals, and `MainWindow` slots update widgets on the Qt
-thread.
+A raw bus subscriber may mutate a Qt widget only when its event is guaranteed
+to originate on the Qt UI thread. Any event that may originate from Twitch,
+OBS, soundboard, HTTP, AI, filesystem, subprocess, or another worker must cross
+an owning subsystem bridge or queued Qt Signal/Slot boundary first:
+
+```text
+background/domain event
+        -> subsystem Qt bridge or queued signal
+        -> Qt UI-thread slot
+        -> widget mutation
+```
+
+`ui.twitch_bridge.TwitchEventBridge` is the Twitch-specific implementation of
+that boundary. It is not a universal bridge for OBS, soundboard, AI, or future
+services; each subsystem must use its own Qt-safe result path.
 
 Important event families:
 
@@ -315,9 +328,11 @@ Important event families:
 - `RoutineExecutionResult`
 - `AutomationExecutionResult`
 
-`TriggerEvent.context` is a string-to-string mapping. Service adapters normalize
-external payloads before automation sees them. Task templates use
-`{lowercase_name}` variables.
+`TriggerEvent.context` is a string-to-string internal mapping. Service adapters
+normalize external payloads before automation sees them. User-facing templates
+accept only canonical dotted placeholders registered through the modern
+Variables architecture, such as `{user.display_name}`, `{command.data}`, or
+`{automation.random_line}`.
 
 A routine stores a primary `trigger_id` plus `additional_trigger_ids`. Trigger
 stores own trigger-specific metadata; `RoutineStore` owns task order, routine
@@ -437,15 +452,16 @@ writes. Valid types are `text`, `integer`, `number`,
 malformed names, duplicate names, provider collisions, alias collisions, and
 alias loops are rejected. Reserved built-in namespaces currently include
 `stream`, `user`, `chat`, `command`, `keyword`, `event`, `counter`, `obs`,
-`hub`, `custom`, `automation`, `ads`, `soundboard`, `channel`, `socials`, and
-`serverinfo`.
+`hub`, `custom`, `automation`, `ads`, `soundboard`, `target`, `channel`,
+`socials`, and `serverinfo`.
 Current providers expose:
 
 - cached Twitch stream values: `stream.title`, `stream.category`,
   `stream.viewer_count`, and `stream.game_id`;
 - contextual `user.*` and `chat.*` values from the current trigger;
-- contextual Chat Command values `command.name` and `command.data`, where data
-  is the trimmed raw text following the recognized command;
+- contextual Chat Command values `command.name`, `command.data`,
+  `command.target`, and `command.uses`, where data is the trimmed raw text
+  following the recognized command;
 - contextual Keyword/Phrase values `keyword.message`, `keyword.match`,
   `keyword.before`, and `keyword.after`;
 - cached and calculated Twitch ad state as `ads.*`, plus contextual
@@ -787,8 +803,9 @@ Connection intent and current socket state are separate:
 - an intentional disconnect does not reconnect.
 
 OBS event handlers cache useful live state such as input mute. Task variable
-resolution may query live OBS state when a template requests `{muted}` or other
-live values; do not assume every value is present in the original trigger.
+resolution may query live OBS state when a template requests `{obs.muted}` or
+other canonical OBS values; do not assume every value is present in the
+original trigger.
 
 Qt WebSocket callbacks already arrive in Qt context. Preserve asynchronous
 request IDs and callbacks rather than blocking the UI waiting for OBS.
@@ -966,9 +983,12 @@ Your Channel top tabs:
 
 - Chat
 - Analytics
-- Soundboard
 - Commands
+- Channel Information
 - Channel Points
+- Soundboard
+- Counters
+- User
 
 These are the tabs currently implemented. The planned Hub workspace—including
 Stream Info, Engagement, Raids, and Moderation—is documented in
@@ -998,9 +1018,24 @@ routine editor contains Triggers, Tasks, Settings, and History.
   `products/hub/ui/automation_page.py`, `products/hub/ui/soundboard_page.py`, and
   `products/hub/ui/channel_points_page.py`.
 
-Prefer a focused widget/module for new substantial pages. `MainWindow` is
-already a large composition/orchestration class; avoid putting reusable domain
-logic or network protocol code in it.
+`MainWindow` is the Hub composition root and shell coordinator. It may
+instantiate components, inject dependencies, connect signals/slots, register
+pages, and perform small application-shell orchestration. It should not become
+the implementation owner of a new feature domain.
+
+Substantial features should generally follow the existing ownership shape:
+
+```text
+domain service/store
+        -> controller or worker when needed
+        -> focused page/panel/widget
+        -> MainWindow composition and wiring only
+```
+
+This is a cohesion rule, not a requirement to create a file for every trivial
+control. Reusable domain rules, API calls, persistence, timers, and substantial
+feature UI should not accumulate in `main_window.py` merely because it is the
+composition root.
 
 ### Responsive layout
 
@@ -1052,26 +1087,35 @@ minimum are not a substitute for a separate small-screen content-layout task.
 
 Use these rules:
 
-1. Qt widgets are mutated only on the Qt/main thread.
-2. Slow Helix, localhost HTTP, filesystem batches, and model work run in
-   workers or dedicated service threads.
-3. Worker results return through Qt signals.
-4. The global event bus is synchronous and does not switch threads.
+1. Qt widgets are UI-thread-only.
+2. `Events.emit()` is synchronous on the emitting thread; use a subsystem Qt
+   bridge or queued Signal/Slot boundary before a worker event touches widgets.
+3. Potentially blocking HTTP/network calls, Helix or blocking OBS operations,
+   filesystem batches, subprocess waits, model/inference work, long CPU work,
+   and waits/sleeps must not run on the Qt UI thread.
+4. Route slow work through the owning service, existing worker, or dedicated
+   thread; return results through Qt signals or another explicitly Qt-safe state
+   update.
 5. `ThreadingHTTPServer` request handlers must not touch Qt widgets directly.
-6. Soundboard server and relay threads communicate through Qt signals.
-7. Automation execution currently occurs on the Qt thread because several task
-   handlers use Qt APIs; do not move it wholesale to a Python thread without
-   separating Qt-dependent handlers.
-8. Twitch command routines containing Helix information tasks run through the
+   Soundboard server/relay and AI/Twitch workers already use Qt signal
+   boundaries; preserve those patterns.
+6. Automation execution currently occurs mainly on the Qt thread because some
+   task handlers use Qt APIs. Any handler executed there must not perform
+   blocking I/O. Network-capable tasks require an existing asynchronous
+   service/worker path.
+7. Twitch command routines containing Helix information tasks run through the
    single-worker `CommandExecutionWorker`; completion and UI updates return by
    Qt signal. Other automation remains on the Qt thread because its task set may
    include Qt-affine providers.
+8. A future background Automation executor requires explicit affinity metadata
+   and a UI-thread dispatch path for Qt-dependent handlers; do not move the
+   executor wholesale to a Python thread.
 9. Avoid blocking waits. Core delay tasks use a nested Qt event loop so the UI
    continues processing events.
 
 ## Persistence and secrets
 
-`core.paths.user_data_root()` currently resolves:
+`shared.streamhouse_runtime.paths.user_data_root()` currently resolves:
 
 1. `STREAMHOUSE_DATA_DIR` when set (tests/smoke isolation);
 2. `%LOCALAPPDATA%\Streamhouse`;
@@ -1088,6 +1132,14 @@ stores are not copied. Current window-state keys use product/domain names.
 JSON stores use `atomic_write_json()` and `load_json_with_backup()`: write to a
 temporary file, keep an adjacent `.bak`, then replace atomically.
 
+Current pre-alpha version handling is store-specific. Hub/AI settings,
+routines, custom Variables, Channel Information, Counters, commands, activity,
+chatter, and stream sessions require their exact current schema and direct
+developers to reset discarded data. Queue, Core/Twitch/OBS trigger, and
+soundboard loaders still tolerate some non-newer or unversioned shapes. This is
+an implementation fact, not an Alpha compatibility promise or a pattern for
+new stores; those remaining paths remain subject to the pre-alpha policy.
+
 Routine exports use `streamhouse.automation.routine` and the
 `.streamhouse-routine.json` extension. Task clipboard payloads use
 `streamhouse.automation.task`. No pre-rebrand import identifiers or filename
@@ -1097,26 +1149,26 @@ formats are accepted.
 
 | Relative path | Owner | Notes |
 | --- | --- | --- |
-| `config/settings.json` | Hub | `AppSettings`, validated/defaulted |
-| `ai/settings.json` | Streamhouse AI | model, endpoint, personality/language |
-| `automation/routines.json` | Hub | groups, routines, ordered tasks, trigger links, and explicit queue assignments |
-| `automation/core_triggers.json` | Hub | application lifecycle bindings |
-| `automation/queues.json` | Hub | the system-owned Default Queue plus custom queue definitions; pending items are not persisted |
-| `automation/variables.json` | Hub | global values only; session/routine are volatile |
-| `twitch/commands.json` | Hub | configured commands, permissions, aliases, cooldowns, statistics, and default-template provenance; unconfigured templates are code-owned |
+| `config/settings.json` | Hub | schema v3 `AppSettings`, validated/defaulted; no obsolete auto-send toggle field |
+| `ai/settings.json` | Streamhouse AI | schema v2 model, endpoint, personality/language |
+| `automation/routines.json` | Hub | schema v4 groups, routines, ordered tasks, trigger links, and queue IDs |
+| `automation/core_triggers.json` | Hub | schema v1 application lifecycle bindings |
+| `automation/queues.json` | Hub | schema v1 Default Queue/custom definitions; pending items are volatile |
+| `automation/variables.json` | Hub | schema v3 global values; session/routine values are volatile |
+| `twitch/commands.json` | Hub | schema v6 configured commands and template provenance; templates stay in code |
 | `twitch/channel-information.json` | Hub | pre-alpha schema v3 committed social links/inclusion, schedule, rules, and server information; automatic Variables with no exposure flags; older development schemas reset |
 | `counters/index.json` | Hub | pre-alpha schema v2 definitions: stable ID, labels, scopes, numeric type, reset/minimum, and display precision |
 | `counters/<counter_id>.json` | Hub | schema v2 atomic values stored as exact decimal strings; shared/current-stream and Twitch-user-ID keyed values |
-| `twitch/event_triggers.json` | Hub | Twitch EventSub, first-message, Keyword/Phrase, and Ads trigger definitions |
-| `twitch/soundboard.json` | Hub | pages, buttons, routine IDs |
-| `twitch/soundboard-relay.json` | Hub | non-secret relay URL/channel/autoconnect |
-| `obs/connection.json` | Hub | non-secret OBS host/port/autoconnect |
-| `obs/triggers.json` | Hub | OBS trigger definitions |
-| `memory/twitch_chatters.json` | Hub | stable-Twitch-ID keyed consent-aware profiles, Twitch roles, Hub-owned local group assignments, timelines, and memories |
-| `memory/twitch_activity.json` | Hub | bounded activity feed history |
-| `memory/stream_sessions.json` | Hub | active/completed session analytics |
-| `training/examples.json` | Streamhouse AI | consent-based classifier examples |
-| `diagnostics/ai_test_report.json` | Streamhouse AI | AI outcomes/latency metadata |
+| `twitch/event_triggers.json` | Hub | schema v2 EventSub, first-message, Keyword/Phrase, and Ads triggers |
+| `twitch/soundboard.json` | Hub | schema v1 pages, buttons, routine IDs |
+| `twitch/soundboard-relay.json` | Hub | v1 non-secret relay URL/channel/autoconnect |
+| `obs/connection.json` | Hub | v1 non-secret OBS host/port/autoconnect |
+| `obs/triggers.json` | Hub | schema v1 OBS trigger definitions |
+| `memory/twitch_chatters.json` | Hub | schema v6, stable-Twitch-ID profiles and Hub-owned local groups |
+| `memory/twitch_activity.json` | Hub | schema v2 bounded activity feed history with stable Twitch user references where applicable |
+| `memory/stream_sessions.json` | Hub | schema v1 active/completed session analytics, including current incomplete-session recovery |
+| `training/examples.json` | Streamhouse AI | v1 consent-based classifier examples |
+| `diagnostics/ai_test_report.json` | Streamhouse AI | v1 AI outcomes/latency metadata |
 | `logs/` | each process | rotating application logs |
 | `backups/` | Hub | allowlisted local data archives |
 
@@ -1139,13 +1191,15 @@ Extension assets, or Git.
 
 `BackupManager.FILES` is an explicit allowlist. A new persistent file is not
 automatically backed up. Decide deliberately whether it belongs in backups,
-legacy migration, restore, diagnostics, and viewer-deletion scrubbing.
+schema compatibility, restore, diagnostics, and viewer-deletion scrubbing.
 
-At this snapshot, the backup allowlist covers core settings, primary Twitch
-history/commands/triggers/routines, Core triggers, and OBS config/triggers. It
-does not automatically include every newer queue, variable, soundboard,
-Streamhouse AI, training, or test-report file. Treat that as an explicit product
-decision or follow-up when changing data safety.
+At this snapshot, the backup allowlist covers Hub settings, Twitch
+chatter/activity/session history, commands, Channel Information, Twitch/Core
+triggers, routines, OBS config/triggers, and the complete `counters/` JSON
+directory. It does not include queues, custom Variables, soundboard/relay
+configuration, Streamhouse AI settings, training, or test-report files. Treat
+those gaps as explicit product decisions or follow-up work when changing data
+safety.
 
 ## Security and privacy invariants
 
@@ -1249,6 +1303,10 @@ Inspect and update:
 Never add a UI menu item without a registered handler, or a handler without an
 editor schema unless it is intentionally internal.
 
+Output-producing tasks must publish typed `automation.<name>` definitions.
+Keep runtime values root-routine scoped and expose an output only to later tasks
+and nested routines after its producer; do not add a flat output catalog.
+
 ### Adding an automation trigger
 
 Inspect and update:
@@ -1263,6 +1321,8 @@ Inspect and update:
    required by `development-policy.md`.
 
 Link the existing shared `RoutineStore`.
+If the trigger can originate outside the Qt thread, route any UI response
+through a queued signal boundary rather than subscribing a widget directly.
 
 ### Changing Twitch
 
@@ -1278,6 +1338,9 @@ Route by concern:
 - health/scopes: `products/hub/twitch/health.py`
 
 Verify both broadcaster-only and separate-bot configurations.
+Keep broadcaster authorization distinct from bot chat authorization. Twitch API
+and EventSub behavior belongs to the service; UI reads service state and invokes
+service/worker actions rather than owning request construction or socket state.
 
 ### Changing AI or memory
 
@@ -1312,10 +1375,14 @@ For each persisted schema:
 - edit `products/hub/ui/mainwindow.ui` then regenerate
   `products/hub/ui/generated/ui_mainwindow.py` for
   Designer-owned controls;
-- use focused widgets for substantial dynamic features;
+- establish domain/service/store ownership before adding a substantial UI;
+- use a focused page, panel, or widget for substantial feature UI and keep
+  `MainWindow` to composition, dependency injection, and signal wiring;
 - test both portrait and landscape;
 - preserve adjustable splitter/table state;
-- use Qt signals to cross worker threads;
+- identify the emitting thread of every bus event and use queued Qt signals to
+  cross worker threads;
+- never perform potentially blocking work on the UI thread;
 - avoid launching a visible application during unattended/headless work.
 
 ### Changing the Streamhouse AI API
@@ -1344,15 +1411,19 @@ Keep public config free of local paths and routine internals.
   New reusable domain logic should move into services/stores rather than making
   it larger.
 - The event bus is global and synchronous. It is simple but has no typed schema,
-  replay, priority, or async scheduling.
+  replay, priority, async scheduling, or automatic Qt-thread marshalling.
 - Automation tasks run in the UI process, and some intentionally use Qt APIs.
-  A future background executor needs explicit task affinity.
+  Blocking-I/O risk must be managed handler by handler; a future background
+  executor needs explicit task affinity and UI dispatch.
 - Trigger providers use separate persisted stores linked by IDs. Cross-file
   updates are validated but are not transactional across multiple files.
 - Streamhouse AI HTTP has no authentication because it is loopback-only.
 - The hosted relay uses SQLite and in-memory rate-limit state; horizontal
   scaling would need shared storage and stronger operational controls.
 - Backup coverage is allowlist-based and currently lags some newer data stores.
+- Several v1/v2 queue, trigger, and soundboard stores still tolerate
+  non-newer or unversioned shapes. Review those private-development paths
+  before Alpha rather than treating them as supported upgrade contracts.
 - UI layout is partly Designer-generated and partly dynamic, making structural
   changes span multiple files.
 - Version remains `0.1.0`; persisted store versions and Streamhouse AI protocol

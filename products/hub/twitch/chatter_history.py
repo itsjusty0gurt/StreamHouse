@@ -7,7 +7,6 @@ from typing import Any, Iterable
 from uuid import uuid4
 
 from shared.streamhouse_runtime.json_store import atomic_write_json, load_json_with_backup
-from products.hub.core.migrations import migrate_payload
 from shared.streamhouse_runtime.paths import user_data_root
 
 
@@ -19,21 +18,32 @@ def _normalize_manual_group(value: Any) -> str:
     return group if group in LOCAL_CHATTER_GROUPS else ""
 
 
-def _normalize_memory(values: dict[str, Any]) -> dict[str, Any]:
-    """Fill structured-memory fields on legacy and current records."""
-    memory = dict(values)
-    source = str(memory.get("source", "manual"))
-    memory["source"] = source
-    memory.setdefault("status", "approved" if source == "manual" else "pending")
-    memory.setdefault("confidence", 1.0 if source == "manual" else 0.5)
-    memory.setdefault("evidence", [])
-    memory.setdefault("key", "")
-    memory.setdefault("last_confirmed_at", memory.get("created_at", ""))
-    memory.setdefault("conflicts_with", "")
-    memory.setdefault("rejection_reason", "")
-    memory.setdefault("pinned", False)
-    memory.setdefault("archived", False)
-    return memory
+CURRENT_MEMORY_FIELDS = frozenset(
+    {
+        "id",
+        "text",
+        "category",
+        "source",
+        "created_at",
+        "updated_at",
+        "status",
+        "confidence",
+        "evidence",
+        "key",
+        "last_confirmed_at",
+        "conflicts_with",
+        "rejection_reason",
+        "pinned",
+        "archived",
+    }
+)
+
+
+def _load_current_memory(values: dict[str, Any]) -> dict[str, Any] | None:
+    """Return a current-schema memory entry or discard the malformed entry."""
+    if not CURRENT_MEMORY_FIELDS.issubset(values):
+        return None
+    return dict(values)
 
 
 @dataclass(slots=True)
@@ -82,9 +92,10 @@ class ChatterRecord:
             roles=[str(role) for role in values.get("roles", [])],
             followed_at=str(values.get("followed_at", "")),
             memories=[
-                _normalize_memory(memory)
+                loaded
                 for memory in values.get("memories", [])
                 if isinstance(memory, dict)
+                and (loaded := _load_current_memory(memory)) is not None
             ],
             tags=[str(tag) for tag in values.get("tags", [])][:50],
             private_notes=str(values.get("private_notes", ""))[:5000],
@@ -144,6 +155,7 @@ class ChatterHistoryStore:
     REGULAR_SNAPSHOT_DAYS = 10
     MEMORY_REGULAR_STREAMS = 5
     MEMORY_CONSENT_VERSION = "1"
+    VERSION = 6
 
     def __init__(self, path: Path | None = None) -> None:
         self.path = path or user_data_root() / "memory" / "twitch_chatters.json"
@@ -156,7 +168,10 @@ class ChatterHistoryStore:
         values = load_json_with_backup(self.path)
         if not isinstance(values, dict):
             raise ValueError("Chatter history must contain a JSON object.")
-        values = migrate_payload("chatters", values)
+        if int(values.get("version", 0)) != self.VERSION:
+            raise ValueError(
+                "Chatter history uses a discarded pre-alpha schema and must be reset."
+            )
         records = values.get("chatters", {})
         if not isinstance(records, dict):
             raise ValueError("Chatter history chatters must be an object.")
@@ -168,6 +183,11 @@ class ChatterHistoryStore:
                 normalized = True
                 continue
             record = ChatterRecord.from_dict(raw_record)
+            raw_memories = raw_record.get("memories", [])
+            if not isinstance(raw_memories, list):
+                normalized = True
+            elif len(record.memories) != len(raw_memories):
+                normalized = True
             if record.user_id != user_id:
                 normalized = True
             record.user_id = user_id
@@ -806,7 +826,7 @@ class ChatterHistoryStore:
         if not self.dirty:
             return
         payload = {
-            "version": 6,
+            "version": self.VERSION,
             "chatters": {
                 user_id: asdict(record)
                 for user_id, record in self.records.items()

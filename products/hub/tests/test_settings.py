@@ -42,7 +42,6 @@ class SettingsStoreTests(unittest.TestCase):
             ai_memory_promo_enabled=False,
             ai_memory_promo_interval_messages=250,
             ai_response_decisions_enabled=False,
-            ai_auto_send_replies=True,
             ai_response_max_age_seconds=25,
             ai_response_min_interval_seconds=12,
             ai_conversation_followup_seconds=240,
@@ -88,7 +87,6 @@ class SettingsStoreTests(unittest.TestCase):
                     "ai_memory_promo_enabled": "yes",
                     "ai_memory_promo_interval_messages": 5000,
                     "ai_response_decisions_enabled": "yes",
-                    "ai_auto_send_replies": "yes",
                     "ai_response_max_age_seconds": 500,
                     "ai_response_min_interval_seconds": 0,
                     "ai_conversation_followup_seconds": 5000,
@@ -129,7 +127,6 @@ class SettingsStoreTests(unittest.TestCase):
         self.assertTrue(settings.ai_memory_promo_enabled)
         self.assertEqual(settings.ai_memory_promo_interval_messages, 1000)
         self.assertTrue(settings.ai_response_decisions_enabled)
-        self.assertTrue(settings.ai_auto_send_replies)
         self.assertEqual(settings.ai_response_max_age_seconds, 60)
         self.assertEqual(settings.ai_response_min_interval_seconds, 3)
         self.assertEqual(settings.ai_conversation_followup_seconds, 600)
@@ -166,12 +163,25 @@ class SettingsStoreTests(unittest.TestCase):
 
     def test_discarded_pre_alpha_schema_is_rejected(self) -> None:
         self.settings_path.write_text(
-            json.dumps({"_version": 1, "startup_page": "Memories"}),
+            json.dumps(
+                {
+                    "_version": 2,
+                    "startup_page": "Memories",
+                    "ai_auto_send_replies": True,
+                }
+            ),
             encoding="utf-8",
         )
 
         with self.assertRaisesRegex(ValueError, "discarded pre-alpha schema"):
             self.store.load()
+
+    def test_current_settings_do_not_serialize_removed_auto_send_field(self) -> None:
+        self.store.save(AppSettings())
+
+        payload = json.loads(self.settings_path.read_text(encoding="utf-8"))
+        self.assertEqual(payload["_version"], SettingsStore.VERSION)
+        self.assertNotIn("ai_auto_send_replies", payload)
 
 
 if __name__ == "__main__":

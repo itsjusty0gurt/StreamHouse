@@ -6,7 +6,6 @@ from pathlib import Path
 from typing import Any
 
 from shared.streamhouse_runtime.json_store import atomic_write_json, load_json_with_backup
-from products.hub.core.migrations import migrate_payload
 from shared.streamhouse_runtime.paths import user_data_root
 
 
@@ -36,6 +35,7 @@ class StreamSession:
 
 
 class StreamSessionStore:
+    VERSION = 1
     LIMIT = 100
 
     def __init__(self, path: Path | None = None) -> None:
@@ -51,7 +51,10 @@ class StreamSessionStore:
         values = load_json_with_backup(self.path)
         if not isinstance(values, dict):
             raise ValueError("Stream session history must be an object.")
-        values = migrate_payload("sessions", values)
+        if int(values.get("version", 0)) != self.VERSION:
+            raise ValueError(
+                "Stream session history uses a discarded pre-alpha schema and must be reset."
+            )
         raw_sessions = values.get("sessions", [])
         if not isinstance(raw_sessions, list):
             raise ValueError("Stream sessions must be a list.")
@@ -78,7 +81,7 @@ class StreamSessionStore:
         if not self.dirty:
             return
         payload = {
-            "version": 1,
+            "version": self.VERSION,
             "current": asdict(self.current) if self.current else None,
             "retention_days": self.retention_days,
             "sessions": [asdict(session) for session in self.sessions],

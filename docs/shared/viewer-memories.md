@@ -19,10 +19,11 @@ but does not approve or own live viewer authorization.
 
 ## AI-memory boundary
 
-Viewer memory is opt-in. A viewer uses `!sallymemory on` in chat; legacy
-profiles without an explicit consent record are not eligible. Unconsented
-viewer records remain session-only and are omitted when chatter history is
-saved. Available commands are:
+Viewer memory is opt-in. A viewer uses `!sallymemory on` in chat; records
+without an explicit consent record are not eligible. Unconsented activity-only
+records remain session-only. The store may still persist the minimum record
+needed for an explicit opt-out or a Hub-owned local group/bot classification;
+those fields do not authorize AI memory. Available commands are:
 
 - `!sallymemory` - explain the feature and controls.
 - `!sallymemory on` - consent to daily context and regular qualification.
@@ -31,8 +32,9 @@ saved. Available commands are:
   opt-out preference.
 - `!sallymemory delete` followed by `!sallymemory confirmdelete` - erase the
   complete viewer profile, consent metadata, runtime context, and associated
-  activity-feed entries. Existing Sally backup archives are scrubbed as part of
-  confirmed deletion so a later restore cannot silently recreate the profile.
+  activity-feed entries. Existing Streamhouse Hub backup archives are scrubbed
+  as part of confirmed deletion so a later restore cannot silently recreate the
+  profile.
 
 Daily context is capped at 100 messages per opted-in viewer. On startup and
 once per minute, Streamhouse Hub compares its last update with the configured local reset

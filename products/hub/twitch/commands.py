@@ -75,13 +75,8 @@ class TwitchCommandTrigger:
 
     @classmethod
     def from_dict(cls, values: Mapping[str, Any]) -> TwitchCommandTrigger:
-        trigger_id = (
-            str(values.get("trigger_id", ""))
-            or str(values.get("command_id", ""))
-            or uuid4().hex
-        )
         return cls(
-            trigger_id=trigger_id,
+            trigger_id=str(values.get("trigger_id", "")),
             routine_id=str(values.get("routine_id", "")),
             name=str(values.get("name", "")),
             aliases=[str(value) for value in values.get("aliases", [])],
@@ -163,7 +158,7 @@ class TwitchCommandTriggerStore:
         if not isinstance(payload, dict):
             raise ValueError("Twitch command triggers must contain a JSON object.")
         version = int(payload.get("version", 0))
-        if version not in {5, self.VERSION}:
+        if version != self.VERSION:
             raise ValueError(
                 "Twitch command data uses a discarded pre-alpha schema and must be reset."
             )
@@ -184,11 +179,7 @@ class TwitchCommandTriggerStore:
             except (TypeError, ValueError):
                 continue
             loaded.append(trigger)
-        if version == 5:
-            self._remove_pristine_seeded_defaults()
         self.reconcile_managed_routines()
-        if version == 5:
-            self.save()
         return list(loaded)
 
     def reconcile_managed_routines(self) -> tuple[int, int]:
@@ -564,46 +555,6 @@ class TwitchCommandTriggerStore:
             raise
         return trigger
 
-    def _remove_pristine_seeded_defaults(self) -> None:
-        """Drop version-five startup defaults that were never used or edited."""
-        definitions = {
-            definition.default_id: definition
-            for definition in default_command_definitions()
-        }
-        for trigger in tuple(self.triggers):
-            definition = definitions.get(trigger.default_id)
-            routine = self.routine_store.get(trigger.routine_id)
-            expected = self._trigger_for(definition) if definition is not None else None
-            pristine_trigger = bool(
-                expected is not None
-                and trigger.trigger_id == expected.trigger_id
-                and trigger.routine_id == expected.routine_id
-                and trigger.name == expected.name
-                and trigger.aliases == expected.aliases
-                and trigger.permission == expected.permission
-                and trigger.global_cooldown_seconds == expected.global_cooldown_seconds
-                and trigger.user_cooldown_seconds == expected.user_cooldown_seconds
-                and trigger.enabled == expected.enabled
-                and trigger.uses == 0
-                and not trigger.last_used_at
-                and trigger.has_chat_response == expected.has_chat_response
-            )
-            pristine_routine = bool(
-                definition is not None
-                and routine is not None
-                and routine.routine_id == definition.routine_id
-                and routine.name == f"Command !{definition.name}"
-                and routine.trigger_id == definition.trigger_id
-                and not routine.additional_trigger_ids
-                and routine.managed_by == self.MANAGED_BY
-                and routine.tasks == list(definition.tasks)
-            )
-            if pristine_trigger and pristine_routine:
-                self.triggers.remove(trigger)
-                self.routine_store.delete_managed(
-                    trigger.routine_id, self.MANAGED_BY
-                )
-
     def _trigger_for(
         self,
         definition: DefaultCommandDefinition,
@@ -857,6 +808,8 @@ class TwitchCommandTriggerStore:
         *,
         excluding_id: str = "",
     ) -> None:
+        if not trigger.trigger_id:
+            raise ValueError("Twitch command trigger is missing its stable ID.")
         names = [trigger.name, *trigger.aliases]
         if not self.NAME_PATTERN.fullmatch(trigger.name):
             raise ValueError(

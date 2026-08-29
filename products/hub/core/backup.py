@@ -115,10 +115,9 @@ class BackupManager:
                 return None
         return self.create("automatic")
 
-    def scrub_viewer(self, user_id: str, user_name: str = "") -> int:
+    def scrub_viewer(self, user_id: str) -> int:
         """Remove a viewer's profile and activity rows from existing backups."""
         clean_id = user_id.strip()
-        clean_name = user_name.strip().casefold()
         changed_archives = 0
         archives = tuple(self.backup_directory.glob("streamhouse-*.zip"))
         for archive in archives:
@@ -136,7 +135,7 @@ class BackupManager:
                         changed = changed or item_changed
                     elif member.filename == "memory/twitch_activity.json":
                         data, item_changed = self._scrub_activity_payload(
-                            data, clean_id, clean_name
+                            data, clean_id
                         )
                         changed = changed or item_changed
                     destination.writestr(member, data)
@@ -162,7 +161,6 @@ class BackupManager:
     def _scrub_activity_payload(
         data: bytes,
         user_id: str,
-        user_name: str,
     ) -> tuple[bytes, bool]:
         try:
             payload = json.loads(data.decode("utf-8"))
@@ -176,16 +174,7 @@ class BackupManager:
             for event in events
             if not (
                 isinstance(event, dict)
-                and (
-                    str(event.get("user_id", "")) == user_id
-                    or (
-                        user_name
-                        and not event.get("user_id")
-                        and str(event.get("text", "")).casefold().startswith(
-                            user_name + " "
-                        )
-                    )
-                )
+                and str(event.get("user_id", "")) == user_id
             )
         ]
         if len(retained) == len(events):

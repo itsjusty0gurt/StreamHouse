@@ -24,7 +24,7 @@ bound only to `127.0.0.1:8765`.
 | Ollama, response reasoning, personality execution | `products/ai/` |
 | Lightweight protocol and presence contracts | `shared/streamhouse_shared/` |
 | Cross-product runtime utilities | `shared/streamhouse_runtime/` |
-| Shared PySide6 window chrome and UI components | `shared/streamhouse_ui/` |
+| AI window chrome and reusable Qt UI components | `shared/streamhouse_ui/` |
 | Hosted Twitch extension and relay | `extensions/twitch/` |
 | Build, packaging, release, smoke, development tools | `tools/` |
 | Cross-product and release tests | `tests/integration/`, `tests/release/` |

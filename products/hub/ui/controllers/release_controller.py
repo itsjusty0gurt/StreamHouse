@@ -28,8 +28,8 @@ class ReleaseController:
         self.backups.create("before-restore")
         return self.backups.restore(latest)
 
-    def scrub_viewer_data(self, user_id: str, user_name: str = "") -> int:
-        return self.backups.scrub_viewer(user_id, user_name)
+    def scrub_viewer_data(self, user_id: str) -> int:
+        return self.backups.scrub_viewer(user_id)
 
     def export_diagnostics(
         self,

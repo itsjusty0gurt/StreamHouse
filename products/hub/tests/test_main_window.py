@@ -3166,7 +3166,6 @@ class MainWindowTests(unittest.TestCase):
         )
 
     def test_hey_sally_bypasses_confidence_and_normal_reply_gap(self) -> None:
-        self.window.settings.ai_auto_send_replies = True
         self.window.twitch_service.state = TwitchConnectionState.CONNECTED
         self.window.twitch_service.send_message = Mock(return_value=True)
         self.window.last_auto_reply_at = 100.0
@@ -3189,7 +3188,6 @@ class MainWindowTests(unittest.TestCase):
             self.assertTrue(self.window._maybe_auto_send_reply(decision))
 
     def test_expected_followup_bypasses_confidence_and_normal_reply_gap(self) -> None:
-        self.window.settings.ai_auto_send_replies = True
         self.window.twitch_service.state = TwitchConnectionState.CONNECTED
         self.window.twitch_service.send_message = Mock(return_value=True)
         self.window.last_auto_reply_at = 100.0
@@ -3213,7 +3211,6 @@ class MainWindowTests(unittest.TestCase):
             self.assertTrue(self.window._maybe_auto_send_reply(decision))
 
     def test_interjection_requires_high_confidence_and_separate_cooldown(self) -> None:
-        self.window.settings.ai_auto_send_replies = True
         self.window.settings.ai_interjections_enabled = True
         self.window.settings.ai_interjection_min_interval_seconds = 180
         self.window.settings.ai_interjection_min_messages = 6
@@ -3240,7 +3237,6 @@ class MainWindowTests(unittest.TestCase):
             self.assertFalse(self.window._maybe_auto_send_reply(decision))
 
     def test_model_direct_label_cannot_bypass_unsolicited_guards(self) -> None:
-        self.window.settings.ai_auto_send_replies = True
         self.window.settings.ai_interjections_enabled = False
         self.window.twitch_service.state = TwitchConnectionState.CONNECTED
         self.window.twitch_service.send_message = Mock(return_value=True)
@@ -3263,7 +3259,6 @@ class MainWindowTests(unittest.TestCase):
         self.window.twitch_service.send_message.assert_not_called()
 
     def test_failed_model_still_falls_back_for_hey_sally(self) -> None:
-        self.window.settings.ai_auto_send_replies = True
         self.window.twitch_service.state = TwitchConnectionState.CONNECTED
         self.window.twitch_service.send_message = Mock(return_value=True)
         message = ResponseMessage(
@@ -3585,7 +3580,6 @@ class MainWindowTests(unittest.TestCase):
         self.window.response_decision_thread_pool.start = Mock()
         self.window.twitch_service.state = TwitchConnectionState.CONNECTED
         self.window.twitch_service.send_message = Mock(return_value=True)
-        self.window.settings.ai_auto_send_replies = True
 
         self.window.handle_twitch_message(
             TwitchMessage(

@@ -39,11 +39,16 @@ the saved-data compatibility baseline.
     - `StreamhouseAI-<version>-windows-x64.zip`
     - `StreamhouseAI-<version>-windows-x64.zip.sha256`
 
-Obsolete local environment aliases, protocol headers, QSettings identifiers,
-data readers, and migration paths have been removed. Externally deployed relay
-compatibility is governed by `docs/deployment/relay-brand-migration.md` and
-remains until its operational removal conditions are satisfied. New builds and
-documentation use Streamhouse names.
+Obsolete Sally-era cross-root readers, environment aliases, protocol headers,
+QSettings identifiers, command v5 migration, and the shared
+activity/chatter/session development-data normalizer have been removed.
+Affected stores now require their exact current schema; any remaining tolerant
+store loaders are debt recorded in `overview.md`, not an Alpha compatibility
+promise.
+Externally deployed relay compatibility is governed by
+`docs/deployment/relay-brand-migration.md` and remains until its operational
+removal conditions are satisfied. New builds and documentation use Streamhouse
+names.
 
 Approved product icons live under `shared/assets/streamhouse-icons/`. Confirm
 Hub uses the `H` icon and Streamhouse AI uses the `AI` icon in both Qt and the

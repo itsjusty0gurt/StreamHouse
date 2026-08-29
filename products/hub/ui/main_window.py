@@ -3994,12 +3994,8 @@ class MainWindow(QMainWindow):
             else:
                 self.pending_memory_deletions.pop(user_id, None)
                 try:
-                    self.activity_history.delete_user(
-                        user_id, chat_message.username
-                    )
-                    self.release_controller.scrub_viewer_data(
-                        user_id, chat_message.username
-                    )
+                    self.activity_history.delete_user(user_id)
+                    self.release_controller.scrub_viewer_data(user_id)
                 except OSError as error:
                     Logger.warning(
                         f"Could not erase viewer activity history: {error}",
@@ -5858,7 +5854,6 @@ class MainWindow(QMainWindow):
             ai_response_decisions_enabled=(
                 self.ai_response_decisions_check.isChecked()
             ),
-            ai_auto_send_replies=True,
             ai_response_max_age_seconds=(
                 self.ai_response_max_age_spin.value()
             ),

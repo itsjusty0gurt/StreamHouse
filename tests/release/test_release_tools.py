@@ -6,7 +6,6 @@ from zipfile import ZipFile
 
 from products.hub.core.backup import BackupManager
 from products.hub.core.diagnostics import export_diagnostics
-from products.hub.core.migrations import migrate_payload
 from products.hub.ui.controllers.release_controller import ReleaseController
 
 
@@ -119,19 +118,6 @@ class ReleaseToolsTests(unittest.TestCase):
             self.assertNotIn("secret-value", warnings)
             self.assertEqual(payload["health"]["connection"], "Connected")
 
-    def test_chatter_migration_adds_release_fields(self) -> None:
-        migrated = migrate_payload(
-            "chatters",
-            {"version": 1, "chatters": {"1": {"user_name": "Viewer"}}},
-        )
-        record = migrated["chatters"]["1"]
-        self.assertEqual(migrated["version"], 6)
-        self.assertEqual(record["manual_group"], "")
-        self.assertEqual(record["timeline"], [])
-        self.assertEqual(record["private_notes"], "")
-        self.assertFalse(record["memory_enabled"])
-        self.assertEqual(record["memory_consent"], "unknown")
-
     def test_release_controller_creates_daily_backup(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             controller = ReleaseController(Path(directory))
@@ -169,7 +155,7 @@ class ReleaseToolsTests(unittest.TestCase):
             controller = ReleaseController(root)
             archive = controller.create_backup()
 
-            self.assertEqual(controller.scrub_viewer_data("1", "Viewer"), 1)
+            self.assertEqual(controller.scrub_viewer_data("1"), 1)
             with ZipFile(archive) as source:
                 chatters = json.loads(
                     source.read("memory/twitch_chatters.json")

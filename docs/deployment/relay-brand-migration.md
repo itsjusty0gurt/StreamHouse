@@ -21,8 +21,8 @@ Viewer GET/POST requests use Twitch Extension JWTs. Previously deployed neutral
 
 ## Compatibility window
 
-`relay-compat-v1` remains supported no earlier than Streamhouse `0.3.0` and is
-limited to the former relay environment variables, Hub route aliases, Hub
+`relay-compat-v1` must remain supported until at least Streamhouse `0.3.0` and
+is limited to the former relay environment variables, Hub route aliases, Hub
 headers, Extension base setting, and old hostname fallback. Modern values win
 when both names are supplied. Conflicts and legacy-only use emit one structured,
 value-free warning per process/browser session. Current documentation, UI, and

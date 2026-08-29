@@ -134,10 +134,11 @@ definition tables, old output metadata, compatibility aliases, old saved-
 routine formats, and fallbacks to obsolete variable systems. Existing private
 development routines and variables may be reset instead of migrated.
 
-While transitional Variables code still exists, do not extend it for new
-features or make old data migration a prerequisite for removal. Complete the
-active-consumer migration, prove the registry path, then remove the parallel
-runtime and its compatibility tests and documentation.
+The former flat catalog, flat placeholder path, and compatibility-only aliases
+are not part of the current runtime. Do not reintroduce them. New definitions,
+context, previews, validation, picker entries, and task outputs must extend the
+registry/provider/typed-output architecture rather than create a parallel
+catalog or parser.
 
 ## Product naming and ownership
 

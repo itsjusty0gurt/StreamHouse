@@ -15,9 +15,8 @@ but only dependencies explicitly documented here are required.
 character in prompts, replies, commands, and viewer-facing features; Sally is
 not the name of the complete Streamhouse ecosystem.
 
-The implementation, packages, executables, and local protocol now use
-Streamhouse product names. The GitHub repository remains `SallyAIBot`; changing
-that external repository identifier is outside the application rebrand. Active
+The implementation, packages, executables, local protocol, and GitHub
+repository (`itsjusty0gurt/StreamHouse`) use Streamhouse product names. Active
 internal generic infrastructure no longer uses SallyBot-era names. The hosted
 relay retains a narrowly isolated external compatibility contract until the
 deployment runbook's removal gates are met. All other current Sally names refer
