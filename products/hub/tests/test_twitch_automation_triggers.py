@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -305,6 +306,58 @@ class TwitchEventTriggerStoreTests(unittest.TestCase):
             self.assertEqual(events[0].trigger_id, trigger.trigger_id)
             self.assertEqual(events[0].trigger_type, "ads")
             self.assertEqual(events[0].context["ads.next_in"], "300")
+
+    def test_keyword_and_ads_current_formats_round_trip(self) -> None:
+        keyword_routine = self.routines.add("Keyword")
+        keyword = self.store.add_keyword_phrase(
+            keyword_routine.routine_id,
+            "coffee",
+            match_type="starts_with",
+            ignore_case=False,
+            whole_word=True,
+        )
+        ads_routine = self.routines.add("Ads Started")
+        ads = self.store.add(ads_routine.routine_id, "ads.started")
+
+        loaded = TwitchEventTriggerStore(self.store.path, self.routines)
+        loaded.load()
+
+        self.assertEqual(loaded.get(keyword.trigger_id).filters["phrase"], "coffee")
+        self.assertEqual(
+            loaded.get(keyword.trigger_id).filters["match_type"], "starts_with"
+        )
+        self.assertEqual(loaded.get(ads.trigger_id).event_type, "ads.started")
+
+    def test_obsolete_or_unversioned_schema_is_rejected(self) -> None:
+        for payload in (
+            {"triggers": []},
+            {"version": 1, "triggers": []},
+            {"version": "2", "triggers": []},
+            {"version": 3, "triggers": []},
+        ):
+            with self.subTest(payload=payload):
+                self.store.path.write_text(json.dumps(payload), encoding="utf-8")
+                with self.assertRaisesRegex(ValueError, "Unsupported Twitch event"):
+                    self.store.load()
+
+    def test_current_schema_does_not_invent_missing_trigger_ids(self) -> None:
+        routine = self.routines.add("Follow")
+        self.store.path.write_text(
+            json.dumps(
+                {
+                    "version": self.store.VERSION,
+                    "triggers": [
+                        {
+                            "routine_id": routine.routine_id,
+                            "event_type": "channel.follow",
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        self.assertEqual(self.store.load(), [])
 
 
 if __name__ == "__main__":

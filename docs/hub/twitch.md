@@ -282,7 +282,9 @@ rejected authorization distinctly from a genuine not-following result.
 ## Automation event triggers
 
 Twitch EventSub automation triggers persist at
-`twitch/event_triggers.json`. The live-ready set is follow, subscribe,
+`twitch/event_triggers.json` in the exact current v2 schema; unversioned and
+obsolete private-development formats are rejected rather than migrated. The
+live-ready set is follow, subscribe,
 subscription gift, subscription message, cheer, incoming raid, custom channel
 point redemption, stream online, and stream offline. These correspond to the
 activity subscriptions Hub currently establishes with Twitch.

@@ -31,7 +31,7 @@ class AutomationQueueDefinition:
     @classmethod
     def from_dict(cls, values: dict) -> AutomationQueueDefinition:
         return cls(
-            queue_id=str(values.get("queue_id", "")) or uuid4().hex,
+            queue_id=str(values.get("queue_id", "")),
             name=str(values.get("name", "")),
             paused=bool(values.get("paused", False)),
             max_length=int(values.get("max_length", 100)),
@@ -70,8 +70,12 @@ class AutomationQueueStore:
         payload = load_json_with_backup(self.path)
         if not isinstance(payload, dict):
             raise ValueError("Automation queues must contain a JSON object.")
-        if int(payload.get("version", 1)) > self.VERSION:
-            raise ValueError("Automation queue data is newer than this app.")
+        version = payload.get("version")
+        if type(version) is not int or version != self.VERSION:
+            raise ValueError(
+                f"Unsupported Automation queue version {version}; "
+                f"expected {self.VERSION}."
+            )
         raw = payload.get("queues", [])
         if not isinstance(raw, list):
             raise ValueError("Automation queues must contain a queue list.")
@@ -80,29 +84,10 @@ class AutomationQueueStore:
             for value in raw
             if isinstance(value, dict)
         ]
-        default = next(
-            (
-                queue
-                for queue in queues
-                if queue.queue_id == DEFAULT_AUTOMATION_QUEUE_ID
-            ),
-            None,
-        )
-        changed = default is None or (
-            default is not None and queues.index(default) != 0
-        )
-        if default is None:
-            queues.insert(0, self._default_queue())
-        else:
-            if default.name != DEFAULT_AUTOMATION_QUEUE_NAME:
-                default.name = DEFAULT_AUTOMATION_QUEUE_NAME
-                changed = True
-            queues.remove(default)
-            queues.insert(0, default)
         self._validate(queues)
+        if queues[0].queue_id != DEFAULT_AUTOMATION_QUEUE_ID:
+            raise ValueError("The Default Queue must be the first queue.")
         self.queues = queues
-        if changed:
-            self.save()
         return list(self.queues)
 
     def reset(self) -> AutomationQueueDefinition:
@@ -191,6 +176,8 @@ class AutomationQueueStore:
         names: set[str] = set()
         if len(ids) != len(set(ids)):
             raise ValueError("Automation queue IDs must be unique.")
+        if any(not queue_id for queue_id in ids):
+            raise ValueError("Automation queues require stable IDs.")
         if ids.count(DEFAULT_AUTOMATION_QUEUE_ID) != 1:
             raise ValueError("Automation queues require exactly one Default Queue.")
         for queue in values:

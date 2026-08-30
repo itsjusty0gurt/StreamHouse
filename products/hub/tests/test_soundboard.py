@@ -93,6 +93,40 @@ class SoundboardStoreTests(unittest.TestCase):
         )
         self.assertEqual(loaded.pages[1].buttons[1].button_id, first.button_id)
 
+    def test_obsolete_or_unversioned_soundboard_schema_is_rejected(self) -> None:
+        for payload in (
+            {"pages": []},
+            {"version": 0, "pages": []},
+            {"version": "1", "pages": []},
+        ):
+            with self.subTest(payload=payload):
+                self.path.write_text(json.dumps(payload), encoding="utf-8")
+                with self.assertRaisesRegex(ValueError, "Unsupported soundboard"):
+                    self.store.load()
+
+    def test_current_schema_does_not_invent_page_or_button_ids(self) -> None:
+        payloads = (
+            {
+                "version": self.store.VERSION,
+                "pages": [{"name": "Missing identity", "buttons": []}],
+            },
+            {
+                "version": self.store.VERSION,
+                "pages": [
+                    {
+                        "page_id": "page-1",
+                        "name": "Sounds",
+                        "buttons": [{"label": "Missing identity", "routine_id": "r1"}],
+                    }
+                ],
+            },
+        )
+        for payload in payloads:
+            with self.subTest(payload=payload):
+                self.path.write_text(json.dumps(payload), encoding="utf-8")
+                with self.assertRaisesRegex(ValueError, "stable IDs"):
+                    self.store.load()
+
     def test_page_is_limited_to_nine_buttons(self) -> None:
         page = self.store.pages[0]
         for index in range(9):
@@ -163,6 +197,19 @@ class SoundboardStoreTests(unittest.TestCase):
             ):
                 config, _key = store.load()
             self.assertEqual(config.url, "https://legacy.example")
+
+    def test_relay_settings_require_the_exact_current_schema(self) -> None:
+        path = self.path.with_name("relay.json")
+        store = SoundboardRelayConfigStore(path)
+        for payload in (
+            {"url": "https://relay.example", "channel_id": "123"},
+            {"version": 0, "url": "https://relay.example", "channel_id": "123"},
+            {"version": "1", "url": "https://relay.example", "channel_id": "123"},
+        ):
+            with self.subTest(payload=payload):
+                path.write_text(json.dumps(payload), encoding="utf-8")
+                with self.assertRaisesRegex(ValueError, "Unsupported soundboard relay"):
+                    store.load()
 
 
 class SoundboardServerTests(unittest.TestCase):

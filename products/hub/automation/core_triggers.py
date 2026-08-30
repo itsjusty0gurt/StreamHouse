@@ -27,7 +27,7 @@ class CoreAutomationTrigger:
     @classmethod
     def from_dict(cls, values: Mapping[str, Any]) -> CoreAutomationTrigger:
         return cls(
-            trigger_id=str(values.get("trigger_id", "")) or uuid4().hex,
+            trigger_id=str(values.get("trigger_id", "")),
             routine_id=str(values.get("routine_id", "")),
             event_type=str(values.get("event_type", "")).strip(),
             enabled=bool(values.get("enabled", True)),
@@ -57,8 +57,11 @@ class CoreTriggerStore:
         payload = load_json_with_backup(self.path)
         if not isinstance(payload, dict):
             raise ValueError("Core triggers must contain a JSON object.")
-        if int(payload.get("version", 1)) > self.VERSION:
-            raise ValueError("Core trigger data is newer than this app.")
+        version = payload.get("version")
+        if type(version) is not int or version != self.VERSION:
+            raise ValueError(
+                f"Unsupported Core trigger version {version}; expected {self.VERSION}."
+            )
         values = payload.get("triggers", [])
         if not isinstance(values, list):
             raise ValueError("Core triggers must contain a trigger list.")

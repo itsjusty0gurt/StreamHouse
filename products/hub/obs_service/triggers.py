@@ -59,7 +59,7 @@ class ObsAutomationTrigger:
     def from_dict(cls, values: Mapping[str, Any]) -> ObsAutomationTrigger:
         raw_filters = values.get("filters", {})
         return cls(
-            trigger_id=str(values.get("trigger_id", "")) or uuid4().hex,
+            trigger_id=str(values.get("trigger_id", "")),
             routine_id=str(values.get("routine_id", "")),
             event_type=str(values.get("event_type", "")).strip(),
             filters={
@@ -92,6 +92,11 @@ class ObsTriggerStore:
         payload = load_json_with_backup(self.path)
         if not isinstance(payload, dict):
             raise ValueError("OBS triggers must contain a JSON object.")
+        version = payload.get("version")
+        if type(version) is not int or version != self.VERSION:
+            raise ValueError(
+                f"Unsupported OBS trigger version {version}; expected {self.VERSION}."
+            )
         values = payload.get("triggers", [])
         if not isinstance(values, list):
             raise ValueError("OBS triggers must contain a trigger list.")

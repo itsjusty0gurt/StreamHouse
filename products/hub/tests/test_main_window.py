@@ -2974,7 +2974,7 @@ class MainWindowTests(unittest.TestCase):
         message = worker.messages[0]
         self.assertTrue(message.conversation_continuation)
         self.assertTrue(message.response_expected)
-        self.assertIn("How about you?", message.previous_sally_reply)
+        self.assertIn("How about you?", message.previous_ai_reply)
 
     def test_conversation_context_expires_after_configured_window(self) -> None:
         now = datetime.now(timezone.utc)
@@ -3214,7 +3214,7 @@ class MainWindowTests(unittest.TestCase):
         self.window.settings.ai_interjections_enabled = True
         self.window.settings.ai_interjection_min_interval_seconds = 180
         self.window.settings.ai_interjection_min_messages = 6
-        self.window.viewer_messages_since_sally_reply = 6
+        self.window.viewer_messages_since_ai_reply = 6
         self.window.twitch_service.state = TwitchConnectionState.CONNECTED
         self.window.twitch_service.send_message = Mock(return_value=True)
         decision = ResponseDecision(
@@ -3327,7 +3327,7 @@ class MainWindowTests(unittest.TestCase):
                 user_name="Viewer",
                 text="say hello sally",
                 received_at=datetime.now(timezone.utc).isoformat(),
-                directed_at_sally=True,
+                directed_at_ai=True,
             )
         )
         sent = ResponseDecision(

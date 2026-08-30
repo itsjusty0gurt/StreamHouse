@@ -67,7 +67,7 @@ class TwitchEventAutomationTrigger:
     ) -> TwitchEventAutomationTrigger:
         raw_filters = values.get("filters", {})
         return cls(
-            trigger_id=str(values.get("trigger_id", "")) or uuid4().hex,
+            trigger_id=str(values.get("trigger_id", "")),
             routine_id=str(values.get("routine_id", "")),
             event_type=str(values.get("event_type", "")).strip(),
             filters={
@@ -109,8 +109,12 @@ class TwitchEventTriggerStore:
         payload = load_json_with_backup(self.path)
         if not isinstance(payload, dict):
             raise ValueError("Twitch event triggers must contain a JSON object.")
-        if int(payload.get("version", 1)) > self.VERSION:
-            raise ValueError("Twitch event trigger data is newer than this app.")
+        version = payload.get("version")
+        if type(version) is not int or version != self.VERSION:
+            raise ValueError(
+                f"Unsupported Twitch event trigger version {version}; "
+                f"expected {self.VERSION}."
+            )
         values = payload.get("triggers", [])
         if not isinstance(values, list):
             raise ValueError("Twitch event triggers must contain a trigger list.")

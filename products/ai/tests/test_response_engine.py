@@ -238,7 +238,7 @@ class ResponseDecisionEngineTests(unittest.TestCase):
             text=message.text,
             received_at=message.received_at,
             conversation_continuation=True,
-            previous_sally_reply="I'm doing great. How about you?",
+            previous_ai_reply="I'm doing great. How about you?",
             response_expected=True,
         )
 
@@ -271,7 +271,7 @@ class ResponseDecisionEngineTests(unittest.TestCase):
             user_name=base.user_name,
             text=base.text,
             received_at=base.received_at,
-            directed_at_sally=True,
+            directed_at_ai=True,
         )
 
         decision = ResponseDecisionEngine().decide(provider, (message,))[0]

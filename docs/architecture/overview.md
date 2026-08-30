@@ -2,7 +2,7 @@
 
 > Canonical implementation map for maintainers and coding agents.
 >
-> Last verified: 2026-08-29 against version `0.1.0`.
+> Last verified: 2026-08-30 against version `0.1.0`.
 > Update this file when a change moves ownership, adds a persisted format,
 > changes an inter-process contract, or introduces a new service/trigger/task.
 
@@ -819,7 +819,7 @@ request IDs and callbacks rather than blocking the UI waiting for OBS.
 `StreamhouseAIClient` is synchronous by design and must be used only in worker
 threads. Every request includes `X-Streamhouse-Protocol`.
 
-`PROTOCOL_VERSION` is `2`. Clients and the server use only
+`PROTOCOL_VERSION` is `3`. Clients and the server use only
 `X-Streamhouse-Protocol`; missing or unsupported versions receive a clear HTTP
 409 mismatch response. The `/v1/...` routes remain product-neutral.
 
@@ -1132,13 +1132,13 @@ stores are not copied. Current window-state keys use product/domain names.
 JSON stores use `atomic_write_json()` and `load_json_with_backup()`: write to a
 temporary file, keep an adjacent `.bak`, then replace atomically.
 
-Current pre-alpha version handling is store-specific. Hub/AI settings,
-routines, custom Variables, Channel Information, Counters, commands, activity,
-chatter, and stream sessions require their exact current schema and direct
-developers to reset discarded data. Queue, Core/Twitch/OBS trigger, and
-soundboard loaders still tolerate some non-newer or unversioned shapes. This is
-an implementation fact, not an Alpha compatibility promise or a pattern for
-new stores; those remaining paths remain subject to the pre-alpha policy.
+Current pre-alpha stores require their exact current schema and direct
+developers to reset discarded private-development data. This includes Hub/AI
+settings, routines, queues, custom Variables, Channel Information, Counters,
+commands, Core/Twitch/OBS triggers, soundboard and relay configuration,
+activity, chatter, and stream sessions. Their loaders retain current-schema
+validation and same-schema backup recovery, but do not silently migrate
+unversioned or obsolete private-development formats.
 
 Routine exports use `streamhouse.automation.routine` and the
 `.streamhouse-routine.json` extension. Task clipboard payloads use
@@ -1421,9 +1421,6 @@ Keep public config free of local paths and routine internals.
 - The hosted relay uses SQLite and in-memory rate-limit state; horizontal
   scaling would need shared storage and stronger operational controls.
 - Backup coverage is allowlist-based and currently lags some newer data stores.
-- Several v1/v2 queue, trigger, and soundboard stores still tolerate
-  non-newer or unversioned shapes. Review those private-development paths
-  before Alpha rather than treating them as supported upgrade contracts.
 - UI layout is partly Designer-generated and partly dynamic, making structural
   changes span multiple files.
 - Version remains `0.1.0`; persisted store versions and Streamhouse AI protocol

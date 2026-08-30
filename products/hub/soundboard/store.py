@@ -30,9 +30,11 @@ class SoundboardStore:
             payload = load_json_with_backup(self.path)
             if not isinstance(payload, dict):
                 raise ValueError("Soundboard data must contain a JSON object.")
-            version = int(payload.get("version", 1))
-            if version > self.VERSION:
-                raise ValueError("Soundboard data is newer than this app.")
+            version = payload.get("version")
+            if type(version) is not int or version != self.VERSION:
+                raise ValueError(
+                    f"Unsupported soundboard version {version}; expected {self.VERSION}."
+                )
             values = payload.get("pages", [])
             if not isinstance(values, list):
                 raise ValueError("Soundboard data must contain a page list.")
@@ -195,6 +197,8 @@ class SoundboardStore:
         page_ids: set[str] = set()
         button_ids: set[str] = set()
         for page in pages:
+            if not page.page_id:
+                raise ValueError("Soundboard pages require stable IDs.")
             page.name = cls._clean_name(page.name, "Page name")
             if page.page_id in page_ids:
                 raise ValueError("Soundboard page IDs must be unique.")
@@ -202,6 +206,8 @@ class SoundboardStore:
             if len(page.buttons) > cls.MAX_BUTTONS_PER_PAGE:
                 raise ValueError("A soundboard page contains more than 9 sounds.")
             for button in page.buttons:
+                if not button.button_id:
+                    raise ValueError("Soundboard buttons require stable IDs.")
                 button.label = cls._clean_name(button.label, "Button label")
                 if button.button_id in button_ids:
                     raise ValueError("Soundboard button IDs must be unique.")

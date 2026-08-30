@@ -19,8 +19,8 @@ class ResponsePolicy:
         return (
             cls.requires_reply(message.text)
             or message.response_expected
-            or message.directed_at_sally
-            or message.reply_to_sally
+            or message.directed_at_ai
+            or message.reply_to_ai
         )
 
     @staticmethod

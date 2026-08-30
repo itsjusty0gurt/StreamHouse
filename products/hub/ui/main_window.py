@@ -728,7 +728,7 @@ class MainWindow(QMainWindow):
         self.recent_ai_chat: deque[dict[str, str]] = deque(maxlen=100)
         self.last_auto_reply_at = 0.0
         self.last_interjection_at = 0.0
-        self.viewer_messages_since_sally_reply = 0
+        self.viewer_messages_since_ai_reply = 0
         self.closed_ai_conversations: dict[str, datetime] = {}
         self.current_memory_stream_id = ""
         self.memory_promo_message_count = 0
@@ -3728,7 +3728,7 @@ class MainWindow(QMainWindow):
             self._maybe_promote_sally_memory()
         if not memory_command and not training_command and not custom_command:
             if not is_bot:
-                self.viewer_messages_since_sally_reply += 1
+                self.viewer_messages_since_ai_reply += 1
             self._buffer_message_for_memory_reasoning(chat_message, is_bot)
             self._queue_response_decision(chat_message, is_bot)
         emote_size = max(20, round(self.settings.twitch_chat_font_size * 1.8))
@@ -4370,17 +4370,17 @@ class MainWindow(QMainWindow):
         user_id = chat_message.user_id
         text = " ".join(chat_message.text.strip().split())[:500]
         received_at = chat_message.received_at.astimezone(timezone.utc)
-        directed_at_sally, reply_to_sally = self._sally_address_signals(
+        directed_at_ai, reply_to_ai = self._sally_address_signals(
             chat_message, text
         )
         (
             conversation_continuation,
-            previous_sally_reply,
+            previous_ai_reply,
             response_expected,
         ) = self._conversation_context(user_id, text, received_at)
         third_person_reference = bool(
             conversation_continuation
-            and not directed_at_sally
+            and not directed_at_ai
             and re.search(
                 r"\b(?:she(?:['’]?s)?|her|hers)\b",
                 text,
@@ -4395,7 +4395,7 @@ class MainWindow(QMainWindow):
         ):
             self.closed_ai_conversations[user_id] = received_at
             conversation_continuation = False
-            previous_sally_reply = ""
+            previous_ai_reply = ""
             response_expected = False
         if (
             not user_id
@@ -4428,10 +4428,10 @@ class MainWindow(QMainWindow):
                 if isinstance(memory, dict)
             ),
             conversation_continuation=conversation_continuation,
-            previous_sally_reply=previous_sally_reply,
+            previous_ai_reply=previous_ai_reply,
             response_expected=response_expected,
-            directed_at_sally=directed_at_sally,
-            reply_to_sally=reply_to_sally,
+            directed_at_ai=directed_at_ai,
+            reply_to_ai=reply_to_ai,
             third_person_reference=third_person_reference,
             addressed_to_other=addressed_to_other,
         )
@@ -4821,7 +4821,7 @@ class MainWindow(QMainWindow):
             reason = "interjection_low_confidence"
         elif (
             interjection
-            and self.viewer_messages_since_sally_reply
+            and self.viewer_messages_since_ai_reply
             < self.settings.ai_interjection_min_messages
         ):
             reason = "interjection_message_threshold"
@@ -4853,14 +4853,14 @@ class MainWindow(QMainWindow):
         self.last_auto_reply_at = monotonic()
         if interjection:
             self.last_interjection_at = self.last_auto_reply_at
-        self._remember_sally_reply(
+        self._remember_ai_reply(
             decision.reply,
             user_id=decision.user_id,
             user_name=decision.user_name,
         )
         return True
 
-    def _remember_sally_reply(
+    def _remember_ai_reply(
         self,
         reply: str,
         *,
@@ -4870,7 +4870,7 @@ class MainWindow(QMainWindow):
         clean = " ".join(reply.strip().split())[:500]
         if not clean:
             return
-        self.viewer_messages_since_sally_reply = 0
+        self.viewer_messages_since_ai_reply = 0
         bot_name = (
             self.twitch_bot_auth.token.login
             if self.twitch_bot_auth.token is not None
@@ -5036,7 +5036,7 @@ class MainWindow(QMainWindow):
         if decision is None or not decision.reply:
             return
         if self.twitch_service.send_message(decision.reply):
-            self._remember_sally_reply(
+            self._remember_ai_reply(
                 decision.reply,
                 user_id=decision.user_id,
                 user_name=decision.user_name,
@@ -5060,7 +5060,7 @@ class MainWindow(QMainWindow):
         )
         clean = " ".join(reply.strip().split())[:400]
         if accepted and clean and self.twitch_service.send_message(clean):
-            self._remember_sally_reply(clean)
+            self._remember_ai_reply(clean)
             row = self.reply_review_table.currentRow()
             self.reply_review_table.item(row, 3).setText("SENT (EDITED)")
             self.reply_review_table.item(row, 4).setText(clean)

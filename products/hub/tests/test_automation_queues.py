@@ -91,6 +91,38 @@ class AutomationQueueTests(unittest.TestCase):
             [DEFAULT_AUTOMATION_QUEUE_ID],
         )
 
+    def test_obsolete_or_unversioned_queue_data_is_rejected(self) -> None:
+        for payload in (
+            {"queues": []},
+            {"version": 0, "queues": []},
+            {"version": "1", "queues": []},
+            {"version": 2, "queues": []},
+        ):
+            with self.subTest(payload=payload):
+                self.queue_store.path.write_text(json.dumps(payload), encoding="utf-8")
+                with self.assertRaisesRegex(ValueError, "Unsupported Automation queue"):
+                    self.queue_store.load()
+
+    def test_current_queue_schema_does_not_invent_missing_ids(self) -> None:
+        self.queue_store.path.write_text(
+            json.dumps(
+                {
+                    "version": self.queue_store.VERSION,
+                    "queues": [
+                        {
+                            "queue_id": DEFAULT_AUTOMATION_QUEUE_ID,
+                            "name": DEFAULT_AUTOMATION_QUEUE_NAME,
+                        },
+                        {"name": "Missing identity"},
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with self.assertRaisesRegex(ValueError, "stable IDs"):
+            self.queue_store.load()
+
     def test_default_queue_cannot_be_deleted_or_renamed(self) -> None:
         self.assertFalse(self.queue_store.delete(DEFAULT_AUTOMATION_QUEUE_ID))
         with self.assertRaisesRegex(ValueError, "cannot be renamed"):

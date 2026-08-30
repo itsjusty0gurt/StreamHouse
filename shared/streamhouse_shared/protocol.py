@@ -11,7 +11,7 @@ from shared.streamhouse_shared.models import (
 )
 
 
-PROTOCOL_VERSION = 2
+PROTOCOL_VERSION = 3
 PROTOCOL_HEADER = "X-Streamhouse-Protocol"
 
 
@@ -32,10 +32,10 @@ def response_message_from_dict(value: dict[str, Any]) -> ResponseMessage:
         memory_summary=str(value.get("memory_summary", "")),
         memories=tuple(str(item) for item in value.get("memories", [])),
         conversation_continuation=bool(value.get("conversation_continuation", False)),
-        previous_sally_reply=str(value.get("previous_sally_reply", "")),
+        previous_ai_reply=str(value.get("previous_ai_reply", "")),
         response_expected=bool(value.get("response_expected", False)),
-        directed_at_sally=bool(value.get("directed_at_sally", False)),
-        reply_to_sally=bool(value.get("reply_to_sally", False)),
+        directed_at_ai=bool(value.get("directed_at_ai", False)),
+        reply_to_ai=bool(value.get("reply_to_ai", False)),
         third_person_reference=bool(value.get("third_person_reference", False)),
         addressed_to_other=bool(value.get("addressed_to_other", False)),
     )

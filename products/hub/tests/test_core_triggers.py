@@ -75,6 +75,37 @@ class CoreTriggerStoreTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "not supported"):
             self.store.add(routine.routine_id, "application.exploded")
 
+    def test_obsolete_or_unversioned_schema_is_rejected(self) -> None:
+        for payload in (
+            {"triggers": []},
+            {"version": 0, "triggers": []},
+            {"version": "1", "triggers": []},
+        ):
+            with self.subTest(payload=payload):
+                self.store.path.write_text(json.dumps(payload), encoding="utf-8")
+                with self.assertRaisesRegex(ValueError, "Unsupported Core trigger"):
+                    self.store.load()
+
+    def test_current_schema_does_not_invent_missing_trigger_ids(self) -> None:
+        routine = self.routines.add("Lifecycle")
+        self.store.path.write_text(
+            json.dumps(
+                {
+                    "version": self.store.VERSION,
+                    "triggers": [
+                        {
+                            "routine_id": routine.routine_id,
+                            "event_type": "application.started",
+                            "enabled": True,
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        self.assertEqual(self.store.load(), [])
+
 
 if __name__ == "__main__":
     unittest.main()

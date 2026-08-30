@@ -12,6 +12,7 @@ from products.hub.streamhouse_hub.ai_client import StreamhouseAIClient
 from shared.streamhouse_shared.protocol import (
     PROTOCOL_HEADER,
     PROTOCOL_VERSION,
+    response_message_to_dict,
 )
 from products.ai.streamhouse_ai.server import create_server
 
@@ -88,12 +89,34 @@ class StreamhouseAIProtocolTests(unittest.TestCase):
         self.thread.join(timeout=2.0)
 
     def test_status_proves_protocol_and_model(self) -> None:
-        self.assertEqual(PROTOCOL_VERSION, 2)
+        self.assertEqual(PROTOCOL_VERSION, 3)
         self.assertEqual(self.server.server_address[0], "127.0.0.1")
         status = self.client.status("http://127.0.0.1:11434", "qwen3:14b")
         self.assertTrue(status.available)
         self.assertEqual(status.protocol_version, PROTOCOL_VERSION)
         self.assertEqual(status.models, ("qwen3:14b",))
+
+    def test_response_message_wire_fields_are_product_neutral(self) -> None:
+        payload = response_message_to_dict(
+            ResponseMessage(
+                "request-1",
+                "message-1",
+                "user-1",
+                "Viewer",
+                "hello",
+                "now",
+                previous_ai_reply="Previous answer",
+                directed_at_ai=True,
+                reply_to_ai=True,
+            )
+        )
+
+        self.assertEqual(payload["previous_ai_reply"], "Previous answer")
+        self.assertTrue(payload["directed_at_ai"])
+        self.assertTrue(payload["reply_to_ai"])
+        self.assertNotIn("previous_sally_reply", payload)
+        self.assertNotIn("directed_at_sally", payload)
+        self.assertNotIn("reply_to_sally", payload)
 
     def test_reply_decision_round_trip(self) -> None:
         message = ResponseMessage(

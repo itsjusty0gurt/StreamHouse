@@ -58,6 +58,8 @@ class SoundboardRelayConfig:
 
 
 class SoundboardRelayConfigStore:
+    VERSION = 1
+
     def __init__(self, path: Path | None = None) -> None:
         self.path = path or user_data_root() / "twitch" / "soundboard-relay.json"
         self.secret_store = SecretStore(
@@ -71,6 +73,12 @@ class SoundboardRelayConfigStore:
             payload = load_json_with_backup(self.path)
             if not isinstance(payload, dict):
                 raise ValueError("Soundboard relay settings must be a JSON object.")
+            version = payload.get("version")
+            if type(version) is not int or version != self.VERSION:
+                raise ValueError(
+                    f"Unsupported soundboard relay settings version {version}; "
+                    f"expected {self.VERSION}."
+                )
             config = SoundboardRelayConfig.from_dict(payload)
         selection = load_relay_environment(
             os.environ,
@@ -98,7 +106,7 @@ class SoundboardRelayConfigStore:
         return config, self.secret_store.load()
 
     def save(self, config: SoundboardRelayConfig, key: str) -> None:
-        atomic_write_json(self.path, {"version": 1, **asdict(config)})
+        atomic_write_json(self.path, {"version": self.VERSION, **asdict(config)})
         self.secret_store.save(key.strip())
 
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -150,6 +151,44 @@ class ObsTriggerStoreTests(unittest.TestCase):
             store = ObsTriggerStore(Path(directory) / "obs.json", routines)
             with self.assertRaises(ValueError):
                 store.add(routine.routine_id, "MadeUpEvent")
+
+    def test_obsolete_or_unversioned_schema_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            routines = RoutineStore(root / "routines.json")
+            store = ObsTriggerStore(root / "triggers.json", routines)
+            for payload in (
+                {"triggers": []},
+                {"version": 0, "triggers": []},
+                {"version": "1", "triggers": []},
+            ):
+                with self.subTest(payload=payload):
+                    store.path.write_text(json.dumps(payload), encoding="utf-8")
+                    with self.assertRaisesRegex(ValueError, "Unsupported OBS trigger"):
+                        store.load()
+
+    def test_current_schema_does_not_invent_missing_trigger_ids(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            routines = RoutineStore(root / "routines.json")
+            routine = routines.add("OBS Connected")
+            store = ObsTriggerStore(root / "triggers.json", routines)
+            store.path.write_text(
+                json.dumps(
+                    {
+                        "version": store.VERSION,
+                        "triggers": [
+                            {
+                                "routine_id": routine.routine_id,
+                                "event_type": "ConnectionOpened",
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            self.assertEqual(store.load(), [])
 
     def test_mute_context_is_typed_and_canonicalizable(self) -> None:
         muted = ObsTriggerStore.context_for(
