@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from datetime import datetime, timezone
 from time import perf_counter
 
 from products.hub.automation.cancellation import (
@@ -189,12 +190,22 @@ class AutomationService:
         trigger = self._prepare_trigger(trigger)
         Events.emit("trigger_fired", trigger=trigger)
         Events.emit("trigger_fired.streamhouse.task_test", trigger=trigger)
+        started_at = datetime.now(timezone.utc)
+        started_clock = perf_counter()
         task_result = self._execute_task(routine, task, trigger)
         routine_result = RoutineExecutionResult(
             routine_id=routine.routine_id,
             succeeded=task_result.succeeded,
             task_results=(task_result,),
             detail="" if task_result.succeeded else "Selected task test failed.",
+            queue_id=routine.queue_id,
+            started_at=started_at.isoformat(),
+            finished_at=datetime.now(timezone.utc).isoformat(),
+            duration_ms=max(int((perf_counter() - started_clock) * 1000), 0),
+            trigger_service=trigger.service,
+            trigger_type=trigger.trigger_type,
+            trigger_occurred_at=trigger.occurred_at,
+            context_values=self.safe_execution_context(trigger.context),
         )
         return AutomationExecutionResult(
             event_id=trigger.event_id,
@@ -239,6 +250,8 @@ class AutomationService:
         cancellation: AutomationCancellation | None = None,
     ) -> RoutineExecutionResult:
         execution = cancellation or current_cancellation() or AutomationCancellation()
+        started_at = datetime.now(timezone.utc)
+        started_clock = perf_counter()
         routine_stack = execution.routine_stack
         if routine.routine_id in routine_stack:
             chain = " -> ".join((*routine_stack, routine.routine_id))
@@ -293,6 +306,14 @@ class AutomationService:
                     ),
                     flow_action=flow_action,
                     cancelled=cancelled,
+                    queue_id=execution.queue_id or routine.queue_id,
+                    started_at=started_at.isoformat(),
+                    finished_at=datetime.now(timezone.utc).isoformat(),
+                    duration_ms=max(int((perf_counter() - started_clock) * 1000), 0),
+                    trigger_service=trigger.service,
+                    trigger_type=trigger.trigger_type,
+                    trigger_occurred_at=trigger.occurred_at,
+                    context_values=self.safe_execution_context(trigger.context),
                 )
                 Events.emit(
                     "routine_cancelled"
@@ -307,6 +328,52 @@ class AutomationService:
                 return routine_result
             finally:
                 routine_stack.pop()
+
+    @staticmethod
+    def safe_execution_context(
+        context,
+    ) -> tuple[tuple[str, str], ...]:
+        """Capture useful routine context without retaining credentials.
+
+        Run History is intentionally an allowlist, not a dump of registry or
+        task configuration state. Values are copied at execution time so the
+        details window never substitutes a later live Variable value.
+        """
+        allowed_prefixes = (
+            "user.",
+            "chat.",
+            "command.",
+            "keyword.",
+            "event.",
+            "obs.",
+            "ads.requester.",
+            "automation.",
+        )
+        sensitive_parts = {
+            "api_key",
+            "apikey",
+            "authorization",
+            "credential",
+            "credentials",
+            "oauth",
+            "password",
+            "relay_key",
+            "secret",
+            "token",
+        }
+        captured: list[tuple[str, str]] = []
+        for raw_name, raw_value in context.items():
+            name = str(raw_name).strip().casefold()
+            if not name.startswith(allowed_prefixes):
+                continue
+            parts = set(name.replace("-", "_").split("."))
+            if parts & sensitive_parts or any(
+                part.endswith("_token") or part.endswith("_secret")
+                for part in parts
+            ):
+                continue
+            captured.append((name, str(raw_value)))
+        return tuple(sorted(captured))
 
     def _refresh_registry_values(self, trigger: TriggerEvent) -> None:
         """Refresh global/contextual snapshots before each routine task.

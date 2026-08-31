@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import replace
 from typing import MutableMapping
 
 from products.hub.automation.custom_variables import CustomVariableStore
@@ -174,16 +175,24 @@ class RunRoutineTask:
             summary += f": {task_details}"
         stop_on_failure = bool(task.config.get("stop_on_failure", True))
         if nested.succeeded:
-            return _result(task, True, summary)
+            return replace(
+                _result(task, True, summary),
+                nested_results=(nested,),
+            )
         failure_detail = summary
         if nested.detail:
             failure_detail += f". {nested.detail}"
         if stop_on_failure:
-            return _result(task, False, failure_detail)
-        return _result(
-            task,
-            True,
-            failure_detail + " Parent routine continued.",
+            result = _result(task, False, failure_detail)
+        else:
+            result = _result(
+                task,
+                True,
+                failure_detail + " Parent routine continued.",
+            )
+        return replace(
+            result,
+            nested_results=(nested,),
         )
 
 

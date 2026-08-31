@@ -446,6 +446,16 @@ are recorded as **Cancelled**, not completed or internally failed.
 `AutomationService.process_queues()` is called periodically on the Qt thread so
 Qt-based tasks remain thread-safe.
 
+Run History is a bounded, runtime-only view of executions that actually
+started; merely accepting an item into a queue does not create a completed-run
+entry. `RoutineExecutionResult` retains root timing, queue/trigger metadata,
+ordered task results, and nested routine results for the details window. It
+also captures a small allowlisted snapshot of meaningful dotted trigger
+context and `automation.*` outputs at execution time. Credential-like names
+and unrelated global registry state are excluded. The details window reads
+only that snapshot—it must never substitute current live Variable values for
+historical ones. Run History is not persisted across Hub restarts.
+
 ### Variables
 
 `CustomVariableStore` owns:

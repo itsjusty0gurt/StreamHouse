@@ -13,8 +13,13 @@ from shared.streamhouse_runtime.version import VERSION
 
 
 _SECRET_PATTERN = re.compile(
-    r"(?i)(access[_ -]?token|refresh[_ -]?token|authorization|secret)\s*[:=]\s*\S+"
+    r"(?i)(access[_ -]?token|refresh[_ -]?token|api[_ -]?key|authorization|"
+    r"password|secret)\s*[:=]\s*(?:\"[^\"]*\"|'[^']*'|(?:bearer\s+)?\S+)"
 )
+
+
+def redact_sensitive_text(value: object) -> str:
+    return _SECRET_PATTERN.sub(r"\1=[REDACTED]", str(value))
 
 
 def export_diagnostics(
@@ -28,7 +33,7 @@ def export_diagnostics(
     if latest_log.exists():
         lines = latest_log.read_text(encoding="utf-8", errors="replace").splitlines()
         warnings = [
-            _SECRET_PATTERN.sub(r"\1=[REDACTED]", line)
+            redact_sensitive_text(line)
             for line in lines[-2000:]
             if "[ WARNING ]" in line
             or "[  ERROR  ]" in line

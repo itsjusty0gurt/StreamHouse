@@ -89,6 +89,7 @@ def _result(
     detail: str,
     *,
     flow_action: str = "",
+    nested_results: tuple[RoutineExecutionResult, ...] = (),
 ) -> TaskExecutionResult:
     return TaskExecutionResult(
         task.task_id,
@@ -96,6 +97,7 @@ def _result(
         succeeded,
         detail,
         flow_action=flow_action,
+        nested_results=nested_results,
     )
 
 
@@ -280,12 +282,14 @@ class RandomChoiceTask(_RoutineLogicTask):
                     task,
                     False,
                     result.detail or f'Random choice "{display_name}" failed.',
+                    nested_results=(result,),
                 )
             return _result(
                 task,
                 True,
                 f'Random choice selected "{display_name}".',
                 flow_action="break" if result.flow_action == "break" else "",
+                nested_results=(result,),
             )
         except (TypeError, ValueError) as error:
             return _result(task, False, str(error))
@@ -305,16 +309,24 @@ class IfElseTask(_RoutineLogicTask):
             )
             branch = "true" if matched else "false"
             routine_id = str(task.config.get(f"{branch}_routine_id", "")).strip()
+            nested_results = ()
             if routine_id:
                 result = self._run(routine_id, trigger)
+                nested_results = (result,)
                 if not result.succeeded:
-                    return _result(task, False, result.detail or f"{branch.title()} branch failed.")
+                    return _result(
+                        task,
+                        False,
+                        result.detail or f"{branch.title()} branch failed.",
+                        nested_results=nested_results,
+                    )
                 if result.flow_action == "break":
                     return _result(
                         task,
                         True,
                         f"{branch.title()} branch requested a routine break.",
                         flow_action="break",
+                        nested_results=nested_results,
                     )
             if not matched and bool(task.config.get("break_if_false", False)):
                 return _result(
@@ -323,7 +335,12 @@ class IfElseTask(_RoutineLogicTask):
                     "Condition was false; routine stopped.",
                     flow_action="break",
                 )
-            return _result(task, True, f"Condition was {str(matched).lower()}; {branch} branch selected.")
+            return _result(
+                task,
+                True,
+                f"Condition was {str(matched).lower()}; {branch} branch selected.",
+                nested_results=nested_results,
+            )
         except (TypeError, ValueError, re.error) as error:
             return _result(task, False, str(error))
 
@@ -354,14 +371,26 @@ class SwitchTask(_RoutineLogicTask):
             if routine_id:
                 result = self._run(routine_id, trigger)
                 if not result.succeeded:
-                    return _result(task, False, result.detail or "Switch branch failed.")
+                    return _result(
+                        task,
+                        False,
+                        result.detail or "Switch branch failed.",
+                        nested_results=(result,),
+                    )
                 if result.flow_action == "break":
                     return _result(
                         task,
                         True,
                         f'Switch case "{matched_case}" requested a routine break.',
                         flow_action="break",
+                        nested_results=(result,),
                     )
+                return _result(
+                    task,
+                    True,
+                    f'Switch selected "{matched_case}".',
+                    nested_results=(result,),
+                )
             return _result(task, True, f'Switch selected "{matched_case}".')
         except (TypeError, ValueError) as error:
             return _result(task, False, str(error))
@@ -380,6 +409,7 @@ class WhileTask(_RoutineLogicTask):
             timeout_seconds = max(0.1, min(float(task.config.get("timeout_seconds", 10)), 3600))
             started = perf_counter()
             iterations = 0
+            nested_results: list[RoutineExecutionResult] = []
             while evaluate_condition(
                 str(task.config.get("left", "")),
                 str(task.config.get("operator", "equals")),
@@ -391,12 +421,23 @@ class WhileTask(_RoutineLogicTask):
                 if perf_counter() - started >= timeout_seconds:
                     raise ValueError(f"While loop exceeded its {timeout_seconds:g} second limit.")
                 result = self._run(routine_id, trigger)
+                nested_results.append(result)
                 iterations += 1
                 if not result.succeeded:
-                    return _result(task, False, result.detail or "While loop routine failed.")
+                    return _result(
+                        task,
+                        False,
+                        result.detail or "While loop routine failed.",
+                        nested_results=tuple(nested_results),
+                    )
                 if result.flow_action == "break":
                     break
-            return _result(task, True, f"While loop completed {iterations} iteration(s).")
+            return _result(
+                task,
+                True,
+                f"While loop completed {iterations} iteration(s).",
+                nested_results=tuple(nested_results),
+            )
         except (TypeError, ValueError, re.error) as error:
             return _result(task, False, str(error))
 

@@ -135,6 +135,7 @@ class TaskExecutionResult:
     duration_ms: int = 0
     flow_action: str = ""
     cancelled: bool = False
+    nested_results: tuple[RoutineExecutionResult, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -145,6 +146,14 @@ class RoutineExecutionResult:
     detail: str = ""
     flow_action: str = ""
     cancelled: bool = False
+    queue_id: str = ""
+    started_at: str = ""
+    finished_at: str = ""
+    duration_ms: int = 0
+    trigger_service: str = ""
+    trigger_type: str = ""
+    trigger_occurred_at: str = ""
+    context_values: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

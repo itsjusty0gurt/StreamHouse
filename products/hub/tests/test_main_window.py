@@ -15,6 +15,7 @@ from PySide6.QtGui import QContextMenuEvent
 from PySide6.QtWidgets import (
     QApplication,
     QBoxLayout,
+    QDialog,
     QHeaderView,
     QLabel,
     QMenu,
@@ -57,6 +58,7 @@ from products.hub.twitch.models import (
     TwitchReply,
 )
 from products.hub.ui.main_window import MainWindow
+from products.hub.ui.automation_page import RunHistoryDetailsDialog
 from shared.streamhouse_shared.protocol import PROTOCOL_VERSION
 from products.hub.ui.channel_snapshot_worker import ChannelSnapshotResult
 from products.hub.ui.memory_worker import MemoryExtractionResult
@@ -927,6 +929,16 @@ class MainWindowTests(unittest.TestCase):
                                 12,
                             ),
                         ),
+                        queue_id=DEFAULT_AUTOMATION_QUEUE_ID,
+                        started_at="2026-08-31T18:00:00+00:00",
+                        finished_at="2026-08-31T18:00:00.012000+00:00",
+                        duration_ms=12,
+                        trigger_service="streamhouse",
+                        trigger_type="manual",
+                        context_values=(
+                            ("command.data", "historical value"),
+                            ("event.oauth_token", "must not appear"),
+                        ),
                     ),
                 ),
             ),
@@ -936,6 +948,95 @@ class MainWindowTests(unittest.TestCase):
         self.assertIn("Short wait", page.history_details.toPlainText())
         self.assertIn("12 ms", page.history_details.toPlainText())
         self.assertIn("Waited.", page.history_details.toPlainText())
+        entry = page.history[0]
+        dialog = RunHistoryDetailsDialog(entry, page)
+        self.assertEqual(dialog.summary_labels["Routine"].text(), "History details")
+        self.assertEqual(dialog.summary_labels["Final status"].text(), "Completed")
+        self.assertEqual(dialog.task_tree.topLevelItem(0).text(0), "Short wait")
+        self.assertEqual(dialog.task_tree.topLevelItem(0).text(1), "Completed")
+        self.assertEqual(dialog.context_table.item(0, 0).text(), "command.data")
+        self.assertEqual(
+            dialog.context_table.item(0, 1).text(),
+            "historical value",
+        )
+        self.assertEqual(dialog.context_table.rowCount(), 1)
+        with patch(
+            "products.hub.ui.automation_page.RunHistoryDetailsDialog.exec",
+            return_value=QDialog.DialogCode.Rejected,
+        ) as open_details:
+            page.history_table.selectRow(0)
+            page._open_history_details(page.history_table)
+            open_details.assert_called_once_with()
+        dialog.deleteLater()
+
+    def test_run_history_details_handles_nested_failure_and_missing_optional_data(self) -> None:
+        store = self.twitch_command_trigger_store.routine_store
+        child = store.add("Nested child")
+        child_task = store.add_task(
+            child.routine_id,
+            task_type="core.wait",
+            name="Child wait",
+        )
+        parent = store.add("Parent history")
+        parent_task = store.add_task(
+            parent.routine_id,
+            task_type="core.run_routine",
+            name="Run child",
+        )
+        nested = RoutineExecutionResult(
+            routine_id=child.routine_id,
+            succeeded=False,
+            task_results=(
+                TaskExecutionResult(
+                    child_task.task_id,
+                    child_task.task_type,
+                    False,
+                    "Child failed. Authorization: Bearer private-token",
+                ),
+            ),
+            detail="Nested routine failed.",
+        )
+        page = self.window.automation_page
+        page.record_execution(
+            AutomationExecutionResult(
+                "nested-event",
+                "manual",
+                (
+                    RoutineExecutionResult(
+                        parent.routine_id,
+                        False,
+                        (
+                            TaskExecutionResult(
+                                parent_task.task_id,
+                                parent_task.task_type,
+                                False,
+                                "Parent stopped.",
+                                nested_results=(nested,),
+                            ),
+                        ),
+                        detail="Routine stopped after a failed task.",
+                    ),
+                ),
+            )
+        )
+
+        dialog = RunHistoryDetailsDialog(page.history[0], page)
+        parent_item = dialog.task_tree.topLevelItem(0)
+        self.assertEqual(parent_item.text(1), "Failed")
+        self.assertEqual(parent_item.child(0).text(0), "Nested child")
+        self.assertEqual(parent_item.child(0).child(0).text(0), "Child wait")
+        self.assertNotIn(
+            "private-token",
+            parent_item.child(0).child(0).text(3),
+        )
+        self.assertIn("[REDACTED]", parent_item.child(0).child(0).text(3))
+        self.assertEqual(dialog.summary_labels["Started"].text(), "Not recorded")
+        self.assertEqual(
+            dialog.summary_labels["Failure reason"].text(),
+            "Routine stopped after a failed task.",
+        )
+        self.assertEqual(dialog.context_table.rowCount(), 0)
+        dialog.deleteLater()
 
     def test_queue_stop_controls_and_cancelled_history_state(self) -> None:
         page = self.window.automation_page
@@ -1005,6 +1106,14 @@ class MainWindowTests(unittest.TestCase):
 
         self.assertEqual(page.history[0]["result"], "Cancelled")
         self.assertIn("Long wait — Cancelled", page.history[0]["details"])
+        dialog = RunHistoryDetailsDialog(page.history[0], page)
+        self.assertEqual(dialog.summary_labels["Final status"].text(), "Cancelled")
+        self.assertEqual(
+            dialog.summary_labels["Failure reason"].text(),
+            "Cancelled by user.",
+        )
+        self.assertEqual(dialog.task_tree.topLevelItem(0).text(1), "Cancelled")
+        dialog.deleteLater()
 
     def test_automation_page_lists_command_event_and_core_triggers_together(self) -> None:
         command = self.twitch_command_trigger_store.add("hello", "Hello")

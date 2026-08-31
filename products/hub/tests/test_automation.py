@@ -214,6 +214,61 @@ class AutomationServiceTests(unittest.TestCase):
         self.assertEqual(handler.calls[0][1].context["user"], "Tester")
         self.assertGreaterEqual(result.routine_results[0].task_results[0].duration_ms, 0)
 
+    def test_run_result_captures_timing_queue_and_safe_historical_context(self) -> None:
+        handler = ExampleTask()
+        self.registry.register(handler)
+        routine = self.store.add("History snapshot")
+        self.store.add_task(
+            routine.routine_id,
+            task_type=handler.task_type,
+            name="Capture",
+        )
+        supplied = {
+            "user.id": "viewer-1",
+            "command.data": "coffee 0.5",
+            "automation.result": "done",
+            "custom.private_note": "not historical context",
+            "event.oauth_token": "do-not-record",
+            "password": "do-not-record",
+        }
+
+        result = AutomationService(self.store, self.registry).run_routine(
+            routine.routine_id,
+            supplied,
+        ).routine_results[0]
+        snapshot = dict(result.context_values)
+        supplied["command.data"] = "changed later"
+
+        self.assertTrue(result.started_at)
+        self.assertTrue(result.finished_at)
+        self.assertGreaterEqual(result.duration_ms, 0)
+        self.assertEqual(snapshot["user.id"], "viewer-1")
+        self.assertEqual(snapshot["command.data"], "coffee 0.5")
+        self.assertEqual(snapshot["automation.result"], "done")
+        self.assertNotIn("custom.private_note", snapshot)
+        self.assertNotIn("event.oauth_token", snapshot)
+        self.assertNotIn("password", snapshot)
+
+    def test_task_test_result_captures_failure_and_trigger_summary(self) -> None:
+        handler = ExampleTask(succeeded=False)
+        self.registry.register(handler)
+        routine = self.store.add("Failed task test")
+        task = self.store.add_task(
+            routine.routine_id,
+            task_type=handler.task_type,
+            name="Fail",
+        )
+
+        result = AutomationService(self.store, self.registry).run_task(
+            routine.routine_id,
+            task.task_id,
+            {"keyword.message": "Coffee please"},
+        ).routine_results[0]
+
+        self.assertFalse(result.succeeded)
+        self.assertEqual(result.trigger_type, "task_test")
+        self.assertEqual(dict(result.context_values)["keyword.message"], "Coffee please")
+
     def test_single_task_run_does_not_execute_other_routine_tasks(self) -> None:
         handler = ExampleTask()
         self.registry.register(handler)

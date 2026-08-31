@@ -527,6 +527,10 @@ class AutomationQueueTests(unittest.TestCase):
         self.assertEqual(self.capture.users, [])
         self.assertEqual(result.task_results[0].task_type, "core.run_routine")
         self.assertTrue(result.task_results[0].cancelled)
+        nested = result.task_results[0].nested_results
+        self.assertEqual(len(nested), 1)
+        self.assertEqual(nested[0].routine_id, child.routine_id)
+        self.assertTrue(nested[0].cancelled)
 
     def test_routine_and_task_state_tasks_toggle_enabled_state(self) -> None:
         routine = self.routine_store.add("Toggle me")

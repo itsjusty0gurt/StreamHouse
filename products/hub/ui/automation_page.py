@@ -48,6 +48,7 @@ from products.hub.automation.models import (
     TaskDefinition,
     TriggerEvent,
 )
+from products.hub.core.diagnostics import redact_sensitive_text
 from products.hub.automation.core_triggers import (
     CORE_TRIGGER_TYPES,
     CoreAutomationTrigger,
@@ -2130,6 +2131,119 @@ class QueueEditorDialog(QDialog):
         }
 
 
+class RunHistoryDetailsDialog(QDialog):
+    """A read-only snapshot of one completed routine execution."""
+
+    def __init__(
+        self,
+        entry: dict[str, object],
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.setWindowTitle(f"Run Details — {entry.get('routine', 'Routine')}")
+        self.setObjectName("runHistoryDetailsDialog")
+        self.resize(820, 620)
+        layout = QVBoxLayout(self)
+
+        summary = QGroupBox("Summary")
+        summary_form = QFormLayout(summary)
+        summary_values = (
+            ("Routine", entry.get("routine", "")),
+            ("Routine ID", entry.get("routine_id", "")),
+            ("Trigger", entry.get("trigger", "")),
+            ("Trigger source", entry.get("trigger_source", "")),
+            ("Trigger ID", entry.get("trigger_id", "")),
+            ("Queue", entry.get("queue", "")),
+            ("Queue ID", entry.get("queue_id", "")),
+            ("Started", entry.get("started", "Not recorded")),
+            ("Finished", entry.get("finished", "Not recorded")),
+            ("Duration", entry.get("duration", "Not recorded")),
+            ("Final status", entry.get("result", "")),
+        )
+        self.summary_labels: dict[str, QLabel] = {}
+        for title, value in summary_values:
+            label = QLabel(str(value) or "Not recorded")
+            label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            label.setWordWrap(True)
+            summary_form.addRow(title, label)
+            self.summary_labels[title] = label
+        failure = redact_sensitive_text(entry.get("failure_reason", "")).strip()
+        if failure:
+            label = QLabel(failure)
+            label.setObjectName("runHistoryFailureReason")
+            label.setWordWrap(True)
+            label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            summary_form.addRow("Failure reason", label)
+            self.summary_labels["Failure reason"] = label
+        layout.addWidget(summary)
+
+        tabs = QTabWidget()
+        timeline_page = QWidget()
+        timeline_layout = QVBoxLayout(timeline_page)
+        self.task_tree = QTreeWidget()
+        self.task_tree.setObjectName("runHistoryTaskTimeline")
+        self.task_tree.setHeaderLabels(("Task", "Status", "Duration", "Result"))
+        self.task_tree.header().setStretchLastSection(True)
+        timeline_layout.addWidget(self.task_tree)
+        for task_entry in entry.get("task_entries", ()):
+            self._add_task_entry(None, task_entry)
+        if not self.task_tree.topLevelItemCount():
+            empty = QTreeWidgetItem(("No task results were recorded.", "", "", ""))
+            self.task_tree.addTopLevelItem(empty)
+        self.task_tree.expandAll()
+        tabs.addTab(timeline_page, "Task Timeline")
+
+        context_page = QWidget()
+        context_layout = QVBoxLayout(context_page)
+        self.context_table = QTableWidget(0, 2)
+        self.context_table.setObjectName("runHistoryContextTable")
+        self.context_table.setHorizontalHeaderLabels(("Variable", "Historical Value"))
+        self.context_table.horizontalHeader().setStretchLastSection(True)
+        self.context_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        context_values = tuple(entry.get("context_values", ()))
+        self.context_table.setRowCount(len(context_values))
+        for row, (name, value) in enumerate(context_values):
+            self.context_table.setItem(row, 0, QTableWidgetItem(str(name)))
+            self.context_table.setItem(row, 1, QTableWidgetItem(str(value)))
+        context_layout.addWidget(self.context_table)
+        if not context_values:
+            note = QLabel("No safe execution context was recorded for this run.")
+            note.setWordWrap(True)
+            context_layout.addWidget(note)
+        tabs.addTab(context_page, "Context")
+        layout.addWidget(tabs)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def _add_task_entry(self, parent, entry: dict[str, object]) -> None:
+        item = QTreeWidgetItem(
+            (
+                str(entry.get("name", "Task")),
+                str(entry.get("status", "")),
+                str(entry.get("duration", "")),
+                redact_sensitive_text(entry.get("detail", "")),
+            )
+        )
+        if parent is None:
+            self.task_tree.addTopLevelItem(item)
+        else:
+            parent.addChild(item)
+        for nested in entry.get("nested", ()):
+            nested_item = QTreeWidgetItem(
+                (
+                    str(nested.get("routine", "Nested routine")),
+                    str(nested.get("status", "")),
+                    str(nested.get("duration", "")),
+                    redact_sensitive_text(nested.get("detail", "")),
+                )
+            )
+            item.addChild(nested_item)
+            for child in nested.get("tasks", ()):
+                self._add_task_entry(nested_item, child)
+
+
 class AutomationPage(QWidget):
     KIND_ROLE = int(Qt.ItemDataRole.UserRole) + 1
 
@@ -2757,6 +2871,11 @@ class AutomationPage(QWidget):
                 self.routine_history_details,
             )
         )
+        self.routine_history_table.cellDoubleClicked.connect(
+            lambda _row, _column: self._open_history_details(
+                self.routine_history_table
+            )
+        )
         self.editor_tabs.addTab(tab, "History")
 
     def _build_task_library_tab(self) -> None:
@@ -2828,6 +2947,12 @@ class AutomationPage(QWidget):
         self.history_table.horizontalHeader().setStretchLastSection(True)
         self.history_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         layout.addWidget(self.history_table)
+        actions = QHBoxLayout()
+        actions.addStretch()
+        self.open_history_details_button = QPushButton("Open Details")
+        self.open_history_details_button.setEnabled(False)
+        actions.addWidget(self.open_history_details_button)
+        layout.addLayout(actions)
         self.history_details = QTextEdit()
         self.history_details.setReadOnly(True)
         self.history_details.setMaximumHeight(180)
@@ -2836,10 +2961,13 @@ class AutomationPage(QWidget):
         )
         layout.addWidget(self.history_details)
         self.history_table.itemSelectionChanged.connect(
-            lambda: self._show_history_details(
-                self.history_table,
-                self.history_details,
-            )
+            self._history_selection_changed
+        )
+        self.history_table.cellDoubleClicked.connect(
+            lambda _row, _column: self._open_history_details(self.history_table)
+        )
+        self.open_history_details_button.clicked.connect(
+            lambda: self._open_history_details(self.history_table)
         )
         self.tabs.addTab(page, "Run History")
 
@@ -4805,24 +4933,54 @@ class AutomationPage(QWidget):
         self, execution: AutomationExecutionResult, trigger_label: str = ""
     ) -> None:
         for result in execution.routine_results:
+            # Queue acceptance is not a completed run. The claimed queue item
+            # is recorded later with its actual execution result.
+            if result.succeeded and not result.task_results and not result.started_at:
+                continue
             routine = self.routine_store.get(result.routine_id)
             details = self._format_execution_details(routine, result)
+            queue_id = result.queue_id or (routine.queue_id if routine else "")
+            queue = self.queue_store.resolve(queue_id)
+            task_entries = self._history_task_entries(result)
+            status = (
+                "Cancelled"
+                if result.cancelled
+                else "Completed"
+                if result.succeeded
+                else "Failed"
+            )
             self.history.insert(
                 0,
                 {
-                    "when": datetime.now().astimezone().strftime("%H:%M:%S"),
+                    "when": self._history_time(result.started_at),
                     "routine_id": result.routine_id,
                     "routine": routine.name if routine else result.routine_id,
                     "trigger": trigger_label or execution.trigger_id,
-                    "result": (
-                        "Cancelled"
-                        if result.cancelled
-                        else "Completed"
-                        if result.succeeded
-                        else "Failed"
+                    "trigger_id": execution.trigger_id,
+                    "trigger_service": result.trigger_service,
+                    "trigger_type": result.trigger_type,
+                    "trigger_source": " / ".join(
+                        value
+                        for value in (result.trigger_service, result.trigger_type)
+                        if value
+                    ),
+                    "queue": queue.name,
+                    "queue_id": queue.queue_id,
+                    "started": self._history_timestamp(result.started_at),
+                    "finished": self._history_timestamp(result.finished_at),
+                    "duration": self._history_duration(result.duration_ms),
+                    "result": status,
+                    "failure_reason": (
+                        redact_sensitive_text(result.detail)
+                        if not result.succeeded
+                        else ""
                     ),
                     "tasks": str(len(result.task_results)),
                     "details": details,
+                    "task_entries": task_entries,
+                    "context_values": self.automation_service.safe_execution_context(
+                        dict(result.context_values)
+                    ),
                 },
             )
         del self.history[200:]
@@ -4830,6 +4988,79 @@ class AutomationPage(QWidget):
         self._refresh_routine_history()
         if self.history_table.rowCount():
             self.history_table.selectRow(0)
+
+    @staticmethod
+    def _history_time(value: str) -> str:
+        if not value:
+            return datetime.now().astimezone().strftime("%H:%M:%S")
+        try:
+            return datetime.fromisoformat(value).astimezone().strftime("%H:%M:%S")
+        except ValueError:
+            return value
+
+    @staticmethod
+    def _history_timestamp(value: str) -> str:
+        if not value:
+            return "Not recorded"
+        try:
+            return datetime.fromisoformat(value).astimezone().strftime(
+                "%Y-%m-%d %H:%M:%S %Z"
+            )
+        except ValueError:
+            return value
+
+    @staticmethod
+    def _history_duration(duration_ms: int) -> str:
+        if duration_ms < 1000:
+            return f"{duration_ms} ms"
+        return f"{duration_ms / 1000:g} sec"
+
+    def _history_task_entries(self, result) -> tuple[dict[str, object], ...]:
+        routine = self.routine_store.get(result.routine_id)
+        tasks_by_id = {
+            task.task_id: task
+            for task in (routine.tasks if routine is not None else ())
+        }
+        entries: list[dict[str, object]] = []
+        for task_result in result.task_results:
+            task = tasks_by_id.get(task_result.task_id)
+            entries.append(
+                {
+                    "name": task.name if task is not None else task_result.task_type,
+                    "task_type": task_result.task_type,
+                    "status": (
+                        "Cancelled"
+                        if task_result.cancelled
+                        else "Completed"
+                        if task_result.succeeded
+                        else "Failed"
+                    ),
+                    "duration": self._history_duration(task_result.duration_ms),
+                    "detail": redact_sensitive_text(task_result.detail),
+                    "nested": tuple(
+                        self._nested_history_entry(nested)
+                        for nested in task_result.nested_results
+                    ),
+                }
+            )
+        return tuple(entries)
+
+    def _nested_history_entry(self, result) -> dict[str, object]:
+        routine = self.routine_store.get(result.routine_id)
+        return {
+            "routine": routine.name if routine is not None else result.routine_id,
+            "routine_id": result.routine_id,
+            "status": (
+                "Cancelled"
+                if result.cancelled
+                else "Completed"
+                if result.succeeded
+                else "Failed"
+            ),
+            "duration": self._history_duration(result.duration_ms),
+            "detail": redact_sensitive_text(result.detail),
+            "tasks": self._history_task_entries(result),
+        }
 
     @staticmethod
     def _format_execution_details(routine, result) -> str:
@@ -4892,6 +5123,27 @@ class AutomationPage(QWidget):
         output.setPlainText(
             str(entry.get("details", "")) if isinstance(entry, dict) else ""
         )
+
+    def _history_selection_changed(self) -> None:
+        self._show_history_details(self.history_table, self.history_details)
+        self.open_history_details_button.setEnabled(
+            self._selected_history_entry(self.history_table) is not None
+        )
+
+    @staticmethod
+    def _selected_history_entry(
+        table: QTableWidget,
+    ) -> dict[str, object] | None:
+        row = table.currentRow()
+        item = table.item(row, 0) if row >= 0 else None
+        entry = item.data(Qt.ItemDataRole.UserRole) if item is not None else None
+        return entry if isinstance(entry, dict) else None
+
+    def _open_history_details(self, table: QTableWidget) -> None:
+        entry = self._selected_history_entry(table)
+        if entry is None:
+            return
+        RunHistoryDetailsDialog(entry, self).exec()
 
     @staticmethod
     def _error_title(error: Exception) -> str:
