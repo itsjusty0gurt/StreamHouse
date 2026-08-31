@@ -129,7 +129,7 @@ class VariablesPage(QWidget):
         self.table = QTableWidget(0, 8)
         self.table.setHorizontalHeaderLabels(
             (
-                "Name",
+                "Placeholders",
                 "Current Value",
                 "Source",
                 "Type",
@@ -148,9 +148,7 @@ class VariablesPage(QWidget):
         self.details_label.setWordWrap(True)
         actions = QHBoxLayout()
         self.copy_placeholder_button = QPushButton("Copy Placeholder")
-        self.copy_name_button = QPushButton("Copy Name")
         actions.addWidget(self.copy_placeholder_button)
-        actions.addWidget(self.copy_name_button)
         actions.addWidget(self.edit_button)
         actions.addWidget(self.delete_button)
         actions.addStretch()
@@ -160,7 +158,6 @@ class VariablesPage(QWidget):
         self.source_combo.currentIndexChanged.connect(self.refresh)
         self.table.itemSelectionChanged.connect(self._selection_changed)
         self.copy_placeholder_button.clicked.connect(self._copy_placeholder)
-        self.copy_name_button.clicked.connect(self._copy_name)
         self.new_button.clicked.connect(self._create)
         self.edit_button.clicked.connect(self._edit)
         self.delete_button.clicked.connect(self._delete)
@@ -207,7 +204,7 @@ class VariablesPage(QWidget):
                 continue
             row = self.table.rowCount()
             self.table.insertRow(row)
-            item = QTableWidgetItem(definition.name)
+            item = QTableWidgetItem(f"{{{definition.name}}}")
             item.setData(Qt.ItemDataRole.UserRole, entry.key)
             self.table.setItem(row, 0, item)
             self.table.setItem(
@@ -381,11 +378,6 @@ class VariablesPage(QWidget):
         name = self.selected_name()
         if name:
             QApplication.clipboard().setText(f"{{{name}}}")
-
-    def _copy_name(self) -> None:
-        name = self.selected_name()
-        if name:
-            QApplication.clipboard().setText(name)
 
     def _open_picker(self) -> None:
         VariablePickerDialog(self.registry, parent=self).exec()

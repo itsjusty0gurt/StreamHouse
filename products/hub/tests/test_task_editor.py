@@ -341,6 +341,17 @@ class TaskEditorTests(unittest.TestCase):
             {"duration": "{custom.overlay_delay}", "unit": "minutes"},
         )
         self.assertTrue(hasattr(dialog, "variable_table"))
+        self.assertEqual(dialog.variable_table.columnCount(), 2)
+        self.assertEqual(
+            [
+                dialog.variable_table.horizontalHeaderItem(column).text()
+                for column in range(dialog.variable_table.columnCount())
+            ],
+            ["Variable", "Actual Value"],
+        )
+        self.assertFalse(hasattr(dialog, "variable_field_combo"))
+        self.assertFalse(hasattr(dialog, "insert_variable_button"))
+        self.assertFalse(hasattr(dialog, "browse_variables_button"))
 
     def test_play_audio_form_exposes_volume_and_wait_controls(self) -> None:
         dialog = TaskEditorDialog("core.play_audio")
@@ -406,7 +417,7 @@ class TaskEditorTests(unittest.TestCase):
         self.assertIn("{user.display_name}", rows)
         self.assertEqual(
             dialog.variable_table.item(rows["{user.display_name}"], 1).text(),
-            "Twitch Context",
+            "TestViewer",
         )
 
     def test_if_else_form_disables_value_for_unary_comparison(self) -> None:
@@ -532,8 +543,9 @@ class TaskEditorTests(unittest.TestCase):
 
         self.assertEqual(message.toPlainText(), "Hello {user.display_name}")
         self.assertIn("Hello TestViewer", dialog.variable_preview_label.text())
+        self.assertFalse(hasattr(dialog, "variable_field_combo"))
 
-    def test_variable_reference_shows_sources_and_sample_runtime_values(self) -> None:
+    def test_variable_reference_shows_only_actual_runtime_values(self) -> None:
         dialog = TaskEditorDialog("twitch.send_chat_message", variable_registry=self.variables())
         message = dialog.field_widgets["twitch.send_chat_message"]["message"]
         message.setPlainText("Scene is {obs.current_scene} while playing {stream.category}.")
@@ -547,12 +559,21 @@ class TaskEditorTests(unittest.TestCase):
         game_row = rows["{stream.category}"]
         self.assertEqual(
             dialog.variable_table.item(muted_row, 1).text(),
-            "OBS",
+            "Gameplay",
         )
         self.assertEqual(
             dialog.variable_table.item(game_row, 1).text(),
-            "Twitch",
+            "Science & Technology",
         )
+        user_row = rows["{user.display_name}"]
+        self.assertEqual(
+            dialog.variable_table.item(user_row, 1).text(),
+            "Not currently available",
+        )
+        definition = dialog.variable_registry.definition("user.display_name")
+        self.assertIsNotNone(definition)
+        self.assertEqual(definition.source, "Twitch Context")
+        self.assertEqual(definition.data_type.value, "text")
         self.assertIn(
             "Scene is Gameplay while playing Science & Technology.",
             dialog.variable_preview_label.text(),
@@ -568,16 +589,16 @@ class TaskEditorTests(unittest.TestCase):
             dialog.variable_table.item(row, 0).text(): row
             for row in range(dialog.variable_table.rowCount())
         }
-        expected_sources = {
-            "{stream.title}": "Twitch",
-            "{user.display_name}": "Twitch Context",
-            "{obs.current_scene}": "OBS",
+        expected_values = {
+            "{stream.title}": "Building Streamhouse",
+            "{user.display_name}": "Not currently available",
+            "{obs.current_scene}": "Gameplay",
         }
-        for variable, source in expected_sources.items():
+        for variable, value in expected_values.items():
             self.assertIn(variable, rows)
             self.assertEqual(
                 dialog.variable_table.item(rows[variable], 1).text(),
-                source,
+                value,
             )
 
     def test_python_script_form_exposes_safe_execution_options(self) -> None:

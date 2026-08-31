@@ -1150,22 +1150,15 @@ class TaskEditorDialog(QDialog):
         group = QGroupBox("Available Variables")
         group_layout = QVBoxLayout(group)
         help_label = QLabel(
-            "Live trigger values are shown first. Other known variables use "
-            "sample values in the preview and are filled from Twitch, OBS, or "
-            "runtime context when the task runs."
+            "Actual values are shown when they are available in this task's "
+            "current context. Contextual Variables may be unavailable until the "
+            "routine runs."
         )
         help_label.setWordWrap(True)
         group_layout.addWidget(help_label)
-        self.variable_table = QTableWidget(0, 6)
+        self.variable_table = QTableWidget(0, 2)
         self.variable_table.setHorizontalHeaderLabels(
-            (
-                "Variable",
-                "Source",
-                "Type",
-                "Availability",
-                "Test value",
-                "Meaning",
-            )
+            ("Variable", "Actual Value")
         )
         self.variable_table.horizontalHeader().setStretchLastSection(True)
         self.variable_table.setSelectionBehavior(
@@ -1194,56 +1187,49 @@ class TaskEditorDialog(QDialog):
             metadata = registry_definitions.get(key) or output_definitions.get(key)
             if metadata is None:
                 continue
-            value = self.variable_preview_context.get(key, "")
+            value = (
+                self.variable_preview_context[key]
+                if key in self.variable_preview_context
+                else "Not currently available"
+            )
             self.variable_table.insertRow(row)
-            description = metadata.description
-            source = metadata.source
-            data_type = metadata.data_type.value.title()
-            availability = metadata.availability.value.title()
-            if not value and metadata.preview_value is not None:
-                value = str(metadata.preview_value)
             self.variable_table.setItem(row, 0, QTableWidgetItem(f"{{{key}}}"))
-            self.variable_table.setItem(row, 1, QTableWidgetItem(source))
-            self.variable_table.setItem(row, 2, QTableWidgetItem(data_type))
-            self.variable_table.setItem(row, 3, QTableWidgetItem(availability))
-            self.variable_table.setItem(row, 4, QTableWidgetItem(value))
-            self.variable_table.setItem(row, 5, QTableWidgetItem(description))
+            self.variable_table.setItem(
+                row,
+                1,
+                QTableWidgetItem(VariableRegistry.display_value(value)),
+            )
         if self.variable_table.rowCount():
             self.variable_table.selectRow(0)
         group_layout.addWidget(self.variable_table)
-        controls = QHBoxLayout()
-        controls.addWidget(QLabel("Insert into"))
-        self.variable_field_combo = QComboBox()
-        schema_by_key = {
-            str(spec["key"]): str(spec.get("label", spec["key"]))
-            for spec in self.SCHEMAS.get(self.task_type, ())
-        }
-        for key in field_keys:
-            if key in self.field_widgets.get(self.task_type, {}):
-                self.variable_field_combo.addItem(schema_by_key.get(key, key), key)
-        self.insert_variable_button = QPushButton("Insert Selected Variable")
-        self.browse_variables_button = QPushButton("{x} Browse Variables")
-        controls.addWidget(self.variable_field_combo)
-        controls.addWidget(self.insert_variable_button)
-        controls.addWidget(self.browse_variables_button)
-        controls.addStretch()
-        group_layout.addLayout(controls)
-        self.variable_preview_label = QLabel()
-        self.variable_preview_label.setWordWrap(True)
-        group_layout.addWidget(self.variable_preview_label)
-        self.insert_variable_button.clicked.connect(self._insert_selected_variable)
-        self.browse_variables_button.setEnabled(self.variable_registry is not None)
-        self.browse_variables_button.clicked.connect(self._browse_registry_variable)
-        self.variable_field_combo.currentIndexChanged.connect(
-            lambda _index: self._update_variable_preview()
-        )
-        for key in field_keys:
-            widget = self.field_widgets.get(self.task_type, {}).get(key)
-            if isinstance(widget, QLineEdit):
-                widget.textChanged.connect(lambda _text: self._update_variable_preview())
-            elif isinstance(widget, QTextEdit):
-                widget.textChanged.connect(self._update_variable_preview)
-        self._update_variable_preview()
+        message = self._message_widget()
+        if message is not None:
+            controls = QHBoxLayout()
+            self.insert_variable_button = QPushButton("Insert Selected Variable")
+            self.browse_variables_button = QPushButton("{x} Browse Variables")
+            controls.addWidget(self.insert_variable_button)
+            controls.addWidget(self.browse_variables_button)
+            controls.addStretch()
+            group_layout.addLayout(controls)
+            self.variable_preview_label = QLabel()
+            self.variable_preview_label.setWordWrap(True)
+            group_layout.addWidget(self.variable_preview_label)
+            self.insert_variable_button.clicked.connect(
+                self._insert_selected_variable
+            )
+            self.browse_variables_button.setEnabled(
+                self.variable_registry is not None
+            )
+            self.browse_variables_button.clicked.connect(
+                self._browse_registry_variable
+            )
+            if isinstance(message, QLineEdit):
+                message.textChanged.connect(
+                    lambda _text: self._update_variable_preview()
+                )
+            else:
+                message.textChanged.connect(self._update_variable_preview)
+            self._update_variable_preview()
         layout.addWidget(group)
 
     def _selected_variable(self) -> str:
@@ -1263,7 +1249,7 @@ class TaskEditorDialog(QDialog):
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         variable = dialog.selected_placeholder()
-        widget = self._template_widget()
+        widget = self._message_widget()
         if not variable or widget is None:
             return
         if isinstance(widget, QLineEdit):
@@ -1272,13 +1258,13 @@ class TaskEditorDialog(QDialog):
             widget.insertPlainText(variable)
         self._update_variable_preview()
 
-    def _template_widget(self) -> QWidget | None:
-        key = str(self.variable_field_combo.currentData() or "")
-        return self.field_widgets.get(self.task_type, {}).get(key)
+    def _message_widget(self) -> QLineEdit | QTextEdit | None:
+        widget = self.field_widgets.get(self.task_type, {}).get("message")
+        return widget if isinstance(widget, (QLineEdit, QTextEdit)) else None
 
     def _insert_selected_variable(self) -> None:
         variable = self._selected_variable()
-        widget = self._template_widget()
+        widget = self._message_widget()
         if not variable or widget is None:
             return
         if isinstance(widget, QLineEdit):
@@ -1290,7 +1276,7 @@ class TaskEditorDialog(QDialog):
     def _update_variable_preview(self) -> None:
         if not hasattr(self, "variable_preview_label"):
             return
-        widget = self._template_widget()
+        widget = self._message_widget()
         if isinstance(widget, QLineEdit):
             template = widget.text()
         elif isinstance(widget, QTextEdit):

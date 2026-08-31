@@ -378,7 +378,12 @@ def test_variables_page_and_picker_search_canonical_names() -> None:
         page = VariablesPage(registry, store)
         page.search_edit.setText("game_mode")
         assert page.table.rowCount() == 1
-        assert page.table.item(0, 0).text() == "custom.game_mode"
+        assert page.table.horizontalHeaderItem(0).text() == "Placeholders"
+        assert page.table.item(0, 0).text() == "{custom.game_mode}"
+        assert not hasattr(page, "copy_name_button")
+        page.table.selectRow(0)
+        page.copy_placeholder_button.click()
+        assert QApplication.clipboard().text() == "{custom.game_mode}"
         picker = VariablePickerDialog(registry)
         picker.search_edit.setText("game_mode")
         assert picker.selected_placeholder() == "{custom.game_mode}"
@@ -436,14 +441,14 @@ def test_variables_page_lists_contextual_definitions_without_fake_values() -> No
         }
         assert len(names) == page.table.rowCount()
         expected = {
-            "command.name",
-            "command.data",
-            "keyword.message",
-            "keyword.match",
-            "keyword.before",
-            "keyword.after",
-            "ads.requester.id",
-            "ads.requester.name",
+            "{command.name}",
+            "{command.data}",
+            "{keyword.message}",
+            "{keyword.match}",
+            "{keyword.before}",
+            "{keyword.after}",
+            "{ads.requester.id}",
+            "{ads.requester.name}",
         }
         assert expected <= names.keys()
         for name in expected:
@@ -452,7 +457,7 @@ def test_variables_page_lists_contextual_definitions_without_fake_values() -> No
             assert page.table.item(row, 4).text() == "Not currently available"
             assert page.table.item(row, 6).text() == "Routine"
 
-        command_row = names["command.data"]
+        command_row = names["{command.data}"]
         assert page.table.item(command_row, 5).text() == "Chat Command routine"
         page.table.selectRow(command_row)
         assert "Context: Chat Command routine" in page.details_label.text()
@@ -465,7 +470,7 @@ def test_variables_page_lists_contextual_definitions_without_fake_values() -> No
         assert page.table.rowCount() == 2
         page.search_edit.setText("viewer")
         assert any(
-            page.table.item(row, 0).text() == "user.id"
+            page.table.item(row, 0).text() == "{user.id}"
             for row in range(page.table.rowCount())
         )
         assert registry.aliases() == ()
@@ -499,9 +504,9 @@ def test_variables_page_refreshes_dynamic_providers() -> None:
             page.table.item(row, 0).text()
             for row in range(page.table.rowCount())
         }
-        assert "counter.deaths.stream" in names
-        assert "counter.deaths.viewer" in names
-        assert "socials.discord" in names
+        assert "{counter.deaths.stream}" in names
+        assert "{counter.deaths.viewer}" in names
+        assert "{socials.discord}" in names
 
         counter_service.delete_counter("deaths")
         information.social_links["discord"].url = ""
@@ -529,7 +534,7 @@ def test_variables_page_tracks_configured_routine_outputs() -> None:
         page = VariablesPage(VariableRegistry(), custom_store, routines)
         page.search_edit.setText("automation.random_line")
         assert page.table.rowCount() == 1
-        assert page.table.item(0, 0).text() == "automation.random_line"
+        assert page.table.item(0, 0).text() == "{automation.random_line}"
         assert page.table.item(0, 1).text() == "Not currently available"
         assert page.table.item(0, 5).text() == "Welcome routine"
         assert page.table.item(0, 6).text() == "Routine"
