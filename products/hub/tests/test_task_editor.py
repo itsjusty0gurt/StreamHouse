@@ -16,19 +16,74 @@ from products.hub.automation.variable_outputs import generated_output_definition
 from products.hub.ui.automation_page import TaskEditorDialog
 
 
+class FakeSignal:
+    def __init__(self) -> None:
+        self.callbacks: list[object] = []
+
+    def connect(self, callback) -> None:
+        self.callbacks.append(callback)
+
+    def emit(self, *args) -> None:
+        for callback in tuple(self.callbacks):
+            callback(*args)
+
+
 class FakeObsService:
-    connected = True
+    def __init__(
+        self,
+        *,
+        connected: bool = True,
+        failures: set[str] | None = None,
+        deferred: set[str] | None = None,
+    ) -> None:
+        self.connected = connected
+        self.failures = set(failures or ())
+        self.deferred = set(deferred or ())
+        self.requests: list[tuple[str, dict[str, object]]] = []
+        self.pending: list[tuple[str, object, object]] = []
+        self.state_changed = FakeSignal()
 
     def send_request(self, request_type, request_data=None, callback=None):
+        data = dict(request_data or {})
+        self.requests.append((request_type, data))
+        source_filters = {
+            "Mic/Aux": ["Compressor", "Noise Suppression"],
+            "Music": ["Limiter"],
+            "Gameplay": ["Scene Color"],
+            "Starting Soon": [],
+        }
         responses = {
             "GetSceneList": {"scenes": [{"sceneName": "Gameplay"}, {"sceneName": "Starting Soon"}]},
             "GetInputList": {"inputs": [{"inputName": "Mic/Aux"}, {"inputName": "Music"}]},
             "GetHotkeyList": {"hotkeys": ["OBSBasic.StartStreaming"]},
             "GetSceneItemList": {"sceneItems": [{"sourceName": "Camera"}, {"sourceName": "Game Capture"}]},
+            "GetSourceFilterList": {
+                "filters": [
+                    {"filterName": name}
+                    for name in source_filters.get(str(data.get("sourceName", "")), [])
+                ]
+            },
         }
+        result = SimpleNamespace(
+            succeeded=request_type not in self.failures,
+            comment="Discovery rejected" if request_type in self.failures else "",
+            response_data=responses[request_type],
+        )
         if callback:
-            callback(SimpleNamespace(succeeded=True, response_data=responses[request_type]))
+            if request_type in self.deferred:
+                self.pending.append((request_type, callback, result))
+            else:
+                callback(result)
         return "request-id"
+
+    def complete_next(self, request_type: str) -> None:
+        index = next(
+            index
+            for index, (pending_type, _callback, _result) in enumerate(self.pending)
+            if pending_type == request_type
+        )
+        _pending_type, callback, result = self.pending.pop(index)
+        callback(result)
 
 
 class TaskEditorTests(unittest.TestCase):
@@ -70,11 +125,13 @@ class TaskEditorTests(unittest.TestCase):
         self.assertNotIn("type_combo", dialog.__dict__)
 
     def test_obs_form_loads_live_editable_choices(self) -> None:
+        service = FakeObsService()
         dialog = TaskEditorDialog(
             "obs.set_scene_item_enabled",
-            obs_service=FakeObsService(),
+            obs_service=service,
         )
         dialog._refresh_obs_choices()
+        self.assertEqual([kind for kind, _data in service.requests], ["GetSceneList"])
         fields = dialog.field_widgets["obs.set_scene_item_enabled"]
         scene = fields["scene"]
         source = fields["source"]
@@ -88,6 +145,173 @@ class TaskEditorTests(unittest.TestCase):
         fields["action"].setCurrentIndex(fields["action"].findData("hide"))
         config = dialog.values()["config"]
         self.assertEqual(config, {"scene": "Gameplay", "source": "Camera", "action": "hide"})
+
+    def test_obs_discovery_is_contextual_to_the_task(self) -> None:
+        cases = {
+            "obs.set_input_mute": "GetInputList",
+            "obs.set_program_scene": "GetSceneList",
+            "obs.trigger_hotkey": "GetHotkeyList",
+        }
+        for task_type, expected_request in cases.items():
+            with self.subTest(task_type=task_type):
+                service = FakeObsService()
+                dialog = TaskEditorDialog(task_type, obs_service=service)
+                dialog._refresh_obs_choices()
+
+                self.assertEqual(
+                    [kind for kind, _data in service.requests],
+                    [expected_request],
+                )
+                self.assertEqual(dialog.obs_choices_status.text(), "")
+
+    def test_obs_task_without_discovery_hides_refresh_toolbar(self) -> None:
+        service = FakeObsService()
+        dialog = TaskEditorDialog("obs.stream_control", obs_service=service)
+
+        dialog._refresh_obs_choices()
+
+        self.assertTrue(dialog.refresh_obs_choices_button.isHidden())
+        self.assertTrue(dialog.obs_choices_status.isHidden())
+        self.assertEqual(service.requests, [])
+
+    def test_obs_loading_status_is_specific_and_clears_after_completion(self) -> None:
+        service = FakeObsService(deferred={"GetInputList"})
+        dialog = TaskEditorDialog("obs.set_input_mute", obs_service=service)
+
+        dialog._refresh_obs_choices()
+        self.assertEqual(dialog.obs_choices_status.text(), "Loading OBS inputs…")
+
+        service.complete_next("GetInputList")
+        self.assertEqual(dialog.obs_choices_status.text(), "")
+
+    def test_obs_discovery_failure_and_disconnect_resolve_loading_state(self) -> None:
+        failed = FakeObsService(failures={"GetInputList"})
+        dialog = TaskEditorDialog("obs.set_input_mute", obs_service=failed)
+        dialog._refresh_obs_choices()
+        self.assertIn("Discovery rejected", dialog.obs_choices_status.text())
+        self.assertNotIn("Loading", dialog.obs_choices_status.text())
+
+        saved = TaskDefinition(
+            "mute",
+            "obs.set_input_mute",
+            "Mute mic",
+            {"input": "Mic/Aux", "action": "mute"},
+        )
+        disconnected = TaskEditorDialog(
+            saved.task_type,
+            task=saved,
+            obs_service=FakeObsService(connected=False),
+        )
+        disconnected._refresh_obs_choices()
+        self.assertEqual(
+            disconnected.field_widgets[saved.task_type]["input"].currentText(),
+            "Mic/Aux",
+        )
+        self.assertIn("disconnected", disconnected.obs_choices_status.text())
+        self.assertNotIn("Loading", disconnected.obs_choices_status.text())
+
+        disconnected.obs_service.connected = True
+        disconnected.obs_service.state_changed.emit(object(), "Connected")
+        self.application.processEvents()
+        self.assertEqual(
+            [kind for kind, _data in disconnected.obs_service.requests],
+            ["GetInputList"],
+        )
+        self.assertEqual(disconnected.obs_choices_status.text(), "")
+
+    def test_source_filter_discovery_tracks_selected_source(self) -> None:
+        task = TaskDefinition(
+            "source-filter",
+            "obs.set_source_filter_state",
+            "Mic filter",
+            {"source": "Mic/Aux", "filter": "Compressor", "action": "enable"},
+        )
+        service = FakeObsService()
+        dialog = TaskEditorDialog(task.task_type, task=task, obs_service=service)
+
+        dialog._refresh_obs_choices()
+
+        fields = dialog.field_widgets[task.task_type]
+        source = fields["source"]
+        filters = fields["filter"]
+        self.assertEqual(
+            [kind for kind, _data in service.requests],
+            ["GetInputList", "GetSourceFilterList"],
+        )
+        self.assertGreaterEqual(filters.findText("Noise Suppression"), 0)
+
+        source.setCurrentText("Music")
+        source.activated.emit(source.currentIndex())
+        self.assertEqual(service.requests[-1][1], {"sourceName": "Music"})
+        self.assertGreaterEqual(filters.findText("Limiter"), 0)
+        self.assertEqual(filters.findText("Noise Suppression"), -1)
+
+    def test_disconnected_source_filter_keeps_saved_values_editable(self) -> None:
+        task = TaskDefinition(
+            "source-filter",
+            "obs.set_source_filter_state",
+            "Mic filter",
+            {"source": "Missing Mic", "filter": "Saved Filter", "action": "enable"},
+        )
+        dialog = TaskEditorDialog(
+            task.task_type,
+            task=task,
+            obs_service=FakeObsService(connected=False),
+        )
+        dialog._refresh_obs_choices()
+        fields = dialog.field_widgets[task.task_type]
+
+        self.assertTrue(fields["source"].isEditable())
+        self.assertTrue(fields["filter"].isEditable())
+        self.assertEqual(fields["source"].currentText(), "Missing Mic")
+        self.assertEqual(fields["filter"].currentText(), "Saved Filter")
+        self.assertIn("disconnected", dialog.obs_choices_status.text())
+
+    def test_scene_filter_discovery_handles_empty_and_failed_lists(self) -> None:
+        task = TaskDefinition(
+            "scene-filter",
+            "obs.set_scene_filter_state",
+            "Scene filter",
+            {"scene": "Gameplay", "filter": "Scene Color", "action": "enable"},
+        )
+        service = FakeObsService()
+        dialog = TaskEditorDialog(task.task_type, task=task, obs_service=service)
+        dialog._refresh_obs_choices()
+        fields = dialog.field_widgets[task.task_type]
+        scene = fields["scene"]
+        filters = fields["filter"]
+        self.assertGreaterEqual(filters.findText("Scene Color"), 0)
+        self.assertEqual(service.requests[-1][1], {"sourceName": "Gameplay"})
+
+        scene.setCurrentText("Starting Soon")
+        scene.activated.emit(scene.currentIndex())
+        self.assertEqual(filters.count(), 0)
+        self.assertEqual(filters.currentText(), "Scene Color")
+        self.assertEqual(dialog.obs_choices_status.text(), "No OBS filters found.")
+
+        service.failures.add("GetSourceFilterList")
+        dialog._refresh_obs_filters("Gameplay")
+        self.assertEqual(filters.count(), 0)
+        self.assertIn("Discovery rejected", dialog.obs_choices_status.text())
+
+    def test_late_filter_response_cannot_restore_stale_options(self) -> None:
+        service = FakeObsService(deferred={"GetSourceFilterList"})
+        dialog = TaskEditorDialog(
+            "obs.set_source_filter_state",
+            obs_service=service,
+        )
+        source = dialog.field_widgets[dialog.task_type]["source"]
+        filters = dialog.field_widgets[dialog.task_type]["filter"]
+
+        dialog._refresh_obs_choices()
+        source.setCurrentText("Mic/Aux")
+        dialog._refresh_obs_filters("Mic/Aux")
+        source.setCurrentText("Music")
+        dialog._refresh_obs_filters("Music")
+        service.complete_next("GetSourceFilterList")
+        self.assertEqual(filters.findText("Compressor"), -1)
+        service.complete_next("GetSourceFilterList")
+        self.assertGreaterEqual(filters.findText("Limiter"), 0)
 
     def test_open_target_has_file_and_folder_picker_field(self) -> None:
         dialog = TaskEditorDialog("core.open_target")

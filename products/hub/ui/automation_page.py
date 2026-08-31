@@ -1061,6 +1061,19 @@ class TaskEditorDialog(QDialog):
         "counter.decrease": ("amount",),
         "counter.set_value": ("value",),
     }
+    OBS_PRIMARY_DISCOVERY: dict[str, str] = {
+        "obs.set_program_scene": "obs_scene",
+        "obs.set_preview_scene": "obs_scene",
+        "obs.set_scene_item_enabled": "obs_scene",
+        "obs.set_input_mute": "obs_input",
+        "obs.set_input_volume": "obs_input",
+        "obs.set_source_filter_state": "obs_input",
+        "obs.set_scene_filter_state": "obs_scene",
+        "obs.set_text_source": "obs_input",
+        "obs.set_image_source": "obs_input",
+        "obs.media_control": "obs_input",
+        "obs.trigger_hotkey": "obs_hotkey",
+    }
 
     def __init__(
         self,
@@ -1085,6 +1098,8 @@ class TaskEditorDialog(QDialog):
         self.counter_service = counter_service
         self.variable_registry = variable_registry
         self._output_definitions = output_definitions
+        self._obs_request_generation = 0
+        self._obs_refresh_scheduled = False
         self.field_widgets: dict[str, dict[str, QWidget]] = {}
         self.setWindowTitle("Edit Task" if task else "Add Task")
         self.setMinimumWidth(620)
@@ -1151,7 +1166,11 @@ class TaskEditorDialog(QDialog):
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
         self._update_page()
-        QTimer.singleShot(0, self._refresh_obs_choices)
+        state_changed = getattr(self.obs_service, "state_changed", None)
+        if state_changed is not None and hasattr(state_changed, "connect"):
+            state_changed.connect(self._obs_state_changed)
+        self.finished.connect(lambda _result: self._invalidate_obs_request())
+        self._schedule_obs_refresh()
 
     def _build_variable_help(self, layout: QVBoxLayout) -> None:
         field_keys = self.TEMPLATED_FIELDS.get(self.task_type, ())
@@ -1493,16 +1512,28 @@ class TaskEditorDialog(QDialog):
             combo.setEditable(True)
             combo.setCurrentText(str(value or ""))
             combo.setProperty("obs_choice_kind", kind)
-            if kind == "obs_scene":
+            has_dependent_choices = (
+                kind == "obs_scene"
+                and self.task_type
+                in {"obs.set_scene_item_enabled", "obs.set_scene_filter_state"}
+            ) or (
+                kind == "obs_input"
+                and self.task_type == "obs.set_source_filter_state"
+            )
+            if has_dependent_choices:
                 combo.activated.connect(
-                    lambda _index, field=combo: self._refresh_obs_sources(
-                        field.currentText()
+                    lambda _index, field=combo, choice_kind=kind: (
+                        self._refresh_obs_dependent_choices(
+                            choice_kind, field.currentText()
+                        )
                     )
                 )
                 if combo.lineEdit() is not None:
                     combo.lineEdit().editingFinished.connect(
-                        lambda field=combo: self._refresh_obs_sources(
-                            field.currentText()
+                        lambda field=combo, choice_kind=kind: (
+                            self._refresh_obs_dependent_choices(
+                                choice_kind, field.currentText()
+                            )
                         )
                     )
             return combo, combo
@@ -1532,9 +1563,11 @@ class TaskEditorDialog(QDialog):
         combo.setCurrentIndex(combo.findData(definition.counter_id))
 
     def _update_page(self) -> None:
-        is_obs = self.task_type.startswith("obs.")
-        self.refresh_obs_choices_button.setVisible(is_obs)
-        self.obs_choices_status.setVisible(is_obs)
+        has_obs_discovery = self.task_type in self.OBS_PRIMARY_DISCOVERY
+        self.refresh_obs_choices_button.setVisible(has_obs_discovery)
+        self.obs_choices_status.setVisible(has_obs_discovery)
+        if not has_obs_discovery:
+            self.obs_choices_status.clear()
         if self.task_type == "core.run_python_script":
             fields = self.field_widgets[self.task_type]
             wait = fields["wait_for_completion"]
@@ -1669,74 +1702,202 @@ class TaskEditorDialog(QDialog):
             edit.setText(folder)
 
     def _refresh_obs_choices(self) -> None:
-        if self.obs_service is None or not self.obs_service.connected:
-            self.obs_choices_status.setText("Connect OBS to load its names; fields remain editable.")
+        kind = self.OBS_PRIMARY_DISCOVERY.get(self.task_type, "")
+        if not kind:
+            self.obs_choices_status.clear()
             return
-        self.obs_choices_status.setText("Loading OBS scenes, inputs, and hotkeys…")
-        pending = {"scenes", "inputs", "hotkeys"}
+        if not self._obs_discovery_available():
+            return
+        if self.task_type == "obs.set_scene_item_enabled":
+            self._populate_obs_choices("obs_source", [])
+        elif self.task_type in {
+            "obs.set_source_filter_state",
+            "obs.set_scene_filter_state",
+        }:
+            self._populate_obs_choices("obs_filter", [])
 
-        def completed(kind: str, values: list[str]) -> None:
-            self._populate_obs_choices(kind, values)
-            pending.discard(kind)
-            if not pending:
-                self.obs_choices_status.setText("OBS lists loaded.")
-
-        def scenes_completed(values: list[str]) -> None:
-            completed("obs_scene", values)
-            selected_scenes = {
-                widget.currentText().strip()
-                for fields in self.field_widgets.values()
-                for widget in fields.values()
-                if isinstance(widget, QComboBox)
-                and widget.property("obs_choice_kind") == "obs_scene"
-                and widget.currentText().strip()
-            }
-            for scene in selected_scenes:
-                self._refresh_obs_sources(scene)
-
-        try:
-            self.obs_service.send_request(
+        if kind == "obs_scene":
+            self._request_obs_choices(
                 "GetSceneList",
-                callback=lambda result: scenes_completed(
-                    [str(item.get("sceneName", "")) for item in result.response_data.get("scenes", []) if isinstance(item, dict)],
-                ),
+                kind="obs_scene",
+                collection_key="scenes",
+                value_key="sceneName",
+                loading_text="Loading OBS scenes…",
+                on_loaded=self._refresh_selected_obs_dependency,
             )
-            self.obs_service.send_request(
+        elif kind == "obs_input":
+            self._request_obs_choices(
                 "GetInputList",
-                callback=lambda result: completed(
-                    "obs_input",
-                    [str(item.get("inputName", "")) for item in result.response_data.get("inputs", []) if isinstance(item, dict)],
-                ),
+                kind="obs_input",
+                collection_key="inputs",
+                value_key="inputName",
+                loading_text="Loading OBS inputs…",
+                on_loaded=self._refresh_selected_obs_dependency,
             )
-            self.obs_service.send_request(
+        elif kind == "obs_hotkey":
+            self._request_obs_choices(
                 "GetHotkeyList",
-                callback=lambda result: completed(
-                    "obs_hotkey",
-                    [str(value) for value in result.response_data.get("hotkeys", [])],
-                ),
+                kind="obs_hotkey",
+                collection_key="hotkeys",
+                loading_text="Loading OBS hotkeys…",
             )
-        except ValueError as error:
-            self.obs_choices_status.setText(str(error))
 
     def _refresh_obs_sources(self, scene: str) -> None:
         clean_scene = scene.strip()
-        if not clean_scene or self.obs_service is None or not self.obs_service.connected:
+        self._populate_obs_choices("obs_source", [])
+        if not clean_scene:
+            self._invalidate_obs_request()
+            self.obs_choices_status.setText("Select an OBS scene to load sources.")
             return
+        if not self._obs_discovery_available():
+            return
+        self._request_obs_choices(
+            "GetSceneItemList",
+            {"sceneName": clean_scene},
+            kind="obs_source",
+            collection_key="sceneItems",
+            value_key="sourceName",
+            loading_text="Loading OBS sources…",
+            empty_text="No OBS sources found.",
+        )
+
+    def _refresh_obs_filters(self, source_name: str) -> None:
+        clean_source = source_name.strip()
+        self._populate_obs_choices("obs_filter", [])
+        if not clean_source:
+            self._invalidate_obs_request()
+            owner = "scene" if self.task_type == "obs.set_scene_filter_state" else "source"
+            self.obs_choices_status.setText(
+                f"Select an OBS {owner} to load filters."
+            )
+            return
+        if not self._obs_discovery_available():
+            return
+        self._request_obs_choices(
+            "GetSourceFilterList",
+            {"sourceName": clean_source},
+            kind="obs_filter",
+            collection_key="filters",
+            value_key="filterName",
+            loading_text="Loading OBS filters…",
+            empty_text="No OBS filters found.",
+        )
+
+    def _refresh_obs_dependent_choices(self, kind: str, value: str) -> None:
+        if self.task_type == "obs.set_scene_item_enabled" and kind == "obs_scene":
+            self._refresh_obs_sources(value)
+        elif self.task_type == "obs.set_scene_filter_state" and kind == "obs_scene":
+            self._refresh_obs_filters(value)
+        elif self.task_type == "obs.set_source_filter_state" and kind == "obs_input":
+            self._refresh_obs_filters(value)
+
+    def _refresh_selected_obs_dependency(self, _values: list[str]) -> None:
+        fields = self.field_widgets.get(self.task_type, {})
+        if self.task_type == "obs.set_scene_item_enabled":
+            parent = fields.get("scene")
+            if isinstance(parent, QComboBox):
+                self._refresh_obs_sources(parent.currentText())
+        elif self.task_type == "obs.set_scene_filter_state":
+            parent = fields.get("scene")
+            if isinstance(parent, QComboBox):
+                self._refresh_obs_filters(parent.currentText())
+        elif self.task_type == "obs.set_source_filter_state":
+            parent = fields.get("source")
+            if isinstance(parent, QComboBox):
+                self._refresh_obs_filters(parent.currentText())
+
+    def _request_obs_choices(
+        self,
+        request_type: str,
+        request_data: dict[str, object] | None = None,
+        *,
+        kind: str,
+        collection_key: str,
+        loading_text: str,
+        value_key: str = "",
+        empty_text: str = "",
+        on_loaded: Callable[[list[str]], None] | None = None,
+    ) -> None:
+        service = self.obs_service
+        if service is None or not service.connected:
+            self._obs_discovery_available()
+            return
+        generation = self._invalidate_obs_request()
+        self.obs_choices_status.setText(loading_text)
+
+        def completed(result: object) -> None:
+            if generation != self._obs_request_generation:
+                return
+            if not bool(getattr(result, "succeeded", False)):
+                comment = str(getattr(result, "comment", "")).strip()
+                self.obs_choices_status.setText(
+                    f"OBS discovery failed: {comment or request_type}."
+                )
+                return
+            response_data = getattr(result, "response_data", {})
+            raw_values = (
+                response_data.get(collection_key, [])
+                if isinstance(response_data, dict)
+                else []
+            )
+            values: list[str] = []
+            if isinstance(raw_values, list):
+                for item in raw_values:
+                    if value_key and isinstance(item, dict):
+                        values.append(str(item.get(value_key, "")))
+                    elif not value_key:
+                        values.append(str(item))
+            clean_values = sorted(
+                {value.strip() for value in values if value.strip()},
+                key=str.casefold,
+            )
+            self._populate_obs_choices(kind, clean_values)
+            self.obs_choices_status.setText(
+                empty_text if empty_text and not clean_values else ""
+            )
+            if on_loaded is not None:
+                on_loaded(clean_values)
+
         try:
-            self.obs_service.send_request(
-                "GetSceneItemList",
-                {"sceneName": clean_scene},
-                callback=lambda result: self._populate_obs_choices(
-                    "obs_source",
-                    [
-                        str(item.get("sourceName", ""))
-                        for item in result.response_data.get("sceneItems", [])
-                        if isinstance(item, dict)
-                    ],
-                ),
+            service.send_request(
+                request_type,
+                request_data,
+                callback=completed,
             )
         except ValueError as error:
-            self.obs_choices_status.setText(str(error))
+            if generation == self._obs_request_generation:
+                self.obs_choices_status.setText(str(error))
+
+    def _obs_discovery_available(self) -> bool:
+        if self.obs_service is not None and self.obs_service.connected:
+            return True
+        self._invalidate_obs_request()
+        self.obs_choices_status.setText(
+            "OBS is disconnected; saved values remain editable."
+        )
+        return False
+
+    def _obs_state_changed(self, _state: object, _detail: str) -> None:
+        if self.task_type not in self.OBS_PRIMARY_DISCOVERY:
+            return
+        if self.obs_service is not None and self.obs_service.connected:
+            self._schedule_obs_refresh()
+            return
+        self._obs_discovery_available()
+
+    def _schedule_obs_refresh(self) -> None:
+        if self._obs_refresh_scheduled:
+            return
+        self._obs_refresh_scheduled = True
+        QTimer.singleShot(0, self._run_scheduled_obs_refresh)
+
+    def _run_scheduled_obs_refresh(self) -> None:
+        self._obs_refresh_scheduled = False
+        self._refresh_obs_choices()
+
+    def _invalidate_obs_request(self) -> int:
+        self._obs_request_generation += 1
+        return self._obs_request_generation
 
     def _populate_obs_choices(self, kind: str, values: list[str]) -> None:
         clean_values = sorted({value for value in values if value}, key=str.casefold)
