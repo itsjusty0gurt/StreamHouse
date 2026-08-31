@@ -137,8 +137,20 @@ class AutomationServiceTests(unittest.TestCase):
             expected,
         )
         self.assertEqual(registry.missing_descriptions(), ())
+        self.assertEqual(registry.missing_help(), ())
         self.assertEqual(len(registry.visible_metadata()), 68)
         self.assertIsNone(registry.metadata("twitch.get_channel_information"))
+
+        wait = registry.metadata("core.wait")
+        assert wait is not None
+        self.assertIn("without freezing", wait.help_text)
+        self.assertEqual(wait.variable_inputs, ("duration",))
+        self.assertIn("How long", wait.input_description("duration"))
+
+        obs = registry.metadata("obs.set_scene_item_enabled")
+        assert obs is not None
+        self.assertIn("OBS connection", obs.requirements[0])
+        self.assertTrue(obs.examples)
 
     def test_registry_reports_missing_description_without_rejecting_metadata(self) -> None:
         registry = TaskRegistry(
@@ -154,6 +166,10 @@ class AutomationServiceTests(unittest.TestCase):
 
         self.assertEqual(
             registry.missing_descriptions(),
+            ("test.missing_description",),
+        )
+        self.assertEqual(
+            registry.missing_help(),
             ("test.missing_description",),
         )
 

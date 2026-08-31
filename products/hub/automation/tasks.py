@@ -18,6 +18,14 @@ class TaskHandler(Protocol):
 
 
 @dataclass(frozen=True, slots=True)
+class TaskInputHelp:
+    """Plain-language guidance for one task configuration field."""
+
+    key: str
+    description: str
+
+
+@dataclass(frozen=True, slots=True)
 class TaskMetadata:
     """User-facing reference metadata for one registered task type."""
 
@@ -26,6 +34,33 @@ class TaskMetadata:
     short_description: str
     category: str
     visible: bool = True
+    help_text: str = ""
+    input_help: tuple[TaskInputHelp, ...] = ()
+    variable_inputs: tuple[str, ...] = ()
+    requirements: tuple[str, ...] = ()
+    notes: tuple[str, ...] = ()
+    examples: tuple[str, ...] = ()
+
+    def input_description(self, key: str) -> str:
+        return next(
+            (item.description for item in self.input_help if item.key == key),
+            "",
+        )
+
+    def search_text(self) -> str:
+        return " ".join(
+            (
+                self.label,
+                self.short_description,
+                self.category,
+                self.task_type,
+                self.help_text,
+                *(item.description for item in self.input_help),
+                *self.requirements,
+                *self.notes,
+                *self.examples,
+            )
+        )
 
 
 class TaskRegistry:
@@ -82,6 +117,13 @@ class TaskRegistry:
             definition.task_type
             for definition in self.visible_metadata()
             if not definition.short_description.strip()
+        )
+
+    def missing_help(self) -> tuple[str, ...]:
+        return tuple(
+            definition.task_type
+            for definition in self.visible_metadata()
+            if not definition.help_text.strip()
         )
 
     def execute(

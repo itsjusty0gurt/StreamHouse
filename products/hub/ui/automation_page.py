@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from datetime import datetime
+from html import escape
 import json
 from pathlib import Path
 import re
@@ -34,6 +35,7 @@ from PySide6.QtWidgets import (
     QTableWidget,
     QTableWidgetItem,
     QTextEdit,
+    QTextBrowser,
     QTreeWidget,
     QTreeWidgetItem,
     QVBoxLayout,
@@ -54,6 +56,7 @@ from products.hub.automation.core_triggers import (
 from products.hub.automation.routines import RoutineStore
 from products.hub.automation.service import AutomationService
 from products.hub.automation.tasks import TaskRegistry
+from products.hub.automation.task_catalog import VARIABLE_INPUT_FIELDS
 from products.hub.automation.variable_registry import VariableRegistry
 from products.hub.automation.core_tasks import CORE_TASK_LABELS, PlayAudioTask
 from products.hub.automation.variable_tasks import (
@@ -1028,39 +1031,7 @@ class TaskEditorDialog(QDialog):
             {"key": "request_data", "label": "Request data", "kind": "json", "default": {}},
         ),
     }
-    TEMPLATED_FIELDS: dict[str, tuple[str, ...]] = {
-        "core.wait": ("duration",),
-        "twitch.send_chat_message": ("message",),
-        "twitch.send_pinned_message": ("message",),
-        "twitch.update_stream_title": ("title",),
-        "twitch.update_stream_category": ("category",),
-        "twitch.moderate_user": ("user", "reason", "message_id"),
-        "twitch.update_redemption": ("reward_id", "redemption_id"),
-        "twitch.resolve_user": ("reference",),
-        "twitch.get_follow_relationship": ("user_id",),
-        "core.create_global_variable": ("value",),
-        "core.create_session_variable": ("value",),
-        "core.create_routine_variable": ("value",),
-        "core.format_duration": ("start", "end", "seconds"),
-        "core.select_text": ("selector", "cases", "default"),
-        "core.logic_get_input": ("title", "prompt", "default"),
-        "core.logic_if_else": ("left", "right"),
-        "core.logic_switch": ("input",),
-        "core.logic_while": ("left", "right"),
-        "core.run_python_script": ("script", "arguments", "working_directory"),
-        "core.show_notification": ("title", "message"),
-        "core.file_read": ("path",),
-        "core.file_random_line": ("path",),
-        "core.file_specific_line": ("path", "line_number"),
-        "core.file_write": ("path", "text"),
-        "core.path_exists": ("path",),
-        "core.file_count_lines": ("path",),
-        "obs.set_text_source": ("text",),
-        "obs.set_image_source": ("file",),
-        "counter.increase": ("amount",),
-        "counter.decrease": ("amount",),
-        "counter.set_value": ("value",),
-    }
+    TEMPLATED_FIELDS = VARIABLE_INPUT_FIELDS
     OBS_PRIMARY_DISCOVERY: dict[str, str] = {
         "obs.set_program_scene": "obs_scene",
         "obs.set_preview_scene": "obs_scene",
@@ -2818,7 +2789,9 @@ class AutomationPage(QWidget):
         layout.addWidget(self.task_library_search_edit)
         self.task_library_tree = QTreeWidget()
         self.task_library_tree.setObjectName("taskLibraryTree")
-        self.task_library_tree.setHeaderLabels(("Service / task", "Status"))
+        self.task_library_tree.setHeaderLabels(("Task", "Description", "Status"))
+        self.task_library_tree.setColumnWidth(0, 220)
+        self.task_library_tree.setColumnWidth(1, 520)
         layout.addWidget(self.task_library_tree, 1)
 
         reference = QGroupBox("Task Reference")
@@ -2838,9 +2811,14 @@ class AutomationPage(QWidget):
         self.task_library_facts_label = QLabel()
         self.task_library_facts_label.setObjectName("taskLibraryReferenceFacts")
         self.task_library_facts_label.setWordWrap(True)
+        self.task_library_help_browser = QTextBrowser()
+        self.task_library_help_browser.setObjectName("taskLibraryReferenceHelp")
+        self.task_library_help_browser.setOpenExternalLinks(False)
+        self.task_library_help_browser.setMaximumHeight(320)
         reference_layout.addWidget(self.task_library_title_label)
         reference_layout.addWidget(self.task_library_description_label)
         reference_layout.addWidget(self.task_library_facts_label)
+        reference_layout.addWidget(self.task_library_help_browser)
         layout.addWidget(reference)
         self.tabs.addTab(page, "Task Library")
         self.task_library_search_edit.textChanged.connect(
@@ -4458,14 +4436,22 @@ class AutomationPage(QWidget):
         categories: dict[str, QTreeWidgetItem] = {}
         selected_item = None
         for metadata in self.task_registry.visible_metadata():
-            searchable = " ".join(
-                (
-                    metadata.label,
-                    metadata.short_description,
-                    metadata.category,
-                    metadata.task_type,
+            schema = TaskEditorDialog.SCHEMAS.get(metadata.task_type, ())
+            schema_text = " ".join(
+                " ".join(
+                    (
+                        str(spec.get("label", "")),
+                        str(spec.get("text", "")),
+                        str(spec.get("placeholder", "")),
+                        " ".join(
+                            str(label)
+                            for label, _value in spec.get("choices", ())
+                        ),
+                    )
                 )
-            ).casefold()
+                for spec in schema
+            )
+            searchable = f"{metadata.search_text()} {schema_text}".casefold()
             if query and query not in searchable:
                 continue
             parent = None
@@ -4474,7 +4460,7 @@ class AutomationPage(QWidget):
                 path = f"{path}/{category.strip()}" if path else category.strip()
                 category_item = categories.get(path)
                 if category_item is None:
-                    category_item = QTreeWidgetItem((category.strip(), ""))
+                    category_item = QTreeWidgetItem((category.strip(), "", ""))
                     category_item.setExpanded(True)
                     if parent is None:
                         self.task_library_tree.addTopLevelItem(category_item)
@@ -4485,6 +4471,7 @@ class AutomationPage(QWidget):
             task_item = QTreeWidgetItem(
                 (
                     metadata.label,
+                    metadata.short_description,
                     "Available"
                     if metadata.task_type in available
                     else "Unavailable",
@@ -4504,7 +4491,7 @@ class AutomationPage(QWidget):
         if not query:
             for service in ("Voice", "Timer", "AI", "Vision"):
                 self.task_library_tree.addTopLevelItem(
-                    QTreeWidgetItem((service, "Future provider"))
+                    QTreeWidgetItem((service, "", "Future provider"))
                 )
         self.task_library_tree.blockSignals(False)
         if selected_item is not None:
@@ -4526,6 +4513,7 @@ class AutomationPage(QWidget):
                 "Select a task to see what it does before adding it to a routine."
             )
             self.task_library_facts_label.clear()
+            self.task_library_help_browser.clear()
             return
         self.task_library_title_label.setText(metadata.label)
         self.task_library_description_label.setText(
@@ -4535,6 +4523,137 @@ class AutomationPage(QWidget):
         if has_temporary_outputs(metadata.task_type):
             facts.append("Output: routine-scoped automation.* for later tasks")
         self.task_library_facts_label.setText("  •  ".join(facts))
+        self.task_library_help_browser.setHtml(
+            self._task_library_help_html(metadata)
+        )
+
+    @staticmethod
+    def _task_library_field_format(spec: dict[str, object]) -> str:
+        kind = str(spec.get("kind", "text"))
+        formats = {
+            "bool": "On/off option",
+            "choice": "Choice",
+            "counter": "Counter selection",
+            "file": "Local file",
+            "folder": "Local folder",
+            "json": "JSON object",
+            "multiline": "Text",
+            "number": "Number",
+            "obs_filter": "OBS filter",
+            "obs_hotkey": "OBS hotkey",
+            "obs_input": "OBS input",
+            "obs_scene": "OBS scene",
+            "obs_source": "OBS source",
+            "python_file": "Python file",
+            "queue": "Queue selection",
+            "random_choices": "Weighted choices",
+            "routine": "Routine selection",
+            "routine_task": "Task selection",
+            "switch_cases": "Value-to-routine cases",
+            "target": "File, folder, or URL",
+            "text": "Text",
+        }
+        details = [formats.get(kind, kind.replace("_", " ").title())]
+        if spec.get("required"):
+            details.append("Required")
+        if kind == "choice":
+            choices = [str(label) for label, _value in spec.get("choices", ())]
+            if choices:
+                details.append("Options: " + ", ".join(choices))
+        if kind == "number":
+            minimum = spec.get("minimum")
+            maximum = spec.get("maximum")
+            if minimum is not None and maximum is not None:
+                details.append(f"Range: {minimum:g} to {maximum:g}")
+        return ". ".join(details) + "."
+
+    def _task_library_help_html(self, metadata) -> str:
+        schema = TaskEditorDialog.SCHEMAS.get(metadata.task_type, ())
+        sections = [
+            "<h3>What it does</h3>",
+            f"<p>{escape(metadata.help_text.strip() or metadata.short_description.strip())}</p>",
+        ]
+        if schema:
+            inputs: list[str] = []
+            for spec in schema:
+                key = str(spec.get("key", ""))
+                label = str(spec.get("label") or spec.get("text") or key)
+                explanation = metadata.input_description(key)
+                if not explanation:
+                    explanation = self._task_library_field_format(spec)
+                else:
+                    explanation = (
+                        explanation.rstrip(".")
+                        + ". "
+                        + self._task_library_field_format(spec)
+                    )
+                if key in metadata.variable_inputs:
+                    explanation += " Accepts canonical Variables."
+                inputs.append(
+                    f"<li><b>{escape(label)}</b><br>{escape(explanation)}</li>"
+                )
+            sections.extend(("<h3>Inputs</h3>", "<ul>" + "".join(inputs) + "</ul>"))
+        if metadata.variable_inputs:
+            labels = {
+                str(spec.get("key", "")): str(
+                    spec.get("label") or spec.get("text") or spec.get("key", "")
+                )
+                for spec in schema
+            }
+            fields = ", ".join(
+                escape(labels.get(key, key)) for key in metadata.variable_inputs
+            )
+            sections.extend(
+                (
+                    "<h3>Variables</h3>",
+                    f"<p>{fields} may use canonical placeholders such as "
+                    "<code>{user.display_name}</code> or "
+                    "<code>{custom.example}</code> when their context is available.</p>",
+                )
+            )
+        default_config = {
+            str(spec.get("key", "")): spec.get("default") for spec in schema
+        }
+        outputs = generated_output_definitions(
+            metadata.task_type,
+            default_config,
+            source=metadata.label,
+        )
+        if outputs:
+            output_rows = "".join(
+                f"<li><code>{escape(definition.placeholder)}</code> — "
+                f"{escape(definition.description)}</li>"
+                for definition in outputs
+            )
+            sections.extend(("<h3>Outputs</h3>", f"<ul>{output_rows}</ul>"))
+        elif output_config_key(metadata.task_type):
+            namespace = (
+                "custom.*"
+                if metadata.task_type
+                in {"core.create_global_variable", "core.create_session_variable"}
+                else "automation.*"
+            )
+            sections.extend(
+                (
+                    "<h3>Outputs</h3>",
+                    f"<p>Creates the configured <code>{namespace}</code> Variable.</p>",
+                )
+            )
+        for heading, values in (
+            ("Requirements", metadata.requirements),
+            ("Notes / Limitations", metadata.notes),
+            ("Example", metadata.examples),
+        ):
+            if values:
+                sections.extend(
+                    (
+                        f"<h3>{heading}</h3>",
+                        "<ul>"
+                        + "".join(f"<li>{escape(value)}</li>" for value in values)
+                        + "</ul>",
+                    )
+                )
+        return "".join(sections)
 
     def _output_definitions_before(
         self,

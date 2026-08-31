@@ -1247,6 +1247,7 @@ class MainWindowTests(unittest.TestCase):
                 expected_text,
                 page.task_library_description_label.text(),
             )
+            self.assertTrue(item.text(1))
         self.assertTrue(page.task_library_description_label.wordWrap())
         self.assertIn(
             "routine-scoped automation.*",
@@ -1261,6 +1262,64 @@ class MainWindowTests(unittest.TestCase):
         self.application.processEvents()
         self.assertIsNotNone(task_item("twitch.send_chat_message"))
         self.assertIsNone(task_item("counter.increase"))
+
+        page.task_library_search_edit.setText("deterministic")
+        self.application.processEvents()
+        self.assertIsNotNone(task_item("obs.set_scene_item_enabled"))
+
+    def test_task_library_renders_structured_metadata_and_real_outputs(self) -> None:
+        page = self.window.automation_page
+
+        def task_item(task_type: str):
+            pending = [
+                page.task_library_tree.topLevelItem(index)
+                for index in range(page.task_library_tree.topLevelItemCount())
+            ]
+            while pending:
+                item = pending.pop()
+                pending.extend(
+                    item.child(index) for index in range(item.childCount())
+                )
+                if item.data(0, Qt.ItemDataRole.UserRole) == task_type:
+                    return item
+            return None
+
+        page.task_library_search_edit.clear()
+        page.task_library_tree.setCurrentItem(task_item("core.wait"))
+        self.application.processEvents()
+        wait_help = page.task_library_help_browser.toPlainText()
+        for heading in ("What it does", "Inputs", "Variables", "Notes / Limitations", "Example"):
+            self.assertIn(heading, wait_help)
+        self.assertIn("Duration", wait_help)
+        self.assertIn("Accepts canonical Variables", wait_help)
+        self.assertNotIn("Outputs", wait_help)
+        self.assertNotIn("None", wait_help)
+
+        page.task_library_tree.setCurrentItem(
+            task_item("twitch.get_stream_information")
+        )
+        self.application.processEvents()
+        output_help = page.task_library_help_browser.toPlainText()
+        self.assertIn("Outputs", output_help)
+        self.assertIn("{automation.stream_title}", output_help)
+        self.assertNotIn("{automation.random_line}", output_help)
+        self.assertIn("Requires Twitch broadcaster authorization", output_help)
+
+        page.task_library_tree.setCurrentItem(task_item("obs.raw_request"))
+        self.application.processEvents()
+        raw_help = page.task_library_help_browser.toPlainText()
+        self.assertIn("Request type", raw_help)
+        self.assertIn("JSON object", raw_help)
+        self.assertIn("active OBS connection", raw_help)
+
+        for metadata in self.window.task_registry.visible_metadata():
+            item = task_item(metadata.task_type)
+            self.assertIsNotNone(item, metadata.task_type)
+            page.task_library_tree.setCurrentItem(item)
+            self.application.processEvents()
+            rendered = page.task_library_help_browser.toPlainText()
+            self.assertIn("What it does", rendered, metadata.task_type)
+            self.assertNotIn("None", rendered, metadata.task_type)
 
     def test_task_library_missing_description_has_safe_fallback(self) -> None:
         page = self.window.automation_page
@@ -1286,6 +1345,7 @@ class MainWindowTests(unittest.TestCase):
             page.task_library_description_label.text(),
             "No description is available yet.",
         )
+        self.assertNotIn("None", page.task_library_help_browser.toPlainText())
 
     def test_custom_twitch_command_sends_as_bot_and_skips_ai_reasoning(self) -> None:
         command = self.twitch_command_trigger_store.add(

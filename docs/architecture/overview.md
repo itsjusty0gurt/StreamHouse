@@ -392,13 +392,15 @@ sequenceDiagram
 A routine with no enabled/executed tasks is not considered successful.
 
 `TaskRegistry` owns typed `TaskMetadata` for every visible built-in task as well
-as its executable handler. Metadata supplies the user-facing label, concise
-description, and category; the Automation **Task Library** renders and searches
-that registry metadata as a compact built-in reference. Output-capable tasks
-derive their routine-scoped `automation.*` indicator from the existing typed
-output-definition architecture rather than a second output catalog. Internal or
-test-only handlers may omit visible metadata, while registry coverage tests
-prevent user-facing built-ins from shipping without descriptions.
+as its executable handler. Metadata supplies the user-facing label, concise and
+detailed help, input guidance, Variable-capable fields, requirements, notes,
+examples, and category. The Automation **Task Library** renders and searches
+that metadata as a compact built-in reference. Input formats, choices, and
+bounds come from the existing task-editor schema. Output-capable tasks derive
+their exact placeholders from the typed output-definition architecture rather
+than a second output catalog. Internal or test-only handlers may omit visible
+metadata, while registry coverage tests prevent user-facing built-ins from
+shipping without descriptions and help text.
 
 Counter tasks use this same pipeline. A command, EventSub subscription, OBS
 event, Core event, or manual routine execution can invoke any routine that
