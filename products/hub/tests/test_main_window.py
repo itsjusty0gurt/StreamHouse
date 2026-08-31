@@ -32,7 +32,6 @@ from products.hub.core.settings import AppSettings
 from products.hub.twitch.auth import TwitchAuthState
 from products.hub.twitch.chatter_history import ChatterHistoryStore, ChatterRecord
 from products.hub.automation.routines import RoutineStore
-from products.hub.automation.tasks import TaskMetadata
 from products.hub.automation.models import (
     DEFAULT_AUTOMATION_QUEUE_ID,
     AutomationExecutionResult,
@@ -1320,32 +1319,6 @@ class MainWindowTests(unittest.TestCase):
             rendered = page.task_library_help_browser.toPlainText()
             self.assertIn("What it does", rendered, metadata.task_type)
             self.assertNotIn("None", rendered, metadata.task_type)
-
-    def test_task_library_missing_description_has_safe_fallback(self) -> None:
-        page = self.window.automation_page
-        self.window.task_registry.register_metadata(
-            TaskMetadata(
-                task_type="test.missing_description",
-                label="Missing description",
-                short_description="",
-                category="Tests",
-            )
-        )
-        page._refresh_task_library()
-        tests_category = next(
-            page.task_library_tree.topLevelItem(index)
-            for index in range(page.task_library_tree.topLevelItemCount())
-            if page.task_library_tree.topLevelItem(index).text(0) == "Tests"
-        )
-        item = tests_category.child(0)
-
-        page.task_library_tree.setCurrentItem(item)
-
-        self.assertEqual(
-            page.task_library_description_label.text(),
-            "No description is available yet.",
-        )
-        self.assertNotIn("None", page.task_library_help_browser.toPlainText())
 
     def test_custom_twitch_command_sends_as_bot_and_skips_ai_reasoning(self) -> None:
         command = self.twitch_command_trigger_store.add(

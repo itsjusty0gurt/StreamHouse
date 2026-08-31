@@ -85,6 +85,14 @@ class TaskRegistry:
             raise ValueError("Task metadata requires a user-facing label.")
         if not metadata.category.strip():
             raise ValueError("Task metadata requires a category.")
+        if metadata.visible and not metadata.short_description.strip():
+            raise ValueError(
+                f"Visible task metadata for {clean_type} requires a short description."
+            )
+        if metadata.visible and not metadata.help_text.strip():
+            raise ValueError(
+                f"Visible task metadata for {clean_type} requires detailed help."
+            )
         self._metadata[clean_type] = metadata
 
     def register(self, handler: TaskHandler) -> None:

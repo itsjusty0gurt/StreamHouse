@@ -152,26 +152,46 @@ class AutomationServiceTests(unittest.TestCase):
         self.assertIn("OBS connection", obs.requirements[0])
         self.assertTrue(obs.examples)
 
-    def test_registry_reports_missing_description_without_rejecting_metadata(self) -> None:
-        registry = TaskRegistry(
+    def test_registry_rejects_incomplete_visible_help_metadata(self) -> None:
+        registry = TaskRegistry()
+        cases = (
             (
                 TaskMetadata(
                     task_type="test.missing_description",
                     label="Missing description",
                     short_description="",
+                    help_text="Detailed help is present.",
                     category="Tests",
                 ),
-            )
+                "short description",
+            ),
+            (
+                TaskMetadata(
+                    task_type="test.missing_help",
+                    label="Missing help",
+                    short_description="A short description is present.",
+                    help_text="",
+                    category="Tests",
+                ),
+                "detailed help",
+            ),
         )
+        for metadata, expected in cases:
+            with self.subTest(task_type=metadata.task_type):
+                with self.assertRaisesRegex(ValueError, expected):
+                    registry.register_metadata(metadata)
 
-        self.assertEqual(
-            registry.missing_descriptions(),
-            ("test.missing_description",),
+        internal = TaskMetadata(
+            task_type="test.internal",
+            label="Internal task",
+            short_description="",
+            help_text="",
+            category="Tests",
+            visible=False,
         )
-        self.assertEqual(
-            registry.missing_help(),
-            ("test.missing_description",),
-        )
+        registry.register_metadata(internal)
+        self.assertIs(registry.metadata("test.internal"), internal)
+        self.assertNotIn(internal, registry.visible_metadata())
 
     def test_manual_run_executes_one_selected_routine(self) -> None:
         handler = ExampleTask()

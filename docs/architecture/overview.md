@@ -400,7 +400,11 @@ bounds come from the existing task-editor schema. Output-capable tasks derive
 their exact placeholders from the typed output-definition architecture rather
 than a second output catalog. Internal or test-only handlers may omit visible
 metadata, while registry coverage tests prevent user-facing built-ins from
-shipping without descriptions and help text.
+shipping without descriptions and help text. Registration rejects visible task
+metadata unless both `short_description` and `help_text` are non-empty; hidden
+internal/test task metadata is the only exception. Adding a user-facing task
+therefore includes its Task Library documentation as part of defining the task,
+not as an optional follow-up.
 
 Counter tasks use this same pipeline. A command, EventSub subscription, OBS
 event, Core event, or manual routine execution can invoke any routine that
@@ -1318,10 +1322,13 @@ Inspect and update:
 2. provider label/type catalog;
 3. registration in `MainWindow`;
 4. schema and task menu in `products/hub/ui/automation_page.py`;
-5. template rendering and live-variable resolution if applicable;
-6. `generated_output_definitions()` if it creates outputs;
-7. import/export validation in `products/hub/automation/transfer.py` if needed;
-8. focused execution, editor, and integration tests.
+5. complete visible `TaskMetadata` in the built-in task catalog, including a
+   short description and detailed help plus relevant input guidance,
+   requirements, notes, and examples;
+6. template rendering and live-variable resolution if applicable;
+7. `generated_output_definitions()` if it creates outputs;
+8. import/export validation in `products/hub/automation/transfer.py` if needed;
+9. focused execution, editor, registry-coverage, and integration tests.
 
 Never add a UI menu item without a registered handler, or a handler without an
 editor schema unless it is intentionally internal.
