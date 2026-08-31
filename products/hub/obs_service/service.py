@@ -4,9 +4,11 @@ import base64
 import hashlib
 import json
 from collections.abc import Callable
+from dataclasses import dataclass, field
+from threading import Event, Lock
 from uuid import uuid4
 
-from PySide6.QtCore import QEventLoop, QObject, QTimer, QUrl, Signal
+from PySide6.QtCore import QEventLoop, QObject, QThread, QTimer, QUrl, Qt, Signal
 from PySide6.QtNetwork import QAbstractSocket
 from PySide6.QtWebSockets import QWebSocket
 
@@ -15,10 +17,49 @@ from shared.streamhouse_runtime.logger import Logger
 from products.hub.obs_service.models import ObsConnectionState, ObsEvent, ObsRequestResult
 
 
+@dataclass(slots=True)
+class _ObsRequestWaiter:
+    request_type: str
+    request_data: dict[str, object]
+    completed: Event = field(default_factory=Event)
+    lock: Lock = field(default_factory=Lock)
+    request_id: str = ""
+    result: ObsRequestResult | None = None
+    cancelled: bool = False
+    event_loop: QEventLoop | None = None
+
+    def finish(self, result: ObsRequestResult) -> bool:
+        with self.lock:
+            if self.cancelled or self.result is not None:
+                return False
+            self.result = result
+            self.completed.set()
+            loop = self.event_loop
+        if loop is not None:
+            loop.quit()
+        return True
+
+    def timeout(self, result: ObsRequestResult) -> str:
+        with self.lock:
+            if self.result is not None:
+                return ""
+            self.cancelled = True
+            self.result = result
+            self.completed.set()
+            request_id = self.request_id
+            loop = self.event_loop
+        if loop is not None:
+            loop.quit()
+        return request_id
+
+
 class ObsWebSocketService(QObject):
     """OBS WebSocket 5.x JSON client with authentication and reconnect."""
 
+    DEFAULT_AUTOMATION_TIMEOUT_MS = 10_000
     state_changed = Signal(object, str)
+    _waiter_requested = Signal(object)
+    _request_cancelled = Signal(str)
 
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -33,7 +74,9 @@ class ObsWebSocketService(QObject):
         self.auto_reconnect = True
         self._intentional_close = True
         self._identified = False
+        self._automation_requests_stopping = False
         self._callbacks: dict[str, Callable[[ObsRequestResult], None]] = {}
+        self._request_types: dict[str, str] = {}
         self._input_mute_states: dict[str, bool] = {}
         self._primary_audio_input = ""
         self._current_program_scene = ""
@@ -41,6 +84,14 @@ class ObsWebSocketService(QObject):
         self.reconnect_timer.setSingleShot(True)
         self.reconnect_timer.setInterval(2_000)
         self.reconnect_timer.timeout.connect(self._retry_connect)
+        self._waiter_requested.connect(
+            self._dispatch_waiter,
+            Qt.ConnectionType.QueuedConnection,
+        )
+        self._request_cancelled.connect(
+            self._cancel_request,
+            Qt.ConnectionType.QueuedConnection,
+        )
 
     def configure(
         self,
@@ -76,7 +127,7 @@ class ObsWebSocketService(QObject):
         self.reconnect_timer.stop()
         was_connected = self._identified
         self._identified = False
-        self._callbacks.clear()
+        self.cancel_pending_requests("OBS disconnected before the request completed.")
         self.socket.close()
         if was_connected:
             self._publish_event("ConnectionClosed", {})
@@ -101,6 +152,7 @@ class ObsWebSocketService(QObject):
         request_id = uuid4().hex
         if callback is not None:
             self._callbacks[request_id] = callback
+            self._request_types[request_id] = request_type
         data: dict[str, object] = {
             "requestType": request_type,
             "requestId": request_id,
@@ -110,37 +162,170 @@ class ObsWebSocketService(QObject):
         self.socket.sendTextMessage(json.dumps({"op": 6, "d": data}))
         return request_id
 
+    def request_and_wait(
+        self,
+        request_type: str,
+        request_data: dict[str, object] | None = None,
+        *,
+        timeout_ms: int | None = None,
+    ) -> ObsRequestResult:
+        """Run one OBS request on the socket's Qt thread and await its response.
+
+        Qt-thread callers use a nested event loop so Hub remains responsive.
+        Worker callers block only their worker thread while the request is
+        marshalled to this object's owning Qt thread.
+        """
+        clean_type = str(request_type).strip()
+        if not clean_type:
+            return self._failure("", "OBS request type cannot be blank.")
+        if self._automation_requests_stopping:
+            return self._failure(clean_type, "Hub is shutting down.")
+        timeout = max(
+            int(
+                self.DEFAULT_AUTOMATION_TIMEOUT_MS
+                if timeout_ms is None
+                else timeout_ms
+            ),
+            1,
+        )
+        waiter = _ObsRequestWaiter(clean_type, dict(request_data or {}))
+        if QThread.currentThread() == self.thread():
+            loop = QEventLoop()
+            waiter.event_loop = loop
+            self._dispatch_waiter(waiter)
+            if not waiter.completed.is_set():
+                timer = QTimer()
+                timer.setSingleShot(True)
+                timer.timeout.connect(lambda: self._timeout_waiter(waiter, timeout))
+                timer.start(timeout)
+                loop.exec()
+                timer.stop()
+        else:
+            self._waiter_requested.emit(waiter)
+            if not waiter.completed.wait(timeout / 1000):
+                self._timeout_waiter(waiter, timeout)
+        return waiter.result or self._failure(
+            clean_type,
+            "OBS request ended without a result.",
+            request_id=waiter.request_id,
+        )
+
+    def _dispatch_waiter(self, waiter: _ObsRequestWaiter) -> None:
+        with waiter.lock:
+            if waiter.cancelled or waiter.result is not None:
+                return
+        try:
+            request_id = self.send_request(
+                waiter.request_type,
+                waiter.request_data,
+                waiter.finish,
+            )
+        except (TypeError, ValueError) as error:
+            waiter.finish(self._failure(waiter.request_type, str(error)))
+            return
+        with waiter.lock:
+            waiter.request_id = request_id
+            cancelled = waiter.cancelled
+        if cancelled:
+            self._cancel_request(request_id)
+
+    def _timeout_waiter(self, waiter: _ObsRequestWaiter, timeout_ms: int) -> None:
+        request_id = waiter.timeout(
+            self._failure(
+                waiter.request_type,
+                f"Timed out waiting {timeout_ms / 1000:g} seconds for OBS.",
+                request_id=waiter.request_id,
+            )
+        )
+        if request_id:
+            if QThread.currentThread() == self.thread():
+                self._cancel_request(request_id)
+            else:
+                self._request_cancelled.emit(request_id)
+
+    def _cancel_request(self, request_id: str) -> None:
+        self._callbacks.pop(request_id, None)
+        self._request_types.pop(request_id, None)
+
+    def cancel_pending_requests(
+        self,
+        detail: str = "OBS request cancelled.",
+        *,
+        stop_new: bool = False,
+    ) -> None:
+        if stop_new:
+            self._automation_requests_stopping = True
+        pending = tuple(self._callbacks.items())
+        request_types = dict(self._request_types)
+        self._callbacks.clear()
+        self._request_types.clear()
+        for request_id, callback in pending:
+            callback(
+                self._failure(
+                    request_types.get(request_id, "OBS"),
+                    detail,
+                    request_id=request_id,
+                )
+            )
+
+    @staticmethod
+    def _failure(
+        request_type: str,
+        detail: str,
+        *,
+        request_id: str = "",
+        code: int = -1,
+    ) -> ObsRequestResult:
+        return ObsRequestResult(
+            request_id=request_id,
+            request_type=request_type,
+            succeeded=False,
+            code=code,
+            comment=detail,
+        )
+
     def set_scene_item_enabled(
         self,
         scene_name: str,
         source_name: str,
         action: str,
-    ) -> str:
-        def found(result: ObsRequestResult) -> None:
-            if not result.succeeded:
-                return
-            item_id = result.response_data.get("sceneItemId")
-            if item_id is None:
-                return
-            if action == "toggle":
-                self.send_request(
-                    "GetSceneItemEnabled",
-                    {"sceneName": scene_name, "sceneItemId": item_id},
-                    lambda state: self._set_resolved_scene_item(
-                        scene_name,
-                        item_id,
-                        not bool(state.response_data.get("sceneItemEnabled", False)),
-                    ) if state.succeeded else None,
-                )
-            else:
-                self._set_resolved_scene_item(
-                    scene_name, item_id, action == "show"
-                )
-
-        return self.send_request(
+        *,
+        timeout_ms: int | None = None,
+    ) -> ObsRequestResult:
+        found = self.request_and_wait(
             "GetSceneItemId",
             {"sceneName": scene_name, "sourceName": source_name},
-            found,
+            timeout_ms=timeout_ms,
+        )
+        if not found.succeeded:
+            return found
+        item_id = found.response_data.get("sceneItemId")
+        if item_id is None:
+            return self._failure(
+                "GetSceneItemId",
+                f'OBS did not return an item ID for source "{source_name}".',
+                request_id=found.request_id,
+            )
+        enabled = action == "show"
+        if action == "toggle":
+            state = self.request_and_wait(
+                "GetSceneItemEnabled",
+                {"sceneName": scene_name, "sceneItemId": item_id},
+                timeout_ms=timeout_ms,
+            )
+            if not state.succeeded:
+                return state
+            enabled = not bool(
+                state.response_data.get("sceneItemEnabled", False)
+            )
+        return self.request_and_wait(
+            "SetSceneItemEnabled",
+            {
+                "sceneName": scene_name,
+                "sceneItemId": item_id,
+                "sceneItemEnabled": enabled,
+            },
+            timeout_ms=timeout_ms,
         )
 
     def set_source_filter_enabled(
@@ -148,21 +333,28 @@ class ObsWebSocketService(QObject):
         source_name: str,
         filter_name: str,
         action: str,
-    ) -> str:
+        *,
+        timeout_ms: int | None = None,
+    ) -> ObsRequestResult:
         if action == "toggle":
-            return self.send_request(
+            result = self.request_and_wait(
                 "GetSourceFilter",
                 {"sourceName": source_name, "filterName": filter_name},
-                lambda result: self._set_resolved_source_filter(
-                    source_name,
-                    filter_name,
-                    not bool(result.response_data.get("filterEnabled", False)),
-                ) if result.succeeded else None,
+                timeout_ms=timeout_ms,
             )
-        return self._set_resolved_source_filter(
-            source_name,
-            filter_name,
-            action == "enable",
+            if not result.succeeded:
+                return result
+            enabled = not bool(result.response_data.get("filterEnabled", False))
+        else:
+            enabled = action == "enable"
+        return self.request_and_wait(
+            "SetSourceFilterEnabled",
+            {
+                "sourceName": source_name,
+                "filterName": filter_name,
+                "filterEnabled": enabled,
+            },
+            timeout_ms=timeout_ms,
         )
 
     def current_mute_state(
@@ -229,44 +421,10 @@ class ObsWebSocketService(QObject):
         *,
         timeout_ms: int = 1500,
     ) -> ObsRequestResult | None:
-        result: list[ObsRequestResult] = []
-        loop = QEventLoop()
-
-        def completed(value: ObsRequestResult) -> None:
-            result.append(value)
-            loop.quit()
-
-        self.send_request(request_type, request_data, completed)
-        QTimer.singleShot(max(int(timeout_ms), 1), loop.quit)
-        if not result:
-            loop.exec()
-        return result[0] if result else None
-
-    def _set_resolved_scene_item(
-        self, scene_name: str, item_id: object, enabled: bool
-    ) -> None:
-        self.send_request(
-            "SetSceneItemEnabled",
-            {
-                "sceneName": scene_name,
-                "sceneItemId": item_id,
-                "sceneItemEnabled": enabled,
-            },
-        )
-
-    def _set_resolved_source_filter(
-        self,
-        source_name: str,
-        filter_name: str,
-        enabled: bool,
-    ) -> str:
-        return self.send_request(
-            "SetSourceFilterEnabled",
-            {
-                "sourceName": source_name,
-                "filterName": filter_name,
-                "filterEnabled": enabled,
-            },
+        return self.request_and_wait(
+            request_type,
+            request_data,
+            timeout_ms=timeout_ms,
         )
 
     @staticmethod
@@ -338,6 +496,7 @@ class ObsWebSocketService(QObject):
             response_data=response,
         )
         callback = self._callbacks.pop(result.request_id, None)
+        self._request_types.pop(result.request_id, None)
         if callback is not None:
             callback(result)
         Events.emit("obs_request_completed", result=result)
@@ -374,6 +533,7 @@ class ObsWebSocketService(QObject):
     def _disconnected(self) -> None:
         was_connected = self._identified
         self._identified = False
+        self.cancel_pending_requests("OBS disconnected before the request completed.")
         if was_connected:
             self._publish_event("ConnectionClosed", {})
         if self._intentional_close:
@@ -390,6 +550,7 @@ class ObsWebSocketService(QObject):
 
     def _socket_error(self, _error: QAbstractSocket.SocketError) -> None:
         detail = self.socket.errorString() or "OBS connection failed"
+        self.cancel_pending_requests(f"OBS connection failed: {detail}")
         if self.auto_reconnect and not self._intentional_close:
             self._set_state(
                 ObsConnectionState.DISCONNECTED,

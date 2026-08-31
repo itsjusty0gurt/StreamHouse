@@ -4,6 +4,7 @@ import json
 
 from products.hub.automation.models import TaskDefinition, TaskExecutionResult, TriggerEvent
 from products.hub.automation.variable_registry import render_placeholders
+from products.hub.obs_service.models import ObsRequestResult
 from products.hub.obs_service.service import ObsWebSocketService
 
 
@@ -36,18 +37,12 @@ class ObsTask:
         try:
             if self.task_type == "obs.set_scene_item_enabled":
                 c = task.config
-                request_id = self.service.set_scene_item_enabled(
+                result = self.service.set_scene_item_enabled(
                     self._required(c, "scene"),
                     self._required(c, "source"),
                     str(c.get("action", "show")).casefold(),
                 )
-                return TaskExecutionResult(
-                    task.task_id,
-                    task.task_type,
-                    bool(request_id),
-                    "Queued OBS source visibility request."
-                    if request_id else "OBS is not connected.",
-                )
+                return self._result(task, result)
             if self.task_type in {
                 "obs.set_source_filter_state",
                 "obs.set_scene_filter_state",
@@ -58,27 +53,33 @@ class ObsTask:
                     if self.task_type == "obs.set_scene_filter_state"
                     else self._required(c, "source")
                 )
-                request_id = self.service.set_source_filter_enabled(
+                result = self.service.set_source_filter_enabled(
                     source,
                     self._required(c, "filter"),
                     str(c.get("action", "toggle")).casefold(),
                 )
-                return TaskExecutionResult(
-                    task.task_id,
-                    task.task_type,
-                    bool(request_id),
-                    "Queued OBS filter state request."
-                    if request_id else "OBS is not connected.",
-                )
+                return self._result(task, result)
             request_type, request_data = self._request(task, trigger)
-            request_id = self.service.send_request(request_type, request_data)
+            result = self.service.request_and_wait(request_type, request_data)
         except (TypeError, ValueError, json.JSONDecodeError) as error:
             return TaskExecutionResult(task.task_id, task.task_type, False, str(error))
+        return self._result(task, result)
+
+    @staticmethod
+    def _result(
+        task: TaskDefinition,
+        result: ObsRequestResult,
+    ) -> TaskExecutionResult:
+        if result.succeeded:
+            detail = f"OBS request {result.request_type} completed."
+        else:
+            reason = result.comment.strip() or f"error code {result.code}"
+            detail = f"OBS request {result.request_type or 'unknown'} failed: {reason}"
         return TaskExecutionResult(
             task.task_id,
             task.task_type,
-            bool(request_id),
-            f"Queued OBS request {request_type}." if request_id else "OBS is not connected.",
+            result.succeeded,
+            detail,
         )
 
     def _request(

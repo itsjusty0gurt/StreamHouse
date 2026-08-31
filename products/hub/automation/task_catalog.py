@@ -81,8 +81,9 @@ _SHORT_DESCRIPTIONS = {
     "core.close_application": (
         "Closes a running application selected by its executable name."
     ),
-    "core.delay": (
-        "Waits for a configured duration before the routine continues."
+    "core.wait": (
+        "Waits for a specified duration before the routine continues. Supports "
+        "milliseconds, seconds, minutes, and Variables while Hub stays responsive."
     ),
     "core.random_delay": (
         "Waits for a randomly selected duration within the configured range."

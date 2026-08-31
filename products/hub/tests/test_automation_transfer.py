@@ -15,7 +15,7 @@ from products.hub.twitch.commands import TwitchCommandTriggerStore
 
 
 class AvailableTask:
-    task_type = "core.delay"
+    task_type = "core.wait"
 
     def execute(self, task, trigger):  # pragma: no cover - registry marker only
         raise AssertionError("Import validation must not execute tasks.")
@@ -52,9 +52,9 @@ class AutomationTransferTests(unittest.TestCase):
         )
         original_task = self.stores["routine_store"].add_task(
             routine.routine_id,
-            task_type="core.delay",
+            task_type="core.wait",
             name="Brief wait",
-            config={"seconds": 2},
+            config={"duration": "2", "unit": "seconds"},
         )
         self.stores["core_store"].add(routine.routine_id, "application.started")
         self.stores["obs_store"].add(
@@ -81,7 +81,10 @@ class AutomationTransferTests(unittest.TestCase):
         self.assertEqual(imported.name, routine.name)
         self.assertEqual(imported.description, routine.description)
         self.assertEqual(imported.queue_id, DEFAULT_AUTOMATION_QUEUE_ID)
-        self.assertEqual(imported.tasks[0].config, {"seconds": 2})
+        self.assertEqual(
+            imported.tasks[0].config,
+            {"duration": "2", "unit": "seconds"},
+        )
         self.assertNotEqual(imported.tasks[0].task_id, original_task.task_id)
         self.assertEqual(len(destination["core_store"].for_routine(imported.routine_id)), 1)
         self.assertEqual(len(destination["obs_store"].for_routine(imported.routine_id)), 1)
@@ -127,9 +130,9 @@ class AutomationTransferTests(unittest.TestCase):
         )
         self.stores["routine_store"].add_task(
             command.routine_id,
-            task_type="core.delay",
+            task_type="core.wait",
             name="Small delay",
-            config={"seconds": 1},
+            config={"duration": "1", "unit": "seconds"},
         )
         routine = self.stores["routine_store"].get(command.routine_id)
         payload = export_routine(routine, **self.stores)
@@ -153,7 +156,7 @@ class AutomationTransferTests(unittest.TestCase):
         )
         self.assertEqual(len(imported.tasks), 2)
         self.assertEqual(imported.tasks[0].managed_key, "twitch.command")
-        self.assertEqual(imported.tasks[1].task_type, "core.delay")
+        self.assertEqual(imported.tasks[1].task_type, "core.wait")
 
 
 if __name__ == "__main__":

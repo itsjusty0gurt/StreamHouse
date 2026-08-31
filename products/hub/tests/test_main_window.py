@@ -352,9 +352,9 @@ class MainWindowTests(unittest.TestCase):
         routine = store.add("Play sound", trigger_id="sound", queue_id=queue.queue_id)
         store.add_task(
             routine.routine_id,
-            task_type="core.delay",
+            task_type="core.wait",
             name="Tiny delay",
-            config={"seconds": 0},
+            config={"duration": "0", "unit": "seconds"},
         )
 
         execution = self.window.automation_service.publish_trigger(
@@ -733,15 +733,15 @@ class MainWindowTests(unittest.TestCase):
         routine = store.add("Reorder me")
         first = store.add_task(
             routine.routine_id,
-            task_type="core.delay",
+            task_type="core.wait",
             name="First",
-            config={"seconds": 1},
+            config={"duration": "1", "unit": "seconds"},
         )
         second = store.add_task(
             routine.routine_id,
-            task_type="core.delay",
+            task_type="core.wait",
             name="Second",
-            config={"seconds": 2},
+            config={"duration": "2", "unit": "seconds"},
         )
         page = self.window.automation_page
         page.select_routine(routine.routine_id)
@@ -772,9 +772,9 @@ class MainWindowTests(unittest.TestCase):
         source = store.add("Source")
         original = store.add_task(
             source.routine_id,
-            task_type="core.delay",
+            task_type="core.wait",
             name="Wait briefly",
-            config={"seconds": 2.5},
+            config={"duration": "2.5", "unit": "seconds"},
         )
         destination = store.add("Destination")
         page = self.window.automation_page
@@ -906,9 +906,9 @@ class MainWindowTests(unittest.TestCase):
         routine = store.add("History details")
         task = store.add_task(
             routine.routine_id,
-            task_type="core.delay",
+            task_type="core.wait",
             name="Short wait",
-            config={"seconds": 0},
+            config={"duration": "0", "unit": "seconds"},
         )
         page = self.window.automation_page
         page.record_execution(

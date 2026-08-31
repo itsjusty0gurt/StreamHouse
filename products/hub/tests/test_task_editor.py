@@ -96,6 +96,28 @@ class TaskEditorTests(unittest.TestCase):
         target.setText("https://twitch.tv")
         self.assertEqual(dialog.values()["config"]["target"], "https://twitch.tv")
 
+    def test_wait_form_accepts_variables_and_units(self) -> None:
+        dialog = TaskEditorDialog(
+            "core.wait",
+            variables={"custom.overlay_delay": "2.5"},
+            variable_registry=self.variables(),
+        )
+        fields = dialog.field_widgets["core.wait"]
+
+        self.assertIsInstance(fields["duration"], QLineEdit)
+        self.assertIsInstance(fields["unit"], QComboBox)
+        self.assertEqual(fields["duration"].text(), "1")
+        self.assertEqual(fields["unit"].currentData(), "seconds")
+
+        fields["duration"].setText("{custom.overlay_delay}")
+        fields["unit"].setCurrentIndex(fields["unit"].findData("minutes"))
+
+        self.assertEqual(
+            dialog.values()["config"],
+            {"duration": "{custom.overlay_delay}", "unit": "minutes"},
+        )
+        self.assertTrue(hasattr(dialog, "variable_table"))
+
     def test_play_audio_form_exposes_volume_and_wait_controls(self) -> None:
         dialog = TaskEditorDialog("core.play_audio")
         fields = dialog.field_widgets["core.play_audio"]

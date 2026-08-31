@@ -278,9 +278,9 @@ class TwitchCommandTriggerStoreTests(unittest.TestCase):
         trigger = self.store.add("hello", "Hello {user.display_name}")
         extra = self.routine_store.add_task(
             trigger.routine_id,
-            task_type="core.delay",
+            task_type="core.wait",
             name="Wait",
-            config={"seconds": 1},
+            config={"duration": "1", "unit": "seconds"},
         )
 
         self.store.update(
@@ -364,9 +364,9 @@ class TwitchCommandTriggerStoreTests(unittest.TestCase):
             trigger_id="missing-command",
             name="Yippie",
             managed_by=self.store.MANAGED_BY,
-            task_type="core.delay",
+            task_type="core.wait",
             task_name="Keep task",
-            task_config={"seconds": 1},
+            task_config={"duration": "1", "unit": "seconds"},
         )
 
         trigger = self.store.attach_routine(routine.routine_id, "yippie")
@@ -376,7 +376,7 @@ class TwitchCommandTriggerStoreTests(unittest.TestCase):
         self.assertEqual(attached.managed_by, self.store.MANAGED_BY)
         self.assertEqual(attached.trigger_id, trigger.trigger_id)
         self.assertEqual(len(attached.tasks), 1)
-        self.assertEqual(attached.tasks[0].task_type, "core.delay")
+        self.assertEqual(attached.tasks[0].task_type, "core.wait")
 
     def test_command_update_preserves_a_custom_routine_name(self) -> None:
         trigger = self.store.add("hello", "Hello")
@@ -536,9 +536,9 @@ class TwitchCommandTriggerStoreTests(unittest.TestCase):
         )
         self.routine_store.add_task(
             command.routine_id,
-            task_type="core.delay",
+            task_type="core.wait",
             name="Extra task",
-            config={"seconds": 1},
+            config={"duration": "1", "unit": "seconds"},
         )
 
         reset = self.store.reset_default("title")
@@ -632,9 +632,9 @@ class TwitchCommandTriggerStoreTests(unittest.TestCase):
         self.store.set_enabled(discord.trigger_id, True)
         self.routine_store.add_task(
             discord.routine_id,
-            task_type="core.delay",
+            task_type="core.wait",
             name="Extra task",
-            config={"seconds": 1},
+            config={"duration": "1", "unit": "seconds"},
         )
 
         reset = self.store.reset_default("discord")

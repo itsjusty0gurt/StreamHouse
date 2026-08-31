@@ -11,10 +11,10 @@ from unittest.mock import Mock
 from PySide6.QtWidgets import QApplication
 
 from products.hub.automation.core_tasks import (
-    DelayTask,
     DesktopNotificationTask,
     PlayAudioTask,
     RandomDelayTask,
+    WaitTask,
     WaitForServiceTask,
 )
 from products.hub.automation.models import TaskDefinition, TriggerEvent
@@ -31,18 +31,33 @@ class FakeObsService:
     def __init__(self) -> None:
         self.connected = True
         self.requests: list[tuple[str, dict[str, object]]] = []
+        self.next_result: ObsRequestResult | None = None
+
+    def _result(self, request_type: str) -> ObsRequestResult:
+        result = self.next_result or ObsRequestResult(
+            "request-id",
+            request_type,
+            True,
+            100,
+        )
+        self.next_result = None
+        return result
 
     def send_request(self, request_type, request_data=None, callback=None):
         self.requests.append((request_type, request_data or {}))
         return "request-id"
 
+    def request_and_wait(self, request_type, request_data=None, **_kwargs):
+        self.requests.append((request_type, request_data or {}))
+        return self._result(request_type)
+
     def set_scene_item_enabled(self, scene, source, action):
         self.requests.append(("resolved-scene-item", {"scene": scene, "source": source, "action": action}))
-        return "request-id"
+        return self._result("SetSceneItemEnabled")
 
     def set_source_filter_enabled(self, source, filter_name, action):
         self.requests.append(("source-filter", {"source": source, "filter": filter_name, "action": action}))
-        return "request-id"
+        return self._result("SetSourceFilterEnabled")
 
 
 class ObsServiceTests(unittest.TestCase):
@@ -215,6 +230,10 @@ class ObsTaskTests(unittest.TestCase):
         task = TaskDefinition("task", task_type, task_type, config)
         return self.registry.execute(task, self.trigger).succeeded
 
+    def run_result(self, task_type: str, config: dict) -> TaskExecutionResult:
+        task = TaskDefinition("task", task_type, task_type, config)
+        return self.registry.execute(task, self.trigger)
+
     def test_all_advertised_obs_tasks_are_registered(self) -> None:
         self.assertEqual(set(OBS_TASK_LABELS), set(self.registry.registered_types()))
 
@@ -223,6 +242,27 @@ class ObsTaskTests(unittest.TestCase):
         self.assertTrue(self.run_task("obs.set_input_mute", {"input": "Mic/Aux", "action": "toggle"}))
         self.assertEqual(self.service.requests[0][0], "SetCurrentProgramScene")
         self.assertEqual(self.service.requests[1][0], "ToggleInputMute")
+
+    def test_explicit_mute_and_unmute_payloads(self) -> None:
+        self.assertTrue(
+            self.run_task(
+                "obs.set_input_mute",
+                {"input": "Mic/Aux", "action": "mute"},
+            )
+        )
+        self.assertTrue(
+            self.run_task(
+                "obs.set_input_mute",
+                {"input": "Mic/Aux", "action": "unmute"},
+            )
+        )
+        self.assertEqual(
+            self.service.requests,
+            [
+                ("SetInputMute", {"inputName": "Mic/Aux", "inputMuted": True}),
+                ("SetInputMute", {"inputName": "Mic/Aux", "inputMuted": False}),
+            ],
+        )
 
     def test_source_visibility_uses_scene_item_resolution(self) -> None:
         self.assertTrue(self.run_task("obs.set_scene_item_enabled", {"scene": "Gameplay", "source": "Camera", "action": "hide"}))
@@ -294,17 +334,76 @@ class ObsTaskTests(unittest.TestCase):
     def test_raw_request_rejects_non_object_json(self) -> None:
         self.assertFalse(self.run_task("obs.raw_request", {"request_type": "GetVersion", "request_data": "[]"}))
 
+    def test_raw_request_reports_actual_success(self) -> None:
+        result = self.run_result(
+            "obs.raw_request",
+            {"request_type": "GetVersion", "request_data": "{}"},
+        )
+        self.assertTrue(result.succeeded)
+        self.assertEqual(self.service.requests[-1], ("GetVersion", {}))
+        self.assertIn("completed", result.detail)
+
+    def test_every_obs_task_propagates_obs_failure(self) -> None:
+        configs = {
+            "obs.set_program_scene": {"scene": "Gameplay"},
+            "obs.set_preview_scene": {"scene": "Preview"},
+            "obs.set_scene_item_enabled": {
+                "scene": "Gameplay",
+                "source": "Camera",
+                "action": "show",
+            },
+            "obs.set_input_mute": {"input": "Mic/Aux", "action": "mute"},
+            "obs.set_input_volume": {"input": "Mic/Aux", "volume_db": -8},
+            "obs.set_source_filter_state": {
+                "source": "Camera",
+                "filter": "Blur",
+                "action": "enable",
+            },
+            "obs.set_scene_filter_state": {
+                "scene": "Gameplay",
+                "filter": "Color",
+                "action": "disable",
+            },
+            "obs.set_text_source": {"input": "Title", "text": "Hello"},
+            "obs.set_image_source": {"input": "Art", "file": "C:/art.png"},
+            "obs.stream_control": {"action": "start"},
+            "obs.record_control": {"action": "start"},
+            "obs.replay_buffer_control": {"action": "save"},
+            "obs.media_control": {"input": "Intro", "action": "restart"},
+            "obs.trigger_hotkey": {"hotkey": "OBSBasic.StartStreaming"},
+            "obs.set_studio_mode": {"enabled": True},
+            "obs.raw_request": {"request_type": "GetVersion", "request_data": {}},
+        }
+        self.assertEqual(set(configs), set(OBS_TASK_LABELS))
+        for task_type, config in configs.items():
+            with self.subTest(task_type=task_type):
+                self.service.next_result = ObsRequestResult(
+                    "failed-request",
+                    "RejectedRequest",
+                    False,
+                    600,
+                    "OBS rejected the request.",
+                )
+                result = self.run_result(task_type, config)
+                self.assertFalse(result.succeeded)
+                self.assertIn("OBS rejected the request", result.detail)
+
 
 class CoreTaskTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.application = QApplication.instance() or QApplication([])
 
-    def test_delay_and_immediate_service_wait(self) -> None:
+    def test_wait_and_immediate_service_wait(self) -> None:
         trigger = TriggerEvent("manual", "test", "manual", {})
-        delay = TaskDefinition("delay", "core.delay", "Delay", {"seconds": 0})
+        delay = TaskDefinition(
+            "wait",
+            "core.wait",
+            "Wait",
+            {"duration": "0", "unit": "seconds"},
+        )
         wait = TaskDefinition("wait", "core.wait_for_service", "Wait", {"service": "obs", "timeout_seconds": 1})
-        self.assertTrue(DelayTask().execute(delay, trigger).succeeded)
+        self.assertTrue(WaitTask().execute(delay, trigger).succeeded)
         self.assertTrue(WaitForServiceTask(lambda name: name == "obs").execute(wait, trigger).succeeded)
 
     def test_random_delay_uses_a_duration_inside_the_configured_range(self) -> None:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import random
 import shlex
@@ -8,6 +9,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from threading import RLock
 from typing import Callable, Mapping
 
 from PySide6.QtCore import (
@@ -33,7 +35,7 @@ from products.hub.automation.value_tasks import VALUE_TASK_LABELS
 CORE_TASK_LABELS = {
     "core.launch_application": "Core — Launch application",
     "core.close_application": "Core — Close application",
-    "core.delay": "Core — Wait / delay",
+    "core.wait": "Core — Wait",
     "core.random_delay": "Core — Wait a random duration",
     "core.wait_for_service": "Core — Wait for service",
     "core.open_target": "Core — Open file, folder, or URL",
@@ -106,19 +108,81 @@ class CloseApplicationTask:
         return _result(task, completed.returncode == 0, detail or f"Closed {process_name}.")
 
 
-class DelayTask:
-    task_type = "core.delay"
+class WaitTask:
+    task_type = "core.wait"
+    _UNIT_SECONDS = {
+        "milliseconds": 0.001,
+        "seconds": 1.0,
+        "minutes": 60.0,
+    }
+    _MAX_SECONDS = 86_400.0
+
+    def __init__(self, wait: Callable[[int], bool] | None = None) -> None:
+        self._wait_override = wait
+        self._active_loops: set[QEventLoop] = set()
+        self._lock = RLock()
+        self._stopping = False
 
     def execute(self, task: TaskDefinition, trigger: TriggerEvent) -> TaskExecutionResult:
-        seconds = max(0.0, min(float(task.config.get("seconds", 1.0)), 86_400.0))
-        self._wait(seconds)
-        return _result(task, True, f"Waited {seconds:g} seconds.")
+        try:
+            raw_duration = render_placeholders(
+                str(task.config.get("duration", "1")),
+                trigger.context,
+                strip_values=True,
+            ).strip()
+            if not raw_duration:
+                raise ValueError("Enter a wait duration.")
+            duration = float(raw_duration)
+            if not math.isfinite(duration):
+                raise ValueError("Wait duration must be a finite number.")
+            if duration < 0:
+                raise ValueError("Wait duration cannot be negative.")
+            unit = str(task.config.get("unit", "seconds")).strip().casefold()
+            multiplier = self._UNIT_SECONDS.get(unit)
+            if multiplier is None:
+                raise ValueError("Choose Milliseconds, Seconds, or Minutes.")
+            seconds = duration * multiplier
+            if seconds > self._MAX_SECONDS:
+                raise ValueError("Wait duration cannot exceed 24 hours.")
+            milliseconds = round(seconds * 1000)
+            completed = (
+                self._wait_override(milliseconds)
+                if self._wait_override is not None
+                else self._wait_interruptibly(milliseconds)
+            )
+            if completed is False:
+                return _result(task, False, "Wait was cancelled.")
+            return _result(task, True, f"Waited {duration:g} {unit}.")
+        except (TypeError, ValueError) as error:
+            return _result(task, False, str(error))
 
-    @staticmethod
-    def _wait(seconds: float) -> None:
+    def _wait_interruptibly(self, milliseconds: int) -> bool:
+        if milliseconds <= 0:
+            return True
         loop = QEventLoop()
-        QTimer.singleShot(round(seconds * 1000), loop.quit)
-        loop.exec()
+        timer = QTimer()
+        timer.setSingleShot(True)
+        timer.timeout.connect(loop.quit)
+        with self._lock:
+            if self._stopping:
+                return False
+            self._active_loops.add(loop)
+        try:
+            timer.start(milliseconds)
+            loop.exec()
+            return not timer.isActive()
+        finally:
+            timer.stop()
+            with self._lock:
+                self._active_loops.discard(loop)
+
+    def cancel_all(self) -> None:
+        """Interrupt active waits so shutdown is not held by their timers."""
+        with self._lock:
+            self._stopping = True
+            loops = tuple(self._active_loops)
+        for loop in loops:
+            loop.quit()
 
 
 class RandomDelayTask:
@@ -126,7 +190,13 @@ class RandomDelayTask:
 
     def __init__(self, rng: random.Random | None = None, wait=None) -> None:
         self._rng = rng or random.Random()
-        self._wait = wait or DelayTask._wait
+        self._wait = wait or self._wait_seconds
+
+    @staticmethod
+    def _wait_seconds(seconds: float) -> None:
+        loop = QEventLoop()
+        QTimer.singleShot(round(seconds * 1000), loop.quit)
+        loop.exec()
 
     def execute(self, task: TaskDefinition, trigger: TriggerEvent) -> TaskExecutionResult:
         try:

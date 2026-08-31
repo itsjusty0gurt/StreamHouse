@@ -595,7 +595,7 @@ Handlers are registered in `MainWindow` with one stable lowercase task type.
 
 | Provider | Files | Current capability groups |
 | --- | --- | --- |
-| Core | `products/hub/automation/core_tasks.py`, `products/hub/automation/value_tasks.py` | applications, delays, service waits, paths/URLs, notifications, audio, Python scripts, duration formatting, conditional text selection |
+| Core | `products/hub/automation/core_tasks.py`, `products/hub/automation/value_tasks.py` | applications, interruptible Wait/random delays, service waits, paths/URLs, notifications, audio, Python scripts, duration formatting, conditional text selection |
 | Variables | `products/hub/automation/variable_tasks.py` | create/delete/adjust/toggle variables, nested routines |
 | Logic | `products/hub/automation/logic_tasks.py` | break, input, random number/choice, if/else, switch, while |
 | Files | `products/hub/automation/file_tasks.py` | read text/random/specific lines, write, existence, line count |
@@ -807,8 +807,14 @@ resolution may query live OBS state when a template requests `{obs.muted}` or
 other canonical OBS values; do not assume every value is present in the
 original trigger.
 
-Qt WebSocket callbacks already arrive in Qt context. Preserve asynchronous
-request IDs and callbacks rather than blocking the UI waiting for OBS.
+Qt WebSocket callbacks already arrive in Qt context. Automation OBS tasks use
+the service's completion-aware request boundary: worker callers marshal sends
+to the socket's Qt thread, while Qt-thread callers use a bounded nested event
+loop so Hub remains responsive. A task continues only after OBS acknowledges
+the request; rejection, timeout, disconnect, and shutdown become normal task
+failures. Source visibility confirms both scene-item lookup and the final state
+change. The acknowledgement is the ordering boundary; tasks do not wait for a
+separate OBS state-change event.
 
 ## Streamhouse AI subsystem
 
@@ -1110,8 +1116,10 @@ Use these rules:
 8. A future background Automation executor requires explicit affinity metadata
    and a UI-thread dispatch path for Qt-dependent handlers; do not move the
    executor wholesale to a Python thread.
-9. Avoid blocking waits. Core delay tasks use a nested Qt event loop so the UI
-   continues processing events.
+9. Avoid blocking waits. **Core → Wait** accepts literal or Variable-backed
+   durations in milliseconds, seconds, or minutes and uses an interruptible
+   nested Qt event loop. It pauses only the current routine while the UI and
+   other eligible queues continue processing; Hub shutdown cancels active waits.
 
 ## Persistence and secrets
 

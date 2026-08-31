@@ -799,8 +799,9 @@ class TaskEditorDialog(QDialog):
             {"key": "process_name", "label": "Process name", "kind": "text", "default": "", "required": True, "placeholder": "obs64.exe"},
             {"key": "force", "label": "", "kind": "bool", "default": False, "text": "Force close if a normal close fails"},
         ),
-        "core.delay": (
-            {"key": "seconds", "label": "Duration", "kind": "number", "default": 1.0, "minimum": 0.0, "maximum": 86400.0, "suffix": " seconds"},
+        "core.wait": (
+            {"key": "duration", "label": "Duration", "kind": "text", "default": "1", "required": True, "placeholder": "8 or {custom.overlay_delay}"},
+            {"key": "unit", "label": "Unit", "kind": "choice", "default": "seconds", "choices": (("Milliseconds", "milliseconds"), ("Seconds", "seconds"), ("Minutes", "minutes"))},
         ),
         "core.random_delay": (
             {"key": "minimum_seconds", "label": "Minimum", "kind": "number", "default": 1.0, "minimum": 0.0, "maximum": 86400.0, "suffix": " seconds"},
@@ -1028,6 +1029,7 @@ class TaskEditorDialog(QDialog):
         ),
     }
     TEMPLATED_FIELDS: dict[str, tuple[str, ...]] = {
+        "core.wait": ("duration",),
         "twitch.send_chat_message": ("message",),
         "twitch.send_pinned_message": ("message",),
         "twitch.update_stream_title": ("title",),

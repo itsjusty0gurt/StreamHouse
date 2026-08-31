@@ -72,13 +72,13 @@ from products.hub.automation.variable_registry import VariableRegistry
 from products.hub.automation.core_triggers import CoreTriggerStore
 from products.hub.automation.core_tasks import (
     CloseApplicationTask,
-    DelayTask,
     DesktopNotificationTask,
     LaunchApplicationTask,
     OpenTargetTask,
     PlayAudioTask,
     PythonScriptTask,
     RandomDelayTask,
+    WaitTask,
     WaitForServiceTask,
 )
 from products.hub.automation.tasks import TaskRegistry
@@ -542,7 +542,8 @@ class MainWindow(QMainWindow):
         )
         self.task_registry.register(LaunchApplicationTask())
         self.task_registry.register(CloseApplicationTask())
-        self.task_registry.register(DelayTask())
+        self.wait_task = WaitTask()
+        self.task_registry.register(self.wait_task)
         self.task_registry.register(RandomDelayTask())
         self.task_registry.register(OpenTargetTask())
         self.task_registry.register(DesktopNotificationTask())
@@ -7802,6 +7803,11 @@ class MainWindow(QMainWindow):
             )
 
     def closeEvent(self, event: QCloseEvent) -> None:
+        self.wait_task.cancel_all()
+        self.obs_service.cancel_pending_requests(
+            "Hub is shutting down.",
+            stop_new=True,
+        )
         if not self._core_closing_fired:
             self._core_closing_fired = True
             self._fire_core_automation_event("application.closing")
