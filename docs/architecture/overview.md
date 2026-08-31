@@ -2,7 +2,7 @@
 
 > Canonical implementation map for maintainers and coding agents.
 >
-> Last verified: 2026-08-30 against version `0.1.0`.
+> Last verified: 2026-08-31 against version `0.1.0`.
 > Update this file when a change moves ownership, adds a persisted format,
 > changes an inter-process contract, or introduces a new service/trigger/task.
 
@@ -384,6 +384,7 @@ sequenceDiagram
 - emits normalized lifecycle events;
 - runs enabled tasks in order;
 - stops on failed tasks or a logic `break`;
+- distinguishes cooperative user cancellation from task failure and success;
 - blocks recursive routine loops;
 - limits nested routines to ten levels;
 - supports manual routine/task tests through the same execution path.
@@ -417,6 +418,8 @@ beginner default rather than offering a direct-execution/no-queue mode.
 Queue policy supports:
 
 - pause/resume;
+- stopping the current routine while preserving later pending items;
+- stopping a queue by cancelling its current routine and clearing its pending items;
 - maximum pending length;
 - duplicate `allow`, `ignore`, or `replace`;
 - delay between completed items.
@@ -427,7 +430,13 @@ empty or dangling pre-alpha assignment normalizes it to the same stable ID.
 Submission and claiming are one thread-safe operation so Qt-triggered routines
 and network-backed Chat Command workers preserve one-at-a-time queue behavior.
 Nested routines remain part of their parent execution and do not enqueue a
-second item.
+second item. Each claimed root item owns one runtime-only cooperative
+cancellation token shared by its nested routines and active cancellable task.
+Cancellation never crosses queue boundaries. **Stop Current Routine** cancels
+that execution chain and leaves later items queued; **Stop Queue** also removes
+all waiting items. Completed side effects are not rolled back, and cleared
+items that never started do not create run-history entries. Cancelled routines
+are recorded as **Cancelled**, not completed or internally failed.
 `AutomationService.process_queues()` is called periodically on the Qt thread so
 Qt-based tasks remain thread-safe.
 
@@ -1120,6 +1129,10 @@ Use these rules:
    durations in milliseconds, seconds, or minutes and uses an interruptible
    nested Qt event loop. It pauses only the current routine while the UI and
    other eligible queues continue processing; Hub shutdown cancels active waits.
+   User cancellation of a running queue item uses the same cooperative wake-up
+   path. OBS response waits also register with the current routine token, remove
+   their pending callback when cancelled, and return through normal cancelled
+   task/routine lifecycle events.
 
 ## Persistence and secrets
 

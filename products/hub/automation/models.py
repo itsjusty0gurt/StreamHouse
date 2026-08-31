@@ -134,6 +134,7 @@ class TaskExecutionResult:
     detail: str = ""
     duration_ms: int = 0
     flow_action: str = ""
+    cancelled: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -143,6 +144,7 @@ class RoutineExecutionResult:
     task_results: tuple[TaskExecutionResult, ...] = ()
     detail: str = ""
     flow_action: str = ""
+    cancelled: bool = False
 
 
 @dataclass(frozen=True, slots=True)

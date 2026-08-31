@@ -9,7 +9,13 @@ from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication
 
 from products.hub.automation.core_tasks import WaitTask
-from products.hub.automation.models import TaskDefinition, TaskExecutionResult, TriggerEvent
+from products.hub.automation.models import (
+    DEFAULT_AUTOMATION_QUEUE_ID,
+    TaskDefinition,
+    TaskExecutionResult,
+    TriggerEvent,
+)
+from products.hub.automation.queues import AutomationQueueManager, AutomationQueueStore
 from products.hub.automation.routines import RoutineStore
 from products.hub.automation.service import AutomationService
 from products.hub.automation.task_catalog import BUILTIN_TASK_METADATA
@@ -107,6 +113,50 @@ class CoreWaitTaskTests(unittest.TestCase):
 
         self.assertFalse(result.succeeded)
         self.assertIn("cancelled", result.detail.casefold())
+        self.assertLess(time.perf_counter() - started, 0.5)
+
+    def test_queue_cancellation_interrupts_wait_and_skips_remaining_tasks(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = RoutineStore(root / "routines.json")
+            queue_manager = AutomationQueueManager(
+                AutomationQueueStore(root / "queues.json")
+            )
+            routine = store.add("Long wait")
+            store.add_task(
+                routine.routine_id,
+                task_type="core.wait",
+                name="Wait",
+                config={"duration": "10", "unit": "seconds"},
+            )
+            store.add_task(
+                routine.routine_id,
+                task_type="test.marker",
+                name="Must not run",
+            )
+            events: list[str] = []
+            registry = TaskRegistry()
+            registry.register(WaitTask())
+            registry.register(MarkerTask(events))
+            service = AutomationService(
+                store,
+                registry,
+                queue_manager=queue_manager,
+            )
+            QTimer.singleShot(
+                20,
+                lambda: queue_manager.cancel_current(
+                    DEFAULT_AUTOMATION_QUEUE_ID
+                ),
+            )
+
+            started = time.perf_counter()
+            result = service.run_routine(routine.routine_id).routine_results[0]
+
+        self.assertTrue(result.cancelled)
+        self.assertFalse(result.succeeded)
+        self.assertTrue(result.task_results[0].cancelled)
+        self.assertEqual(events, [])
         self.assertLess(time.perf_counter() - started, 0.5)
 
     def test_routine_continues_in_order_after_wait(self) -> None:

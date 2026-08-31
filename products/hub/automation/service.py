@@ -3,6 +3,11 @@ from __future__ import annotations
 from dataclasses import replace
 from time import perf_counter
 
+from products.hub.automation.cancellation import (
+    AutomationCancellation,
+    cancellation_scope,
+    current_cancellation,
+)
 from products.hub.automation.models import (
     AutomationExecutionResult,
     RoutineExecutionResult,
@@ -40,7 +45,6 @@ class AutomationService:
             AutomationQueueStore()
         )
         self.variable_registry = variable_registry
-        self._routine_stack: list[str] = []
         self.max_routine_depth = 10
 
     def publish_trigger(self, trigger: TriggerEvent) -> AutomationExecutionResult:
@@ -106,7 +110,11 @@ class AutomationService:
                     detail=f'Queued routine "{routine.name}" is disabled.',
                 )
             Events.emit("automation_queue_item_started", item=item)
-            return self._execute_routine(routine, item.trigger)
+            return self._execute_routine(
+                routine,
+                item.trigger,
+                self.queue_manager.cancellation_for(item),
+            )
         finally:
             self.queue_manager.complete(item.queue_id)
             Events.emit("automation_queue_changed", queue_id=item.queue_id)
@@ -224,59 +232,81 @@ class AutomationService:
             context.update(self.variable_registry.context_values(context))
         return replace(trigger, context=context)
 
-    def _execute_routine(self, routine, trigger: TriggerEvent) -> RoutineExecutionResult:
-        if routine.routine_id in self._routine_stack:
-            chain = " -> ".join((*self._routine_stack, routine.routine_id))
+    def _execute_routine(
+        self,
+        routine,
+        trigger: TriggerEvent,
+        cancellation: AutomationCancellation | None = None,
+    ) -> RoutineExecutionResult:
+        execution = cancellation or current_cancellation() or AutomationCancellation()
+        routine_stack = execution.routine_stack
+        if routine.routine_id in routine_stack:
+            chain = " -> ".join((*routine_stack, routine.routine_id))
             return RoutineExecutionResult(
                 routine_id=routine.routine_id,
                 succeeded=False,
                 detail=f"Routine call loop blocked: {chain}.",
             )
-        if len(self._routine_stack) >= self.max_routine_depth:
+        if len(routine_stack) >= self.max_routine_depth:
             return RoutineExecutionResult(
                 routine_id=routine.routine_id,
                 succeeded=False,
                 detail=f"Routine nesting is limited to {self.max_routine_depth} levels.",
             )
-        self._routine_stack.append(routine.routine_id)
-        Events.emit("routine_started", trigger=trigger, routine=routine)
-        try:
-            task_results = []
-            flow_action = ""
-            for task in routine.tasks:
-                if not task.enabled:
-                    continue
-                self._refresh_registry_values(trigger)
-                task_result = self._execute_task(routine, task, trigger)
-                task_results.append(task_result)
-                if not task_result.succeeded:
-                    break
-                if task_result.flow_action:
-                    flow_action = task_result.flow_action
-                    break
-            succeeded = bool(task_results) and all(
-                result.succeeded for result in task_results
-            )
-            routine_result = RoutineExecutionResult(
-                routine_id=routine.routine_id,
-                succeeded=succeeded,
-                task_results=tuple(task_results),
-                detail=(
-                    "Routine stopped by logic."
-                    if succeeded and flow_action == "break"
-                    else "" if succeeded else "Routine stopped after a failed task."
-                ),
-                flow_action=flow_action,
-            )
-            Events.emit(
-                "routine_completed" if succeeded else "routine_failed",
-                trigger=trigger,
-                routine=routine,
-                result=routine_result,
-            )
-            return routine_result
-        finally:
-            self._routine_stack.pop()
+        with cancellation_scope(execution):
+            routine_stack.append(routine.routine_id)
+            Events.emit("routine_started", trigger=trigger, routine=routine)
+            try:
+                task_results = []
+                flow_action = ""
+                for task in routine.tasks:
+                    if execution.cancelled:
+                        break
+                    if not task.enabled:
+                        continue
+                    self._refresh_registry_values(trigger)
+                    task_result = self._execute_task(routine, task, trigger)
+                    task_results.append(task_result)
+                    if execution.cancelled or not task_result.succeeded:
+                        break
+                    if task_result.flow_action:
+                        flow_action = task_result.flow_action
+                        break
+                cancelled = execution.cancelled
+                succeeded = (
+                    not cancelled
+                    and bool(task_results)
+                    and all(result.succeeded for result in task_results)
+                )
+                routine_result = RoutineExecutionResult(
+                    routine_id=routine.routine_id,
+                    succeeded=succeeded,
+                    task_results=tuple(task_results),
+                    detail=(
+                        execution.reason
+                        if cancelled
+                        else "Routine stopped by logic."
+                        if succeeded and flow_action == "break"
+                        else ""
+                        if succeeded
+                        else "Routine stopped after a failed task."
+                    ),
+                    flow_action=flow_action,
+                    cancelled=cancelled,
+                )
+                Events.emit(
+                    "routine_cancelled"
+                    if cancelled
+                    else "routine_completed"
+                    if succeeded
+                    else "routine_failed",
+                    trigger=trigger,
+                    routine=routine,
+                    result=routine_result,
+                )
+                return routine_result
+            finally:
+                routine_stack.pop()
 
     def _refresh_registry_values(self, trigger: TriggerEvent) -> None:
         """Refresh global/contextual snapshots before each routine task.
@@ -315,8 +345,20 @@ class AutomationService:
             task_result,
             duration_ms=max(int((perf_counter() - started_at) * 1000), 0),
         )
+        cancellation = current_cancellation()
+        if cancellation is not None and cancellation.cancelled:
+            task_result = replace(
+                task_result,
+                succeeded=False,
+                detail=cancellation.reason,
+                cancelled=True,
+            )
         Events.emit(
-            "task_completed" if task_result.succeeded else "task_failed",
+            "task_cancelled"
+            if task_result.cancelled
+            else "task_completed"
+            if task_result.succeeded
+            else "task_failed",
             trigger=trigger,
             routine=routine,
             task=task,

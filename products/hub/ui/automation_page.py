@@ -2358,8 +2358,8 @@ class AutomationPage(QWidget):
         page = QWidget()
         layout = QVBoxLayout(page)
         intro = QLabel(
-            "Assign routines to independent sequential queues. Immediate is the "
-            "default and bypasses queueing."
+            "Every routine runs through a sequential queue. Routines use Default "
+            "Queue unless another queue is selected."
         )
         intro.setWordWrap(True)
         layout.addWidget(intro)
@@ -2391,11 +2391,13 @@ class AutomationPage(QWidget):
         title_font.setPointSize(13)
         self.queue_title_label.setFont(title_font)
         self.pause_queue_button = QPushButton("Pause")
-        self.clear_queue_button = QPushButton("Clear Pending")
+        self.stop_current_routine_button = QPushButton("Stop Current Routine")
+        self.stop_queue_button = QPushButton("Stop Queue")
         header.addWidget(self.queue_title_label)
         header.addStretch()
         header.addWidget(self.pause_queue_button)
-        header.addWidget(self.clear_queue_button)
+        header.addWidget(self.stop_current_routine_button)
+        header.addWidget(self.stop_queue_button)
         details_layout.addLayout(header)
         self.queue_status_label = QLabel("Choose a custom queue to inspect it.")
         self.queue_status_label.setWordWrap(True)
@@ -2423,7 +2425,10 @@ class AutomationPage(QWidget):
         self.edit_queue_button.clicked.connect(self._edit_queue)
         self.delete_queue_button.clicked.connect(self._delete_queue)
         self.pause_queue_button.clicked.connect(self._toggle_queue_pause)
-        self.clear_queue_button.clicked.connect(self._clear_queue)
+        self.stop_current_routine_button.clicked.connect(
+            self._stop_current_routine
+        )
+        self.stop_queue_button.clicked.connect(self._stop_queue)
         self.remove_queue_item_button.clicked.connect(self._remove_queue_item)
         self.queue_list.itemSelectionChanged.connect(self._queue_selected)
         self.pending_queue_list.model().rowsMoved.connect(
@@ -2451,6 +2456,7 @@ class AutomationPage(QWidget):
                     queue.duplicate_policy,
                     queue.delay_seconds,
                     getattr(current, "item_id", ""),
+                    self.queue_manager.current_cancelled(queue.queue_id),
                     tuple(item.item_id for item in pending),
                 )
             )
@@ -2488,8 +2494,9 @@ class AutomationPage(QWidget):
             enabled and queue.queue_id != DEFAULT_AUTOMATION_QUEUE_ID
         )
         self.pause_queue_button.setEnabled(enabled)
-        self.clear_queue_button.setEnabled(enabled)
-        self.remove_queue_item_button.setEnabled(enabled)
+        self.stop_current_routine_button.setEnabled(False)
+        self.stop_queue_button.setEnabled(False)
+        self.remove_queue_item_button.setEnabled(False)
         self.pending_queue_list.clear()
         if queue is None:
             self.queue_title_label.setText("Select a queue")
@@ -2500,8 +2507,16 @@ class AutomationPage(QWidget):
         self.queue_title_label.setText(queue.name)
         self.pause_queue_button.setText("Resume" if queue.paused else "Pause")
         current, pending = self.queue_manager.state(queue.queue_id)
+        current_cancelled = self.queue_manager.current_cancelled(queue.queue_id)
+        self.stop_current_routine_button.setEnabled(
+            current is not None and not current_cancelled
+        )
+        self.stop_queue_button.setEnabled(
+            bool(pending) or (current is not None and not current_cancelled)
+        )
         self.queue_status_label.setText(
-            f"Current: {current.routine_name if current else 'None'}  •  "
+            f"Current: {current.routine_name if current else 'None'}"
+            f"{' (cancelling)' if current_cancelled else ''}  •  "
             f"Limit: {queue.max_length}  •  Duplicates: {queue.duplicate_policy.title()}  •  "
             f"Delay: {queue.delay_seconds:g}s"
         )
@@ -2512,6 +2527,7 @@ class AutomationPage(QWidget):
                 f"Trigger: {item.trigger.trigger_id}\nEvent: {item.trigger.event_id}"
             )
             self.pending_queue_list.addItem(row)
+        self.remove_queue_item_button.setEnabled(bool(pending))
 
     def _add_queue(self) -> None:
         dialog = QueueEditorDialog(parent=self)
@@ -2576,11 +2592,24 @@ class AutomationPage(QWidget):
             return
         self._refresh_queues(queue.queue_id)
 
-    def _clear_queue(self) -> None:
+    def _stop_current_routine(self) -> None:
         queue = self._selected_queue()
         if queue is None:
             return
-        self.queue_manager.clear(queue.queue_id)
+        self.queue_manager.cancel_current(
+            queue.queue_id,
+            "Cancelled by user.",
+        )
+        self._refresh_queues(queue.queue_id)
+
+    def _stop_queue(self) -> None:
+        queue = self._selected_queue()
+        if queue is None:
+            return
+        self.queue_manager.stop(
+            queue.queue_id,
+            "Queue stopped by user.",
+        )
         self._refresh_queues(queue.queue_id)
 
     def _remove_queue_item(self) -> None:
@@ -4680,7 +4709,13 @@ class AutomationPage(QWidget):
                     "routine_id": result.routine_id,
                     "routine": routine.name if routine else result.routine_id,
                     "trigger": trigger_label or execution.trigger_id,
-                    "result": "Completed" if result.succeeded else "Failed",
+                    "result": (
+                        "Cancelled"
+                        if result.cancelled
+                        else "Completed"
+                        if result.succeeded
+                        else "Failed"
+                    ),
                     "tasks": str(len(result.task_results)),
                     "details": details,
                 },
@@ -4701,7 +4736,13 @@ class AutomationPage(QWidget):
         for index, task_result in enumerate(result.task_results, start=1):
             task = tasks_by_id.get(task_result.task_id)
             name = task.name if task is not None else task_result.task_type
-            state = "Completed" if task_result.succeeded else "Failed"
+            state = (
+                "Cancelled"
+                if task_result.cancelled
+                else "Completed"
+                if task_result.succeeded
+                else "Failed"
+            )
             lines.append(
                 f"{index}. {name} — {state} ({task_result.duration_ms} ms)"
             )

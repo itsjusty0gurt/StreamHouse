@@ -17,6 +17,7 @@ from products.hub.automation.queues import AutomationQueueManager, AutomationQue
 from products.hub.automation.routines import RoutineStore
 from products.hub.automation.service import AutomationService
 from products.hub.automation.tasks import TaskRegistry
+from products.hub.automation.variable_tasks import RunRoutineTask
 from products.hub.twitch.automation_triggers import (
     KEYWORD_PHRASE_EVENT_TYPE,
     TwitchEventTriggerStore,
@@ -33,6 +34,30 @@ class CaptureTask:
     def execute(self, task: TaskDefinition, trigger: TriggerEvent) -> TaskExecutionResult:
         self.users.append(str(trigger.context.get("user", "")))
         return TaskExecutionResult(task.task_id, task.task_type, True, "Captured.")
+
+
+class CancelCurrentTask:
+    task_type = "test.cancel_current"
+
+    def __init__(self, manager: AutomationQueueManager, queue_id: str) -> None:
+        self.manager = manager
+        self.queue_id = queue_id
+
+    def execute(self, task: TaskDefinition, trigger: TriggerEvent) -> TaskExecutionResult:
+        self.manager.cancel_current(self.queue_id)
+        return TaskExecutionResult(task.task_id, task.task_type, True, "Requested cancellation.")
+
+
+class StopQueueTask:
+    task_type = "test.stop_queue"
+
+    def __init__(self, manager: AutomationQueueManager, queue_id: str) -> None:
+        self.manager = manager
+        self.queue_id = queue_id
+
+    def execute(self, task: TaskDefinition, trigger: TriggerEvent) -> TaskExecutionResult:
+        self.manager.stop(self.queue_id)
+        return TaskExecutionResult(task.task_id, task.task_type, True, "Stopped queue.")
 
 
 class AutomationQueueTests(unittest.TestCase):
@@ -339,6 +364,169 @@ class AutomationQueueTests(unittest.TestCase):
 
         self.assertIsNone(self.manager.take_ready(queue.queue_id, now=11.9))
         self.assertIsNotNone(self.manager.take_ready(queue.queue_id, now=12))
+
+    def test_completed_cancellation_does_not_leak_into_next_queue_item(self) -> None:
+        queue = self.queue_store.add("Reusable")
+        first = self.manager.enqueue(
+            queue.queue_id,
+            "first",
+            "First",
+            self.event("First"),
+        ).item
+        self.assertIsNotNone(first)
+        current = self.manager.take_ready(queue.queue_id)
+        self.assertEqual(current, first)
+        self.assertEqual(self.manager.cancel_all_current("Shutdown"), 1)
+        self.assertTrue(self.manager.current_cancelled(queue.queue_id))
+        self.manager.complete(queue.queue_id)
+
+        second = self.manager.enqueue(
+            queue.queue_id,
+            "second",
+            "Second",
+            self.event("Second"),
+        ).item
+        current = self.manager.take_ready(queue.queue_id)
+
+        self.assertEqual(current, second)
+        self.assertFalse(self.manager.current_cancelled(queue.queue_id))
+
+    def test_stop_current_cancels_remaining_tasks_and_next_item_can_run(self) -> None:
+        queue = self.queue_store.add("Recovery")
+        self.registry.register(CancelCurrentTask(self.manager, queue.queue_id))
+        current_routine = self.routine_store.add("Current", queue_id=queue.queue_id)
+        self.routine_store.add_task(
+            current_routine.routine_id,
+            task_type="test.cancel_current",
+            name="Cancel current",
+        )
+        self.routine_store.add_task(
+            current_routine.routine_id,
+            task_type=self.capture.task_type,
+            name="Must not run",
+        )
+        next_routine = self.add_queued_routine(queue.queue_id)
+        self.manager.enqueue(
+            queue.queue_id,
+            current_routine.routine_id,
+            current_routine.name,
+            self.event("Current"),
+        )
+        self.manager.enqueue(
+            queue.queue_id,
+            next_routine.routine_id,
+            next_routine.name,
+            self.event("Next"),
+        )
+
+        first = self.service.process_queues()[0].routine_results[0]
+
+        self.assertTrue(first.cancelled)
+        self.assertFalse(first.succeeded)
+        self.assertEqual(self.capture.users, [])
+        current, pending = self.manager.state(queue.queue_id)
+        self.assertIsNone(current)
+        self.assertEqual(len(pending), 1)
+        self.assertEqual(pending[0].queue_id, queue.queue_id)
+
+        second = self.service.process_queues()[0].routine_results[0]
+        self.assertTrue(second.succeeded)
+        self.assertEqual(self.capture.users, ["Next"])
+
+    def test_stop_queue_cancels_current_clears_waiting_and_isolates_queues(self) -> None:
+        stopped_queue = self.queue_store.add("Stopped")
+        other_queue = self.queue_store.add("Unaffected")
+        self.queue_store.update(other_queue.queue_id, paused=True)
+        self.registry.register(StopQueueTask(self.manager, stopped_queue.queue_id))
+        current_routine = self.routine_store.add(
+            "Current",
+            queue_id=stopped_queue.queue_id,
+        )
+        self.routine_store.add_task(
+            current_routine.routine_id,
+            task_type="test.stop_queue",
+            name="Stop queue",
+        )
+        self.routine_store.add_task(
+            current_routine.routine_id,
+            task_type=self.capture.task_type,
+            name="Must not run",
+        )
+        for name in ("Waiting B", "Waiting C"):
+            waiting = self.routine_store.add(name, queue_id=stopped_queue.queue_id)
+            self.routine_store.add_task(
+                waiting.routine_id,
+                task_type=self.capture.task_type,
+                name="Capture",
+            )
+        unaffected = self.add_queued_routine(other_queue.queue_id)
+        for routine in (
+            current_routine,
+            *(
+                routine
+                for routine in self.routine_store.routines
+                if routine.name in {"Waiting B", "Waiting C"}
+            ),
+        ):
+            self.manager.enqueue(
+                stopped_queue.queue_id,
+                routine.routine_id,
+                routine.name,
+                self.event(routine.name),
+            )
+        self.manager.enqueue(
+            other_queue.queue_id,
+            unaffected.routine_id,
+            unaffected.name,
+            self.event("Other"),
+        )
+
+        stopped = self.service.process_queues()[0].routine_results[0]
+
+        self.assertTrue(stopped.cancelled)
+        self.assertEqual(self.manager.state(stopped_queue.queue_id), (None, ()))
+        self.assertEqual(self.manager.count(other_queue.queue_id), 1)
+        self.assertEqual(self.capture.users, [])
+
+    def test_nested_routine_uses_root_cancellation_and_skips_parent_remainder(self) -> None:
+        queue = self.queue_store.add("Nested")
+        self.registry.register(CancelCurrentTask(self.manager, queue.queue_id))
+        child = self.routine_store.add("Child")
+        self.routine_store.add_task(
+            child.routine_id,
+            task_type="test.cancel_current",
+            name="Cancel root",
+        )
+        self.routine_store.add_task(
+            child.routine_id,
+            task_type=self.capture.task_type,
+            name="Child remainder",
+        )
+        parent = self.routine_store.add("Parent", queue_id=queue.queue_id)
+        self.routine_store.add_task(
+            parent.routine_id,
+            task_type="core.run_routine",
+            name="Run child",
+            config={"routine_id": child.routine_id, "stop_on_failure": True},
+        )
+        self.routine_store.add_task(
+            parent.routine_id,
+            task_type=self.capture.task_type,
+            name="Parent remainder",
+        )
+        self.registry.register(
+            RunRoutineTask(
+                self.service.run_nested_routine,
+                self.service.routine_name,
+            )
+        )
+
+        result = self.service.run_routine(parent.routine_id).routine_results[0]
+
+        self.assertTrue(result.cancelled)
+        self.assertEqual(self.capture.users, [])
+        self.assertEqual(result.task_results[0].task_type, "core.run_routine")
+        self.assertTrue(result.task_results[0].cancelled)
 
     def test_routine_and_task_state_tasks_toggle_enabled_state(self) -> None:
         routine = self.routine_store.add("Toggle me")

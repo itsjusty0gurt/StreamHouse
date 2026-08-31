@@ -7803,6 +7803,9 @@ class MainWindow(QMainWindow):
             )
 
     def closeEvent(self, event: QCloseEvent) -> None:
+        self.automation_queue_manager.cancel_all_current(
+            "Hub is shutting down."
+        )
         self.wait_task.cancel_all()
         self.obs_service.cancel_pending_requests(
             "Hub is shutting down.",

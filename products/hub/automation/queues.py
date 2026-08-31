@@ -7,6 +7,7 @@ from time import monotonic
 from typing import Iterable
 from uuid import uuid4
 
+from products.hub.automation.cancellation import AutomationCancellation
 from products.hub.automation.models import (
     DEFAULT_AUTOMATION_QUEUE_ID,
     DEFAULT_AUTOMATION_QUEUE_NAME,
@@ -205,6 +206,7 @@ class AutomationQueueManager:
         self.store = store
         self.pending: dict[str, list[QueuedRoutine]] = {}
         self.current: dict[str, QueuedRoutine] = {}
+        self._cancellations: dict[str, AutomationCancellation] = {}
         self.ready_at: dict[str, float] = {}
         self._lock = RLock()
 
@@ -291,12 +293,17 @@ class AutomationQueueManager:
             return None
         item = items.pop(0)
         self.current[queue_id] = item
+        self._cancellations[queue_id] = AutomationCancellation(
+            queue_id,
+            item.item_id,
+        )
         return item
 
     def complete(self, queue_id: str, *, now: float | None = None) -> None:
         with self._lock:
             queue = self.store.get(queue_id)
             self.current.pop(queue_id, None)
+            self._cancellations.pop(queue_id, None)
             if queue is None:
                 self.ready_at.pop(queue_id, None)
                 return
@@ -319,6 +326,55 @@ class AutomationQueueManager:
             count = len(items)
             items.clear()
             return count
+
+    def cancellation_for(self, item: QueuedRoutine) -> AutomationCancellation:
+        with self._lock:
+            current = self.current.get(item.queue_id)
+            cancellation = self._cancellations.get(item.queue_id)
+            if (
+                current is None
+                or current.item_id != item.item_id
+                or cancellation is None
+            ):
+                raise RuntimeError("The queued routine is no longer current.")
+            return cancellation
+
+    def cancel_current(
+        self,
+        queue_id: str,
+        reason: str = "Cancelled by user.",
+    ) -> bool:
+        with self._lock:
+            cancellation = self._cancellations.get(queue_id)
+            return cancellation.cancel(reason) if cancellation is not None else False
+
+    def stop(
+        self,
+        queue_id: str,
+        reason: str = "Queue stopped by user.",
+    ) -> tuple[bool, int]:
+        """Cancel the current routine and remove every waiting queue item."""
+        with self._lock:
+            items = self.pending.get(queue_id, [])
+            cleared = len(items)
+            items.clear()
+            cancellation = self._cancellations.get(queue_id)
+            cancelled = (
+                cancellation.cancel(reason)
+                if cancellation is not None
+                else False
+            )
+            return cancelled, cleared
+
+    def current_cancelled(self, queue_id: str) -> bool:
+        with self._lock:
+            cancellation = self._cancellations.get(queue_id)
+            return bool(cancellation is not None and cancellation.cancelled)
+
+    def cancel_all_current(self, reason: str = "Automation cancelled.") -> int:
+        with self._lock:
+            cancellations = tuple(self._cancellations.values())
+            return sum(cancellation.cancel(reason) for cancellation in cancellations)
 
     def reorder(self, queue_id: str, item_ids: Iterable[str]) -> None:
         with self._lock:

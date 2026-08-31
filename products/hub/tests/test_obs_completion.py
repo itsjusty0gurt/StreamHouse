@@ -13,7 +13,11 @@ from PySide6.QtCore import QEventLoop, QThread, QThreadPool, QTimer
 from PySide6.QtWidgets import QApplication
 
 from products.hub.automation.core_tasks import WaitTask
-from products.hub.automation.models import TaskExecutionResult
+from products.hub.automation.models import (
+    DEFAULT_AUTOMATION_QUEUE_ID,
+    TaskExecutionResult,
+)
+from products.hub.automation.queues import AutomationQueueManager, AutomationQueueStore
 from products.hub.automation.routines import RoutineStore
 from products.hub.automation.service import AutomationService
 from products.hub.automation.tasks import TaskRegistry
@@ -229,6 +233,62 @@ class ObsCompletionTests(unittest.TestCase):
         self.assertFalse(result.succeeded)
         self.assertEqual(result.comment, "Hub is shutting down.")
         self.assertEqual(service.requests, [])
+
+    def test_queue_cancellation_releases_worker_obs_wait_and_callback(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            obs = AutoRespondingObsService()
+            obs.auto_respond = False
+            store = RoutineStore(root / "routines.json")
+            routine = store.add("Worker OBS")
+            store.add_task(
+                routine.routine_id,
+                task_type="obs.set_program_scene",
+                name="BRB",
+                config={"scene": "BRB"},
+            )
+            store.add_task(
+                routine.routine_id,
+                task_type="test.marker",
+                name="Must not run",
+            )
+            registry = TaskRegistry()
+            register_obs_tasks(registry, obs)
+            events: list[str] = []
+            registry.register(MarkerTask(events))
+            manager = AutomationQueueManager(
+                AutomationQueueStore(root / "queues.json")
+            )
+            automation = AutomationService(
+                store,
+                registry,
+                queue_manager=manager,
+            )
+            results = []
+            thread = threading.Thread(
+                target=lambda: results.append(
+                    automation.run_routine(routine.routine_id)
+                )
+            )
+            thread.start()
+            self.process_until(
+                lambda: bool(obs._callbacks)
+                and manager.state(DEFAULT_AUTOMATION_QUEUE_ID)[0] is not None
+            )
+
+            self.assertTrue(
+                manager.cancel_current(DEFAULT_AUTOMATION_QUEUE_ID)
+            )
+            self.process_until(lambda: not thread.is_alive())
+            thread.join()
+
+        routine_result = results[0].routine_results[0]
+        self.assertTrue(routine_result.cancelled)
+        self.assertFalse(routine_result.succeeded)
+        self.assertTrue(routine_result.task_results[0].cancelled)
+        self.assertEqual(events, [])
+        self.assertEqual(obs._callbacks, {})
+        self.assertEqual(obs._request_types, {})
 
     def test_reconnect_does_not_inherit_stale_waiters(self) -> None:
         service = AutoRespondingObsService()

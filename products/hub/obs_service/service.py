@@ -12,6 +12,7 @@ from PySide6.QtCore import QEventLoop, QObject, QThread, QTimer, QUrl, Qt, Signa
 from PySide6.QtNetwork import QAbstractSocket
 from PySide6.QtWebSockets import QWebSocket
 
+from products.hub.automation.cancellation import current_cancellation
 from products.hub.core.events import Events
 from shared.streamhouse_runtime.logger import Logger
 from products.hub.obs_service.models import ObsConnectionState, ObsEvent, ObsRequestResult
@@ -189,21 +190,34 @@ class ObsWebSocketService(QObject):
             1,
         )
         waiter = _ObsRequestWaiter(clean_type, dict(request_data or {}))
-        if QThread.currentThread() == self.thread():
-            loop = QEventLoop()
-            waiter.event_loop = loop
-            self._dispatch_waiter(waiter)
-            if not waiter.completed.is_set():
-                timer = QTimer()
-                timer.setSingleShot(True)
-                timer.timeout.connect(lambda: self._timeout_waiter(waiter, timeout))
-                timer.start(timeout)
-                loop.exec()
-                timer.stop()
-        else:
-            self._waiter_requested.emit(waiter)
-            if not waiter.completed.wait(timeout / 1000):
-                self._timeout_waiter(waiter, timeout)
+        cancellation = current_cancellation()
+        remove_cancellation_callback = (
+            cancellation.add_callback(
+                lambda reason: self._cancel_waiter(waiter, reason)
+            )
+            if cancellation is not None
+            else lambda: None
+        )
+        try:
+            if QThread.currentThread() == self.thread():
+                loop = QEventLoop()
+                waiter.event_loop = loop
+                self._dispatch_waiter(waiter)
+                if not waiter.completed.is_set():
+                    timer = QTimer()
+                    timer.setSingleShot(True)
+                    timer.timeout.connect(
+                        lambda: self._timeout_waiter(waiter, timeout)
+                    )
+                    timer.start(timeout)
+                    loop.exec()
+                    timer.stop()
+            else:
+                self._waiter_requested.emit(waiter)
+                if not waiter.completed.wait(timeout / 1000):
+                    self._timeout_waiter(waiter, timeout)
+        finally:
+            remove_cancellation_callback()
         return waiter.result or self._failure(
             clean_type,
             "OBS request ended without a result.",
@@ -234,6 +248,20 @@ class ObsWebSocketService(QObject):
             self._failure(
                 waiter.request_type,
                 f"Timed out waiting {timeout_ms / 1000:g} seconds for OBS.",
+                request_id=waiter.request_id,
+            )
+        )
+        if request_id:
+            if QThread.currentThread() == self.thread():
+                self._cancel_request(request_id)
+            else:
+                self._request_cancelled.emit(request_id)
+
+    def _cancel_waiter(self, waiter: _ObsRequestWaiter, detail: str) -> None:
+        request_id = waiter.timeout(
+            self._failure(
+                waiter.request_type,
+                detail,
                 request_id=waiter.request_id,
             )
         )

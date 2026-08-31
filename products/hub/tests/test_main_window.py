@@ -938,6 +938,75 @@ class MainWindowTests(unittest.TestCase):
         self.assertIn("12 ms", page.history_details.toPlainText())
         self.assertIn("Waited.", page.history_details.toPlainText())
 
+    def test_queue_stop_controls_and_cancelled_history_state(self) -> None:
+        page = self.window.automation_page
+        manager = self.window.automation_queue_manager
+        store = self.twitch_command_trigger_store.routine_store
+        routine = store.add("Emergency recovery")
+        task = store.add_task(
+            routine.routine_id,
+            task_type="core.wait",
+            name="Long wait",
+            config={"duration": "10", "unit": "seconds"},
+        )
+        trigger = TriggerEvent("manual", "test", "manual", {})
+        manager.enqueue(
+            DEFAULT_AUTOMATION_QUEUE_ID,
+            routine.routine_id,
+            routine.name,
+            trigger,
+        )
+        current = manager.take_ready(DEFAULT_AUTOMATION_QUEUE_ID)
+        self.assertIsNotNone(current)
+        manager.enqueue(
+            DEFAULT_AUTOMATION_QUEUE_ID,
+            routine.routine_id,
+            routine.name,
+            trigger,
+        )
+        page._refresh_queues(DEFAULT_AUTOMATION_QUEUE_ID)
+
+        self.assertTrue(page.stop_current_routine_button.isEnabled())
+        self.assertTrue(page.stop_queue_button.isEnabled())
+        page.stop_current_routine_button.click()
+        self.assertTrue(manager.current_cancelled(DEFAULT_AUTOMATION_QUEUE_ID))
+        self.assertEqual(manager.count(DEFAULT_AUTOMATION_QUEUE_ID), 1)
+        self.assertFalse(page.stop_current_routine_button.isEnabled())
+
+        page.stop_queue_button.click()
+        self.assertEqual(manager.count(DEFAULT_AUTOMATION_QUEUE_ID), 0)
+        self.assertFalse(page.stop_queue_button.isEnabled())
+        manager.complete(DEFAULT_AUTOMATION_QUEUE_ID)
+
+        page.record_execution(
+            AutomationExecutionResult(
+                event_id="cancelled-event",
+                trigger_id="manual",
+                routine_results=(
+                    RoutineExecutionResult(
+                        routine_id=routine.routine_id,
+                        succeeded=False,
+                        task_results=(
+                            TaskExecutionResult(
+                                task.task_id,
+                                task.task_type,
+                                False,
+                                "Cancelled by user.",
+                                15,
+                                cancelled=True,
+                            ),
+                        ),
+                        detail="Cancelled by user.",
+                        cancelled=True,
+                    ),
+                ),
+            ),
+            "Manual test",
+        )
+
+        self.assertEqual(page.history[0]["result"], "Cancelled")
+        self.assertIn("Long wait — Cancelled", page.history[0]["details"])
+
     def test_automation_page_lists_command_event_and_core_triggers_together(self) -> None:
         command = self.twitch_command_trigger_store.add("hello", "Hello")
         event_trigger = self.twitch_event_trigger_store.add(

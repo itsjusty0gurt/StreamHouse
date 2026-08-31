@@ -23,6 +23,7 @@ from PySide6.QtGui import QDesktopServices
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtWidgets import QApplication, QStyle, QSystemTrayIcon
 
+from products.hub.automation.cancellation import current_cancellation
 from products.hub.automation.models import TaskDefinition, TaskExecutionResult, TriggerEvent
 from products.hub.automation.variable_registry import render_placeholders
 from products.hub.automation.variable_tasks import VARIABLE_TASK_LABELS
@@ -159,20 +160,34 @@ class WaitTask:
     def _wait_interruptibly(self, milliseconds: int) -> bool:
         if milliseconds <= 0:
             return True
+        cancellation = current_cancellation()
+        if cancellation is not None and cancellation.cancelled:
+            return False
         loop = QEventLoop()
         timer = QTimer()
         timer.setSingleShot(True)
         timer.timeout.connect(loop.quit)
+        remove_cancellation_callback = (
+            cancellation.add_callback(lambda _reason: loop.quit())
+            if cancellation is not None
+            else lambda: None
+        )
         with self._lock:
-            if self._stopping:
+            if self._stopping or (
+                cancellation is not None and cancellation.cancelled
+            ):
+                remove_cancellation_callback()
                 return False
             self._active_loops.add(loop)
         try:
             timer.start(milliseconds)
             loop.exec()
-            return not timer.isActive()
+            return not timer.isActive() and not (
+                cancellation is not None and cancellation.cancelled
+            )
         finally:
             timer.stop()
+            remove_cancellation_callback()
             with self._lock:
                 self._active_loops.discard(loop)
 
