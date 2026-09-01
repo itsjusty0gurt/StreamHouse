@@ -1329,7 +1329,12 @@ class MainWindow(QMainWindow):
         self.ui.verticalLayout.insertWidget(2, self.connections_button)
         self.connections_page = QWidget()
         connections_layout = QVBoxLayout(self.connections_page)
-        connections_layout.addWidget(self.ui.twitchConnectionGroup)
+        self.twitch_connections_group = QGroupBox("Twitch")
+        self.twitch_connections_group.setObjectName("twitchConnectionsGroup")
+        twitch_connections_layout = QVBoxLayout(self.twitch_connections_group)
+        twitch_connections_layout.setSpacing(10)
+        self.ui.twitchConnectionGroup.setTitle("Main / Broadcaster Account")
+        twitch_connections_layout.addWidget(self.ui.twitchConnectionGroup)
         obs_group = QGroupBox("OBS Studio")
         self.obs_connection_group = obs_group
         obs_form = QFormLayout(obs_group)
@@ -1392,7 +1397,7 @@ class MainWindow(QMainWindow):
             self._schedule_obs_connection_save
         )
         self._handle_obs_status_changed(self.obs_service.state, "Disconnected")
-        bot_account_group = QGroupBox("Bot Chat Account")
+        bot_account_group = QGroupBox("Bot Account")
         self.twitch_bot_account_group = bot_account_group
         bot_account_layout = QFormLayout(bot_account_group)
         self.twitch_bot_account_status_label = QLabel("Not signed in")
@@ -1415,14 +1420,15 @@ class MainWindow(QMainWindow):
         bot_account_layout.addRow("Bot identity", self.twitch_bot_account_status_label)
         bot_account_layout.addRow("", bot_actions)
         bot_account_layout.addRow("", bot_account_help)
-        connections_layout.addWidget(bot_account_group)
-        connections_layout.addWidget(obs_group)
-        connections_layout.addWidget(self.ui.twitchErrorLabel)
+        twitch_connections_layout.addWidget(bot_account_group)
         health_group = QGroupBox("Connection Health")
+        self.twitch_health_group = health_group
         health_layout = QFormLayout(health_group)
         self.health_auth_label = QLabel("Signed out")
+        self.health_bot_auth_label = QLabel("Signed out")
+        self.health_chat_label = QLabel("Disconnected")
         self.health_token_label = QLabel("Not available")
-        self.health_eventsub_label = QLabel("Stopped")
+        self.health_eventsub_label = QLabel("Disconnected")
         self.health_channel_snapshot_label = QLabel("Never")
         self.health_permissions_label = QLabel("Unknown")
         self.health_permissions_label.setWordWrap(True)
@@ -1430,14 +1436,19 @@ class MainWindow(QMainWindow):
         self.health_error_label.setWordWrap(True)
         self.health_retry_button = QPushButton("Retry Now")
         self.health_retry_button.clicked.connect(self._retry_twitch_health)
-        health_layout.addRow("Authentication", self.health_auth_label)
-        health_layout.addRow("Token expiry", self.health_token_label)
+        health_layout.addRow("Broadcaster Auth", self.health_auth_label)
+        health_layout.addRow("Bot Auth", self.health_bot_auth_label)
+        health_layout.addRow("Chat", self.health_chat_label)
         health_layout.addRow("EventSub", self.health_eventsub_label)
+        health_layout.addRow("Required Scopes", self.health_permissions_label)
+        health_layout.addRow("Token expiry", self.health_token_label)
         health_layout.addRow("Channel refresh", self.health_channel_snapshot_label)
-        health_layout.addRow("Missing permissions", self.health_permissions_label)
         health_layout.addRow("Last issue", self.health_error_label)
         health_layout.addRow("", self.health_retry_button)
-        connections_layout.addWidget(health_group)
+        twitch_connections_layout.addWidget(health_group)
+        twitch_connections_layout.addWidget(self.ui.twitchErrorLabel)
+        connections_layout.addWidget(self.twitch_connections_group)
+        connections_layout.addWidget(obs_group)
         connections_layout.addStretch()
         self.ui.mainStack.addWidget(self.connections_page)
 
@@ -3438,7 +3449,19 @@ class MainWindow(QMainWindow):
             if missing_ad_scopes
             else "Enable Stream Tools"
         )
-        self.ui.twitchAccountStatusLabel.setText(detail)
+        account_status = detail
+        if signed_in:
+            account_status = (
+                f"@{detail} — Needs authorization"
+                if missing_scopes
+                else f"@{detail} — Connected"
+            )
+        self.ui.twitchAccountStatusLabel.setText(account_status)
+        self.ui.twitchAccountStatusLabel.setToolTip(
+            "Missing broadcaster scopes: " + ", ".join(sorted(missing_scopes))
+            if missing_scopes
+            else ""
+        )
         self.ui.twitchSignInButton.setEnabled(
             (not signed_in or bool(missing_scopes)) and not waiting
         )
@@ -3506,9 +3529,9 @@ class MainWindow(QMainWindow):
             else set()
         )
         if signed_in:
-            status = f"@{detail}"
+            status = f"@{detail} — Connected"
             if missing:
-                status += " — update permissions: " + ", ".join(sorted(missing))
+                status = f"@{detail} — Needs authorization"
             broadcaster_token = self.twitch_auth.token
             bot_token = self.twitch_bot_auth.token
             if (
@@ -3520,6 +3543,11 @@ class MainWindow(QMainWindow):
         else:
             status = detail
         self.twitch_bot_account_status_label.setText(status)
+        self.twitch_bot_account_status_label.setToolTip(
+            "Missing bot scopes: " + ", ".join(sorted(missing))
+            if missing
+            else ""
+        )
         self.twitch_bot_sign_in_button.setEnabled(
             (not signed_in or bool(missing)) and not waiting
         )
@@ -3531,6 +3559,7 @@ class MainWindow(QMainWindow):
         self.twitch_bot_sign_out_button.setEnabled(signed_in or waiting)
         if state is TwitchAuthState.ERROR:
             self.handle_twitch_error(f"Bot sign-in failed: {detail}")
+        self._refresh_twitch_health()
 
         # EventSub chat subscriptions are tied to the reading identity. Reopen
         # the socket when that identity changes, while keeping channel controls
@@ -7519,7 +7548,39 @@ class MainWindow(QMainWindow):
     def _refresh_twitch_health(self) -> None:
         if not hasattr(self, "health_auth_label"):
             return
-        self.health_auth_label.setText(self.twitch_health.auth_state)
+        broadcaster_state = self._last_twitch_auth_state
+        bot_state = self._last_twitch_bot_auth_state
+        broadcaster_missing = (
+            self.twitch_auth.missing_scopes(set(TWITCH_SCOPES))
+            if broadcaster_state is TwitchAuthState.SIGNED_IN
+            else set()
+        )
+        bot_missing = (
+            self.twitch_bot_auth.missing_scopes(set(TWITCH_BOT_SCOPES))
+            if bot_state is TwitchAuthState.SIGNED_IN
+            else set()
+        )
+        self.health_auth_label.setText(
+            self._twitch_auth_health_text(broadcaster_state, broadcaster_missing)
+        )
+        self.health_bot_auth_label.setText(
+            self._twitch_auth_health_text(bot_state, bot_missing)
+        )
+        connection_state = self.twitch_service.state
+        if connection_state is TwitchConnectionState.CONNECTED:
+            operational_state = "Connected"
+        elif connection_state is TwitchConnectionState.CONNECTING:
+            operational_state = "Connecting"
+        elif broadcaster_state is not TwitchAuthState.SIGNED_IN:
+            operational_state = "Needs Authorization"
+        elif broadcaster_missing or bot_missing:
+            operational_state = "Missing Scope"
+        elif connection_state is TwitchConnectionState.ERROR:
+            operational_state = "Error"
+        else:
+            operational_state = "Disconnected"
+        self.health_chat_label.setText(operational_state)
+        self.health_eventsub_label.setText(operational_state)
         token = self.twitch_auth.token
         if token is None or not isinstance(token.expires_at, (int, float)):
             self.health_token_label.setText("Not available")
@@ -7535,21 +7596,49 @@ class MainWindow(QMainWindow):
             self.health_token_label.setText(
                 f"{remaining // 60} minutes ({expires.astimezone():%H:%M})"
             )
-        self.health_eventsub_label.setText(
-            self.twitch_health.eventsub_state
-        )
         self.health_channel_snapshot_label.setText(
             TwitchHealth.elapsed_text(
                 self.twitch_health.last_channel_snapshot_success
             )
         )
-        missing = sorted(self.twitch_health.missing_scopes)
-        self.health_permissions_label.setText(
-            ", ".join(missing) if missing else "All requested permissions"
-        )
+        missing = sorted(broadcaster_missing | bot_missing)
+        missing_details = []
+        if broadcaster_state is not TwitchAuthState.SIGNED_IN:
+            self.health_permissions_label.setText("Needs Authorization")
+            missing_details.append(
+                "Sign in with the Main / Broadcaster Account to check scopes."
+            )
+        elif not missing:
+            self.health_permissions_label.setText("Ready")
+        elif len(missing) == 1:
+            self.health_permissions_label.setText("Missing Scope")
+        else:
+            self.health_permissions_label.setText(
+                f"Missing Scopes ({len(missing)})"
+            )
+        if broadcaster_missing:
+            missing_details.append(
+                "Broadcaster: " + ", ".join(sorted(broadcaster_missing))
+            )
+        if bot_missing:
+            missing_details.append("Bot: " + ", ".join(sorted(bot_missing)))
+        self.health_permissions_label.setToolTip("\n".join(missing_details))
         self.health_error_label.setText(
             self.twitch_health.last_channel_snapshot_error or "None"
         )
+
+    @staticmethod
+    def _twitch_auth_health_text(
+        state: TwitchAuthState,
+        missing_scopes: set[str],
+    ) -> str:
+        if state is TwitchAuthState.SIGNED_IN:
+            return "Needs Authorization" if missing_scopes else "Connected"
+        if state is TwitchAuthState.WAITING:
+            return "Authorizing"
+        if state is TwitchAuthState.ERROR:
+            return "Needs Authorization"
+        return "Disconnected"
 
     @Slot()
     def _save_chatter_history(self) -> None:

@@ -31,6 +31,7 @@ from shared.streamhouse_shared.models import (
 )
 from products.hub.core.settings import AppSettings
 from products.hub.twitch.auth import TwitchAuthState
+from products.hub.config.twitch import TWITCH_BOT_SCOPES, TWITCH_SCOPES
 from products.hub.twitch.chatter_history import ChatterHistoryStore, ChatterRecord
 from products.hub.automation.routines import RoutineStore
 from products.hub.automation.models import (
@@ -2161,7 +2162,7 @@ class MainWindowTests(unittest.TestCase):
 
         self.assertEqual(
             self.window.twitch_bot_account_status_label.text(),
-            "@testbot",
+            "@testbot — Connected",
         )
         self.assertFalse(self.window.twitch_bot_sign_in_button.isEnabled())
         self.assertTrue(self.window.twitch_bot_sign_out_button.isEnabled())
@@ -2265,7 +2266,17 @@ class MainWindowTests(unittest.TestCase):
         )
         self.assertIs(
             self.window.ui.twitchConnectionGroup.parentWidget(),
-            self.window.connections_page,
+            self.window.twitch_connections_group,
+        )
+        self.assertTrue(
+            self.window.twitch_connections_group.isAncestorOf(
+                self.window.twitch_bot_account_group
+            )
+        )
+        self.assertTrue(
+            self.window.twitch_connections_group.isAncestorOf(
+                self.window.twitch_health_group
+            )
         )
         self.window.show_twitch()
         self.assertIs(
@@ -2276,6 +2287,87 @@ class MainWindowTests(unittest.TestCase):
             self.window.channel_side_splitter.widget(0),
             self.window.chatter_list.parentWidget(),
         )
+
+    def test_twitch_group_shows_account_chat_eventsub_and_scope_health(self) -> None:
+        secret = "token-that-must-not-appear"
+        self.window.twitch_auth.token = Mock(
+            scopes=list(TWITCH_SCOPES),
+            user_id="broadcaster-1",
+            login="streamer",
+            expires_at=(datetime.now(timezone.utc) + timedelta(hours=1)).timestamp(),
+            access_token=secret,
+        )
+        self.window.twitch_bot_auth.token = Mock(
+            scopes=list(TWITCH_BOT_SCOPES),
+            user_id="bot-1",
+            login="helperbot",
+            access_token=secret,
+        )
+        self.window._last_twitch_auth_state = TwitchAuthState.SIGNED_IN
+        self.window._last_twitch_bot_auth_state = TwitchAuthState.SIGNED_IN
+        self.window.handle_twitch_auth_changed(
+            TwitchAuthState.SIGNED_IN,
+            "streamer",
+        )
+        self.window.handle_twitch_bot_auth_changed(
+            TwitchAuthState.SIGNED_IN,
+            "helperbot",
+        )
+        self.window.twitch_service.state = TwitchConnectionState.CONNECTED
+        self.window.handle_twitch_status_changed(
+            TwitchConnectionState.CONNECTED,
+            "streamer",
+        )
+
+        self.assertEqual(
+            self.window.ui.twitchConnectionGroup.title(),
+            "Main / Broadcaster Account",
+        )
+        self.assertEqual(self.window.twitch_bot_account_group.title(), "Bot Account")
+        self.assertEqual(self.window.health_auth_label.text(), "Connected")
+        self.assertEqual(self.window.health_bot_auth_label.text(), "Connected")
+        self.assertEqual(self.window.health_chat_label.text(), "Connected")
+        self.assertEqual(self.window.health_eventsub_label.text(), "Connected")
+        self.assertEqual(self.window.health_permissions_label.text(), "Ready")
+        visible_text = " ".join(
+            child.text()
+            for child in self.window.twitch_connections_group.findChildren(QLabel)
+        )
+        self.assertNotIn(secret, visible_text)
+        self.assertTrue(self.window.ui.twitchSignOutButton.isEnabled())
+        self.assertTrue(self.window.twitch_bot_sign_out_button.isEnabled())
+
+    def test_twitch_health_distinguishes_missing_scopes_and_disconnected_service(self) -> None:
+        self.window.twitch_auth.token = Mock(
+            scopes=[],
+            user_id="broadcaster-1",
+            login="streamer",
+            expires_at=(datetime.now(timezone.utc) + timedelta(hours=1)).timestamp(),
+        )
+        self.window._last_twitch_auth_state = TwitchAuthState.SIGNED_IN
+        self.window.handle_twitch_auth_changed(
+            TwitchAuthState.SIGNED_IN,
+            "streamer",
+        )
+
+        self.assertEqual(
+            self.window.ui.twitchAccountStatusLabel.text(),
+            "@streamer — Needs authorization",
+        )
+        self.assertEqual(self.window.health_auth_label.text(), "Needs Authorization")
+        self.assertTrue(
+            self.window.health_permissions_label.text().startswith("Missing Scope")
+        )
+        self.assertIn(
+            "Broadcaster:",
+            self.window.health_permissions_label.toolTip(),
+        )
+
+        self.window.twitch_auth.token.scopes = list(TWITCH_SCOPES)
+        self.window.twitch_service.state = TwitchConnectionState.DISCONNECTED
+        self.window._refresh_twitch_health()
+        self.assertEqual(self.window.health_chat_label.text(), "Disconnected")
+        self.assertEqual(self.window.health_eventsub_label.text(), "Disconnected")
 
     def test_channel_points_and_commands_columns_are_user_resizable(self) -> None:
         for table in (
@@ -2289,10 +2381,10 @@ class MainWindowTests(unittest.TestCase):
                     QHeaderView.ResizeMode.Interactive,
                 )
 
-    def test_obs_connection_is_below_bot_and_saves_automatically(self) -> None:
+    def test_obs_connection_is_below_twitch_group_and_saves_automatically(self) -> None:
         layout = self.window.connections_page.layout()
         self.assertLess(
-            layout.indexOf(self.window.twitch_bot_account_group),
+            layout.indexOf(self.window.twitch_connections_group),
             layout.indexOf(self.window.obs_connection_group),
         )
         self.assertFalse(hasattr(self.window, "obs_save_button"))
@@ -2400,7 +2492,10 @@ class MainWindowTests(unittest.TestCase):
             TwitchAuthState.SIGNED_IN,
             "testbot",
         )
-        self.assertEqual(self.window.ui.twitchAccountStatusLabel.text(), "testbot")
+        self.assertEqual(
+            self.window.ui.twitchAccountStatusLabel.text(),
+            "@testbot — Needs authorization",
+        )
         self.assertTrue(self.window.ui.twitchSignOutButton.isEnabled())
 
     def test_local_bot_classification_drives_chat_and_counter_filters(self) -> None:
