@@ -360,6 +360,10 @@ class TaskEditorTests(unittest.TestCase):
         fields["volume"].setValue(42)
 
         self.assertIsInstance(fields["wait_for_completion"], QCheckBox)
+        self.assertEqual(
+            fields["wait_for_completion"].text(),
+            "Wait until audio finishes",
+        )
         self.assertFalse(fields["timeout_seconds"].isEnabled())
         fields["wait_for_completion"].setChecked(True)
         self.assertTrue(fields["timeout_seconds"].isEnabled())

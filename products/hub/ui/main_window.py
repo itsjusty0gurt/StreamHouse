@@ -167,6 +167,7 @@ from products.hub.twitch.health import TwitchHealth
 from products.hub.twitch.analytics import AnalyticsSnapshot, build_analytics
 from products.hub.twitch.simulator import create_eventsub_notification
 from products.hub.ui.generated.ui_mainwindow import Ui_MainWindow
+from products.hub.ui.dashboard_page import DashboardPage
 from products.hub.ui.counters_page import CountersPage
 from products.hub.ui.log_handler import QtLogHandler
 from products.hub.ui.twitch_bridge import TwitchEventBridge
@@ -756,6 +757,24 @@ class MainWindow(QMainWindow):
             self.ui.settingsTitleLabel,
         ):
             page_title.hide()
+        for obsolete_dashboard_widget in (
+            self.ui.coreNameLabel,
+            self.ui.coreStatusLabel,
+            self.ui.aiNameLabel,
+            self.ui.aiStatusLabel,
+            self.ui.twitchNameLabel,
+            self.ui.twitchStatusLabel,
+            self.ui.obsNameLabel,
+            self.ui.obsStatusLabel,
+            self.ui.voiceNameLabel,
+            self.ui.voiceStatusLabel,
+        ):
+            obsolete_dashboard_widget.hide()
+        while self.ui.dashboardLayout.count():
+            self.ui.dashboardLayout.takeAt(0)
+        self.dashboard_page = DashboardPage(self.ui.dashboardPage)
+        self.dashboard_page.connections_requested.connect(self.show_connections)
+        self.ui.dashboardLayout.addWidget(self.dashboard_page, 1)
         old_chat_output = self.ui.twitchChatOutput
         self.ui.twitchChatOutput = TwitchChatView(self.ui.twitchChatTab)
         self.ui.twitchChatTabLayout.replaceWidget(
@@ -2805,6 +2824,7 @@ class MainWindow(QMainWindow):
         self.obs_disconnect_button.setEnabled(
             state in {ObsConnectionState.CONNECTING, ObsConnectionState.CONNECTED, ObsConnectionState.ERROR}
         )
+        self.dashboard_page.update_obs(state)
 
     def _handle_obs_automation_event(self, obs_event: ObsEvent) -> None:
         for trigger in self.obs_trigger_store.evaluate(obs_event):
@@ -3678,7 +3698,7 @@ class MainWindow(QMainWindow):
         self.twitch_health.eventsub_state = (
             "Connected" if connected else "Stopped"
         )
-        self._refresh_twitch_health()
+        self._refresh_twitch_health(connection_state=state)
 
     @Slot(object)
     def handle_twitch_message(self, chat_message: TwitchMessage) -> None:
@@ -7545,9 +7565,11 @@ class MainWindow(QMainWindow):
         self.refresh_channel_snapshot()
         self.statusBar().showMessage("Retrying Twitch services...", 5000)
 
-    def _refresh_twitch_health(self) -> None:
-        if not hasattr(self, "health_auth_label"):
-            return
+    def _refresh_twitch_health(
+        self,
+        *,
+        connection_state: TwitchConnectionState | None = None,
+    ) -> None:
         broadcaster_state = self._last_twitch_auth_state
         bot_state = self._last_twitch_bot_auth_state
         broadcaster_missing = (
@@ -7560,22 +7582,31 @@ class MainWindow(QMainWindow):
             if bot_state is TwitchAuthState.SIGNED_IN
             else set()
         )
+        self.dashboard_page.update_twitch(
+            broadcaster_state,
+            connection_state or self.twitch_service.state,
+            broadcaster_missing_scopes=broadcaster_missing,
+            bot_auth_state=bot_state,
+            bot_missing_scopes=bot_missing,
+        )
+        if not hasattr(self, "health_auth_label"):
+            return
         self.health_auth_label.setText(
             self._twitch_auth_health_text(broadcaster_state, broadcaster_missing)
         )
         self.health_bot_auth_label.setText(
             self._twitch_auth_health_text(bot_state, bot_missing)
         )
-        connection_state = self.twitch_service.state
-        if connection_state is TwitchConnectionState.CONNECTED:
+        effective_connection_state = connection_state or self.twitch_service.state
+        if effective_connection_state is TwitchConnectionState.CONNECTED:
             operational_state = "Connected"
-        elif connection_state is TwitchConnectionState.CONNECTING:
+        elif effective_connection_state is TwitchConnectionState.CONNECTING:
             operational_state = "Connecting"
         elif broadcaster_state is not TwitchAuthState.SIGNED_IN:
             operational_state = "Needs Authorization"
         elif broadcaster_missing or bot_missing:
             operational_state = "Missing Scope"
-        elif connection_state is TwitchConnectionState.ERROR:
+        elif effective_connection_state is TwitchConnectionState.ERROR:
             operational_state = "Error"
         else:
             operational_state = "Disconnected"

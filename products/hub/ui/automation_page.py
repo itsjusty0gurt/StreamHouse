@@ -827,7 +827,7 @@ class TaskEditorDialog(QDialog):
         "core.play_audio": (
             {"key": "file", "label": "Audio file", "kind": "file", "default": "", "required": True, "placeholder": "C:/path/to/sound.ogg, .mp3, or .wav"},
             {"key": "volume", "label": "Volume", "kind": "number", "default": 80, "minimum": 0, "maximum": 100, "suffix": "%"},
-            {"key": "wait_for_completion", "label": "", "kind": "bool", "default": False, "text": "Wait for the audio to finish before continuing"},
+            {"key": "wait_for_completion", "label": "", "kind": "bool", "default": False, "text": "Wait until audio finishes"},
             {"key": "timeout_seconds", "label": "Timeout", "kind": "number", "default": 30.0, "minimum": 0.1, "maximum": 86400.0, "suffix": " seconds"},
         ),
         "core.create_global_variable": (

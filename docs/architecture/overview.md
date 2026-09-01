@@ -1010,6 +1010,13 @@ Primary left navigation:
 - Logs
 - Settings
 
+The Hub Dashboard is a standalone lightweight landing page owned by
+`products/hub/ui/dashboard_page.py`. It shows the authoritative Hub version and
+build kind, compact Twitch/OBS connection summaries sourced from the existing
+services, navigation to Connections, and the configured project/issue-tracker
+links. It does not duplicate connection controls or depend on Streamhouse AI;
+Alpha 0.1 has no in-app update checker.
+
 Your Channel top tabs:
 
 - Chat
@@ -1046,7 +1053,8 @@ routine editor contains Triggers, Tasks, Settings, and History.
 - `products/hub/ui/main_window.py` replaces/builds substantial dynamic areas after
   `setupUi()`.
 - large feature widgets live in focused modules such as
-  `products/hub/ui/automation_page.py`, `products/hub/ui/soundboard_page.py`, and
+  `products/hub/ui/dashboard_page.py`, `products/hub/ui/automation_page.py`,
+  `products/hub/ui/soundboard_page.py`, and
   `products/hub/ui/channel_points_page.py`.
 
 `MainWindow` is the Hub composition root and shell coordinator. It may

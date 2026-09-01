@@ -184,6 +184,39 @@ class MainWindowTests(unittest.TestCase):
             )
             self.assertEqual(self.window.statusBar().currentMessage(), "")
 
+    def test_dashboard_connection_action_opens_connections_page(self) -> None:
+        self.window.show_dashboard()
+
+        self.window.dashboard_page.connections_button.click()
+
+        self.assertIs(
+            self.window.ui.mainStack.currentWidget(),
+            self.window.connections_page,
+        )
+        self.assertTrue(self.window.connections_button.isChecked())
+
+    def test_dashboard_reuses_live_twitch_and_obs_states(self) -> None:
+        self.window._last_twitch_auth_state = TwitchAuthState.SIGNED_IN
+        self.window.twitch_auth.missing_scopes = Mock(return_value=set())
+
+        self.window.handle_twitch_status_changed(
+            TwitchConnectionState.CONNECTED,
+            "testchannel",
+        )
+        self.window._handle_obs_status_changed(
+            ObsConnectionState.CONNECTED,
+            "Connected",
+        )
+
+        self.assertEqual(
+            self.window.dashboard_page.twitch_status_label.text(),
+            "Connected",
+        )
+        self.assertEqual(
+            self.window.dashboard_page.obs_status_label.text(),
+            "Connected",
+        )
+
     def test_streamhouse_ai_presence_is_event_driven(self) -> None:
         self.assertFalse(hasattr(self.window, "ai_health_timer"))
         with patch.object(self.window, "_check_streamhouse_ai") as connect:

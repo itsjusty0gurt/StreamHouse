@@ -370,6 +370,7 @@ class PlayAudioTask:
         self._player_factory = player_factory
         self._audio_output_factory = audio_output_factory
         self._active_players: list[tuple[object, object]] = []
+        self._active_players_lock = RLock()
 
     def execute(self, task: TaskDefinition, trigger: TriggerEvent) -> TaskExecutionResult:
         try:
@@ -395,7 +396,7 @@ class PlayAudioTask:
                 True,
                 f"Started audio: {audio_file.name} at {volume_percent}%.",
             )
-        except (OSError, TypeError, ValueError) as error:
+        except (OSError, RuntimeError, TypeError, ValueError) as error:
             return _result(task, False, str(error))
 
     @classmethod
@@ -415,11 +416,13 @@ class PlayAudioTask:
 
     def _play_background(self, player, audio_output) -> None:
         entry = (player, audio_output)
-        self._active_players.append(entry)
+        with self._active_players_lock:
+            self._active_players.append(entry)
 
         def forget(*_args) -> None:
-            if entry in self._active_players:
-                self._active_players.remove(entry)
+            with self._active_players_lock:
+                if entry in self._active_players:
+                    self._active_players.remove(entry)
 
         player.playbackStateChanged.connect(
             lambda state: (
@@ -433,9 +436,11 @@ class PlayAudioTask:
 
     def stop_all(self) -> None:
         """Stop any background audio started by this task instance."""
-        for player, _audio_output in tuple(self._active_players):
+        with self._active_players_lock:
+            active_players = tuple(self._active_players)
+            self._active_players.clear()
+        for player, _audio_output in active_players:
             player.stop()
-        self._active_players.clear()
 
     def _play_and_wait(
         self,
@@ -454,36 +459,107 @@ class PlayAudioTask:
         )
         timed_out = False
         failed = False
+        completed = False
+        cancelled = False
+        cancellation_reason = "Audio playback was cancelled."
+        failure_detail = "Audio playback failed."
+        done = False
+        entry = (player, audio_output)
+        with self._active_players_lock:
+            self._active_players.append(entry)
 
         def finish() -> None:
+            nonlocal done
+            done = True
             if loop.isRunning():
                 loop.quit()
 
         def timeout() -> None:
             nonlocal timed_out
             timed_out = True
-            player.stop()
             finish()
 
-        def fail(*_args) -> None:
-            nonlocal failed
+        def fail(*args) -> None:
+            nonlocal failed, failure_detail
             failed = True
+            supplied_detail = next(
+                (
+                    str(value).strip()
+                    for value in reversed(args)
+                    if isinstance(value, str) and str(value).strip()
+                ),
+                "",
+            )
+            error_string = getattr(player, "errorString", lambda: "")()
+            failure_detail = supplied_detail or str(error_string).strip() or failure_detail
             finish()
+
+        def media_status_changed(status) -> None:
+            nonlocal completed
+            if status == QMediaPlayer.MediaStatus.EndOfMedia:
+                completed = True
+                finish()
+            elif status == QMediaPlayer.MediaStatus.InvalidMedia:
+                fail("The audio file could not be played.")
+
+        media_status_signal = getattr(player, "mediaStatusChanged", None)
+        if media_status_signal is not None:
+            media_status_signal.connect(media_status_changed)
+
+        def stopped() -> None:
+            nonlocal completed
+            if done:
+                return
+            if media_status_signal is None:
+                # Test/fallback players without media status can only report
+                # completion through the stopped-state signal.
+                completed = True
+                finish()
+                return
+            status = getattr(player, "mediaStatus", lambda: None)()
+            if status == QMediaPlayer.MediaStatus.EndOfMedia:
+                media_status_changed(status)
+            else:
+                fail("Audio playback stopped before the file finished.")
 
         player.playbackStateChanged.connect(
             lambda state: (
-                finish()
+                QTimer.singleShot(0, stopped)
                 if state == QMediaPlayer.PlaybackState.StoppedState
                 else None
             )
         )
         player.errorOccurred.connect(fail)
         timer.timeout.connect(timeout)
-        timer.start(round(timeout_seconds * 1000))
-        player.play()
-        _keep_alive = (player, audio_output)
-        loop.exec()
-        timer.stop()
+        cancellation = current_cancellation()
+
+        def cancel(reason: str) -> None:
+            nonlocal cancelled, cancellation_reason
+            cancelled = True
+            cancellation_reason = str(reason).strip() or cancellation_reason
+            finish()
+
+        remove_cancellation_callback = (
+            cancellation.add_callback(cancel)
+            if cancellation is not None
+            else lambda: None
+        )
+        try:
+            if not cancelled:
+                timer.start(round(timeout_seconds * 1000))
+                player.play()
+                if not done:
+                    loop.exec()
+        finally:
+            timer.stop()
+            remove_cancellation_callback()
+            with self._active_players_lock:
+                if entry in self._active_players:
+                    self._active_players.remove(entry)
+        if timed_out or failed or cancelled:
+            player.stop()
+        if cancelled:
+            return _result(task, False, cancellation_reason)
         if timed_out:
             return _result(
                 task,
@@ -491,7 +567,9 @@ class PlayAudioTask:
                 f"Audio timed out after {timeout_seconds:g} seconds.",
             )
         if failed:
-            return _result(task, False, "Audio playback failed.")
+            return _result(task, False, failure_detail)
+        if not completed:
+            return _result(task, False, "Audio playback ended without completion.")
         return _result(
             task,
             True,
