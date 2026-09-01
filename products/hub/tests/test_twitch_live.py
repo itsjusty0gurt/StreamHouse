@@ -8,6 +8,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtWidgets import QApplication
 
 from products.hub.twitch.auth import TwitchToken
+from products.hub.twitch.automation_triggers import CHANNEL_POINT_REDEMPTION_EVENT_TYPE
 from products.hub.twitch.live import TwitchEventSubSocket, TwitchHelixClient
 from products.hub.twitch.models import TwitchEventTransport
 from products.hub.twitch.simulator import create_chat_notification
@@ -260,6 +261,25 @@ class TwitchHelixClientTests(unittest.TestCase):
             "channel.channel_points_custom_reward_redemption.add",
             event_types,
         )
+
+    def test_read_redemptions_scope_creates_one_broadcaster_reward_subscription(self) -> None:
+        client = TwitchHelixClient()
+        client._create_subscription = Mock()
+        token = TwitchToken(
+            "access", "refresh", 999, ["channel:read:redemptions"]
+        )
+
+        client.create_activity_subscriptions(
+            "session-1", "channel-1", "bot-1", token
+        )
+
+        calls = [
+            call for call in client._create_subscription.call_args_list
+            if call.args[0] == CHANNEL_POINT_REDEMPTION_EVENT_TYPE
+        ]
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0].args[1], "1")
+        self.assertEqual(calls[0].args[2], {"broadcaster_user_id": "channel-1"})
 
     @patch("products.hub.twitch.live.urlopen")
     def test_redemption_status_uses_official_patch_contract(self, open_url) -> None:

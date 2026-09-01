@@ -4,6 +4,7 @@ from enum import StrEnum
 from secrets import token_hex
 from urllib.error import HTTPError, URLError
 
+from products.hub.config.twitch import TWITCH_REDEMPTION_SCOPES
 from products.hub.core.events import Events
 from shared.streamhouse_runtime.logger import Logger
 from products.hub.twitch.eventsub import EventSubWebhookProcessor, LocalEventSubListener
@@ -394,6 +395,22 @@ class TwitchService:
                 manageable=str(item.get("id", "")) in manageable_ids,
             )
             for item in all_rewards
+        ]
+
+    def get_custom_rewards_for_discovery(self) -> list[TwitchCustomReward]:
+        """Return every custom reward using either supported redemption scope."""
+
+        broadcaster_id, token = self._broadcaster_credentials()
+        if not set(token.scopes).intersection(TWITCH_REDEMPTION_SCOPES):
+            raise ValueError(
+                "Reconnect Twitch to grant channel:read:redemptions or "
+                "channel:manage:redemptions."
+            )
+        return [
+            TwitchCustomReward.from_dict(item)
+            for item in self.helix.get_custom_rewards(
+                broadcaster_id, token, only_manageable=False
+            )
         ]
 
     def create_custom_reward(

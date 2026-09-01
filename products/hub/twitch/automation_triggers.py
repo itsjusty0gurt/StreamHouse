@@ -30,6 +30,9 @@ TWITCH_EVENT_AUTOMATION_TYPES = (
     "stream.offline",
     "channel.chat.first_message",
 )
+CHANNEL_POINT_REDEMPTION_EVENT_TYPE = (
+    "channel.channel_points_custom_reward_redemption.add"
+)
 KEYWORD_PHRASE_EVENT_TYPE = "channel.chat.keyword_phrase"
 ADS_TRIGGER_TYPES = {
     "ads.warning.5_minutes": "5 Minute Warning",
@@ -60,6 +63,8 @@ class TwitchEventAutomationTrigger:
     filters: dict[str, str] = field(default_factory=dict)
     enabled: bool = True
     reset_minutes: int = 15
+    reward_id: str = ""
+    reward_title: str = ""
 
     @classmethod
     def from_dict(
@@ -82,11 +87,13 @@ class TwitchEventAutomationTrigger:
                 max(int(values.get("reset_minutes", 15)), 1),
                 180,
             ),
+            reward_id=str(values.get("reward_id", "")).strip(),
+            reward_title=str(values.get("reward_title", "")).strip(),
         )
 
 
 class TwitchEventTriggerStore:
-    VERSION = 2
+    VERSION = 3
 
     def __init__(
         self,
@@ -151,6 +158,8 @@ class TwitchEventTriggerStore:
         filters: Mapping[str, str] | None = None,
         enabled: bool = True,
         reset_minutes: int = 15,
+        reward_id: str = "",
+        reward_title: str = "",
     ) -> TwitchEventAutomationTrigger:
         trigger = TwitchEventAutomationTrigger(
             trigger_id=uuid4().hex,
@@ -159,6 +168,8 @@ class TwitchEventTriggerStore:
             filters=self._clean_filters(filters or {}),
             enabled=bool(enabled),
             reset_minutes=int(reset_minutes),
+            reward_id=reward_id.strip(),
+            reward_title=reward_title.strip(),
         )
         self._validate(trigger)
         if self.routine_store.get(routine_id) is None:
@@ -181,6 +192,8 @@ class TwitchEventTriggerStore:
         filters: Mapping[str, str] | None = None,
         enabled: bool | None = None,
         reset_minutes: int | None = None,
+        reward_id: str = "",
+        reward_title: str = "",
     ) -> TwitchEventAutomationTrigger:
         trigger = self.get(trigger_id)
         if trigger is None:
@@ -196,6 +209,8 @@ class TwitchEventTriggerStore:
                 if reset_minutes is None
                 else int(reset_minutes)
             ),
+            reward_id=reward_id.strip(),
+            reward_title=reward_title.strip(),
         )
         self._validate(candidate)
         index = self.triggers.index(trigger)
@@ -264,7 +279,40 @@ class TwitchEventTriggerStore:
             for trigger in self.triggers
             if trigger.enabled
             and trigger.event_type == twitch_event.subscription_type
+            and self._matches_reward(event, trigger)
             and self._matches(event, trigger.filters)
+        )
+
+    def add_channel_point_redemption(
+        self,
+        routine_id: str,
+        *,
+        reward_id: str = "",
+        reward_title: str = "",
+        enabled: bool = True,
+    ) -> TwitchEventAutomationTrigger:
+        return self.add(
+            routine_id,
+            CHANNEL_POINT_REDEMPTION_EVENT_TYPE,
+            enabled=enabled,
+            reward_id=reward_id,
+            reward_title=reward_title,
+        )
+
+    def update_channel_point_redemption(
+        self,
+        trigger_id: str,
+        *,
+        reward_id: str = "",
+        reward_title: str = "",
+        enabled: bool | None = None,
+    ) -> TwitchEventAutomationTrigger:
+        return self.update(
+            trigger_id,
+            event_type=CHANNEL_POINT_REDEMPTION_EVENT_TYPE,
+            enabled=enabled,
+            reward_id=reward_id,
+            reward_title=reward_title,
         )
 
     def evaluate_named(
@@ -467,7 +515,7 @@ class TwitchEventTriggerStore:
             bool(message.broadcaster_user_id)
             and message.user_id == message.broadcaster_user_id
         )
-        return {
+        context = {
             "user": message.username or "--",
             "user_id": message.user_id or "--",
             "user_login": message.user_login or "--",
@@ -483,6 +531,7 @@ class TwitchEventTriggerStore:
             "message": message.text or "--",
             "message_id": message.message_id or "--",
         }
+        return context
 
     @staticmethod
     def _filter_bool(
@@ -570,7 +619,7 @@ class TwitchEventTriggerStore:
         amount = cls._first(event, "bits", "total", "viewers", "amount")
         if not amount:
             amount = str(reward.get("cost", ""))
-        return {
+        context = {
             "user": user or "--",
             "channel": channel or twitch_event.broadcaster_user_login or "--",
             "event": twitch_event.subscription_type.rsplit(".", 1)[-1],
@@ -591,6 +640,7 @@ class TwitchEventTriggerStore:
                 "from_broadcaster_user_id",
                 "moderator_user_id",
             ) or "--",
+            "user_login": cls._first(event, "user_login") or "--",
             "target_user_id": cls._first(event, "target_user_id") or "--",
             "message_id": cls._first(event, "message_id") or "--",
             "redemption_id": (
@@ -607,6 +657,31 @@ class TwitchEventTriggerStore:
             "target": "--",
             "uses": "--",
         }
+        if twitch_event.subscription_type == CHANNEL_POINT_REDEMPTION_EVENT_TYPE:
+            context.update(
+                {
+                    "channel_points.redemption_id": cls._first(event, "id"),
+                    "channel_points.reward_id": str(reward.get("id", "")),
+                    "channel_points.reward_title": str(reward.get("title", "")),
+                    "channel_points.reward_cost": str(reward.get("cost", "")),
+                    "channel_points.reward_prompt": str(reward.get("prompt", "")),
+                    "channel_points.user_input": str(event.get("user_input", "")),
+                    "channel_points.status": cls._first(event, "status"),
+                    "channel_points.redeemed_at": cls._first(event, "redeemed_at"),
+                }
+            )
+        return context
+
+    @staticmethod
+    def _matches_reward(
+        event: Mapping[str, Any], trigger: TwitchEventAutomationTrigger
+    ) -> bool:
+        if trigger.event_type != CHANNEL_POINT_REDEMPTION_EVENT_TYPE:
+            return True
+        if not trigger.reward_id:
+            return True
+        reward = event.get("reward", {})
+        return isinstance(reward, Mapping) and str(reward.get("id", "")) == trigger.reward_id
 
     @staticmethod
     def _first(values: Mapping[str, Any], *keys: str) -> str:

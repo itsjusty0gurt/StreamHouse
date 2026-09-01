@@ -34,6 +34,13 @@ TWITCH_AD_SCOPES = frozenset(
     }
 )
 
+TWITCH_REDEMPTION_SCOPES = frozenset(
+    {
+        "channel:read:redemptions",
+        "channel:manage:redemptions",
+    }
+)
+
 TWITCH_CHANNEL_SNAPSHOT_SCOPES = frozenset(
     {
         "moderator:read:chatters",

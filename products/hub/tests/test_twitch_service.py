@@ -360,6 +360,30 @@ class TwitchServiceTests(unittest.TestCase):
             "channel-1", token, only_manageable=True
         )
 
+    def test_custom_reward_discovery_accepts_read_scope_and_includes_all(self) -> None:
+        token = TwitchToken(
+            "access", "refresh", 999, ["channel:read:redemptions"], user_id="channel-1"
+        )
+        helix = Mock()
+        helix.get_custom_rewards.return_value = [
+            {"id": "other-1", "title": "External reward", "cost": 750}
+        ]
+        service = TwitchService(auth=Mock(token=token), helix=helix)
+
+        rewards = service.get_custom_rewards_for_discovery()
+
+        self.assertEqual([(item.id, item.title) for item in rewards], [("other-1", "External reward")])
+        helix.get_custom_rewards.assert_called_once_with(
+            "channel-1", token, only_manageable=False
+        )
+
+    def test_custom_reward_discovery_explains_missing_scope(self) -> None:
+        token = TwitchToken("access", "refresh", 999, [], user_id="channel-1")
+        service = TwitchService(auth=Mock(token=token), helix=Mock())
+
+        with self.assertRaisesRegex(ValueError, "channel:read:redemptions"):
+            service.get_custom_rewards_for_discovery()
+
     def test_pin_failure_does_not_resend_successful_notice(self) -> None:
         broadcaster = TwitchToken(
             "broadcaster-access",

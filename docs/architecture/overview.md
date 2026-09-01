@@ -477,8 +477,8 @@ writes. Valid types are `text`, `integer`, `number`,
 malformed names, duplicate names, provider collisions, alias collisions, and
 alias loops are rejected. Reserved built-in namespaces currently include
 `stream`, `user`, `chat`, `command`, `keyword`, `event`, `counter`, `obs`,
-`hub`, `custom`, `automation`, `ads`, `soundboard`, `target`, `channel`,
-`socials`, and `serverinfo`.
+`hub`, `custom`, `automation`, `ads`, `channel_points`, `soundboard`, `target`,
+`channel`, `socials`, and `serverinfo`.
 Current providers expose:
 
 - cached Twitch stream values: `stream.title`, `stream.category`,
@@ -491,6 +491,9 @@ Current providers expose:
   `keyword.before`, and `keyword.after`;
 - cached and calculated Twitch ad state as `ads.*`, plus contextual
   `ads.requester.*` values when an Ads Started event supplies them;
+- contextual Channel Point Redemption data as `channel_points.*`, including
+  stable reward/redemption IDs, title, cost, prompt, optional viewer input,
+  status, and redemption time;
 - automatically available Hub-owned Channel Information as `channel.schedule`,
   `channel.rules`, `socials.<service>`, and `serverinfo.details`;
 - stable shared counter totals as `counter.<counter_id>.stream` and contextual
@@ -505,7 +508,8 @@ Availability/lifetime is metadata, not a sample-value inference:
   A provider can still report one unavailable while disconnected or before a
   cached value has been observed.
 - **Contextual** definitions require trigger/event data. `user.*`, `chat.*`,
-  `command.*`, `keyword.*`, `ads.requester.*`, and `counter.<id>.viewer` never
+  `command.*`, `keyword.*`, `ads.requester.*`, `channel_points.*`, and
+  `counter.<id>.viewer` never
   invent a viewer, message, requester, or fallback value.
 - **Temporary** definitions describe task/action outputs that exist only in the
   current routine execution after their producing task has run. They are not
@@ -533,8 +537,9 @@ unavailable and does not substitute the shared value or create a viewer entry.
 
 The Automation **Variables** tab is a definition reference as well as a live
 value view. It always lists registry definitions, including contextual
-`command.*`, `keyword.*`, `ads.requester.*`, viewer/chat/user, and OBS event
-definitions when no matching routine is running. **Current Value** and
+`command.*`, `keyword.*`, `ads.requester.*`, `channel_points.*`,
+viewer/chat/user, and OBS event definitions when no matching routine is
+running. **Current Value** and
 **Status** distinguish a known definition from a value that is presently
 available; the page never substitutes preview data for a live value. Compact
 Context and Lifetime columns use provider metadata such as **Chat Command
@@ -708,6 +713,7 @@ Adding a task requires more than a handler. See **Adding an automation task**.
 | --- | --- | --- | --- |
 | Twitch commands | `TwitchCommandTriggerStore` | `twitch/commands.json` | configured `!command` triggers, aliases, permissions, cooldowns, statistics, and default-template provenance |
 | Twitch activity | `TwitchEventTriggerStore` | `twitch/event_triggers.json` | follow, sub, gift, cheer, raid, reward, online/offline |
+| Twitch Channel Point Redemption | same as above | same | one broadcaster EventSub subscription, local matching by stable reward ID or Any Custom Reward |
 | Twitch first message | same as above | same | once per viewer per stream with offline grace reset |
 | Twitch Keyword / Phrase | same as above | same | Contains/Exact/Starts With/Ends With chat matching with case and whole-word controls |
 | Twitch Ads | same as above | same | 5/3/2/1-minute warnings, EventSub-backed Ads Started, Hub-calculated Ads Ended |
@@ -1204,7 +1210,7 @@ formats are accepted.
 | `twitch/channel-information.json` | Hub | pre-alpha schema v3 committed social links/inclusion, schedule, rules, and server information; automatic Variables with no exposure flags; older development schemas reset |
 | `counters/index.json` | Hub | pre-alpha schema v2 definitions: stable ID, labels, scopes, numeric type, reset/minimum, and display precision |
 | `counters/<counter_id>.json` | Hub | schema v2 atomic values stored as exact decimal strings; shared/current-stream and Twitch-user-ID keyed values |
-| `twitch/event_triggers.json` | Hub | schema v2 EventSub, first-message, Keyword/Phrase, and Ads triggers |
+| `twitch/event_triggers.json` | Hub | schema v3 EventSub, stable-ID Channel Point Redemption, first-message, Keyword/Phrase, and Ads triggers |
 | `twitch/soundboard.json` | Hub | schema v1 pages, buttons, routine IDs |
 | `twitch/soundboard-relay.json` | Hub | v1 non-secret relay URL/channel/autoconnect |
 | `obs/connection.json` | Hub | v1 non-secret OBS host/port/autoconnect |

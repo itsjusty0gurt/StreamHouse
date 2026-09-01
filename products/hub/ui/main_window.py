@@ -2709,6 +2709,8 @@ class MainWindow(QMainWindow):
             self.task_registry,
             self.automation_service,
             obs_service=self.obs_service,
+            twitch_service=self.twitch_service,
+            twitch_auth=self.twitch_auth,
             commands_changed=self._refresh_twitch_commands,
             queue_store=self.automation_queue_store,
             queue_manager=self.automation_queue_manager,

@@ -554,7 +554,7 @@ class MainWindowTests(unittest.TestCase):
         )
         self.assertEqual(
             [action.text() for action in add_menu.actions()[2].menu().actions()],
-            ["Chat", "Ads", "Events"],
+            ["Chat", "Ads", "Channel Point Redemption…", "Events"],
         )
         twitch_menu = add_menu.actions()[2].menu()
         self.assertEqual(
@@ -573,7 +573,7 @@ class MainWindowTests(unittest.TestCase):
             ],
         )
         self.assertEqual(
-            [action.text() for action in twitch_menu.actions()[2].menu().actions()],
+            [action.text() for action in twitch_menu.actions()[3].menu().actions()],
             [
                 "Follow",
                 "Subscribe",
@@ -581,7 +581,6 @@ class MainWindowTests(unittest.TestCase):
                 "Subscription › Message",
                 "Cheer",
                 "Raid",
-                "Channel Points Custom Reward Redemption › Add",
                 "Stream › Online",
                 "Stream › Offline",
             ],
@@ -613,7 +612,7 @@ class MainWindowTests(unittest.TestCase):
         menu = QMenu()
         add_menu = page._add_trigger_submenu(menu)
         twitch_menu = add_menu.actions()[2].menu()
-        event_menu = twitch_menu.actions()[2].menu()
+        event_menu = twitch_menu.actions()[3].menu()
 
         event_menu.actions()[0].trigger()
 

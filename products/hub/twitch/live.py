@@ -13,7 +13,7 @@ from PySide6.QtCore import QObject, QTimer, QUrl
 from PySide6.QtNetwork import QAbstractSocket
 from PySide6.QtWebSockets import QWebSocket
 
-from products.hub.config.twitch import TWITCH_CLIENT_ID
+from products.hub.config.twitch import TWITCH_CLIENT_ID, TWITCH_REDEMPTION_SCOPES
 from products.hub.twitch.auth import TwitchToken
 from products.hub.twitch.models import (
     TwitchEvent,
@@ -241,9 +241,7 @@ class TwitchHelixClient:
                 "1",
                 {"broadcaster_user_id": broadcaster_user_id},
             ))
-        if scopes.intersection(
-            {"channel:read:redemptions", "channel:manage:redemptions"}
-        ):
+        if scopes.intersection(TWITCH_REDEMPTION_SCOPES):
             activity_specs.append((
                 "channel.channel_points_custom_reward_redemption.add",
                 "1",

@@ -282,7 +282,7 @@ rejected authorization distinctly from a genuine not-following result.
 ## Automation event triggers
 
 Twitch EventSub automation triggers persist at
-`twitch/event_triggers.json` in the exact current v2 schema; unversioned and
+`twitch/event_triggers.json` in the exact current v3 schema; unversioned and
 obsolete private-development formats are rejected rather than migrated. The
 live-ready set is follow, subscribe,
 subscription gift, subscription message, cheer, incoming raid, custom channel
@@ -297,6 +297,26 @@ user-facing templates use the registry's canonical dotted definitions, such as
 `{event.amount}`, `{event.bits}`, `{event.viewers}`, `{event.tier}`,
 `{event.reward}`, `{event.reward_id}`, and `{event.reward_cost}`. Live traffic
 and Developer Simulation enter the same routing path.
+
+**Channel Point Redemption** is a dedicated trigger in the Twitch tree rather
+than a free-form payload-filter workflow. Hub creates one broadcaster-level
+`channel.channel_points_custom_reward_redemption.add` v1 EventSub subscription
+when the broadcaster token has either `channel:read:redemptions` or
+`channel:manage:redemptions`; configured routines then match locally. The
+editor discovers all custom rewards asynchronously and stores the stable Twitch
+reward ID plus its title for display. Matching uses only the ID, so a renamed
+reward continues to work; a deleted or temporarily unavailable reward remains
+visible as a missing saved selection. **Any Custom Reward** leaves the ID empty
+and matches every custom reward. Multiple routines may match one redemption.
+
+Each matching execution receives normal `user.*` values plus the routine-scoped
+`channel_points.redemption_id`, `channel_points.reward_id`,
+`channel_points.reward_title`, `channel_points.reward_cost`,
+`channel_points.reward_prompt`, `channel_points.user_input`,
+`channel_points.status`, and `channel_points.redeemed_at` definitions. Viewer
+input remains an available empty string when a reward has no input. These
+values flow through nested routines and disappear with the root execution.
+EventSub message-ID deduplication remains owned by the shared Twitch ingress.
 
 The Twitch trigger tree also provides an Ads category with 5-, 3-, 2-, and
 1-minute warnings, Ads Started, and Ads Ended. Warning state belongs to

@@ -34,6 +34,7 @@ RESERVED_NAMESPACES = frozenset(
         "channel",
         "socials",
         "serverinfo",
+        "channel_points",
     }
 )
 

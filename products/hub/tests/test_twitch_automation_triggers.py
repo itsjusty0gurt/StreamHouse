@@ -7,7 +7,10 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from products.hub.automation.routines import RoutineStore
-from products.hub.twitch.automation_triggers import TwitchEventTriggerStore
+from products.hub.twitch.automation_triggers import (
+    CHANNEL_POINT_REDEMPTION_EVENT_TYPE,
+    TwitchEventTriggerStore,
+)
 from products.hub.twitch.commands import TwitchCommandTriggerStore
 from products.hub.twitch.models import TwitchEvent, TwitchEventTransport, TwitchMessage
 
@@ -81,6 +84,70 @@ class TwitchEventTriggerStoreTests(unittest.TestCase):
         self.assertEqual(results[0].context["reward"], "hydrate")
         self.assertEqual(results[0].context["reward_cost"], "500")
         self.assertEqual(self.store.evaluate(other), ())
+
+    def test_redemption_matches_stable_reward_id_and_exposes_full_context(self) -> None:
+        hydrate = self.routines.add("Hydrate")
+        any_reward = self.routines.add("Any reward")
+        specific = self.store.add_channel_point_redemption(
+            hydrate.routine_id, reward_id="reward-1", reward_title="Old title"
+        )
+        wildcard = self.store.add_channel_point_redemption(any_reward.routine_id)
+        event = twitch_event(
+            CHANNEL_POINT_REDEMPTION_EVENT_TYPE,
+            {
+                "id": "redemption-1",
+                "user_id": "viewer-1",
+                "user_login": "viewer",
+                "user_name": "Viewer",
+                "user_input": "",
+                "status": "unfulfilled",
+                "redeemed_at": "2026-08-31T12:00:00Z",
+                "reward": {
+                    "id": "reward-1",
+                    "title": "Renamed reward",
+                    "cost": 500,
+                    "prompt": "Drink water",
+                },
+            },
+        )
+
+        results = self.store.evaluate(event)
+
+        self.assertEqual({item.trigger_id for item in results}, {specific.trigger_id, wildcard.trigger_id})
+        context = results[0].context
+        self.assertEqual(context["user_id"], "viewer-1")
+        self.assertEqual(context["user_login"], "viewer")
+        self.assertEqual(context["channel_points.redemption_id"], "redemption-1")
+        self.assertEqual(context["channel_points.reward_id"], "reward-1")
+        self.assertEqual(context["channel_points.reward_title"], "Renamed reward")
+        self.assertEqual(context["channel_points.reward_cost"], "500")
+        self.assertEqual(context["channel_points.reward_prompt"], "Drink water")
+        self.assertEqual(context["channel_points.user_input"], "")
+        self.assertEqual(context["channel_points.status"], "unfulfilled")
+        self.assertEqual(context["channel_points.redeemed_at"], "2026-08-31T12:00:00Z")
+
+        other = twitch_event(
+            CHANNEL_POINT_REDEMPTION_EVENT_TYPE,
+            {"reward": {"id": "reward-2", "title": "Other", "cost": 1}},
+        )
+        self.assertEqual(
+            [item.trigger_id for item in self.store.evaluate(other)],
+            [wildcard.trigger_id],
+        )
+
+    def test_redemption_reward_identity_round_trips(self) -> None:
+        routine = self.routines.add("Hydrate")
+        trigger = self.store.add_channel_point_redemption(
+            routine.routine_id, reward_id="reward-1", reward_title="Hydrate"
+        )
+        self.assertEqual(json.loads(self.store.path.read_text(encoding="utf-8"))["version"], 3)
+
+        loaded = TwitchEventTriggerStore(self.store.path, self.routines)
+        saved = loaded.load()[0]
+
+        self.assertEqual(saved.trigger_id, trigger.trigger_id)
+        self.assertEqual(saved.reward_id, "reward-1")
+        self.assertEqual(saved.reward_title, "Hydrate")
 
     def test_routine_can_combine_command_and_multiple_event_triggers(self) -> None:
         commands = TwitchCommandTriggerStore(
@@ -332,8 +399,9 @@ class TwitchEventTriggerStoreTests(unittest.TestCase):
         for payload in (
             {"triggers": []},
             {"version": 1, "triggers": []},
+            {"version": 2, "triggers": []},
             {"version": "2", "triggers": []},
-            {"version": 3, "triggers": []},
+            {"version": 4, "triggers": []},
         ):
             with self.subTest(payload=payload):
                 self.store.path.write_text(json.dumps(payload), encoding="utf-8")

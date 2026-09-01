@@ -307,6 +307,14 @@ CONTEXT_DEFINITIONS = (
     ("keyword.after", "Text After Keyword", "Text after the matched keyword or phrase.", VariableDataType.TEXT, ("keyword.after",)),
     ("ads.requester.id", "Ad Requester ID", "Twitch ID of the requester reported for an Ads Started event.", VariableDataType.TEXT, ("ads.requester.id",)),
     ("ads.requester.name", "Ad Requester Name", "Readable requester name reported for an Ads Started event.", VariableDataType.TEXT, ("ads.requester.name",)),
+    ("channel_points.redemption_id", "Redemption ID", "Stable ID of this channel-point redemption.", VariableDataType.TEXT, ("channel_points.redemption_id",)),
+    ("channel_points.reward_id", "Reward ID", "Stable Twitch ID of the redeemed custom reward.", VariableDataType.TEXT, ("channel_points.reward_id",)),
+    ("channel_points.reward_title", "Reward Title", "Current title of the redeemed custom reward.", VariableDataType.TEXT, ("channel_points.reward_title",)),
+    ("channel_points.reward_cost", "Reward Cost", "Channel Point cost of the redeemed reward.", VariableDataType.INTEGER, ("channel_points.reward_cost",)),
+    ("channel_points.reward_prompt", "Reward Prompt", "Prompt configured for the redeemed reward.", VariableDataType.TEXT, ("channel_points.reward_prompt",)),
+    ("channel_points.user_input", "Redemption User Input", "Viewer text supplied with this redemption, which may be empty.", VariableDataType.TEXT, ("channel_points.user_input",)),
+    ("channel_points.status", "Redemption Status", "Status reported by Twitch for this redemption.", VariableDataType.TEXT, ("channel_points.status",)),
+    ("channel_points.redeemed_at", "Redeemed At", "When Twitch recorded this redemption.", VariableDataType.DATETIME, ("channel_points.redeemed_at",)),
     ("event.name", "Event Name", "Readable trigger event name.", VariableDataType.TEXT, ("event",)),
     ("event.type", "Event Type", "Owning service event type.", VariableDataType.TEXT, ("event_type",)),
     ("event.input", "Event Input", "Viewer input or event input name.", VariableDataType.TEXT, ("input",)),
@@ -337,6 +345,11 @@ CONTEXT_PREVIEW = {
     "keyword.message": "I think coffee is better than tea", "keyword.match": "coffee",
     "keyword.before": "I think", "keyword.after": "is better than tea",
     "ads.requester.id": "123456", "ads.requester.name": "Streamer",
+    "channel_points.redemption_id": "redemption-123",
+    "channel_points.reward_id": "reward-123", "channel_points.reward_title": "Hydrate",
+    "channel_points.reward_cost": 500, "channel_points.reward_prompt": "Drink some water!",
+    "channel_points.user_input": "sparkling please", "channel_points.status": "unfulfilled",
+    "channel_points.redeemed_at": "2026-08-31T12:00:00Z",
     "event.name": "Follow", "event.type": "channel.follow", "event.input": "Viewer input",
     "event.amount": 100, "event.bits": 100, "event.viewers": 12, "event.tier": "1000",
     "event.reward": "Hydrate", "event.reward_id": "reward-123", "event.reward_cost": 500,
@@ -354,6 +367,7 @@ def _context_presentation(name: str) -> tuple[str, str]:
         "command": ("Command", "Chat Command routine"),
         "keyword": ("Keyword / Phrase", "Keyword / Phrase routine"),
         "ads": ("Ads", "Ads Started"),
+        "channel_points": ("Channel Points", "Channel Point Redemption"),
         "event": ("Twitch Event", "Matching Twitch event"),
         "obs": ("OBS", "Matching OBS event"),
     }.get(namespace, (namespace.title(), "Matching trigger context"))
@@ -379,7 +393,8 @@ def context_provider() -> CallbackVariableProvider:
 
     def resolve(name: str, context: Mapping[str, object]) -> tuple[bool, object, str]:
         for key in (name, *aliases[name]):
-            if key in context and str(context[key]).strip() not in {"", "--"}:
+            allow_empty = name.startswith("channel_points.")
+            if key in context and (allow_empty or str(context[key]).strip() not in {"", "--"}):
                 value: object = context[key]
                 if name in {"user.is_mod", "user.is_subscriber", "obs.enabled", "obs.muted"}:
                     value = str(value).strip().casefold() in {"1", "true", "yes", "on"}

@@ -98,6 +98,20 @@ def test_contextual_resolution_and_safe_placeholder_rendering() -> None:
     assert registry.resolve("keyword.before", keyword).display_value == "I think"
     assert not registry.resolve("keyword.match", command).available
     assert not registry.resolve("command.data", keyword).available
+    redemption = {
+        "channel_points.reward_id": "reward-1",
+        "channel_points.reward_cost": "500",
+        "channel_points.user_input": "",
+    }
+    assert registry.resolve("channel_points.reward_id", redemption).value == "reward-1"
+    assert registry.resolve("channel_points.reward_cost", redemption).value == "500"
+    empty_input = registry.resolve("channel_points.user_input", redemption)
+    assert empty_input.available and empty_input.value == ""
+    assert not registry.resolve("channel_points.reward_id", command).available
+    definition = registry.definition("channel_points.redeemed_at")
+    assert definition.data_type == VariableDataType.DATETIME
+    assert definition.lifetime_label == "Routine"
+    assert definition.context_label == "Channel Point Redemption"
 
 
 def test_channel_information_definitions_always_exist_and_follow_committed_state() -> None:
