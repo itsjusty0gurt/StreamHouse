@@ -117,6 +117,11 @@ from products.hub.twitch.automation_triggers import (
 from products.hub.twitch.auth import TwitchAuthService
 from products.hub.twitch.service import TwitchService
 from products.hub.ui.channel_point_trigger_dialog import ChannelPointRedemptionTriggerDialog
+from products.hub.ui.automation_task_cards import (
+    IfTaskCardWidget,
+    TaskCardContent,
+    TaskCardWidget,
+)
 from products.hub.ui.twitch_command_dialog import TwitchCommandDialog, TwitchCommandManagerDialog
 from products.hub.ui.counters_page import CounterDefinitionDialog
 from products.hub.ui.variables_page import VariablesPage
@@ -2946,7 +2951,13 @@ class AutomationPage(QWidget):
         toolbar.addWidget(self.add_task_button)
         layout.addLayout(toolbar)
         self.task_list = QListWidget()
-        self.task_list.setAlternatingRowColors(True)
+        self.task_list.setAlternatingRowColors(False)
+        self.task_list.setSpacing(5)
+        self.task_list.setStyleSheet(
+            "QListWidget { background:transparent; border:none; outline:none; }"
+            "QListWidget::item { background:transparent; border:none; padding:0; }"
+            "QListWidget::item:selected { background:transparent; }"
+        )
         self.task_list.setDragEnabled(True)
         self.task_list.setAcceptDrops(True)
         self.task_list.setDropIndicatorShown(True)
@@ -2974,6 +2985,12 @@ class AutomationPage(QWidget):
 
     def _task_selection_changed(self) -> None:
         self.test_task_button.setEnabled(self._selected_task() is not None)
+        current = self.task_list.currentItem()
+        for index in range(self.task_list.count()):
+            item = self.task_list.item(index)
+            widget = self.task_list.itemWidget(item)
+            if hasattr(widget, "set_selected"):
+                widget.set_selected(item is current)
 
     def _build_settings_editor(self) -> None:
         tab = QWidget()
@@ -3309,26 +3326,81 @@ class AutomationPage(QWidget):
                         issues.append(f"Random choice {index} has an invalid weight")
         return issues
 
-    def _counter_task_summary(self, task: TaskDefinition) -> str:
-        if not task.task_type.startswith("counter.") or self.counter_service is None:
-            return ""
-        definition = self.counter_service.get_counter(str(task.config.get("counter_id", "")))
-        if definition is None:
-            return "Missing Counter"
-        if task.task_type in {"counter.increase", "counter.decrease"}:
-            amount = str(task.config.get("amount", "1"))
-            sign = "+" if task.task_type == "counter.increase" else "−"
-            scope = {
-                "channel_total": "Shared",
-                "stream_total": "Current broadcast",
-                "viewer_total": "Triggering viewer",
-                "viewer_stream_total": "Viewer current broadcast",
-            }.get(str(task.config.get("scope", "channel_total")), "Counter")
-            return f"{definition.display_name} · {sign}{amount.lstrip('+-')} · {scope}"
-        labels = {
-            "counter.set_value": "Set", "counter.reset": "Reset",
-        }
-        return f"{definition.display_name} · {labels.get(task.task_type, 'Counter')}"
+    def _task_reference_name(self, kind: str, reference_id: str) -> str:
+        if kind == "routine":
+            routine = self.routine_store.get(reference_id)
+            return routine.name if routine is not None else reference_id
+        if kind == "counter" and self.counter_service is not None:
+            counter = self.counter_service.get_counter(reference_id)
+            return counter.display_name if counter is not None else reference_id
+        return reference_id
+
+    def _task_card_content(self, task: TaskDefinition) -> TaskCardContent:
+        metadata = self.task_registry.metadata(task.task_type)
+        provider = TaskEditorDialog.LABELS.get(task.task_type, task.task_type)
+        category, _separator, fallback_name = provider.partition(" — ")
+        task_name = metadata.label if metadata is not None else (fallback_name or provider)
+        summary = (
+            metadata.format_card_summary(task.config, self._task_reference_name)
+            if metadata is not None
+            else ""
+        )
+        issues = tuple(self._task_issues(task))
+        states = []
+        if not task.enabled:
+            states.append("Disabled")
+        if task.managed_key:
+            states.append("Trigger task")
+        if issues:
+            states.append("Needs attention")
+        return TaskCardContent(
+            category=metadata.category if metadata is not None else category,
+            task_name=task_name,
+            summary=summary,
+            instance_name=task.name,
+            status=" · ".join(states),
+            issues=issues,
+        )
+
+    def _nested_routine_cards(
+        self,
+        routine_id: str,
+        visited: frozenset[str],
+    ) -> tuple[QWidget, ...]:
+        if not routine_id or routine_id in visited:
+            return ()
+        routine = self.routine_store.get(routine_id)
+        if routine is None:
+            return ()
+        next_visited = visited | {routine_id}
+        return tuple(
+            self._task_card_widget(task, nested=True, visited=next_visited)
+            for task in routine.tasks
+        )
+
+    def _task_card_widget(
+        self,
+        task: TaskDefinition,
+        *,
+        nested: bool = False,
+        visited: frozenset[str] = frozenset(),
+    ) -> QWidget:
+        content = self._task_card_content(task)
+        if task.task_type != "core.logic_if_else":
+            return TaskCardWidget(content, nested=nested, parent=self.task_list)
+
+        true_routine_id = str(task.config.get("true_routine_id", "")).strip()
+        false_routine_id = str(task.config.get("false_routine_id", "")).strip()
+        true_routine = self.routine_store.get(true_routine_id)
+        false_routine = self.routine_store.get(false_routine_id)
+        return IfTaskCardWidget(
+            content,
+            self._nested_routine_cards(true_routine_id, visited),
+            self._nested_routine_cards(false_routine_id, visited),
+            then_name=true_routine.name if true_routine is not None else "",
+            else_name=false_routine.name if false_routine is not None else "",
+            parent=self.task_list,
+        )
 
     def _routine_issues(self, routine, trigger_count: int | None = None) -> list[str]:
         issues: list[str] = []
@@ -3471,17 +3543,32 @@ class AutomationPage(QWidget):
         self.task_list.blockSignals(True)
         self.task_list.clear()
         for index, task in enumerate(routine.tasks, start=1):
-            provider = TaskEditorDialog.LABELS.get(task.task_type, task.task_type)
-            state = "Enabled" if task.enabled else "Disabled"
-            managed = " • trigger task" if task.managed_key else ""
-            issues = self._task_issues(task)
-            warning = " • needs attention" if issues else ""
-            summary = self._counter_task_summary(task)
-            description = f"{task.name} · {summary}" if summary else task.name
-            item = QListWidgetItem(f"{index}   {provider} — {description}   [{state}{managed}{warning}]")
+            content = self._task_card_content(task)
+            item = QListWidgetItem(
+                f"{index} {content.category} — {content.task_name} "
+                f"{content.summary} {content.instance_name} {content.status}"
+            )
             item.setData(Qt.ItemDataRole.UserRole, task.task_id)
-            item.setToolTip("\n".join(issues) if issues else "Ready")
+            item.setToolTip(
+                "\n".join(
+                    value
+                    for value in (
+                        content.instance_name,
+                        content.summary,
+                        *content.issues,
+                    )
+                    if value
+                )
+                or "Ready"
+            )
             self.task_list.addItem(item)
+            card = self._task_card_widget(
+                task,
+                visited=frozenset({routine.routine_id}),
+            )
+            self.task_list.setItemWidget(item, card)
+            card.adjustSize()
+            item.setSizeHint(card.sizeHint())
         self.task_list.blockSignals(False)
         self.test_task_button.setEnabled(False)
         self.editor_tabs.setTabText(1, f"Tasks ({len(routine.tasks)})")

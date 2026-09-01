@@ -1,10 +1,22 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
+from typing import Any
+
 from products.hub.automation.control_tasks import CONTROL_TASK_LABELS
 from products.hub.automation.core_tasks import CORE_TASK_LABELS
 from products.hub.automation.file_tasks import FILE_TASK_LABELS
-from products.hub.automation.logic_tasks import LOGIC_TASK_LABELS
-from products.hub.automation.tasks import TaskInputHelp, TaskMetadata
+from products.hub.automation.logic_tasks import (
+    COMPARISON_CHOICES,
+    LOGIC_TASK_LABELS,
+    UNARY_OPERATORS,
+)
+from products.hub.automation.tasks import (
+    TaskCardSummaryFormatter,
+    TaskInputHelp,
+    TaskMetadata,
+    TaskReferenceResolver,
+)
 from products.hub.automation.variable_tasks import VARIABLE_MANAGEMENT_TASK_TYPES
 from products.hub.counters.tasks import COUNTER_TASK_LABELS
 from products.hub.obs_service.tasks import OBS_TASK_LABELS
@@ -442,7 +454,7 @@ _NOTES = {
     "core.close_application": ("Force close can discard unsaved work in the target application.",),
     "core.run_routine": ("Routine nesting is limited to ten levels and recursive loops are blocked.",),
     "core.clear_queue": ("This removes pending items only; use Stop Queue in the Queues tab to stop the active routine too.",),
-    "core.logic_break": ("Tasks after Break do not run.",),
+    "core.logic_break": ("Tasks after End Routine do not run.",),
     "core.logic_while": ("The repeated routine runs inline and shares the current routine context.",),
     "core.run_python_script": ("Only run scripts you understand and trust.",),
     "obs.set_scene_item_enabled": ("Prefer Show or Hide when the final state matters.",),
@@ -531,6 +543,148 @@ def _category(task_type: str) -> str:
     return "Core"
 
 
+_CARD_SUMMARY_SKIP_KEYS = frozenset(
+    {
+        "as_bot",
+        "enabled",
+        "stop_on_failure",
+        "wait_for_completion",
+    }
+)
+
+
+def _summary_text(value: object, limit: int = 120) -> str:
+    text = " ".join(str(value or "").split())
+    return text if len(text) <= limit else f"{text[: limit - 1].rstrip()}…"
+
+
+def _resolved(
+    config: Mapping[str, Any],
+    key: str,
+    kind: str,
+    resolver: TaskReferenceResolver | None,
+) -> str:
+    value = _summary_text(config.get(key, ""))
+    if not value or resolver is None:
+        return value
+    return _summary_text(resolver(kind, value) or value)
+
+
+def _unit_abbreviation(unit: object) -> str:
+    return {
+        "milliseconds": "ms",
+        "seconds": "sec",
+        "minutes": "min",
+        "hours": "hr",
+    }.get(str(unit).strip().casefold(), _summary_text(unit))
+
+
+def _condition_summary(config: Mapping[str, Any]) -> str:
+    left = _summary_text(config.get("left", "value")) or "value"
+    operator = str(config.get("operator", "equals"))
+    label = next(
+        (text for text, value in COMPARISON_CHOICES if value == operator),
+        operator.replace("_", " ").title(),
+    )
+    if operator in UNARY_OPERATORS:
+        return f"{left} {label.casefold()}"
+    right = _summary_text(config.get("right", ""))
+    symbols = {
+        "equals": "=",
+        "not_equals": "≠",
+        "less_than": "<",
+        "less_or_equal": "≤",
+        "greater_than": ">",
+        "greater_or_equal": "≥",
+    }
+    return f"{left} {symbols.get(operator, label)} {right}".strip()
+
+
+def _generic_card_summary(config: Mapping[str, Any]) -> str:
+    visible = [
+        (str(key), value)
+        for key, value in config.items()
+        if key not in _CARD_SUMMARY_SKIP_KEYS
+        and value not in (None, "", [], {})
+        and not isinstance(value, (dict, list))
+    ]
+    if not visible:
+        return ""
+    primary_keys = (
+        "message",
+        "text",
+        "title",
+        "scene",
+        "source",
+        "input",
+        "filter",
+        "path",
+        "target",
+        "name",
+        "value",
+        "action",
+    )
+    ordered = sorted(
+        visible,
+        key=lambda item: (
+            primary_keys.index(item[0]) if item[0] in primary_keys else len(primary_keys),
+            item[0],
+        ),
+    )
+    return " · ".join(_summary_text(value, 60) for _key, value in ordered[:2])
+
+
+def _card_summary(
+    task_type: str,
+    config: Mapping[str, Any],
+    resolver: TaskReferenceResolver | None,
+) -> str:
+    if task_type == "core.wait":
+        return f"{_summary_text(config.get('duration', ''))} {_unit_abbreviation(config.get('unit', 'seconds'))}".strip()
+    if task_type == "core.random_delay":
+        unit = _unit_abbreviation(config.get("unit", "seconds"))
+        return f"{config.get('minimum', '')}–{config.get('maximum', '')} {unit}".strip()
+    if task_type in {"twitch.send_chat_message", "twitch.send_pinned_message"}:
+        message = _summary_text(config.get("message", ""))
+        return f'“{message}”' if message else ""
+    if task_type == "obs.set_scene_item_enabled":
+        scene = _summary_text(config.get("scene", ""))
+        source = _summary_text(config.get("source", ""))
+        action = _summary_text(config.get("action", "show")).title()
+        target = " / ".join(value for value in (scene, source) if value)
+        return f"{target} → {action}" if target else action
+    if task_type in {"counter.increase", "counter.decrease"}:
+        counter = _resolved(config, "counter_id", "counter", resolver) or "Counter"
+        amount = _summary_text(config.get("amount", "1")).lstrip("+-")
+        sign = "+" if task_type == "counter.increase" else "−"
+        return f"{counter} {sign}{amount}"
+    if task_type == "counter.set_value":
+        counter = _resolved(config, "counter_id", "counter", resolver) or "Counter"
+        return f"{counter} → {_summary_text(config.get('value', ''))}".rstrip()
+    if task_type == "counter.reset":
+        counter = _resolved(config, "counter_id", "counter", resolver) or "Counter"
+        return f"{counter} → Reset"
+    if task_type == "core.run_routine":
+        return _resolved(config, "routine_id", "routine", resolver)
+    if task_type == "core.logic_break":
+        return "Stop this routine here"
+    if task_type == "core.logic_if_else":
+        return _condition_summary(config)
+    if task_type in {"obs.set_program_scene", "obs.set_preview_scene"}:
+        return _summary_text(config.get("scene", ""))
+    if task_type in {"obs.set_source_filter_state", "obs.set_scene_filter_state"}:
+        owner = _summary_text(config.get("source", config.get("scene", "")))
+        filter_name = _summary_text(config.get("filter", ""))
+        action = _summary_text(config.get("action", "enable")).title()
+        target = " / ".join(value for value in (owner, filter_name) if value)
+        return f"{target} → {action}" if target else action
+    return _generic_card_summary(config)
+
+
+def _card_summary_formatter(task_type: str) -> TaskCardSummaryFormatter:
+    return lambda config, resolver: _card_summary(task_type, config, resolver)
+
+
 _LABELS = {
     **TWITCH_TASK_LABELS,
     **COUNTER_TASK_LABELS,
@@ -556,6 +710,7 @@ BUILTIN_TASK_METADATA = tuple(
         requirements=_requirements(task_type),
         notes=_NOTES.get(task_type, ()),
         examples=_EXAMPLES.get(task_type, ()),
+        card_summary_formatter=_card_summary_formatter(task_type),
     )
     for task_type, label in _LABELS.items()
 )

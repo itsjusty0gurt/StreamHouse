@@ -406,6 +406,24 @@ internal/test task metadata is the only exception. Adding a user-facing task
 therefore includes its Task Library documentation as part of defining the task,
 not as an optional follow-up.
 
+Visible task metadata also owns the concise `card_summary_formatter` used by the
+routine authoring view. The formatter receives persisted task configuration and
+an optional display-name resolver for stable references such as routine and
+Counter IDs. Registration rejects visible metadata that does not provide this
+presentation contract unless it explicitly declares that no configuration
+summary is required. The page must not grow a second task-ID formatting catalog.
+
+The Tasks frame follows the Activity Feed's compact card language without
+reusing its event widget: stable category colors appear as narrow left accent
+strips, while category text remains visible for accessibility. Normal actions
+are dense one-line cards with an elided configuration summary. Structural
+control flow is rendered as a container: **If / Else** previews the referenced
+Then and Else routine tasks recursively, and each child retains its own category
+card. The container is presentation only; task persistence, referenced-routine
+ownership, execution order, editing, and drag/reorder semantics remain in the
+existing routine architecture. The real **End routine** action remains a normal
+compact task rather than a visual `End If` sentinel.
+
 Counter tasks use this same pipeline. A command, EventSub subscription, OBS
 event, Core event, or manual routine execution can invoke any routine that
 contains a registered Counter task. Counters do not own a parallel trigger
@@ -1361,7 +1379,7 @@ Inspect and update:
 4. schema and task menu in `products/hub/ui/automation_page.py`;
 5. complete visible `TaskMetadata` in the built-in task catalog, including a
    short description and detailed help plus relevant input guidance,
-   requirements, notes, and examples;
+   requirements, notes, examples, and a concise task-card summary formatter;
 6. template rendering and live-variable resolution if applicable;
 7. `generated_output_definitions()` if it creates outputs;
 8. import/export validation in `products/hub/automation/transfer.py` if needed;

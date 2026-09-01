@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Any, Protocol
 
 from products.hub.automation.models import TaskDefinition, TaskExecutionResult, TriggerEvent
 
@@ -25,6 +25,13 @@ class TaskInputHelp:
     description: str
 
 
+TaskReferenceResolver = Callable[[str, str], str]
+TaskCardSummaryFormatter = Callable[
+    [Mapping[str, Any], TaskReferenceResolver | None],
+    str,
+]
+
+
 @dataclass(frozen=True, slots=True)
 class TaskMetadata:
     """User-facing reference metadata for one registered task type."""
@@ -40,6 +47,8 @@ class TaskMetadata:
     requirements: tuple[str, ...] = ()
     notes: tuple[str, ...] = ()
     examples: tuple[str, ...] = ()
+    card_summary_formatter: TaskCardSummaryFormatter | None = None
+    card_summary_required: bool = True
 
     def input_description(self, key: str) -> str:
         return next(
@@ -61,6 +70,15 @@ class TaskMetadata:
                 *self.examples,
             )
         )
+
+    def format_card_summary(
+        self,
+        config: Mapping[str, Any],
+        resolver: TaskReferenceResolver | None = None,
+    ) -> str:
+        if self.card_summary_formatter is None:
+            return ""
+        return self.card_summary_formatter(config, resolver).strip()
 
 
 class TaskRegistry:
@@ -92,6 +110,14 @@ class TaskRegistry:
         if metadata.visible and not metadata.help_text.strip():
             raise ValueError(
                 f"Visible task metadata for {clean_type} requires detailed help."
+            )
+        if (
+            metadata.visible
+            and metadata.card_summary_required
+            and metadata.card_summary_formatter is None
+        ):
+            raise ValueError(
+                f"Visible task metadata for {clean_type} requires a card summary."
             )
         self._metadata[clean_type] = metadata
 

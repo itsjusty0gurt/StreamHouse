@@ -20,7 +20,7 @@ from products.hub.automation.variable_outputs import automation_output_name
 
 
 LOGIC_TASK_LABELS = {
-    "core.logic_break": "Core — Break routine",
+    "core.logic_break": "Core — End routine",
     "core.logic_get_input": "Core — Get input",
     "core.logic_random_number": "Core — Get random number",
     "core.logic_random_choice": "Core — Random choice",

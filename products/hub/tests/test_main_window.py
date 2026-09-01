@@ -59,7 +59,12 @@ from products.hub.twitch.models import (
     TwitchReply,
 )
 from products.hub.ui.main_window import MainWindow
-from products.hub.ui.automation_page import RunHistoryDetailsDialog
+from products.hub.ui.automation_page import RunHistoryDetailsDialog, TaskEditorDialog
+from products.hub.ui.automation_task_cards import (
+    IfTaskCardWidget,
+    TaskCardWidget,
+    task_category_accent,
+)
 from shared.streamhouse_shared.protocol import PROTOCOL_VERSION
 from products.hub.ui.channel_snapshot_worker import ChannelSnapshotResult
 from products.hub.ui.memory_worker import MemoryExtractionResult
@@ -801,6 +806,85 @@ class MainWindowTests(unittest.TestCase):
         self.assertEqual(page._selected_task().task_id, first.task_id)
         self.assertTrue(page.task_list.isEnabled())
 
+    def test_task_cards_show_category_name_summary_and_selection(self) -> None:
+        store = self.twitch_command_trigger_store.routine_store
+        routine = store.add("Card presentation")
+        store.add_task(
+            routine.routine_id,
+            task_type="core.wait",
+            name="Pause the alert",
+            config={"duration": "1.5", "unit": "seconds"},
+        )
+        page = self.window.automation_page
+        page.select_routine(routine.routine_id)
+
+        item = page.task_list.item(0)
+        card = page.task_list.itemWidget(item)
+
+        self.assertIsInstance(card, TaskCardWidget)
+        self.assertEqual(card.name_label.text(), "Core — Wait")
+        self.assertEqual(card.summary_label.full_text, "1.5 sec")
+        self.assertEqual(card.accent_bar.styleSheet().find(task_category_accent("Core")) >= 0, True)
+        page.task_list.setCurrentRow(0)
+        self.assertTrue(card.property("selected"))
+
+    def test_if_card_previews_then_else_and_nested_if_structure(self) -> None:
+        store = self.twitch_command_trigger_store.routine_store
+        inner_true = store.add("Inner true")
+        store.add_task(
+            inner_true.routine_id,
+            task_type="core.logic_break",
+            name="End here",
+        )
+        nested_branch = store.add("Nested condition")
+        store.add_task(
+            nested_branch.routine_id,
+            task_type="core.logic_if_else",
+            name="Inner If",
+            config={
+                "left": "{counter.deaths.stream}",
+                "operator": "greater_or_equal",
+                "right": "10",
+                "true_routine_id": inner_true.routine_id,
+                "false_routine_id": "",
+            },
+        )
+        else_branch = store.add("Fallback")
+        store.add_task(
+            else_branch.routine_id,
+            task_type="twitch.send_chat_message",
+            name="Fallback message",
+            config={"message": "Not yet", "as_bot": True},
+        )
+        routine = store.add("Outer")
+        store.add_task(
+            routine.routine_id,
+            task_type="core.logic_if_else",
+            name="Outer If",
+            config={
+                "left": "{event.viewers}",
+                "operator": "greater_than",
+                "right": "20",
+                "true_routine_id": nested_branch.routine_id,
+                "false_routine_id": else_branch.routine_id,
+            },
+        )
+        page = self.window.automation_page
+        page.select_routine(routine.routine_id)
+
+        card = page.task_list.itemWidget(page.task_list.item(0))
+
+        self.assertIsInstance(card, IfTaskCardWidget)
+        self.assertEqual(card.summary_label.full_text, "{event.viewers} > 20")
+        self.assertEqual(len(card.then_cards), 1)
+        self.assertIsInstance(card.then_cards[0], IfTaskCardWidget)
+        self.assertEqual(len(card.else_cards), 1)
+        self.assertIsInstance(card.else_cards[0], TaskCardWidget)
+        self.assertEqual(
+            card.then_cards[0].then_cards[0].name_label.text(),
+            "Core — End routine",
+        )
+
     def test_task_copy_and_paste_preserves_config_with_new_id(self) -> None:
         store = self.twitch_command_trigger_store.routine_store
         source = store.add("Source")
@@ -824,6 +908,55 @@ class MainWindowTests(unittest.TestCase):
         self.assertEqual(pasted.name, original.name)
         self.assertEqual(pasted.config, original.config)
         self.assertNotEqual(pasted.task_id, original.task_id)
+
+    def test_task_card_preserves_edit_duplicate_toggle_move_and_delete(self) -> None:
+        store = self.twitch_command_trigger_store.routine_store
+        routine = store.add("Card interactions")
+        original = store.add_task(
+            routine.routine_id,
+            task_type="core.wait",
+            name="Original",
+            config={"duration": "1", "unit": "seconds"},
+        )
+        page = self.window.automation_page
+        page.select_routine(routine.routine_id)
+        page.task_list.setCurrentRow(0)
+
+        with patch.object(
+            TaskEditorDialog,
+            "exec",
+            return_value=QDialog.DialogCode.Accepted,
+        ), patch.object(
+            TaskEditorDialog,
+            "values",
+            return_value={
+                "name": "Edited",
+                "config": {"duration": "2", "unit": "seconds"},
+                "enabled": True,
+            },
+        ):
+            page._edit_task()
+        self.assertEqual(store.get(routine.routine_id).tasks[0].name, "Edited")
+
+        page._duplicate_task()
+        self.assertEqual(len(store.get(routine.routine_id).tasks), 2)
+        duplicate = page._selected_task()
+        self.assertIsNotNone(duplicate)
+        self.assertNotEqual(duplicate.task_id, original.task_id)
+
+        page._toggle_task()
+        self.assertFalse(store.get(routine.routine_id).tasks[1].enabled)
+        page.task_list.setCurrentRow(1)
+        page._move_task(-1)
+        self.assertEqual(store.get(routine.routine_id).tasks[0].task_id, duplicate.task_id)
+
+        with patch.object(
+            QMessageBox,
+            "question",
+            return_value=QMessageBox.StandardButton.Yes,
+        ):
+            page._delete_task()
+        self.assertEqual(len(store.get(routine.routine_id).tasks), 1)
 
     def test_routine_drag_handler_persists_group_and_order(self) -> None:
         store = self.twitch_command_trigger_store.routine_store
