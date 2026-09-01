@@ -541,7 +541,7 @@ class MainWindowTests(unittest.TestCase):
         )
         self.assertEqual(
             [action.text() for action in add_menu.actions()[0].menu().actions()],
-            ["Program Event"],
+            ["Program Event", "Timer…"],
         )
         program_event_menu = add_menu.actions()[0].menu().actions()[0].menu()
         self.assertEqual(
@@ -1210,6 +1210,26 @@ class MainWindowTests(unittest.TestCase):
             ],
         )
         self.assertEqual(len(self.window.automation_page.history), 2)
+
+    def test_timer_trigger_uses_normal_execution_and_run_history(self) -> None:
+        routine = self.twitch_command_trigger_store.routine_store.add("Timer run")
+        trigger = self.window.core_trigger_store.add_timer(
+            routine.routine_id,
+            timer_mode="fixed",
+            timer_minimum="10",
+            timer_minimum_unit="minutes",
+        )
+
+        self.window._handle_timer_automation_event(
+            self.window.core_trigger_store.event_for(trigger.trigger_id),
+            "Fixed 10 minutes",
+        )
+
+        self.assertEqual(len(self.window.automation_page.history), 1)
+        self.assertEqual(
+            self.window.automation_page.history[0]["trigger"],
+            "Timer — Fixed 10 minutes",
+        )
 
     def test_twitch_command_can_open_its_connected_automation_routine(self) -> None:
         command = self.twitch_command_trigger_store.add(

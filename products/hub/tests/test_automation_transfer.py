@@ -110,6 +110,32 @@ class AutomationTransferTests(unittest.TestCase):
             )
         self.assertEqual(self.stores["routine_store"].routines, [])
 
+    def test_timer_trigger_round_trip_preserves_schedule_configuration(self) -> None:
+        routine = self.stores["routine_store"].add("Random promo")
+        self.stores["core_store"].add_timer(
+            routine.routine_id,
+            timer_mode="random",
+            timer_minimum="30",
+            timer_minimum_unit="minutes",
+            timer_maximum="60",
+            timer_maximum_unit="minutes",
+        )
+        payload = export_routine(routine, **self.stores)
+        destination = self.make_stores(self.root / "timer-destination")
+
+        imported = import_routine(
+            payload,
+            group_id="",
+            task_registry=self.registry,
+            **destination,
+        )
+
+        saved = destination["core_store"].for_routine(imported.routine_id)[0]
+        self.assertEqual(saved.event_type, "timer")
+        self.assertEqual(saved.timer_mode, "random")
+        self.assertEqual(saved.timer_minimum, "30")
+        self.assertEqual(saved.timer_maximum, "60")
+
     def test_import_detects_command_conflict(self) -> None:
         command = self.stores["command_store"].add("hello", "Hello!")
         routine = self.stores["routine_store"].get(command.routine_id)

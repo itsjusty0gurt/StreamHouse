@@ -59,6 +59,7 @@ from shared.streamhouse_runtime.logger import Logger
 from shared.streamhouse_ui import install_window_chrome
 from products.hub.core.settings import AppSettings, SettingsStore
 from products.hub.automation.service import AutomationService
+from products.hub.automation.models import TriggerEvent
 from products.hub.automation.custom_variables import CustomVariableStore
 from products.hub.automation.variable_providers import (
     AdsVariableProvider,
@@ -70,6 +71,7 @@ from products.hub.automation.variable_providers import (
 )
 from products.hub.automation.variable_registry import VariableRegistry
 from products.hub.automation.core_triggers import CoreTriggerStore
+from products.hub.automation.timer_scheduler import AutomationTimerScheduler
 from products.hub.automation.core_tasks import (
     CloseApplicationTask,
     DesktopNotificationTask,
@@ -662,6 +664,11 @@ class MainWindow(QMainWindow):
                 f"Could not load Core automation triggers: {error}",
                 source="AUTOMATION",
             )
+        self.automation_timer_scheduler = AutomationTimerScheduler(
+            self.core_trigger_store,
+            self._handle_timer_automation_event,
+            parent=self,
+        )
         try:
             self.obs_trigger_store.load()
         except (OSError, ValueError, json.JSONDecodeError) as error:
@@ -2718,6 +2725,7 @@ class MainWindow(QMainWindow):
             variable_registry=self.variable_registry,
         )
         self.ui.mainStack.addWidget(self.automation_page)
+        self.automation_timer_scheduler.start()
 
     def _build_counters_page(self) -> None:
         self.counters_page = CountersPage(
@@ -2898,6 +2906,22 @@ class MainWindow(QMainWindow):
                     f'Core automation failed for "{event_type}".',
                     source="AUTOMATION",
                 )
+
+    def _handle_timer_automation_event(
+        self, trigger: TriggerEvent, description: str
+    ) -> None:
+        execution = self.automation_service.publish_trigger(trigger)
+        self.automation_page.record_execution(execution, f"Timer — {description}")
+        if execution.succeeded:
+            Logger.info(
+                f'Executed Automation timer "{description}".',
+                source="AUTOMATION",
+            )
+        elif execution.handled:
+            Logger.warning(
+                f'Automation timer failed for "{description}".',
+                source="AUTOMATION",
+            )
 
     def _add_twitch_command(self) -> None:
         dialog = TwitchCommandDialog(self)
@@ -7925,6 +7949,7 @@ class MainWindow(QMainWindow):
             )
 
     def closeEvent(self, event: QCloseEvent) -> None:
+        self.automation_timer_scheduler.shutdown()
         self.automation_queue_manager.cancel_all_current(
             "Hub is shutting down."
         )

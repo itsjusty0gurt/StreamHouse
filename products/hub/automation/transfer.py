@@ -72,7 +72,15 @@ def export_routine(
                 for trigger in event_store.for_routine(routine.routine_id)
             ],
             "core": [
-                {"event_type": trigger.event_type, "enabled": trigger.enabled}
+                {
+                    "event_type": trigger.event_type,
+                    "enabled": trigger.enabled,
+                    "timer_mode": trigger.timer_mode,
+                    "timer_minimum": trigger.timer_minimum,
+                    "timer_minimum_unit": trigger.timer_minimum_unit,
+                    "timer_maximum": trigger.timer_maximum,
+                    "timer_maximum_unit": trigger.timer_maximum_unit,
+                }
                 for trigger in core_store.for_routine(routine.routine_id)
             ],
             "obs": [
@@ -188,6 +196,11 @@ def import_routine(
                 routine.routine_id,
                 str(values.get("event_type", "")),
                 enabled=bool(values.get("enabled", True)),
+                timer_mode=str(values.get("timer_mode", "")),
+                timer_minimum=str(values.get("timer_minimum", "")),
+                timer_minimum_unit=str(values.get("timer_minimum_unit", "seconds")),
+                timer_maximum=str(values.get("timer_maximum", "")),
+                timer_maximum_unit=str(values.get("timer_maximum_unit", "seconds")),
             )
             core_ids.append(trigger.trigger_id)
         for values in trigger_values.get("obs", []):

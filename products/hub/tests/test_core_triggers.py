@@ -70,6 +70,27 @@ class CoreTriggerStoreTests(unittest.TestCase):
         payload = json.loads(self.store.path.read_text(encoding="utf-8"))
         self.assertEqual(payload["triggers"], [])
 
+    def test_timer_configuration_round_trips_in_current_schema(self) -> None:
+        routine = self.routines.add("Random promo")
+        trigger = self.store.add_timer(
+            routine.routine_id,
+            timer_mode="random",
+            timer_minimum="1.5",
+            timer_minimum_unit="minutes",
+            timer_maximum="2",
+            timer_maximum_unit="hours",
+        )
+
+        loaded = CoreTriggerStore(self.store.path, self.routines)
+        saved = loaded.load()[0]
+        payload = json.loads(self.store.path.read_text(encoding="utf-8"))
+
+        self.assertEqual(payload["version"], 2)
+        self.assertEqual(saved.trigger_id, trigger.trigger_id)
+        self.assertEqual(saved.timer_mode, "random")
+        self.assertEqual(saved.timer_minimum, "1.5")
+        self.assertEqual(saved.timer_maximum_unit, "hours")
+
     def test_unknown_core_event_is_rejected(self) -> None:
         routine = self.routines.add("Unknown")
         with self.assertRaisesRegex(ValueError, "not supported"):
@@ -79,6 +100,7 @@ class CoreTriggerStoreTests(unittest.TestCase):
         for payload in (
             {"triggers": []},
             {"version": 0, "triggers": []},
+            {"version": 1, "triggers": []},
             {"version": "1", "triggers": []},
         ):
             with self.subTest(payload=payload):

@@ -51,6 +51,8 @@ from products.hub.automation.models import (
 from products.hub.core.diagnostics import redact_sensitive_text
 from products.hub.automation.core_triggers import (
     CORE_TRIGGER_TYPES,
+    TIMER_MODES,
+    TIMER_UNITS,
     CoreAutomationTrigger,
     CoreTriggerStore,
 )
@@ -239,6 +241,8 @@ class NewRoutineDialog(QDialog):
         core_form = QFormLayout(self.core_group)
         self.core_event_combo = QComboBox()
         for event_type, label in CORE_TRIGGER_TYPES.items():
+            if event_type == "timer":
+                continue
             self.core_event_combo.addItem(label, event_type)
         core_help = QLabel(
             "Application Started fires after Streamhouse Hub's window opens. Application "
@@ -510,6 +514,8 @@ class CoreTriggerDialog(QDialog):
         form = QFormLayout()
         self.event_type_combo = QComboBox()
         for event_type, label in CORE_TRIGGER_TYPES.items():
+            if event_type == "timer":
+                continue
             self.event_type_combo.addItem(label, event_type)
         if trigger is not None:
             self.event_type_combo.setCurrentIndex(
@@ -539,6 +545,141 @@ class CoreTriggerDialog(QDialog):
             "event_type": str(self.event_type_combo.currentData()),
             "enabled": self.enabled_check.isChecked(),
         }
+
+
+class TimerTriggerDialog(QDialog):
+    def __init__(
+        self,
+        parent: QWidget | None = None,
+        trigger: CoreAutomationTrigger | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Edit Timer Trigger" if trigger else "Add Timer Trigger")
+        self.setMinimumWidth(480)
+        layout = QVBoxLayout(self)
+        form = QFormLayout()
+        self.mode_combo = QComboBox()
+        for mode, label in TIMER_MODES.items():
+            self.mode_combo.addItem(label, mode)
+        self.minimum_spin = self._duration_spin()
+        self.minimum_unit = self._unit_combo()
+        self.maximum_spin = self._duration_spin()
+        self.maximum_unit = self._unit_combo()
+        minimum_row = QWidget()
+        minimum_layout = QHBoxLayout(minimum_row)
+        minimum_layout.setContentsMargins(0, 0, 0, 0)
+        minimum_layout.addWidget(self.minimum_spin)
+        minimum_layout.addWidget(self.minimum_unit)
+        maximum_row = QWidget()
+        maximum_layout = QHBoxLayout(maximum_row)
+        maximum_layout.setContentsMargins(0, 0, 0, 0)
+        maximum_layout.addWidget(self.maximum_spin)
+        maximum_layout.addWidget(self.maximum_unit)
+        self.minimum_label = QLabel("Every")
+        self.maximum_label = QLabel("And")
+        self.enabled_check = QCheckBox("Enabled")
+        self.enabled_check.setChecked(trigger.enabled if trigger else True)
+        form.addRow("Mode", self.mode_combo)
+        form.addRow(self.minimum_label, minimum_row)
+        form.addRow(self.maximum_label, maximum_row)
+        form.addRow("", self.enabled_check)
+        layout.addLayout(form)
+        help_label = QLabel(
+            "Fixed timers repeat at one interval. Random timers choose a new "
+            "interval within the range after every firing. Timers restart fresh "
+            "when Hub starts."
+        )
+        help_label.setWordWrap(True)
+        layout.addWidget(help_label)
+        if trigger is not None:
+            self.mode_combo.setCurrentIndex(
+                max(self.mode_combo.findData(trigger.timer_mode), 0)
+            )
+            self.minimum_spin.setValue(float(trigger.timer_minimum))
+            self.minimum_unit.setCurrentIndex(
+                max(self.minimum_unit.findData(trigger.timer_minimum_unit), 0)
+            )
+            if trigger.timer_maximum:
+                self.maximum_spin.setValue(float(trigger.timer_maximum))
+            self.maximum_unit.setCurrentIndex(
+                max(self.maximum_unit.findData(trigger.timer_maximum_unit), 0)
+            )
+        else:
+            self.minimum_spin.setValue(10)
+            self.minimum_unit.setCurrentIndex(self.minimum_unit.findData("minutes"))
+            self.maximum_spin.setValue(60)
+            self.maximum_unit.setCurrentIndex(self.maximum_unit.findData("minutes"))
+        self.mode_combo.currentIndexChanged.connect(self._update_mode)
+        self._update_mode()
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Save
+            | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def values(self) -> dict[str, object]:
+        random_mode = self.mode_combo.currentData() == "random"
+        return {
+            "timer_mode": str(self.mode_combo.currentData()),
+            "timer_minimum": self._number_text(self.minimum_spin.value()),
+            "timer_minimum_unit": str(self.minimum_unit.currentData()),
+            "timer_maximum": (
+                self._number_text(self.maximum_spin.value()) if random_mode else ""
+            ),
+            "timer_maximum_unit": str(self.maximum_unit.currentData()),
+            "enabled": self.enabled_check.isChecked(),
+        }
+
+    def accept(self) -> None:
+        values = self.values()
+        candidate = CoreAutomationTrigger(
+            "preview",
+            "preview",
+            "timer",
+            enabled=bool(values["enabled"]),
+            timer_mode=str(values["timer_mode"]),
+            timer_minimum=str(values["timer_minimum"]),
+            timer_minimum_unit=str(values["timer_minimum_unit"]),
+            timer_maximum=str(values["timer_maximum"]),
+            timer_maximum_unit=str(values["timer_maximum_unit"]),
+        )
+        try:
+            minimum, maximum = CoreTriggerStore.timer_bounds_seconds(candidate)
+            if minimum > maximum:
+                raise ValueError(
+                    "Random timer minimum must not exceed its maximum."
+                )
+        except ValueError as error:
+            QMessageBox.warning(self, "Invalid Timer", str(error))
+            return
+        super().accept()
+
+    def _update_mode(self) -> None:
+        random_mode = self.mode_combo.currentData() == "random"
+        self.minimum_label.setText("Between" if random_mode else "Every")
+        self.maximum_label.setVisible(random_mode)
+        self.maximum_spin.parentWidget().setVisible(random_mode)
+
+    @staticmethod
+    def _duration_spin() -> QDoubleSpinBox:
+        spin = QDoubleSpinBox()
+        spin.setRange(0.001, 999999)
+        spin.setDecimals(3)
+        spin.setSingleStep(0.5)
+        return spin
+
+    @staticmethod
+    def _unit_combo() -> QComboBox:
+        combo = QComboBox()
+        for unit in TIMER_UNITS:
+            combo.addItem(unit.title(), unit)
+        return combo
+
+    @staticmethod
+    def _number_text(value: float) -> str:
+        return f"{value:.3f}".rstrip("0").rstrip(".")
 
 
 class ObsTriggerDialog(QDialog):
@@ -3297,7 +3438,11 @@ class AutomationPage(QWidget):
             self.trigger_list.addItem(item)
         for trigger in core_triggers:
             state = "Enabled" if trigger.enabled else "Disabled"
-            label = CORE_TRIGGER_TYPES.get(trigger.event_type, trigger.event_type)
+            label = (
+                self.core_trigger_store.timer_description(trigger)
+                if trigger.event_type == "timer"
+                else CORE_TRIGGER_TYPES.get(trigger.event_type, trigger.event_type)
+            )
             item = QListWidgetItem(f"Core program — {label} [{state}]")
             item.setData(Qt.ItemDataRole.UserRole, trigger.trigger_id)
             item.setData(Qt.ItemDataRole.UserRole + 1, "core")
@@ -3773,11 +3918,15 @@ class AutomationPage(QWidget):
         core_menu = QMenu("Core", add_menu)
         program_event_menu = QMenu("Program Event", core_menu)
         for event_type, label in CORE_TRIGGER_TYPES.items():
+            if event_type == "timer":
+                continue
             program_event_menu.addAction(
                 label,
                 lambda checked=False, value=event_type: self._add_core_trigger(value),
             )
         core_menu.addMenu(program_event_menu)
+        timer_action = core_menu.addAction("Timer…", self._add_timer_trigger)
+        timer_action.setEnabled(routine is not None)
         core_menu._streamhouse_trigger_submenus = [program_event_menu]
         add_menu.addMenu(core_menu)
         add_menu._streamhouse_trigger_submenus.append(core_menu)
@@ -3934,6 +4083,23 @@ class AutomationPage(QWidget):
         self.select_routine(routine.routine_id)
         self._select_trigger("core", trigger.trigger_id)
 
+    def _add_timer_trigger(self) -> None:
+        routine = self.routine_store.get(self._selected_routine_id)
+        if routine is None:
+            return
+        dialog = TimerTriggerDialog(self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        try:
+            trigger = self.core_trigger_store.add_timer(
+                routine.routine_id, **dialog.values()
+            )
+        except (OSError, TypeError, ValueError) as error:
+            self._error("Could Not Add Timer", error)
+            return
+        self.select_routine(routine.routine_id)
+        self._select_trigger("core", trigger.trigger_id)
+
     def _add_obs_trigger(self, event_type: str | None = None) -> None:
         routine = self.routine_store.get(self._selected_routine_id)
         if routine is None:
@@ -4026,6 +4192,13 @@ class AutomationPage(QWidget):
             trigger = self.core_trigger_store.get(trigger_id)
             if trigger is None:
                 return
+            if trigger.event_type == "timer":
+                self.trigger_detail_label.setText(
+                    f"Core Timer\n"
+                    f"Schedule: {self.core_trigger_store.timer_description(trigger)}\n"
+                    f"State: {'Enabled' if trigger.enabled else 'Disabled'}"
+                )
+                return
             self.trigger_detail_label.setText(
                 f"Core program event: "
                 f"{CORE_TRIGGER_TYPES.get(trigger.event_type, trigger.event_type)}\n"
@@ -4068,7 +4241,10 @@ class AutomationPage(QWidget):
         if kind == "core":
             trigger = self.core_trigger_store.get(trigger_id)
             if trigger is not None:
-                self._edit_core_trigger(routine.routine_id, trigger)
+                if trigger.event_type == "timer":
+                    self._edit_timer_trigger(routine.routine_id, trigger)
+                else:
+                    self._edit_core_trigger(routine.routine_id, trigger)
             return
         if kind == "obs":
             trigger = self.obs_trigger_store.get(trigger_id)
@@ -4171,6 +4347,22 @@ class AutomationPage(QWidget):
             )
         except (OSError, TypeError, ValueError) as error:
             self._error("Could Not Update Trigger", error)
+            return
+        self.select_routine(routine_id)
+        self._select_trigger("core", updated.trigger_id)
+
+    def _edit_timer_trigger(
+        self, routine_id: str, trigger: CoreAutomationTrigger
+    ) -> None:
+        dialog = TimerTriggerDialog(self, trigger)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        try:
+            updated = self.core_trigger_store.update_timer(
+                trigger.trigger_id, **dialog.values()
+            )
+        except (OSError, TypeError, ValueError) as error:
+            self._error("Could Not Update Timer", error)
             return
         self.select_routine(routine_id)
         self._select_trigger("core", updated.trigger_id)

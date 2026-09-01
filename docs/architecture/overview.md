@@ -446,6 +446,18 @@ are recorded as **Cancelled**, not completed or internally failed.
 `AutomationService.process_queues()` is called periodically on the Qt thread so
 Qt-based tasks remain thread-safe.
 
+Core **Timer** is an ordinary Automation trigger. One Qt-owned scheduler tracks
+all enabled timer definitions without sleeps or a thread per timer. Fixed mode
+starts a fresh configured interval after each firing. Random mode samples a new
+delay within the configured range after every firing. Seconds, minutes, hours,
+and positive decimal values are supported. Each firing publishes through
+`AutomationService`, so the routine's configured queue—including Default Queue
+fallback—owns ordering, duplicates, accumulation, cancellation, and history.
+Editing, disabling, re-enabling, or deleting a trigger replaces or cancels its
+runtime schedule; shutdown cancels every timer. Only configuration persists:
+Hub startup begins fresh intervals, does not catch up downtime, and never emits
+a burst of missed runs.
+
 Run History is a bounded, runtime-only view of executions that actually
 started; merely accepting an item into a queue does not create a completed-run
 entry. `RoutineExecutionResult` retains root timing, queue/trigger metadata,
@@ -718,6 +730,7 @@ Adding a task requires more than a handler. See **Adding an automation task**.
 | Twitch Keyword / Phrase | same as above | same | Contains/Exact/Starts With/Ends With chat matching with case and whole-word controls |
 | Twitch Ads | same as above | same | 5/3/2/1-minute warnings, EventSub-backed Ads Started, Hub-calculated Ads Ended |
 | Core | `CoreTriggerStore` | `automation/core_triggers.json` | application started/closing |
+| Core Timer | `CoreTriggerStore` + `AutomationTimerScheduler` | `automation/core_triggers.json` | fixed intervals or a newly sampled random interval range |
 | OBS | `ObsTriggerStore` | `obs/triggers.json` | connection, scene, source, audio, media, output changes |
 | Soundboard | button record in `SoundboardStore` | `twitch/soundboard.json` | local preview or Extension button |
 
@@ -1203,7 +1216,7 @@ formats are accepted.
 | `config/settings.json` | Hub | schema v3 `AppSettings`, validated/defaulted; no obsolete auto-send toggle field |
 | `ai/settings.json` | Streamhouse AI | schema v2 model, endpoint, personality/language |
 | `automation/routines.json` | Hub | schema v4 groups, routines, ordered tasks, trigger links, and queue IDs |
-| `automation/core_triggers.json` | Hub | schema v1 application lifecycle bindings |
+| `automation/core_triggers.json` | Hub | schema v2 application lifecycle and fixed/random Timer bindings; runtime deadlines are not persisted |
 | `automation/queues.json` | Hub | schema v1 Default Queue/custom definitions; pending items are volatile |
 | `automation/variables.json` | Hub | schema v3 global values; session/routine values are volatile |
 | `twitch/commands.json` | Hub | schema v6 configured commands and template provenance; templates stay in code |
