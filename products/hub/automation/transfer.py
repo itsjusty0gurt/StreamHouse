@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any, Iterable, Mapping
 
-from products.hub.automation.models import RoutineDefinition
+from products.hub.automation.models import RoutineDefinition, TaskDefinition
 from products.hub.automation.routines import RoutineStore
 from products.hub.automation.tasks import TaskRegistry
 from products.hub.automation.core_triggers import CORE_TRIGGER_TYPES, CoreTriggerStore
@@ -16,7 +16,38 @@ from products.hub.twitch.commands import TwitchCommandTriggerStore
 
 
 FORMAT = "streamhouse.automation.routine"
-VERSION = 1
+VERSION = 2
+
+
+def _task_payload(task: TaskDefinition) -> dict[str, Any]:
+    return {
+        "task_type": task.task_type,
+        "name": task.name,
+        "config": task.config,
+        "enabled": task.enabled,
+        "then_tasks": [_task_payload(child) for child in task.then_tasks],
+        "else_tasks": [_task_payload(child) for child in task.else_tasks],
+    }
+
+
+def _validate_task_payloads(
+    tasks: object,
+    available: set[str],
+    unavailable: list[str],
+) -> None:
+    if not isinstance(tasks, list):
+        raise ValueError("The imported task list is invalid.")
+    for task in tasks:
+        if not isinstance(task, Mapping) or not isinstance(task.get("config", {}), Mapping):
+            raise ValueError("The imported routine contains an invalid task.")
+        task_type = str(task.get("task_type", "")).strip().casefold()
+        if task_type not in available:
+            unavailable.append(task_type or "missing task type")
+        for key in ("then_tasks", "else_tasks"):
+            children = task.get(key, [])
+            _validate_task_payloads(children, available, unavailable)
+            if task_type != "core.if" and children:
+                raise ValueError("Only Core If tasks may contain nested branches.")
 
 
 def export_routine(
@@ -51,12 +82,7 @@ def export_routine(
             "enabled": routine.enabled,
             "group": group.name if group is not None else "",
             "tasks": [
-                {
-                    "task_type": task.task_type,
-                    "name": task.name,
-                    "config": task.config,
-                    "enabled": task.enabled,
-                }
+                _task_payload(task)
                 for task in routine.tasks
                 if not task.managed_key
             ],
@@ -113,16 +139,9 @@ def validate_import(
     if not str(routine.get("name", "")).strip():
         raise ValueError("The imported routine has no name.")
     tasks = routine.get("tasks", [])
-    if not isinstance(tasks, list):
-        raise ValueError("The imported task list is invalid.")
     available = set(task_registry.registered_types())
     unavailable: list[str] = []
-    for task in tasks:
-        if not isinstance(task, Mapping) or not isinstance(task.get("config", {}), Mapping):
-            raise ValueError("The imported routine contains an invalid task.")
-        task_type = str(task.get("task_type", "")).strip().casefold()
-        if task_type not in available:
-            unavailable.append(task_type or "missing task type")
+    _validate_task_payloads(tasks, available, unavailable)
     if unavailable:
         raise ValueError(
             "Unavailable task provider(s): " + ", ".join(sorted(set(unavailable)))
@@ -225,12 +244,15 @@ def import_routine(
             command_id = created.trigger_id
             command_store.set_enabled(command_id, bool(command.get("enabled", True)))
         for values in routine_values.get("tasks", []):
+            definition = TaskDefinition.from_dict(values)
             routine_store.add_task(
                 routine.routine_id,
-                task_type=str(values.get("task_type", "")),
-                name=str(values.get("name", "Imported task")),
-                config=dict(values.get("config", {})),
-                enabled=bool(values.get("enabled", True)),
+                task_type=definition.task_type,
+                name=definition.name or "Imported task",
+                config=definition.config,
+                enabled=definition.enabled,
+                then_tasks=definition.then_tasks,
+                else_tasks=definition.else_tasks,
             )
     except (OSError, TypeError, ValueError):
         if command_id:

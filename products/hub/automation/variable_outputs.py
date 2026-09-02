@@ -4,7 +4,7 @@ import re
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 
-from products.hub.automation.models import RoutineDefinition
+from products.hub.automation.models import RoutineDefinition, TaskDefinition
 from products.hub.automation.variable_registry import (
     VariableAvailability,
     VariableDataType,
@@ -86,6 +86,28 @@ def generated_output_definitions(
     return tuple(definitions)
 
 
+def task_output_definitions(
+    task: TaskDefinition,
+    *,
+    source: str = "",
+) -> tuple[VariableDefinition, ...]:
+    """Return outputs available after a task, including conditional children."""
+
+    definitions: dict[str, VariableDefinition] = {
+        definition.name: definition
+        for definition in generated_output_definitions(
+            task.task_type,
+            task.config,
+            source=source or task.name,
+        )
+    }
+    if task.task_type == "core.if":
+        for child in task.child_tasks:
+            for definition in task_output_definitions(child, source=child.name):
+                definitions[definition.name] = definition
+    return tuple(definitions.values())
+
+
 @dataclass(frozen=True, slots=True)
 class ConfiguredOutputReference:
     definition: VariableDefinition
@@ -105,11 +127,7 @@ def configured_output_references(
     references: list[ConfiguredOutputReference] = []
     for routine in routines:
         for task_number, task in enumerate(routine.tasks, start=1):
-            definitions = generated_output_definitions(
-                task.task_type,
-                task.config,
-                source=task.name,
-            )
+            definitions = task_output_definitions(task, source=task.name)
             for definition in definitions:
                 if (
                     definition.availability is not VariableAvailability.TEMPORARY

@@ -4,6 +4,7 @@ import unittest
 import tempfile
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from PySide6.QtWidgets import QApplication, QCheckBox, QComboBox, QLabel, QLineEdit
 from PySide6.QtGui import QTextCursor
@@ -424,14 +425,77 @@ class TaskEditorTests(unittest.TestCase):
             "TestViewer",
         )
 
-    def test_if_else_form_disables_value_for_unary_comparison(self) -> None:
-        dialog = TaskEditorDialog("core.logic_if_else")
-        fields = dialog.field_widgets["core.logic_if_else"]
+    def test_if_form_has_exact_operators_and_disables_right_for_unary(self) -> None:
+        dialog = TaskEditorDialog("core.if")
+        fields = dialog.field_widgets["core.if"]
         operator = fields["operator"]
-        operator.setCurrentIndex(operator.findData("is_true"))
+        choices = [operator.itemData(index) for index in range(operator.count())]
+        self.assertEqual(
+            choices,
+            [
+                "equals",
+                "not_equals",
+                "contains",
+                "not_contains",
+                "starts_with",
+                "ends_with",
+                "greater_than",
+                "greater_or_equal",
+                "less_than",
+                "less_or_equal",
+                "is_empty",
+                "is_not_empty",
+            ],
+        )
+        operator.setCurrentIndex(operator.findData("is_not_empty"))
 
         self.assertFalse(fields["right"].isEnabled())
-        self.assertEqual(dialog.name_edit.text(), "If / Else")
+        self.assertEqual(dialog.name_edit.text(), "If")
+        self.assertEqual(dialog.then_tasks_editor.value(), [])
+        self.assertEqual(dialog.else_tasks_editor.value(), [])
+
+    def test_if_form_round_trips_owned_nested_tasks_and_reorders_them(self) -> None:
+        first = TaskDefinition("first", "core.wait", "First", {"duration": "1"})
+        second = TaskDefinition("second", "core.wait", "Second", {"duration": "2"})
+        condition = TaskDefinition(
+            "condition",
+            "core.if",
+            "If coffee",
+            {"left": "coffee", "operator": "equals", "right": "coffee"},
+            then_tasks=[first, second],
+        )
+        dialog = TaskEditorDialog("core.if", task=condition)
+        dialog.then_tasks_editor.task_list.setCurrentRow(1)
+        dialog.then_tasks_editor.move_selected(-1)
+
+        values = dialog.values()
+
+        self.assertEqual(
+            [task.task_id for task in values["then_tasks"]],
+            ["second", "first"],
+        )
+        self.assertEqual(values["else_tasks"], [])
+
+    def test_if_branch_editor_adds_edits_and_deletes_children(self) -> None:
+        dialog = TaskEditorDialog("core.if")
+        editor = dialog.then_tasks_editor
+        added = TaskDefinition("added", "core.wait", "Added")
+        edited = TaskDefinition("added", "core.wait", "Edited")
+        with patch(
+            "products.hub.ui.automation_page.QInputDialog.getItem",
+            return_value=("Wait", True),
+        ), patch.object(editor, "_run_editor", return_value=added):
+            editor.add_task()
+        self.assertEqual([task.name for task in editor.value()], ["Added"])
+
+        editor.task_list.setCurrentRow(0)
+        with patch.object(editor, "_run_editor", return_value=edited):
+            editor.edit_selected()
+        self.assertEqual([task.name for task in editor.value()], ["Edited"])
+
+        editor.task_list.setCurrentRow(0)
+        editor.delete_selected()
+        self.assertEqual(editor.value(), [])
 
     def test_switch_form_round_trips_case_routines(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

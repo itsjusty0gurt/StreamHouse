@@ -502,6 +502,79 @@ class AutomationServiceTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "discarded pre-alpha schema"):
             self.store.load()
 
+    def test_nested_if_round_trips_in_current_routine_schema(self) -> None:
+        routine = self.store.add("Nested")
+        condition = self.store.add_task(
+            routine.routine_id,
+            task_type="core.if",
+            name="If command data",
+            config={"left": "{command.data}", "operator": "equals", "right": "yes"},
+            then_tasks=[
+                TaskDefinition("then-task", "test.example", "Then task", {"value": 1})
+            ],
+            else_tasks=[
+                TaskDefinition("else-task", "test.example", "Else task", {"value": 2})
+            ],
+        )
+
+        payload = json.loads(self.store.path.read_text(encoding="utf-8"))
+        reloaded = RoutineStore(self.store.path)
+        reloaded.load()
+        saved = reloaded.get(routine.routine_id).tasks[0]
+
+        self.assertEqual(payload["version"], 5)
+        self.assertEqual(saved.task_id, condition.task_id)
+        self.assertEqual(saved.then_tasks[0].task_id, "then-task")
+        self.assertEqual(saved.else_tasks[0].config, {"value": 2})
+
+        reloaded.update_task(
+            routine.routine_id,
+            condition.task_id,
+            then_tasks=[
+                TaskDefinition("second", "test.example", "Second"),
+                TaskDefinition("first", "test.example", "First"),
+            ],
+        )
+        final_store = RoutineStore(self.store.path)
+        final_store.load()
+        self.assertEqual(
+            [task.task_id for task in final_store.get(routine.routine_id).tasks[0].then_tasks],
+            ["second", "first"],
+        )
+
+    def test_previous_routine_schema_is_rejected_without_compatibility(self) -> None:
+        self.store.path.write_text(
+            json.dumps({"version": 4, "groups": [], "routines": []}),
+            encoding="utf-8",
+        )
+
+        with self.assertRaisesRegex(ValueError, "discarded pre-alpha schema"):
+            self.store.load()
+
+    def test_duplicate_if_regenerates_every_nested_task_id(self) -> None:
+        routine = self.store.add("Duplicate nested")
+        condition = self.store.add_task(
+            routine.routine_id,
+            task_type="core.if",
+            name="If",
+            config={"left": "1", "operator": "equals", "right": "1"},
+            then_tasks=[
+                TaskDefinition(
+                    "nested-if",
+                    "core.if",
+                    "Nested If",
+                    {"left": "2", "operator": "equals", "right": "2"},
+                    then_tasks=[TaskDefinition("leaf", "test.example", "Leaf")],
+                )
+            ],
+        )
+
+        copied = self.store.duplicate_task(routine.routine_id, condition.task_id)
+
+        self.assertNotEqual(copied.task_id, condition.task_id)
+        self.assertNotEqual(copied.then_tasks[0].task_id, "nested-if")
+        self.assertNotEqual(copied.then_tasks[0].then_tasks[0].task_id, "leaf")
+
 
 class SendTwitchChatMessageTaskTests(unittest.TestCase):
     def test_task_renders_trigger_context_and_uses_bot_account(self) -> None:

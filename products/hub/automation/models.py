@@ -9,6 +9,7 @@ from uuid import uuid4
 
 DEFAULT_AUTOMATION_QUEUE_ID = "streamhouse.default.queue"
 DEFAULT_AUTOMATION_QUEUE_NAME = "Default Queue"
+END_ROUTINE_ACTION = "end_routine"
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,10 +47,14 @@ class TaskDefinition:
     config: dict[str, Any] = field(default_factory=dict)
     enabled: bool = True
     managed_key: str = ""
+    then_tasks: list[TaskDefinition] = field(default_factory=list)
+    else_tasks: list[TaskDefinition] = field(default_factory=list)
 
     @classmethod
     def from_dict(cls, values: Mapping[str, Any]) -> TaskDefinition:
         config = values.get("config", {})
+        raw_then = values.get("then_tasks", [])
+        raw_else = values.get("else_tasks", [])
         return cls(
             task_id=str(values.get("task_id", "")) or uuid4().hex,
             task_type=str(values.get("task_type", "")),
@@ -57,7 +62,25 @@ class TaskDefinition:
             config=dict(config) if isinstance(config, dict) else {},
             enabled=bool(values.get("enabled", True)),
             managed_key=str(values.get("managed_key", "")),
+            then_tasks=[
+                cls.from_dict(task)
+                for task in raw_then
+                if isinstance(task, Mapping)
+            ]
+            if isinstance(raw_then, list)
+            else [],
+            else_tasks=[
+                cls.from_dict(task)
+                for task in raw_else
+                if isinstance(task, Mapping)
+            ]
+            if isinstance(raw_else, list)
+            else [],
         )
+
+    @property
+    def child_tasks(self) -> tuple[TaskDefinition, ...]:
+        return (*self.then_tasks, *self.else_tasks)
 
 
 @dataclass(slots=True)
@@ -136,6 +159,8 @@ class TaskExecutionResult:
     flow_action: str = ""
     cancelled: bool = False
     nested_results: tuple[RoutineExecutionResult, ...] = ()
+    child_results: tuple[TaskExecutionResult, ...] = ()
+    selected_branch: str = ""
 
 
 @dataclass(frozen=True, slots=True)

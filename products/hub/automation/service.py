@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextvars import ContextVar
 from dataclasses import replace
 from datetime import datetime, timezone
 from time import perf_counter
@@ -10,8 +11,11 @@ from products.hub.automation.cancellation import (
     current_cancellation,
 )
 from products.hub.automation.models import (
+    END_ROUTINE_ACTION,
     AutomationExecutionResult,
+    RoutineDefinition,
     RoutineExecutionResult,
+    TaskDefinition,
     TaskExecutionResult,
     TriggerEvent,
 )
@@ -26,6 +30,12 @@ from products.hub.automation.queues import (
 from products.hub.automation.variable_registry import VariableRegistry
 from products.hub.core.events import Events
 from shared.streamhouse_runtime.logger import Logger
+
+
+_active_routine: ContextVar[RoutineDefinition | None] = ContextVar(
+    "automation_active_routine",
+    default=None,
+)
 
 
 class AutomationService:
@@ -192,7 +202,13 @@ class AutomationService:
         Events.emit("trigger_fired.streamhouse.task_test", trigger=trigger)
         started_at = datetime.now(timezone.utc)
         started_clock = perf_counter()
-        task_result = self._execute_task(routine, task, trigger)
+        execution = AutomationCancellation(queue_id=routine.queue_id)
+        with cancellation_scope(execution):
+            routine_token = _active_routine.set(routine)
+            try:
+                task_result = self._execute_task(routine, task, trigger)
+            finally:
+                _active_routine.reset(routine_token)
         routine_result = RoutineExecutionResult(
             routine_id=routine.routine_id,
             succeeded=task_result.succeeded,
@@ -268,23 +284,15 @@ class AutomationService:
             )
         with cancellation_scope(execution):
             routine_stack.append(routine.routine_id)
+            routine_token = _active_routine.set(routine)
             Events.emit("routine_started", trigger=trigger, routine=routine)
             try:
-                task_results = []
-                flow_action = ""
-                for task in routine.tasks:
-                    if execution.cancelled:
-                        break
-                    if not task.enabled:
-                        continue
-                    self._refresh_registry_values(trigger)
-                    task_result = self._execute_task(routine, task, trigger)
-                    task_results.append(task_result)
-                    if execution.cancelled or not task_result.succeeded:
-                        break
-                    if task_result.flow_action:
-                        flow_action = task_result.flow_action
-                        break
+                task_results, flow_action = self._execute_task_sequence(
+                    routine,
+                    tuple(routine.tasks),
+                    trigger,
+                    execution,
+                )
                 cancelled = execution.cancelled
                 succeeded = (
                     not cancelled
@@ -298,8 +306,8 @@ class AutomationService:
                     detail=(
                         execution.reason
                         if cancelled
-                        else "Routine stopped by logic."
-                        if succeeded and flow_action == "break"
+                        else "Routine completed early because End Routine was reached."
+                        if succeeded and flow_action == END_ROUTINE_ACTION
                         else ""
                         if succeeded
                         else "Routine stopped after a failed task."
@@ -327,7 +335,51 @@ class AutomationService:
                 )
                 return routine_result
             finally:
+                _active_routine.reset(routine_token)
                 routine_stack.pop()
+
+    def execute_child_tasks(
+        self,
+        tasks: tuple[TaskDefinition, ...],
+        trigger: TriggerEvent,
+    ) -> tuple[TaskExecutionResult, ...]:
+        """Execute container-owned children in the current routine frame."""
+
+        routine = _active_routine.get()
+        execution = current_cancellation()
+        if routine is None or execution is None:
+            raise ValueError("Nested tasks require an active routine execution.")
+        results, _flow_action = self._execute_task_sequence(
+            routine,
+            tasks,
+            trigger,
+            execution,
+        )
+        return tuple(results)
+
+    def _execute_task_sequence(
+        self,
+        routine: RoutineDefinition,
+        tasks: tuple[TaskDefinition, ...],
+        trigger: TriggerEvent,
+        execution: AutomationCancellation,
+    ) -> tuple[list[TaskExecutionResult], str]:
+        results: list[TaskExecutionResult] = []
+        flow_action = ""
+        for task in tasks:
+            if execution.cancelled:
+                break
+            if not task.enabled:
+                continue
+            self._refresh_registry_values(trigger)
+            task_result = self._execute_task(routine, task, trigger)
+            results.append(task_result)
+            if execution.cancelled or not task_result.succeeded:
+                break
+            if task_result.flow_action:
+                flow_action = task_result.flow_action
+                break
+        return results, flow_action
 
     @staticmethod
     def safe_execution_context(

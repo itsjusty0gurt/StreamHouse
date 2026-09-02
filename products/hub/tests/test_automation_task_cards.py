@@ -42,7 +42,7 @@ def test_common_task_summaries_are_metadata_driven() -> None:
         ),
         ("counter.increase", {"counter_id": "deaths", "amount": "1"}, "Deaths +1"),
         ("core.run_routine", {"routine_id": "raid"}, "Incoming Raid"),
-        ("core.logic_break", {}, "Stop this routine here"),
+        ("core.end_routine", {}, "End this routine here"),
     )
 
     for task_type, config, expected in cases:

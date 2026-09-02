@@ -10,7 +10,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtWidgets import QApplication
 
 from products.hub.automation.custom_variables import CustomVariableStore
-from products.hub.automation.models import TaskExecutionResult
+from products.hub.automation.models import TaskDefinition, TaskExecutionResult
 from products.hub.automation.logic_tasks import comparison_choices_for_type
 from products.hub.automation.routines import RoutineStore
 from products.hub.automation.service import AutomationService
@@ -324,6 +324,36 @@ def test_configured_output_references_are_routine_and_order_aware() -> None:
         assert reference.definition.lifetime_label == "Routine"
 
 
+def test_if_child_outputs_are_discoverable_after_the_container() -> None:
+    with TemporaryDirectory() as temporary:
+        routines = RoutineStore(Path(temporary) / "routines.json")
+        routine = routines.add("Conditional output")
+        condition = routines.add_task(
+            routine.routine_id,
+            task_type="core.if",
+            name="Choose output",
+            config={"left": "1", "operator": "equals", "right": "1"},
+            then_tasks=[
+                TaskDefinition(
+                    "then-output",
+                    "core.create_routine_variable",
+                    "Then output",
+                    {"name": "choice", "value": "then"},
+                )
+            ],
+        )
+
+        references = configured_output_references(routines.routines)
+        reference = next(
+            item for item in references
+            if item.definition.name == "automation.choice"
+        )
+
+        assert reference.task_id == condition.task_id
+        assert reference.task_number == 1
+        assert reference.definition.source == "Then output"
+
+
 def test_pre_alpha_custom_variable_schema_is_rejected_for_reset() -> None:
     with TemporaryDirectory() as temporary:
         path = Path(temporary) / "variables.json"
@@ -425,14 +455,15 @@ def test_variables_page_and_picker_search_canonical_names() -> None:
             )
         )
         condition_editor = TaskEditorDialog(
-            "core.logic_if_else", variable_registry=integer_registry
+            "core.if", variable_registry=integer_registry
         )
-        condition_editor.field_widgets["core.logic_if_else"]["left"].setText("{hub.score}")
+        condition_editor.field_widgets["core.if"]["left"].setText("{hub.score}")
         application.processEvents()
-        operator = condition_editor.field_widgets["core.logic_if_else"]["operator"]
+        operator = condition_editor.field_widgets["core.if"]["operator"]
         operators = {operator.itemData(index) for index in range(operator.count())}
         assert "greater_than" in operators
-        assert "contains" not in operators
+        assert "contains" in operators
+        assert "regex" not in operators
         condition_editor.close()
         editor.close()
         picker.close()

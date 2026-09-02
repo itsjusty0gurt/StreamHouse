@@ -24,7 +24,7 @@ class RoutineStore:
     routine relationships.
     """
 
-    VERSION = 4
+    VERSION = 5
 
     def __init__(self, path: Path | None = None) -> None:
         self.path = path or user_data_root() / "automation" / "routines.json"
@@ -309,7 +309,7 @@ class RoutineStore:
             raise ValueError("The selected routine no longer exists.")
         tasks = deepcopy(source.tasks)
         for task in tasks:
-            task.task_id = uuid4().hex
+            self._renew_task_ids(task)
             task.managed_key = ""
         duplicate = RoutineDefinition(
             routine_id=uuid4().hex,
@@ -369,6 +369,8 @@ class RoutineStore:
         config: dict[str, Any] | None = None,
         enabled: bool = True,
         index: int | None = None,
+        then_tasks: Iterable[TaskDefinition] = (),
+        else_tasks: Iterable[TaskDefinition] = (),
     ) -> TaskDefinition:
         routines = deepcopy(self.routines)
         routine = self._find_routine(routines, routine_id)
@@ -378,6 +380,8 @@ class RoutineStore:
             name=self._clean_name(name),
             config=deepcopy(config or {}),
             enabled=bool(enabled),
+            then_tasks=deepcopy(list(then_tasks)),
+            else_tasks=deepcopy(list(else_tasks)),
         )
         insert_at = len(routine.tasks) if index is None else max(
             0, min(int(index), len(routine.tasks))
@@ -396,6 +400,8 @@ class RoutineStore:
         name: str | None = None,
         config: dict[str, Any] | None = None,
         enabled: bool | None = None,
+        then_tasks: Iterable[TaskDefinition] | None = None,
+        else_tasks: Iterable[TaskDefinition] | None = None,
     ) -> TaskDefinition:
         routines = deepcopy(self.routines)
         routine = self._find_routine(routines, routine_id)
@@ -412,6 +418,10 @@ class RoutineStore:
             task.config = deepcopy(config)
         if enabled is not None:
             task.enabled = bool(enabled)
+        if then_tasks is not None:
+            task.then_tasks = deepcopy(list(then_tasks))
+        if else_tasks is not None:
+            task.else_tasks = deepcopy(list(else_tasks))
         self._commit(deepcopy(self.groups), routines)
         saved = self.get(routine_id)
         return self._find_task(saved, task_id)  # type: ignore[arg-type]
@@ -450,7 +460,7 @@ class RoutineStore:
         routine = self._find_routine(routines, routine_id)
         source = self._find_task(routine, task_id)
         task = deepcopy(source)
-        task.task_id = uuid4().hex
+        self._renew_task_ids(task)
         task.name = self._clean_name(f"{task.name} Copy")
         task.managed_key = ""
         source_index = routine.tasks.index(source)
@@ -669,8 +679,8 @@ class RoutineStore:
         if len(group.name.strip()) > 60:
             raise ValueError("Routine group names can contain at most 60 characters.")
 
-    @staticmethod
-    def _validate_routine(routine: RoutineDefinition) -> None:
+    @classmethod
+    def _validate_routine(cls, routine: RoutineDefinition) -> None:
         if not routine.routine_id or not routine.name.strip():
             raise ValueError("Routines require an ID and name.")
         if len(routine.name.strip()) > 100:
@@ -682,7 +692,7 @@ class RoutineStore:
             raise ValueError("Routine trigger IDs must be unique.")
         task_ids: set[str] = set()
         managed_keys: set[str] = set()
-        for task in routine.tasks:
+        for task in cls._walk_tasks(routine.tasks):
             if not task.task_id or not task.task_type or not task.name.strip():
                 raise ValueError("Tasks require an ID, type, and name.")
             if task.task_id in task_ids:
@@ -692,6 +702,24 @@ class RoutineStore:
                 if task.managed_key in managed_keys:
                     raise ValueError("Managed task keys must be unique within a routine.")
                 managed_keys.add(task.managed_key)
+            if task.task_type != "core.if" and task.child_tasks:
+                raise ValueError("Only structured control-flow tasks may own child tasks.")
+
+    @classmethod
+    def _walk_tasks(
+        cls,
+        tasks: Iterable[TaskDefinition],
+    ) -> Iterable[TaskDefinition]:
+        for task in tasks:
+            yield task
+            yield from cls._walk_tasks(task.then_tasks)
+            yield from cls._walk_tasks(task.else_tasks)
+
+    @classmethod
+    def _renew_task_ids(cls, task: TaskDefinition) -> None:
+        task.task_id = uuid4().hex
+        for child in task.child_tasks:
+            cls._renew_task_ids(child)
 
     @staticmethod
     def _clean_name(name: str) -> str:

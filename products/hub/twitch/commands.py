@@ -10,7 +10,7 @@ from time import monotonic
 from typing import Any, Callable, Mapping
 from uuid import uuid4
 
-from products.hub.automation.variable_outputs import generated_output_definitions
+from products.hub.automation.variable_outputs import task_output_definitions
 from products.hub.automation.variable_registry import VariableDefinition, VariableRegistry
 from products.hub.automation.models import RoutineDefinition, RoutineGroup, TriggerEvent
 from products.hub.automation.routines import RoutineStore
@@ -783,10 +783,7 @@ class TwitchCommandTriggerStore:
                 if candidate.task_id == task.task_id:
                     break
                 generated_definitions.extend(
-                    generated_output_definitions(
-                        candidate.task_type,
-                        candidate.config,
-                    )
+                    task_output_definitions(candidate)
                 )
             SendTwitchChatMessageTask.validate_template(
                 str(task.config.get("message", "")),

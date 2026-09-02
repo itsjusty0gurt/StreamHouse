@@ -8,6 +8,8 @@ from products.hub.automation.core_tasks import CORE_TASK_LABELS
 from products.hub.automation.file_tasks import FILE_TASK_LABELS
 from products.hub.automation.logic_tasks import (
     COMPARISON_CHOICES,
+    IF_COMPARISON_CHOICES,
+    IF_UNARY_OPERATORS,
     LOGIC_TASK_LABELS,
     UNARY_OPERATORS,
 )
@@ -143,8 +145,8 @@ _SHORT_DESCRIPTIONS = {
         "Runs another routine as part of the current execution. Nested tasks share "
         "the current routine context."
     ),
-    "core.logic_break": (
-        "Stops the current routine at this task without running later tasks."
+    "core.end_routine": (
+        "Ends the current routine immediately and skips its remaining tasks."
     ),
     "core.logic_get_input": (
         "Asks for text while the routine runs. The response becomes a "
@@ -157,9 +159,9 @@ _SHORT_DESCRIPTIONS = {
     "core.logic_random_choice": (
         "Chooses one configured branch by weight and runs its routine."
     ),
-    "core.logic_if_else": (
-        "Compares values and runs either the matching or fallback routine. Values "
-        "may use Variables."
+    "core.if": (
+        "Compares two values and runs its nested Then or optional Else tasks. "
+        "Values may use Variables."
     ),
     "core.logic_switch": (
         "Matches one value against configured cases and runs the selected routine."
@@ -259,7 +261,7 @@ VARIABLE_INPUT_FIELDS: dict[str, tuple[str, ...]] = {
     "core.format_duration": ("start", "end", "seconds"),
     "core.select_text": ("selector", "cases", "default"),
     "core.logic_get_input": ("title", "prompt", "default"),
-    "core.logic_if_else": ("left", "right"),
+    "core.if": ("left", "right"),
     "core.logic_switch": ("input",),
     "core.logic_while": ("left", "right"),
     "core.run_python_script": ("script", "arguments", "working_directory"),
@@ -299,9 +301,17 @@ _HELP_TEXT = {
         "Runs another routine inline, then returns to the next task in this routine. "
         "The child shares the current trigger data and cancellation state."
     ),
-    "core.logic_if_else": (
-        "Compares two values and optionally runs one routine when the comparison is "
-        "true and another when it is false."
+    "core.end_routine": (
+        "Ends the routine invocation containing this task as a successful control-flow "
+        "decision. When used inside If, the signal escapes the selected branch. When "
+        "used in a called child routine, the child ends and its parent resumes after "
+        "Run Routine. It does not cancel or clear any queue."
+    ),
+    "core.if": (
+        "Resolves the configured values when the routine runs, selects exactly one "
+        "nested branch, and executes that branch in the current routine context. "
+        "Then and Else tasks share Variables, outputs, cancellation, and queue "
+        "identity with their parent routine."
     ),
     "core.logic_switch": (
         "Matches one value against a list of cases and runs the routine assigned to "
@@ -396,6 +406,12 @@ _INPUT_HELP: dict[str, dict[str, str]] = {
         "name": "The automation.* output name used by later tasks.",
         "mode": "Generates either an integer in a range or a decimal from 0 to 1.",
     },
+    "core.if": {
+        "left": "A literal value or canonical Variable used on the left side.",
+        "operator": "The text, numeric, or empty-value comparison to perform.",
+        "right": "A literal value or canonical Variable used on the right side.",
+        "ignore_case": "Applies case-insensitive matching to text comparisons.",
+    },
     "core.logic_while": {
         "max_iterations": "Maximum repeats even if the condition remains true.",
         "timeout_seconds": "Maximum total time spent repeating this loop.",
@@ -454,7 +470,14 @@ _NOTES = {
     "core.close_application": ("Force close can discard unsaved work in the target application.",),
     "core.run_routine": ("Routine nesting is limited to ten levels and recursive loops are blocked.",),
     "core.clear_queue": ("This removes pending items only; use Stop Queue in the Queues tab to stop the active routine too.",),
-    "core.logic_break": ("Tasks after End Routine do not run.",),
+    "core.end_routine": (
+        "Tasks after End Routine do not run and completed actions are not undone.",
+        "It ends only the containing routine; it does not cancel the queue or parent routine.",
+    ),
+    "core.if": (
+        "Numeric comparisons use exact decimal values and fail when either side is not numeric.",
+        "Only the selected branch runs, so outputs from the other branch do not exist.",
+    ),
     "core.logic_while": ("The repeated routine runs inline and shares the current routine context.",),
     "core.run_python_script": ("Only run scripts you understand and trust.",),
     "obs.set_scene_item_enabled": ("Prefer Show or Hide when the final state matters.",),
@@ -477,7 +500,10 @@ _EXAMPLES = {
     "core.show_notification": ("Show “Raid incoming” when a raid trigger runs.",),
     "core.create_routine_variable": ("Create automation.winner, then use {automation.winner} in later tasks.",),
     "core.run_routine": ("Run “Play raid alert”, then continue this routine.",),
-    "core.logic_if_else": ("If {event.viewers} is greater than 20, run the large-raid routine.",),
+    "core.end_routine": (
+        "If a viewer is not allowed, send “Mods only”, then End Routine before OBS tasks run.",
+    ),
+    "core.if": ("If {event.viewers} is greater than 20, run the nested raid-alert tasks.",),
     "core.logic_switch": ("Match {event.reward} and run the routine assigned to that reward.",),
     "core.file_random_line": ("Read one quote, then send {automation.random_line} to chat.",),
     "core.file_write": ("Append {user.display_name} to a giveaway entries file.",),
@@ -583,10 +609,14 @@ def _condition_summary(config: Mapping[str, Any]) -> str:
     left = _summary_text(config.get("left", "value")) or "value"
     operator = str(config.get("operator", "equals"))
     label = next(
-        (text for text, value in COMPARISON_CHOICES if value == operator),
+        (
+            text
+            for text, value in (*IF_COMPARISON_CHOICES, *COMPARISON_CHOICES)
+            if value == operator
+        ),
         operator.replace("_", " ").title(),
     )
-    if operator in UNARY_OPERATORS:
+    if operator in UNARY_OPERATORS or operator in IF_UNARY_OPERATORS:
         return f"{left} {label.casefold()}"
     right = _summary_text(config.get("right", ""))
     symbols = {
@@ -666,9 +696,9 @@ def _card_summary(
         return f"{counter} → Reset"
     if task_type == "core.run_routine":
         return _resolved(config, "routine_id", "routine", resolver)
-    if task_type == "core.logic_break":
-        return "Stop this routine here"
-    if task_type == "core.logic_if_else":
+    if task_type == "core.end_routine":
+        return "End this routine here"
+    if task_type == "core.if":
         return _condition_summary(config)
     if task_type in {"obs.set_program_scene", "obs.set_preview_scene"}:
         return _summary_text(config.get("scene", ""))

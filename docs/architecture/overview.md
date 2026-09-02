@@ -2,7 +2,7 @@
 
 > Canonical implementation map for maintainers and coding agents.
 >
-> Last verified: 2026-08-31 against version `0.1.0`.
+> Last verified: 2026-09-01 against version `0.1.0`.
 > Update this file when a change moves ownership, adds a persisted format,
 > changes an inter-process contract, or introduces a new service/trigger/task.
 
@@ -336,7 +336,10 @@ Variables architecture, such as `{user.display_name}`, `{command.data}`, or
 
 A routine stores a primary `trigger_id` plus `additional_trigger_ids`. Trigger
 stores own trigger-specific metadata; `RoutineStore` owns task order, routine
-groups, enable state, queue assignment, and trigger-ID links.
+groups, enable state, queue assignment, and trigger-ID links. `TaskDefinition`
+also owns structured child lists for `core.if`: `then_tasks` and `else_tasks`.
+These are tasks in the same routine execution, not references to other
+routines.
 
 ### Shared routine store
 
@@ -382,8 +385,9 @@ sequenceDiagram
 - refreshes registry-backed values before each task so a later task observes
   domain changes made by an earlier task;
 - emits normalized lifecycle events;
-- runs enabled tasks in order;
-- stops on failed tasks or a logic `break`;
+- runs enabled tasks in order, recursively using the same task executor for a
+  selected structured branch;
+- stops on failed tasks or the explicit `end_routine` control action;
 - distinguishes cooperative user cancellation from task failure and success;
 - blocks recursive routine loops;
 - limits nested routines to ten levels;
@@ -416,13 +420,30 @@ summary is required. The page must not grow a second task-ID formatting catalog.
 The Tasks frame follows the Activity Feed's compact card language without
 reusing its event widget: stable category colors appear as narrow left accent
 strips, while category text remains visible for accessibility. Normal actions
-are dense one-line cards with an elided configuration summary. Structural
-control flow is rendered as a container: **If / Else** previews the referenced
-Then and Else routine tasks recursively, and each child retains its own category
-card. The container is presentation only; task persistence, referenced-routine
-ownership, execution order, editing, and drag/reorder semantics remain in the
-existing routine architecture. The real **End routine** action remains a normal
+are dense one-line cards with an elided configuration summary. Structured
+control flow is rendered as a container: **If** owns and previews its Then and
+optional Else task lists recursively, and each child retains its own category
+card. The selected branch executes inline, shares the current trigger context,
+`automation.*` outputs, queue identity, and cancellation token, then returns to
+the next task after If. Child failure or cancellation propagates through the
+normal task failure semantics. The real **End Routine** action remains a normal
 compact task rather than a visual `End If` sentinel.
+
+`core.end_routine` returns the explicit `end_routine` control action. This is a
+successful early completion, not a task failure or cooperative cancellation.
+The action propagates out of structured containers such as If until the current
+routine executor consumes it. A called child routine is a boundary: End Routine
+skips that child's remaining tasks, then Run Routine (or another task that calls
+a routine) returns successfully and the parent continues. It never ends the
+entire root execution, clears waiting queue items, pauses a queue, or undoes
+completed actions.
+
+`core.if` compares literal values or canonical Variables. Text comparisons may
+ignore case; numeric comparisons parse exact finite decimals rather than binary
+floating-point values. Empty and non-empty checks are unary. Only the selected
+branch executes, an empty branch is valid, and If does not provide jump, label,
+or `goto` behavior. The editor owns child add/edit/delete/reorder controls and
+supports nested If tasks directly.
 
 Counter tasks use this same pipeline. A command, EventSub subscription, OBS
 event, Core event, or manual routine execution can invoke any routine that
@@ -460,7 +481,9 @@ Cancellation never crosses queue boundaries. **Stop Current Routine** cancels
 that execution chain and leaves later items queued; **Stop Queue** also removes
 all waiting items. Completed side effects are not rolled back, and cleared
 items that never started do not create run-history entries. Cancelled routines
-are recorded as **Cancelled**, not completed or internally failed.
+are recorded as **Cancelled**, not completed or internally failed. An
+intentional End Routine result is recorded separately as **Completed Early**;
+the queue proceeds normally and retains its waiting entries.
 `AutomationService.process_queues()` is called periodically on the Qt thread so
 Qt-based tasks remain thread-safe.
 
@@ -479,7 +502,9 @@ a burst of missed runs.
 Run History is a bounded, runtime-only view of executions that actually
 started; merely accepting an item into a queue does not create a completed-run
 entry. `RoutineExecutionResult` retains root timing, queue/trigger metadata,
-ordered task results, and nested routine results for the details window. It
+ordered task results, selected structured branches and their child task results,
+intentional early-completion control actions, and nested routine results for the
+details window. It
 also captures a small allowlisted snapshot of meaningful dotted trigger
 context and `automation.*` outputs at execution time. Credential-like names
 and unrelated global registry state are excluded. The details window reads
@@ -604,7 +629,10 @@ after which it can exist. These references refresh after routine/task changes
 and disappear when the producer is removed. They are not registered as global
 variables, do not alter runtime resolution, and never imply a current value.
 The task editor's Variable Picker remains the enforcement point for task-order
-visibility: only outputs from earlier tasks are offered.
+visibility: only outputs from earlier tasks are offered. Inside an If branch,
+earlier children are visible to later children. After the If, configured outputs
+from either branch are discoverable because either may be selected at runtime;
+only outputs actually produced by the selected branch receive a runtime value.
 
 `ChannelInformationVariableProvider` reads the same thread-safe configuration
 store used by **Your Channel > Channel Information**. All eight `socials.*`
@@ -657,7 +685,7 @@ Handlers are registered in `MainWindow` with one stable lowercase task type.
 | --- | --- | --- |
 | Core | `products/hub/automation/core_tasks.py`, `products/hub/automation/value_tasks.py` | applications, interruptible Wait/random delays, service waits, paths/URLs, notifications, audio, Python scripts, duration formatting, conditional text selection |
 | Variables | `products/hub/automation/variable_tasks.py` | create/delete/adjust/toggle variables, nested routines |
-| Logic | `products/hub/automation/logic_tasks.py` | break, input, random number/choice, if/else, switch, while |
+| Logic | `products/hub/automation/logic_tasks.py` | End Routine, input, random number/choice, structured If, switch, while |
 | Files | `products/hub/automation/file_tasks.py` | read text/random/specific lines, write, existence, line count |
 | Control | `products/hub/automation/control_tasks.py` | enable/disable routines/tasks, pause/clear queues |
 | Twitch | `products/hub/twitch/tasks.py` | chat/pinned chat, ads, moderation, redemption results, user/stream/follow lookups, enabled-command lists, and social-message building |
@@ -1222,10 +1250,11 @@ activity, chatter, and stream sessions. Their loaders retain current-schema
 validation and same-schema backup recovery, but do not silently migrate
 unversioned or obsolete private-development formats.
 
-Routine exports use `streamhouse.automation.routine` and the
+Routine exports use `streamhouse.automation.routine` schema v2 and the
 `.streamhouse-routine.json` extension. Task clipboard payloads use
-`streamhouse.automation.task`. No pre-rebrand import identifiers or filename
-formats are accepted.
+`streamhouse.automation.task` schema v2. Both formats recursively preserve If
+branch tasks and regenerate task IDs on import/paste. No pre-rebrand import
+identifiers or filename formats are accepted.
 
 ### Main files
 
@@ -1233,7 +1262,7 @@ formats are accepted.
 | --- | --- | --- |
 | `config/settings.json` | Hub | schema v3 `AppSettings`, validated/defaulted; no obsolete auto-send toggle field |
 | `ai/settings.json` | Streamhouse AI | schema v2 model, endpoint, personality/language |
-| `automation/routines.json` | Hub | schema v4 groups, routines, ordered tasks, trigger links, and queue IDs |
+| `automation/routines.json` | Hub | schema v5 groups, routines, ordered tasks including recursive If branches, trigger links, and queue IDs |
 | `automation/core_triggers.json` | Hub | schema v2 application lifecycle and fixed/random Timer bindings; runtime deadlines are not persisted |
 | `automation/queues.json` | Hub | schema v1 Default Queue/custom definitions; pending items are volatile |
 | `automation/variables.json` | Hub | schema v3 global values; session/routine values are volatile |

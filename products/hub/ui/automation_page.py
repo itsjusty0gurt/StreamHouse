@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from copy import deepcopy
 from datetime import datetime
 from html import escape
 import json
 from pathlib import Path
 import re
+from uuid import uuid4
 
 from PySide6.QtCore import QTimer, Qt, Signal
 from PySide6.QtGui import QKeySequence, QShortcut
@@ -44,6 +46,7 @@ from PySide6.QtWidgets import (
 
 from products.hub.automation.models import (
     DEFAULT_AUTOMATION_QUEUE_ID,
+    END_ROUTINE_ACTION,
     AutomationExecutionResult,
     TaskDefinition,
     TriggerEvent,
@@ -68,6 +71,8 @@ from products.hub.automation.variable_tasks import (
 )
 from products.hub.automation.logic_tasks import (
     COMPARISON_CHOICES,
+    IF_COMPARISON_CHOICES,
+    IF_UNARY_OPERATORS,
     LOGIC_TASK_LABELS,
     UNARY_OPERATORS,
     comparison_choices_for_type,
@@ -86,6 +91,7 @@ from products.hub.automation.variable_outputs import (
     has_temporary_outputs,
     output_config_key,
     output_id,
+    task_output_definitions,
 )
 from products.hub.automation.variable_registry import (
     PLACEHOLDER_PATTERN,
@@ -874,6 +880,160 @@ class RandomChoicesEditor(QWidget):
         return choices
 
 
+class NestedTaskListEditor(QGroupBox):
+    """Edits one branch owned directly by a structured control-flow task."""
+
+    def __init__(
+        self,
+        title: str,
+        tasks: list[TaskDefinition],
+        owner: TaskEditorDialog,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(title, parent)
+        self.owner = owner
+        self.tasks = deepcopy(tasks)
+        layout = QVBoxLayout(self)
+        self.task_list = QListWidget()
+        self.task_list.setDragDropMode(QAbstractItemView.DragDropMode.NoDragDrop)
+        self.task_list.itemDoubleClicked.connect(lambda _item: self.edit_selected())
+        layout.addWidget(self.task_list)
+        controls = QHBoxLayout()
+        self.add_button = QPushButton("+ Add Task")
+        self.edit_button = QPushButton("Edit")
+        self.delete_button = QPushButton("Delete")
+        self.up_button = QPushButton("Move Up")
+        self.down_button = QPushButton("Move Down")
+        for button in (
+            self.add_button,
+            self.edit_button,
+            self.delete_button,
+            self.up_button,
+            self.down_button,
+        ):
+            controls.addWidget(button)
+        controls.addStretch()
+        layout.addLayout(controls)
+        self.add_button.clicked.connect(self.add_task)
+        self.edit_button.clicked.connect(self.edit_selected)
+        self.delete_button.clicked.connect(self.delete_selected)
+        self.up_button.clicked.connect(lambda: self.move_selected(-1))
+        self.down_button.clicked.connect(lambda: self.move_selected(1))
+        self.task_list.itemSelectionChanged.connect(self._update_controls)
+        self._refresh()
+
+    def value(self) -> list[TaskDefinition]:
+        return deepcopy(self.tasks)
+
+    def add_task(self) -> None:
+        choices = sorted(
+            (
+                (label.partition("—")[2].strip() or label, task_type)
+                for task_type, label in TaskEditorDialog.LABELS.items()
+            ),
+            key=lambda item: item[0].casefold(),
+        )
+        label, accepted = QInputDialog.getItem(
+            self,
+            "Add Nested Task",
+            "Task",
+            [item[0] for item in choices],
+            editable=False,
+        )
+        if not accepted:
+            return
+        task_type = next(task_type for name, task_type in choices if name == label)
+        task = self._run_editor(task_type)
+        if task is None:
+            return
+        self.tasks.append(task)
+        self._refresh(len(self.tasks) - 1)
+
+    def edit_selected(self) -> None:
+        row = self.task_list.currentRow()
+        if row < 0:
+            return
+        updated = self._run_editor(self.tasks[row].task_type, self.tasks[row])
+        if updated is None:
+            return
+        self.tasks[row] = updated
+        self._refresh(row)
+
+    def delete_selected(self) -> None:
+        row = self.task_list.currentRow()
+        if row < 0:
+            return
+        del self.tasks[row]
+        self._refresh(min(row, len(self.tasks) - 1))
+
+    def move_selected(self, offset: int) -> None:
+        row = self.task_list.currentRow()
+        destination = row + offset
+        if row < 0 or destination < 0 or destination >= len(self.tasks):
+            return
+        task = self.tasks.pop(row)
+        self.tasks.insert(destination, task)
+        self._refresh(destination)
+
+    def _run_editor(
+        self,
+        task_type: str,
+        task: TaskDefinition | None = None,
+    ) -> TaskDefinition | None:
+        output_definitions = {
+            definition.name: definition
+            for definition in self.owner._output_definitions
+        }
+        position = self.tasks.index(task) if task in self.tasks else len(self.tasks)
+        for previous in self.tasks[:position]:
+            for definition in task_output_definitions(previous, source=previous.name):
+                output_definitions[definition.name] = definition
+        dialog = TaskEditorDialog(
+            task_type,
+            self,
+            task,
+            self.owner.obs_service,
+            self.owner.variables,
+            self.owner.routine_store,
+            self.owner.queue_store,
+            self.owner.counter_service,
+            self.owner.variable_registry,
+            tuple(output_definitions.values()),
+        )
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return None
+        values = dialog.values()
+        return TaskDefinition(
+            task_id=task.task_id if task is not None else uuid4().hex,
+            task_type=str(values["task_type"]),
+            name=str(values["name"]),
+            config=dict(values["config"]),
+            enabled=bool(values["enabled"]),
+            then_tasks=deepcopy(list(values.get("then_tasks", []))),
+            else_tasks=deepcopy(list(values.get("else_tasks", []))),
+        )
+
+    def _refresh(self, selected_row: int = -1) -> None:
+        self.task_list.clear()
+        for index, task in enumerate(self.tasks, start=1):
+            label = TaskEditorDialog.LABELS.get(task.task_type, task.task_type)
+            state = "" if task.enabled else " [Disabled]"
+            self.task_list.addItem(f"{index}. {label} — {task.name}{state}")
+        if 0 <= selected_row < self.task_list.count():
+            self.task_list.setCurrentRow(selected_row)
+        self._update_controls()
+
+    def _update_controls(self) -> None:
+        row = self.task_list.currentRow()
+        selected = row >= 0
+        self.edit_button.setEnabled(selected)
+        self.delete_button.setEnabled(selected)
+        self.up_button.setEnabled(selected and row > 0)
+        self.down_button.setEnabled(
+            selected and row < self.task_list.count() - 1
+        )
+
+
 class TaskEditorDialog(QDialog):
     LABELS = {
         **TWITCH_TASK_LABELS,
@@ -1036,7 +1196,7 @@ class TaskEditorDialog(QDialog):
         "core.clear_queue": (
             {"key": "queue_id", "label": "Queue", "kind": "queue", "default": "", "required": True},
         ),
-        "core.logic_break": (),
+        "core.end_routine": (),
         "core.logic_get_input": (
             {"key": "name", "label": "Output variable", "kind": "text", "default": "input_result", "required": True},
             {"key": "title", "label": "Window title", "kind": "text", "default": "Streamhouse Hub Input", "required": True},
@@ -1091,13 +1251,11 @@ class TaskEditorDialog(QDialog):
             {"key": "ignore_blank_lines", "label": "", "kind": "bool", "default": False, "text": "Do not count blank lines"},
             {"key": "stop_on_failure", "label": "", "kind": "bool", "default": True, "text": "Stop the routine if the file cannot be read"},
         ),
-        "core.logic_if_else": (
-            {"key": "left", "label": "Input", "kind": "text", "default": "", "required": True, "placeholder": "{custom.death_count}"},
-            {"key": "operator", "label": "Comparison", "kind": "choice", "default": "equals", "choices": COMPARISON_CHOICES},
-            {"key": "right", "label": "Value", "kind": "text", "default": ""},
-            {"key": "true_routine_id", "label": "If true, run", "kind": "routine", "default": ""},
-            {"key": "false_routine_id", "label": "If false, run", "kind": "routine", "default": ""},
-            {"key": "break_if_false", "label": "", "kind": "bool", "default": False, "text": "Break this routine when the condition is false"},
+        "core.if": (
+            {"key": "left", "label": "Left Value", "kind": "text", "default": "", "required": True, "placeholder": "{counter.deaths.stream}"},
+            {"key": "operator", "label": "Comparison", "kind": "choice", "default": "equals", "choices": IF_COMPARISON_CHOICES},
+            {"key": "right", "label": "Right Value", "kind": "text", "default": ""},
+            {"key": "ignore_case", "label": "", "kind": "bool", "default": False, "text": "Ignore uppercase and lowercase differences"},
         ),
         "core.logic_switch": (
             {"key": "input", "label": "Input", "kind": "text", "default": "", "required": True, "placeholder": "{event.reward}"},
@@ -1248,6 +1406,21 @@ class TaskEditorDialog(QDialog):
         layout.addLayout(obs_toolbar)
 
         layout.addWidget(self._build_page(self.task_type))
+        if self.task_type == "core.if":
+            self.then_tasks_editor = NestedTaskListEditor(
+                "THEN",
+                task.then_tasks if task is not None else [],
+                self,
+            )
+            self.else_tasks_editor = NestedTaskListEditor(
+                "ELSE (optional)",
+                task.else_tasks if task is not None else [],
+                self,
+            )
+            self.then_tasks_editor.setMinimumHeight(150)
+            self.else_tasks_editor.setMinimumHeight(150)
+            layout.addWidget(self.then_tasks_editor)
+            layout.addWidget(self.else_tasks_editor)
         if self.task_type == "core.play_audio":
             self._audio_preview = PlayAudioTask()
             preview_row = QHBoxLayout()
@@ -1713,7 +1886,28 @@ class TaskEditorDialog(QDialog):
 
             mode.currentIndexChanged.connect(update_random_mode)
             update_random_mode()
-        if self.task_type in {"core.logic_if_else", "core.logic_while"}:
+        if self.task_type == "core.if":
+            fields = self.field_widgets[self.task_type]
+            operator = fields["operator"]
+
+            def update_if_condition(_value: object = None) -> None:
+                operation = str(operator.currentData())
+                fields["right"].setEnabled(operation not in IF_UNARY_OPERATORS)
+                fields["ignore_case"].setEnabled(
+                    operation
+                    in {
+                        "equals",
+                        "not_equals",
+                        "contains",
+                        "not_contains",
+                        "starts_with",
+                        "ends_with",
+                    }
+                )
+
+            operator.currentIndexChanged.connect(update_if_condition)
+            update_if_condition()
+        if self.task_type == "core.logic_while":
             fields = self.field_widgets[self.task_type]
             operator = fields["operator"]
 
@@ -2085,12 +2279,16 @@ class TaskEditorDialog(QDialog):
         name = self.name_edit.text().strip()
         if not name:
             raise ValueError("Task name is required.")
-        return {
+        values = {
             "task_type": task_type,
             "name": name,
             "config": config,
             "enabled": self.enabled_check.isChecked(),
         }
+        if task_type == "core.if":
+            values["then_tasks"] = self.then_tasks_editor.value()
+            values["else_tasks"] = self.else_tasks_editor.value()
+        return values
 
 
 class TaskTestDialog(QDialog):
@@ -2394,6 +2592,15 @@ class RunHistoryDetailsDialog(QDialog):
             item.addChild(nested_item)
             for child in nested.get("tasks", ()):
                 self._add_task_entry(nested_item, child)
+        children = tuple(entry.get("children", ()))
+        if children or entry.get("branch"):
+            branch = str(entry.get("branch", "Branch")).title()
+            branch_item = QTreeWidgetItem(
+                (f"{branch} branch", "Selected", "", "")
+            )
+            item.addChild(branch_item)
+            for child in children:
+                self._add_task_entry(branch_item, child)
 
 
 class AutomationPage(QWidget):
@@ -3291,7 +3498,6 @@ class AutomationPage(QWidget):
         ):
             issues.append("Nested routine no longer exists")
         routine_reference_keys = {
-            "core.logic_if_else": ("true_routine_id", "false_routine_id"),
             "core.logic_switch": ("default_routine_id",),
             "core.logic_while": ("routine_id",),
         }
@@ -3324,6 +3530,16 @@ class AutomationPage(QWidget):
                             issues.append(f"Random choice {index} needs a positive weight")
                     except (TypeError, ValueError):
                         issues.append(f"Random choice {index} has an invalid weight")
+        if task.task_type == "core.if":
+            for branch_name, children in (
+                ("Then", task.then_tasks),
+                ("Else", task.else_tasks),
+            ):
+                for child in children:
+                    issues.extend(
+                        f"{branch_name} / {child.name}: {issue}"
+                        for issue in self._task_issues(child)
+                    )
         return issues
 
     def _task_reference_name(self, kind: str, reference_id: str) -> str:
@@ -3362,43 +3578,25 @@ class AutomationPage(QWidget):
             issues=issues,
         )
 
-    def _nested_routine_cards(
-        self,
-        routine_id: str,
-        visited: frozenset[str],
-    ) -> tuple[QWidget, ...]:
-        if not routine_id or routine_id in visited:
-            return ()
-        routine = self.routine_store.get(routine_id)
-        if routine is None:
-            return ()
-        next_visited = visited | {routine_id}
-        return tuple(
-            self._task_card_widget(task, nested=True, visited=next_visited)
-            for task in routine.tasks
-        )
-
     def _task_card_widget(
         self,
         task: TaskDefinition,
         *,
         nested: bool = False,
-        visited: frozenset[str] = frozenset(),
     ) -> QWidget:
         content = self._task_card_content(task)
-        if task.task_type != "core.logic_if_else":
+        if task.task_type != "core.if":
             return TaskCardWidget(content, nested=nested, parent=self.task_list)
-
-        true_routine_id = str(task.config.get("true_routine_id", "")).strip()
-        false_routine_id = str(task.config.get("false_routine_id", "")).strip()
-        true_routine = self.routine_store.get(true_routine_id)
-        false_routine = self.routine_store.get(false_routine_id)
         return IfTaskCardWidget(
             content,
-            self._nested_routine_cards(true_routine_id, visited),
-            self._nested_routine_cards(false_routine_id, visited),
-            then_name=true_routine.name if true_routine is not None else "",
-            else_name=false_routine.name if false_routine is not None else "",
+            tuple(
+                self._task_card_widget(child, nested=True)
+                for child in task.then_tasks
+            ),
+            tuple(
+                self._task_card_widget(child, nested=True)
+                for child in task.else_tasks
+            ),
             parent=self.task_list,
         )
 
@@ -3562,10 +3760,7 @@ class AutomationPage(QWidget):
                 or "Ready"
             )
             self.task_list.addItem(item)
-            card = self._task_card_widget(
-                task,
-                visited=frozenset({routine.routine_id}),
-            )
+            card = self._task_card_widget(task)
             self.task_list.setItemWidget(item, card)
             card.adjustSize()
             item.setSizeHint(card.sizeHint())
@@ -4715,7 +4910,7 @@ class AutomationPage(QWidget):
         if (
             not isinstance(payload, dict)
             or payload.get("format") != "streamhouse.automation.task"
-            or int(payload.get("version", 0)) != 1
+            or int(payload.get("version", 0)) != 2
             or not isinstance(payload.get("task"), dict)
         ):
             return None
@@ -4729,13 +4924,8 @@ class AutomationPage(QWidget):
             json.dumps(
                 {
                     "format": "streamhouse.automation.task",
-                    "version": 1,
-                    "task": {
-                        "task_type": task.task_type,
-                        "name": task.name,
-                        "config": task.config,
-                        "enabled": task.enabled,
-                    },
+                    "version": 2,
+                    "task": self._clipboard_task_values(task),
                 },
                 indent=2,
             )
@@ -4754,23 +4944,36 @@ class AutomationPage(QWidget):
                 ValueError(f"Task provider is unavailable: {task_type}"),
             )
             return
-        config = values.get("config", {})
-        if not isinstance(config, dict):
+        definition = TaskDefinition.from_dict(values)
+        if not isinstance(values.get("config", {}), dict):
             self._error("Could Not Paste Task", ValueError("Task configuration is invalid."))
             return
         try:
             copied = self.routine_store.add_task(
                 routine.routine_id,
-                task_type=task_type,
-                name=str(values.get("name", "Copied task")),
-                config=config,
-                enabled=bool(values.get("enabled", True)),
+                task_type=definition.task_type,
+                name=definition.name or "Copied task",
+                config=definition.config,
+                enabled=definition.enabled,
+                then_tasks=definition.then_tasks,
+                else_tasks=definition.else_tasks,
             )
         except (OSError, TypeError, ValueError) as error:
             self._error("Could Not Paste Task", error)
             return
         self.select_routine(routine.routine_id)
         self._select_task(copied.task_id)
+
+    @classmethod
+    def _clipboard_task_values(cls, task: TaskDefinition) -> dict[str, object]:
+        return {
+            "task_type": task.task_type,
+            "name": task.name,
+            "config": task.config,
+            "enabled": task.enabled,
+            "then_tasks": [cls._clipboard_task_values(child) for child in task.then_tasks],
+            "else_tasks": [cls._clipboard_task_values(child) for child in task.else_tasks],
+        }
 
     def _show_add_task_button_menu(self) -> None:
         menu = QMenu(self)
@@ -5131,11 +5334,7 @@ class AutomationPage(QWidget):
             if task_id and task.task_id == task_id:
                 break
             source = TaskEditorDialog.LABELS.get(task.task_type, task.name)
-            for definition in generated_output_definitions(
-                task.task_type,
-                task.config,
-                source=source,
-            ):
+            for definition in task_output_definitions(task, source=source):
                 definitions[definition.name] = definition
         return tuple(definitions.values())
 
@@ -5273,7 +5472,7 @@ class AutomationPage(QWidget):
             "core.file_write": "Writes data to a local text file",
             "core.logic_get_input": "Opens an interactive input window",
             "core.logic_random_choice": "Runs one randomly selected routine",
-            "core.logic_if_else": "May run another routine",
+            "core.if": "Runs nested Then or Else tasks",
             "core.logic_switch": "May run another routine",
             "core.logic_while": "May run another routine repeatedly",
         }
@@ -5297,6 +5496,8 @@ class AutomationPage(QWidget):
             status = (
                 "Cancelled"
                 if result.cancelled
+                else "Completed Early"
+                if result.succeeded and result.flow_action == END_ROUTINE_ACTION
                 else "Completed"
                 if result.succeeded
                 else "Failed"
@@ -5373,29 +5574,45 @@ class AutomationPage(QWidget):
             task.task_id: task
             for task in (routine.tasks if routine is not None else ())
         }
-        entries: list[dict[str, object]] = []
-        for task_result in result.task_results:
-            task = tasks_by_id.get(task_result.task_id)
-            entries.append(
-                {
-                    "name": task.name if task is not None else task_result.task_type,
-                    "task_type": task_result.task_type,
-                    "status": (
-                        "Cancelled"
-                        if task_result.cancelled
-                        else "Completed"
-                        if task_result.succeeded
-                        else "Failed"
-                    ),
-                    "duration": self._history_duration(task_result.duration_ms),
-                    "detail": redact_sensitive_text(task_result.detail),
-                    "nested": tuple(
-                        self._nested_history_entry(nested)
-                        for nested in task_result.nested_results
-                    ),
-                }
-            )
-        return tuple(entries)
+        return tuple(
+            self._history_task_entry(task_result, tasks_by_id.get(task_result.task_id))
+            for task_result in result.task_results
+        )
+
+    def _history_task_entry(
+        self,
+        task_result: TaskExecutionResult,
+        task: TaskDefinition | None,
+    ) -> dict[str, object]:
+        child_definitions = {
+            child.task_id: child
+            for child in (task.child_tasks if task is not None else ())
+        }
+        return {
+            "name": task.name if task is not None else task_result.task_type,
+            "task_type": task_result.task_type,
+            "status": (
+                "Cancelled"
+                if task_result.cancelled
+                else "Completed"
+                if task_result.succeeded
+                else "Failed"
+            ),
+            "duration": self._history_duration(task_result.duration_ms),
+            "detail": redact_sensitive_text(task_result.detail),
+            "branch": task_result.selected_branch,
+            "children": tuple(
+                self._history_task_entry(
+                    child_result,
+                    child_definitions.get(child_result.task_id),
+                )
+                for child_result in task_result.child_results
+            ),
+            "nested": tuple(
+                self._nested_history_entry(nested)
+                for nested in task_result.nested_results
+            ),
+        }
 
     def _nested_history_entry(self, result) -> dict[str, object]:
         routine = self.routine_store.get(result.routine_id)
@@ -5405,6 +5622,8 @@ class AutomationPage(QWidget):
             "status": (
                 "Cancelled"
                 if result.cancelled
+                else "Completed Early"
+                if result.succeeded and result.flow_action == END_ROUTINE_ACTION
                 else "Completed"
                 if result.succeeded
                 else "Failed"

@@ -36,8 +36,10 @@ from products.hub.twitch.chatter_history import ChatterHistoryStore, ChatterReco
 from products.hub.automation.routines import RoutineStore
 from products.hub.automation.models import (
     DEFAULT_AUTOMATION_QUEUE_ID,
+    END_ROUTINE_ACTION,
     AutomationExecutionResult,
     RoutineExecutionResult,
+    TaskDefinition,
     TaskExecutionResult,
     TriggerEvent,
 )
@@ -830,44 +832,43 @@ class MainWindowTests(unittest.TestCase):
 
     def test_if_card_previews_then_else_and_nested_if_structure(self) -> None:
         store = self.twitch_command_trigger_store.routine_store
-        inner_true = store.add("Inner true")
-        store.add_task(
-            inner_true.routine_id,
-            task_type="core.logic_break",
-            name="End here",
-        )
-        nested_branch = store.add("Nested condition")
-        store.add_task(
-            nested_branch.routine_id,
-            task_type="core.logic_if_else",
-            name="Inner If",
-            config={
-                "left": "{counter.deaths.stream}",
-                "operator": "greater_or_equal",
-                "right": "10",
-                "true_routine_id": inner_true.routine_id,
-                "false_routine_id": "",
-            },
-        )
-        else_branch = store.add("Fallback")
-        store.add_task(
-            else_branch.routine_id,
-            task_type="twitch.send_chat_message",
-            name="Fallback message",
-            config={"message": "Not yet", "as_bot": True},
-        )
         routine = store.add("Outer")
         store.add_task(
             routine.routine_id,
-            task_type="core.logic_if_else",
+            task_type="core.if",
             name="Outer If",
             config={
                 "left": "{event.viewers}",
                 "operator": "greater_than",
                 "right": "20",
-                "true_routine_id": nested_branch.routine_id,
-                "false_routine_id": else_branch.routine_id,
             },
+            then_tasks=[
+                TaskDefinition(
+                    "inner-if",
+                    "core.if",
+                    "Inner If",
+                    {
+                        "left": "{counter.deaths.stream}",
+                        "operator": "greater_or_equal",
+                        "right": "10",
+                    },
+                    then_tasks=[
+                        TaskDefinition(
+                            "end-here",
+                            "core.end_routine",
+                            "End here",
+                        )
+                    ],
+                )
+            ],
+            else_tasks=[
+                TaskDefinition(
+                    "fallback",
+                    "twitch.send_chat_message",
+                    "Fallback message",
+                    {"message": "Not yet", "as_bot": True},
+                )
+            ],
         )
         page = self.window.automation_page
         page.select_routine(routine.routine_id)
@@ -882,7 +883,7 @@ class MainWindowTests(unittest.TestCase):
         self.assertIsInstance(card.else_cards[0], TaskCardWidget)
         self.assertEqual(
             card.then_cards[0].then_cards[0].name_label.text(),
-            "Core — End routine",
+            "Core — End Routine",
         )
 
     def test_task_copy_and_paste_preserves_config_with_new_id(self) -> None:
@@ -908,6 +909,34 @@ class MainWindowTests(unittest.TestCase):
         self.assertEqual(pasted.name, original.name)
         self.assertEqual(pasted.config, original.config)
         self.assertNotEqual(pasted.task_id, original.task_id)
+
+    def test_if_copy_and_paste_preserves_branches_with_fresh_ids(self) -> None:
+        store = self.twitch_command_trigger_store.routine_store
+        source = store.add("Conditional source")
+        original = store.add_task(
+            source.routine_id,
+            task_type="core.if",
+            name="If coffee",
+            config={"left": "coffee", "operator": "equals", "right": "coffee"},
+            then_tasks=[TaskDefinition("then-child", "core.wait", "Then wait")],
+            else_tasks=[TaskDefinition("else-child", "core.wait", "Else wait")],
+        )
+        destination = store.add("Conditional destination")
+        page = self.window.automation_page
+        page.select_routine(source.routine_id)
+        page.task_list.setCurrentRow(0)
+        page._copy_task()
+        page.select_routine(destination.routine_id)
+
+        page._paste_task()
+
+        pasted = store.get(destination.routine_id).tasks[0]
+        self.assertEqual(pasted.task_type, "core.if")
+        self.assertEqual(pasted.then_tasks[0].name, "Then wait")
+        self.assertEqual(pasted.else_tasks[0].name, "Else wait")
+        self.assertNotEqual(pasted.task_id, original.task_id)
+        self.assertNotEqual(pasted.then_tasks[0].task_id, "then-child")
+        self.assertNotEqual(pasted.else_tasks[0].task_id, "else-child")
 
     def test_task_card_preserves_edit_duplicate_toggle_move_and_delete(self) -> None:
         store = self.twitch_command_trigger_store.routine_store
@@ -1202,6 +1231,100 @@ class MainWindowTests(unittest.TestCase):
             "Routine stopped after a failed task.",
         )
         self.assertEqual(dialog.context_table.rowCount(), 0)
+        dialog.deleteLater()
+
+    def test_run_history_details_shows_selected_if_branch_and_child_tasks(self) -> None:
+        store = self.twitch_command_trigger_store.routine_store
+        routine = store.add("Conditional history")
+        condition = store.add_task(
+            routine.routine_id,
+            task_type="core.if",
+            name="If coffee",
+            config={"left": "coffee", "operator": "equals", "right": "coffee"},
+            then_tasks=[TaskDefinition("child-wait", "core.wait", "Child wait")],
+        )
+        page = self.window.automation_page
+        page.record_execution(
+            AutomationExecutionResult(
+                "if-event",
+                "manual",
+                (
+                    RoutineExecutionResult(
+                        routine.routine_id,
+                        True,
+                        (
+                            TaskExecutionResult(
+                                condition.task_id,
+                                condition.task_type,
+                                True,
+                                "Then selected.",
+                                child_results=(
+                                    TaskExecutionResult(
+                                        "child-wait",
+                                        "core.wait",
+                                        True,
+                                        "Waited.",
+                                    ),
+                                ),
+                                selected_branch="then",
+                            ),
+                        ),
+                    ),
+                ),
+            )
+        )
+
+        dialog = RunHistoryDetailsDialog(page.history[0], page)
+        condition_item = dialog.task_tree.topLevelItem(0)
+        branch_item = condition_item.child(0)
+
+        self.assertEqual(condition_item.text(0), "If coffee")
+        self.assertEqual(branch_item.text(0), "Then branch")
+        self.assertEqual(branch_item.text(1), "Selected")
+        self.assertEqual(branch_item.child(0).text(0), "Child wait")
+        dialog.deleteLater()
+
+    def test_run_history_marks_end_routine_as_completed_early(self) -> None:
+        store = self.twitch_command_trigger_store.routine_store
+        routine = store.add("Early completion")
+        task = store.add_task(
+            routine.routine_id,
+            task_type="core.end_routine",
+            name="End Routine",
+        )
+        page = self.window.automation_page
+        page.record_execution(
+            AutomationExecutionResult(
+                "end-event",
+                "manual",
+                (
+                    RoutineExecutionResult(
+                        routine.routine_id,
+                        True,
+                        (
+                            TaskExecutionResult(
+                                task.task_id,
+                                task.task_type,
+                                True,
+                                "End Routine was reached; remaining tasks were skipped.",
+                                flow_action=END_ROUTINE_ACTION,
+                            ),
+                        ),
+                        detail="Routine completed early because End Routine was reached.",
+                        flow_action=END_ROUTINE_ACTION,
+                    ),
+                ),
+            )
+        )
+
+        entry = page.history[0]
+        dialog = RunHistoryDetailsDialog(entry, page)
+
+        self.assertEqual(entry["result"], "Completed Early")
+        self.assertEqual(entry["failure_reason"], "")
+        self.assertEqual(dialog.summary_labels["Final status"].text(), "Completed Early")
+        self.assertEqual(dialog.task_tree.topLevelItem(0).text(0), "End Routine")
+        self.assertIn("remaining tasks were skipped", dialog.task_tree.topLevelItem(0).text(3))
         dialog.deleteLater()
 
     def test_queue_stop_controls_and_cancelled_history_state(self) -> None:

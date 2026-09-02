@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 
 from products.hub.automation.core_triggers import CoreTriggerStore
-from products.hub.automation.models import DEFAULT_AUTOMATION_QUEUE_ID
+from products.hub.automation.models import DEFAULT_AUTOMATION_QUEUE_ID, TaskDefinition
 from products.hub.automation.routines import RoutineStore
 from products.hub.automation.tasks import TaskRegistry
 from products.hub.automation.transfer import export_routine, import_routine, validate_import
@@ -21,12 +21,20 @@ class AvailableTask:
         raise AssertionError("Import validation must not execute tasks.")
 
 
+class AvailableIfTask:
+    task_type = "core.if"
+
+    def execute(self, task, trigger):  # pragma: no cover - registry marker only
+        raise AssertionError("Import validation must not execute tasks.")
+
+
 class AutomationTransferTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary.name)
         self.registry = TaskRegistry()
         self.registry.register(AvailableTask())
+        self.registry.register(AvailableIfTask())
         self.stores = self.make_stores(self.root / "source")
 
     def tearDown(self) -> None:
@@ -92,7 +100,7 @@ class AutomationTransferTests(unittest.TestCase):
     def test_import_rejects_unavailable_task_before_creating_routine(self) -> None:
         payload = {
             "format": "streamhouse.automation.routine",
-            "version": 1,
+            "version": 2,
             "routine": {
                 "name": "Unavailable",
                 "tasks": [
@@ -109,6 +117,50 @@ class AutomationTransferTests(unittest.TestCase):
                 command_store=self.stores["command_store"],
             )
         self.assertEqual(self.stores["routine_store"].routines, [])
+
+    def test_nested_if_tasks_round_trip_with_new_ids(self) -> None:
+        routine = self.stores["routine_store"].add("Conditional")
+        condition = self.stores["routine_store"].add_task(
+            routine.routine_id,
+            task_type="core.if",
+            name="If coffee",
+            config={"left": "{command.data}", "operator": "contains", "right": "coffee"},
+            then_tasks=[
+                TaskDefinition(
+                    "then-wait",
+                    "core.wait",
+                    "Then wait",
+                    {"duration": "1", "unit": "seconds"},
+                )
+            ],
+            else_tasks=[
+                TaskDefinition(
+                    "else-wait",
+                    "core.wait",
+                    "Else wait",
+                    {"duration": "2", "unit": "seconds"},
+                )
+            ],
+        )
+        payload = export_routine(
+            self.stores["routine_store"].get(routine.routine_id),
+            **self.stores,
+        )
+        destination = self.make_stores(self.root / "nested-destination")
+
+        imported = import_routine(
+            payload,
+            group_id="",
+            task_registry=self.registry,
+            **destination,
+        )
+
+        imported_if = imported.tasks[0]
+        self.assertEqual(payload["version"], 2)
+        self.assertNotEqual(imported_if.task_id, condition.task_id)
+        self.assertNotEqual(imported_if.then_tasks[0].task_id, "then-wait")
+        self.assertNotEqual(imported_if.else_tasks[0].task_id, "else-wait")
+        self.assertEqual(imported_if.then_tasks[0].config["duration"], "1")
 
     def test_timer_trigger_round_trip_preserves_schedule_configuration(self) -> None:
         routine = self.stores["routine_store"].add("Random promo")

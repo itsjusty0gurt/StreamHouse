@@ -13,6 +13,7 @@ from products.hub.automation.models import (
     TriggerEvent,
 )
 from products.hub.automation.control_tasks import register_control_tasks
+from products.hub.automation.logic_tasks import register_logic_tasks
 from products.hub.automation.queues import AutomationQueueManager, AutomationQueueStore
 from products.hub.automation.routines import RoutineStore
 from products.hub.automation.service import AutomationService
@@ -81,6 +82,7 @@ class AutomationQueueTests(unittest.TestCase):
             self.registry,
             queue_manager=self.manager,
         )
+        register_logic_tasks(self.registry, self.service)
 
     def tearDown(self) -> None:
         self.temporary.cleanup()
@@ -97,6 +99,69 @@ class AutomationQueueTests(unittest.TestCase):
             name="Capture",
         )
         return self.routine_store.get(routine.routine_id)
+
+    def test_end_routine_leaves_waiting_and_unrelated_queues_intact(self) -> None:
+        primary_queue = self.queue_store.add("Primary")
+        other_queue = self.queue_store.add("Other")
+        ending = self.routine_store.add("Ending", queue_id=primary_queue.queue_id)
+        self.routine_store.add_task(
+            ending.routine_id,
+            task_type="core.end_routine",
+            name="End Routine",
+        )
+        self.routine_store.add_task(
+            ending.routine_id,
+            task_type=self.capture.task_type,
+            name="Must not run",
+        )
+        waiting = self.routine_store.add("Waiting", queue_id=primary_queue.queue_id)
+        self.routine_store.add_task(
+            waiting.routine_id,
+            task_type=self.capture.task_type,
+            name="Waiting capture",
+        )
+        unrelated = self.routine_store.add("Unrelated", queue_id=other_queue.queue_id)
+        self.routine_store.add_task(
+            unrelated.routine_id,
+            task_type=self.capture.task_type,
+            name="Other capture",
+        )
+        self.manager.enqueue(
+            primary_queue.queue_id,
+            ending.routine_id,
+            ending.name,
+            self.event("ending"),
+        )
+        self.manager.enqueue(
+            primary_queue.queue_id,
+            waiting.routine_id,
+            waiting.name,
+            self.event("waiting"),
+        )
+        self.manager.enqueue(
+            other_queue.queue_id,
+            unrelated.routine_id,
+            unrelated.name,
+            self.event("other"),
+        )
+
+        first_pass = self.service.process_queues()
+
+        ending_result = next(
+            execution.routine_results[0]
+            for execution in first_pass
+            if execution.routine_results[0].routine_id == ending.routine_id
+        )
+        self.assertTrue(ending_result.succeeded)
+        self.assertFalse(ending_result.cancelled)
+        self.assertEqual(self.manager.count(primary_queue.queue_id), 1)
+        self.assertEqual(self.manager.count(other_queue.queue_id), 0)
+        self.assertEqual(self.capture.users, ["other"])
+
+        self.service.process_queues()
+
+        self.assertEqual(self.capture.users, ["other", "waiting"])
+        self.assertEqual(self.manager.count(primary_queue.queue_id), 0)
 
     def event(self, user: str = "Viewer") -> TriggerEvent:
         return TriggerEvent("trigger", "test", "event", {"user": user})

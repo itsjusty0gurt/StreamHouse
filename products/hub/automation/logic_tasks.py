@@ -3,28 +3,30 @@ from __future__ import annotations
 import random
 import re
 from collections.abc import Callable
+from decimal import Decimal, InvalidOperation
 from time import perf_counter
 from typing import MutableMapping
 
 from PySide6.QtWidgets import QInputDialog
 
 from products.hub.automation.models import (
+    END_ROUTINE_ACTION,
     RoutineExecutionResult,
     TaskDefinition,
     TaskExecutionResult,
     TriggerEvent,
 )
-from products.hub.automation.variable_registry import render_placeholders
+from products.hub.automation.variable_registry import placeholder_names, render_placeholders
 from products.hub.automation.variable_registry import VariableDataType
 from products.hub.automation.variable_outputs import automation_output_name
 
 
 LOGIC_TASK_LABELS = {
-    "core.logic_break": "Core — End routine",
+    "core.end_routine": "Core — End Routine",
     "core.logic_get_input": "Core — Get input",
     "core.logic_random_number": "Core — Get random number",
     "core.logic_random_choice": "Core — Random choice",
-    "core.logic_if_else": "Core — If / Else",
+    "core.if": "Core — If",
     "core.logic_switch": "Core — Switch",
     "core.logic_while": "Core — While",
 }
@@ -51,6 +53,22 @@ COMPARISON_CHOICES = (
 UNARY_OPERATORS = frozenset(
     {"is_empty", "is_true", "is_false", "exists", "not_exists"}
 )
+
+IF_COMPARISON_CHOICES = (
+    ("Equals", "equals"),
+    ("Does Not Equal", "not_equals"),
+    ("Contains", "contains"),
+    ("Does Not Contain", "not_contains"),
+    ("Starts With", "starts_with"),
+    ("Ends With", "ends_with"),
+    ("Greater Than", "greater_than"),
+    ("Greater Than or Equal", "greater_or_equal"),
+    ("Less Than", "less_than"),
+    ("Less Than or Equal", "less_or_equal"),
+    ("Is Empty", "is_empty"),
+    ("Is Not Empty", "is_not_empty"),
+)
+IF_UNARY_OPERATORS = frozenset({"is_empty", "is_not_empty"})
 
 
 def comparison_choices_for_type(
@@ -90,6 +108,8 @@ def _result(
     *,
     flow_action: str = "",
     nested_results: tuple[RoutineExecutionResult, ...] = (),
+    child_results: tuple[TaskExecutionResult, ...] = (),
+    selected_branch: str = "",
 ) -> TaskExecutionResult:
     return TaskExecutionResult(
         task.task_id,
@@ -98,6 +118,8 @@ def _result(
         detail,
         flow_action=flow_action,
         nested_results=nested_results,
+        child_results=child_results,
+        selected_branch=selected_branch,
     )
 
 
@@ -161,11 +183,76 @@ def evaluate_condition(
     raise ValueError(f"Unsupported logic comparison: {operator}")
 
 
-class BreakRoutineTask:
-    task_type = "core.logic_break"
+def evaluate_if_condition(
+    left_template: str,
+    operator: str,
+    right_template: str,
+    context: MutableMapping[str, str],
+    *,
+    ignore_case: bool = False,
+) -> bool:
+    operation = operator.strip().casefold()
+    supported = {value for _label, value in IF_COMPARISON_CHOICES}
+    if operation not in supported:
+        raise ValueError(f"Unsupported If comparison: {operator}")
+    templates = (left_template,) if operation in IF_UNARY_OPERATORS else (
+        left_template,
+        right_template,
+    )
+    for template in templates:
+        missing = [name for name in placeholder_names(template) if name not in context]
+        if missing:
+            raise ValueError(f'Variable "{{{missing[0]}}}" is not available for this If.')
+    left = render_placeholders(left_template, context, strip_values=True)
+    right = render_placeholders(right_template, context, strip_values=True)
+    if operation == "is_empty":
+        return not left.strip()
+    if operation == "is_not_empty":
+        return bool(left.strip())
+    if operation in {"less_than", "less_or_equal", "greater_than", "greater_or_equal"}:
+        try:
+            left_number = Decimal(left)
+            right_number = Decimal(right)
+        except (InvalidOperation, ValueError):
+            raise ValueError(
+                f'If comparison requires numbers, but received "{left}" and "{right}".'
+            ) from None
+        if not left_number.is_finite() or not right_number.is_finite():
+            raise ValueError("If numeric comparisons require finite numbers.")
+        if operation == "less_than":
+            return left_number < right_number
+        if operation == "less_or_equal":
+            return left_number <= right_number
+        if operation == "greater_than":
+            return left_number > right_number
+        return left_number >= right_number
+    if ignore_case:
+        left, right = left.casefold(), right.casefold()
+    if operation == "equals":
+        return left == right
+    if operation == "not_equals":
+        return left != right
+    if operation == "contains":
+        return right in left
+    if operation == "not_contains":
+        return right not in left
+    if operation == "starts_with":
+        return left.startswith(right)
+    if operation == "ends_with":
+        return left.endswith(right)
+    raise ValueError(f"Unsupported If comparison: {operator}")
+
+
+class EndRoutineTask:
+    task_type = "core.end_routine"
 
     def execute(self, task: TaskDefinition, trigger: TriggerEvent) -> TaskExecutionResult:
-        return _result(task, True, "Routine break requested.", flow_action="break")
+        return _result(
+            task,
+            True,
+            "End Routine was reached; remaining tasks were skipped.",
+            flow_action=END_ROUTINE_ACTION,
+        )
 
 
 class GetInputTask:
@@ -191,7 +278,7 @@ class GetInputTask:
                     task,
                     True,
                     "Input was cancelled; routine stopped.",
-                    flow_action="break",
+                    flow_action=END_ROUTINE_ACTION,
                 )
             return _result(
                 task,
@@ -288,60 +375,59 @@ class RandomChoiceTask(_RoutineLogicTask):
                 task,
                 True,
                 f'Random choice selected "{display_name}".',
-                flow_action="break" if result.flow_action == "break" else "",
                 nested_results=(result,),
             )
         except (TypeError, ValueError) as error:
             return _result(task, False, str(error))
 
 
-class IfElseTask(_RoutineLogicTask):
-    task_type = "core.logic_if_else"
+class IfTask:
+    task_type = "core.if"
+
+    def __init__(
+        self,
+        branch_runner: Callable[
+            [tuple[TaskDefinition, ...], TriggerEvent],
+            tuple[TaskExecutionResult, ...],
+        ],
+    ) -> None:
+        self.branch_runner = branch_runner
 
     def execute(self, task: TaskDefinition, trigger: TriggerEvent) -> TaskExecutionResult:
         try:
             context = _context(trigger)
-            matched = evaluate_condition(
+            matched = evaluate_if_condition(
                 str(task.config.get("left", "")),
                 str(task.config.get("operator", "equals")),
                 str(task.config.get("right", "")),
                 context,
+                ignore_case=bool(task.config.get("ignore_case", False)),
             )
-            branch = "true" if matched else "false"
-            routine_id = str(task.config.get(f"{branch}_routine_id", "")).strip()
-            nested_results = ()
-            if routine_id:
-                result = self._run(routine_id, trigger)
-                nested_results = (result,)
-                if not result.succeeded:
-                    return _result(
-                        task,
-                        False,
-                        result.detail or f"{branch.title()} branch failed.",
-                        nested_results=nested_results,
-                    )
-                if result.flow_action == "break":
-                    return _result(
-                        task,
-                        True,
-                        f"{branch.title()} branch requested a routine break.",
-                        flow_action="break",
-                        nested_results=nested_results,
-                    )
-            if not matched and bool(task.config.get("break_if_false", False)):
+            branch = "then" if matched else "else"
+            branch_tasks = tuple(task.then_tasks if matched else task.else_tasks)
+            child_results = self.branch_runner(branch_tasks, trigger)
+            failed = next((result for result in child_results if not result.succeeded), None)
+            if failed is not None:
                 return _result(
                     task,
-                    True,
-                    "Condition was false; routine stopped.",
-                    flow_action="break",
+                    False,
+                    failed.detail or f"{branch.title()} branch task failed.",
+                    child_results=child_results,
+                    selected_branch=branch,
                 )
+            flow_action = next(
+                (result.flow_action for result in child_results if result.flow_action),
+                "",
+            )
             return _result(
                 task,
                 True,
-                f"Condition was {str(matched).lower()}; {branch} branch selected.",
-                nested_results=nested_results,
+                f"Condition was {str(matched).lower()}; {branch.title()} branch selected.",
+                flow_action=flow_action,
+                child_results=child_results,
+                selected_branch=branch,
             )
-        except (TypeError, ValueError, re.error) as error:
+        except (TypeError, ValueError) as error:
             return _result(task, False, str(error))
 
 
@@ -375,14 +461,6 @@ class SwitchTask(_RoutineLogicTask):
                         task,
                         False,
                         result.detail or "Switch branch failed.",
-                        nested_results=(result,),
-                    )
-                if result.flow_action == "break":
-                    return _result(
-                        task,
-                        True,
-                        f'Switch case "{matched_case}" requested a routine break.',
-                        flow_action="break",
                         nested_results=(result,),
                     )
                 return _result(
@@ -430,8 +508,6 @@ class WhileTask(_RoutineLogicTask):
                         result.detail or "While loop routine failed.",
                         nested_results=tuple(nested_results),
                     )
-                if result.flow_action == "break":
-                    break
             return _result(
                 task,
                 True,
@@ -443,12 +519,12 @@ class WhileTask(_RoutineLogicTask):
 
 
 def register_logic_tasks(registry, service) -> None:
-    registry.register(BreakRoutineTask())
+    registry.register(EndRoutineTask())
     registry.register(GetInputTask())
     registry.register(GetRandomNumberTask())
     registry.register(
         RandomChoiceTask(service.run_nested_routine, service.routine_name)
     )
-    registry.register(IfElseTask(service.run_nested_routine, service.routine_name))
+    registry.register(IfTask(service.execute_child_tasks))
     registry.register(SwitchTask(service.run_nested_routine, service.routine_name))
     registry.register(WhileTask(service.run_nested_routine, service.routine_name))
