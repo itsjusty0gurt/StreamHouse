@@ -192,6 +192,31 @@ class TwitchHelixClientTests(unittest.TestCase):
         self.assertIn("stream.online", event_types)
         self.assertIn("stream.offline", event_types)
 
+    def test_activity_subscriptions_include_both_raid_directions(self) -> None:
+        client = TwitchHelixClient()
+        client._create_subscription = Mock()
+        token = TwitchToken("access", "refresh", 999, [])
+
+        client.create_activity_subscriptions(
+            "session-1",
+            "channel-1",
+            "moderator-1",
+            token,
+        )
+
+        raid_conditions = [
+            call.args[2]
+            for call in client._create_subscription.call_args_list
+            if call.args[0] == "channel.raid"
+        ]
+        self.assertEqual(
+            raid_conditions,
+            [
+                {"to_broadcaster_user_id": "channel-1"},
+                {"from_broadcaster_user_id": "channel-1"},
+            ],
+        )
+
     def test_ads_scope_enables_ad_break_begin_eventsub(self) -> None:
         client = TwitchHelixClient()
         client._create_subscription = Mock()

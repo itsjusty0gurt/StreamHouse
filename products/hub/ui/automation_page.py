@@ -137,6 +137,10 @@ from products.hub.ui.variable_picker import VariablePickerDialog
 def _event_display_name(event_type: str) -> str:
     if event_type == "channel.chat.first_message":
         return "First Message Of Stream"
+    if event_type == "channel.raid":
+        return "Incoming Raid"
+    if event_type == "channel.raid.outgoing":
+        return "Outgoing Raid"
     return event_type.replace("channel.", "").replace("_", " ").replace(".", " › ").title()
 
 

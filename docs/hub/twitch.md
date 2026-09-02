@@ -284,10 +284,10 @@ rejected authorization distinctly from a genuine not-following result.
 Twitch EventSub automation triggers persist at
 `twitch/event_triggers.json` in the exact current v3 schema; unversioned and
 obsolete private-development formats are rejected rather than migrated. The
-live-ready set is follow, subscribe,
-subscription gift, subscription message, cheer, incoming raid, custom channel
-point redemption, stream online, and stream offline. These correspond to the
-activity subscriptions Hub currently establishes with Twitch.
+live-ready set is follow, subscribe, subscription gift, subscription message,
+cheer, incoming and outgoing raid, custom channel point redemption, stream
+online, and stream offline. These correspond to the activity subscriptions Hub
+currently establishes with Twitch.
 
 A trigger may optionally match exact EventSub payload fields. Dot notation
 addresses nested fields, for example `reward.id` or `reward.title`. Matching is
@@ -317,6 +317,28 @@ Each matching execution receives normal `user.*` values plus the routine-scoped
 input remains an available empty string when a reward has no input. These
 values flow through nested routines and disappear with the root execution.
 EventSub message-ID deduplication remains owned by the shared Twitch ingress.
+
+Subscription events keep the direct `channel.subscribe`,
+`channel.subscription.message`, or `channel.subscription.gift` EventSub event
+as the single Automation event. Hub normalizes `subscription.tier`, gifted and
+anonymous state, resub cumulative/streak/duration months, plain message text,
+and gift count/cumulative count when Twitch supplies them. Twitch's direct
+subscribe/resub events do not identify Prime subscriptions, so Hub briefly
+correlates the same viewer's `channel.chat.notification` metadata to add
+`subscription.is_prime` when reliable. The bounded correlation waits up to one
+second, expires transient entries, clears them on disconnect, and falls back to
+the direct event without inventing a Prime value. The chat notification never
+creates a second subscription Automation execution. A gift aggregate remains
+one gift event with `subscription.gift_count`; Twitch's separate
+gifted-recipient subscribe events remain independent events.
+
+Hub creates both official `channel.raid` v1 conditions on the broadcaster
+EventSub socket: `to_broadcaster_user_id` for **Incoming Raid** and
+`from_broadcaster_user_id` for **Outgoing Raid**. Raid routines receive
+`raid.direction`, `raid.source.*`, `raid.target.*`, and `raid.viewers` Routine
+Variables. `user.*` represents the initiating/source broadcaster. Twitch does
+not publish a separate completed-raid EventSub event, so Hub does not expose a
+fake Raid Completed trigger.
 
 The Twitch trigger tree also provides an Ads category with 5-, 3-, 2-, and
 1-minute warnings, Ads Started, and Ads Ended. Warning state belongs to
@@ -386,14 +408,15 @@ registered with a Task provider; they are plans, not current capability.
 
 ### Raids
 
-Planned raid controls and normalized events must distinguish:
+Raid controls and normalized events distinguish:
 
 - **Raid Initiated**: Hub successfully starts the Twitch raid countdown.
 - **Outgoing Raid Sent**: Twitch confirms that the outgoing raid occurred.
 - **Incoming Raid**: another broadcaster raids the channel.
 
-The `channel.raid` incoming-raid trigger is currently implemented. Outgoing
-raid controls, Raid Initiated, and Outgoing Raid Sent are planned.
+Incoming and outgoing `channel.raid` observation are implemented. Outgoing
+raid controls and a locally confirmed Raid Initiated action remain planned;
+there is no separate public Twitch raid-completed event.
 
 ### Stream Health and Moderation
 

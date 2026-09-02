@@ -261,11 +261,18 @@ class TwitchHelixClient:
                 ),
             )
         )
-        activity_specs.append(
+        activity_specs.extend(
             (
-                "channel.raid",
-                "1",
-                {"to_broadcaster_user_id": broadcaster_user_id},
+                (
+                    "channel.raid",
+                    "1",
+                    {"to_broadcaster_user_id": broadcaster_user_id},
+                ),
+                (
+                    "channel.raid",
+                    "1",
+                    {"from_broadcaster_user_id": broadcaster_user_id},
+                ),
             )
         )
         warnings = []

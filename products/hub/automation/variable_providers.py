@@ -315,6 +315,24 @@ CONTEXT_DEFINITIONS = (
     ("channel_points.user_input", "Redemption User Input", "Viewer text supplied with this redemption, which may be empty.", VariableDataType.TEXT, ("channel_points.user_input",)),
     ("channel_points.status", "Redemption Status", "Status reported by Twitch for this redemption.", VariableDataType.TEXT, ("channel_points.status",)),
     ("channel_points.redeemed_at", "Redeemed At", "When Twitch recorded this redemption.", VariableDataType.DATETIME, ("channel_points.redeemed_at",)),
+    ("subscription.tier", "Subscription Tier", "Twitch subscription tier for this event.", VariableDataType.TEXT, ("subscription.tier",)),
+    ("subscription.is_gift", "Gifted Subscription", "Whether Twitch reported this subscription as gifted.", VariableDataType.BOOLEAN, ("subscription.is_gift",)),
+    ("subscription.is_prime", "Prime Subscription", "Whether chat notification metadata reliably identified this as a Prime subscription.", VariableDataType.BOOLEAN, ("subscription.is_prime",)),
+    ("subscription.cumulative_months", "Cumulative Subscription Months", "Total months Twitch reports for this resubscription.", VariableDataType.INTEGER, ("subscription.cumulative_months",)),
+    ("subscription.streak_months", "Subscription Streak Months", "Current subscription streak when the viewer shares it.", VariableDataType.INTEGER, ("subscription.streak_months",)),
+    ("subscription.duration_months", "Subscription Duration Months", "Duration in months reported for this subscription event.", VariableDataType.INTEGER, ("subscription.duration_months",)),
+    ("subscription.message", "Resubscription Message", "Plain text of the viewer's resubscription message.", VariableDataType.TEXT, ("subscription.message",)),
+    ("subscription.gift_count", "Gift Subscription Count", "Number of subscriptions in this gifting event.", VariableDataType.INTEGER, ("subscription.gift_count",)),
+    ("subscription.cumulative_gifts", "Cumulative Gift Count", "Total gifts Twitch reports for this gifter when available.", VariableDataType.INTEGER, ("subscription.cumulative_gifts",)),
+    ("subscription.is_anonymous", "Anonymous Gift", "Whether Twitch reported this gifting event as anonymous.", VariableDataType.BOOLEAN, ("subscription.is_anonymous",)),
+    ("raid.direction", "Raid Direction", "Whether this raid is incoming or outgoing.", VariableDataType.TEXT, ("raid.direction",)),
+    ("raid.source.id", "Raid Source ID", "Twitch ID of the broadcaster sending the raid.", VariableDataType.TEXT, ("raid.source.id",)),
+    ("raid.source.login", "Raid Source Login", "Twitch login of the broadcaster sending the raid.", VariableDataType.TEXT, ("raid.source.login",)),
+    ("raid.source.name", "Raid Source Name", "Display name of the broadcaster sending the raid.", VariableDataType.TEXT, ("raid.source.name",)),
+    ("raid.target.id", "Raid Target ID", "Twitch ID of the broadcaster receiving the raid.", VariableDataType.TEXT, ("raid.target.id",)),
+    ("raid.target.login", "Raid Target Login", "Twitch login of the broadcaster receiving the raid.", VariableDataType.TEXT, ("raid.target.login",)),
+    ("raid.target.name", "Raid Target Name", "Display name of the broadcaster receiving the raid.", VariableDataType.TEXT, ("raid.target.name",)),
+    ("raid.viewers", "Raid Viewer Count", "Number of viewers in the raid.", VariableDataType.INTEGER, ("raid.viewers",)),
     ("event.name", "Event Name", "Readable trigger event name.", VariableDataType.TEXT, ("event",)),
     ("event.type", "Event Type", "Owning service event type.", VariableDataType.TEXT, ("event_type",)),
     ("event.input", "Event Input", "Viewer input or event input name.", VariableDataType.TEXT, ("input",)),
@@ -326,6 +344,9 @@ CONTEXT_DEFINITIONS = (
     ("event.reward_id", "Reward ID", "Channel-point reward ID.", VariableDataType.TEXT, ("reward_id",)),
     ("event.reward_cost", "Reward Cost", "Channel-point reward cost.", VariableDataType.INTEGER, ("reward_cost",)),
     ("event.redemption_id", "Redemption ID", "Channel-point redemption ID.", VariableDataType.TEXT, ("redemption_id",)),
+    ("event.is_anonymous", "Anonymous Event", "Whether Twitch reported this event as anonymous.", VariableDataType.BOOLEAN, ("event.is_anonymous",)),
+    ("event.stream_id", "Stream ID", "Stable Twitch stream ID supplied by Stream Online.", VariableDataType.TEXT, ("event.stream_id",)),
+    ("event.started_at", "Event Started At", "Start time supplied by the triggering Twitch event.", VariableDataType.DATETIME, ("event.started_at",)),
     ("obs.scene", "OBS Scene", "Scene supplied by an OBS event.", VariableDataType.TEXT, ("scene",)),
     ("obs.source", "OBS Source", "Source supplied by an OBS event.", VariableDataType.TEXT, ("source",)),
     ("obs.input", "OBS Input", "Input supplied by an OBS event.", VariableDataType.TEXT, ("input",)),
@@ -350,10 +371,21 @@ CONTEXT_PREVIEW = {
     "channel_points.reward_cost": 500, "channel_points.reward_prompt": "Drink some water!",
     "channel_points.user_input": "sparkling please", "channel_points.status": "unfulfilled",
     "channel_points.redeemed_at": "2026-08-31T12:00:00Z",
+    "subscription.tier": "1000", "subscription.is_gift": False,
+    "subscription.is_prime": True, "subscription.cumulative_months": 17,
+    "subscription.streak_months": 6, "subscription.duration_months": 1,
+    "subscription.message": "17 months, let's go!", "subscription.gift_count": 5,
+    "subscription.cumulative_gifts": 42, "subscription.is_anonymous": False,
+    "raid.direction": "incoming", "raid.source.id": "123456",
+    "raid.source.login": "raider", "raid.source.name": "Raider",
+    "raid.target.id": "654321", "raid.target.login": "streamer",
+    "raid.target.name": "Streamer", "raid.viewers": 25,
     "event.name": "Follow", "event.type": "channel.follow", "event.input": "Viewer input",
     "event.amount": 100, "event.bits": 100, "event.viewers": 12, "event.tier": "1000",
     "event.reward": "Hydrate", "event.reward_id": "reward-123", "event.reward_cost": 500,
     "event.redemption_id": "redemption-123", "obs.scene": "Gameplay", "obs.source": "Camera",
+    "event.is_anonymous": False, "event.stream_id": "stream-123",
+    "event.started_at": "2026-08-31T12:00:00Z",
     "obs.input": "Microphone", "obs.output_state": "OBS_WEBSOCKET_OUTPUT_STARTED",
     "obs.enabled": True, "obs.muted": False, "obs.volume_db": -8.0, "obs.media": "Intro Video",
 }
@@ -368,6 +400,8 @@ def _context_presentation(name: str) -> tuple[str, str]:
         "keyword": ("Keyword / Phrase", "Keyword / Phrase routine"),
         "ads": ("Ads", "Ads Started"),
         "channel_points": ("Channel Points", "Channel Point Redemption"),
+        "subscription": ("Subscriptions", "Subscription event"),
+        "raid": ("Raids", "Raid event"),
         "event": ("Twitch Event", "Matching Twitch event"),
         "obs": ("OBS", "Matching OBS event"),
     }.get(namespace, (namespace.title(), "Matching trigger context"))
@@ -393,10 +427,14 @@ def context_provider() -> CallbackVariableProvider:
 
     def resolve(name: str, context: Mapping[str, object]) -> tuple[bool, object, str]:
         for key in (name, *aliases[name]):
-            allow_empty = name.startswith("channel_points.")
+            allow_empty = name.startswith("channel_points.") or name == "subscription.message"
             if key in context and (allow_empty or str(context[key]).strip() not in {"", "--"}):
                 value: object = context[key]
-                if name in {"user.is_mod", "user.is_subscriber", "obs.enabled", "obs.muted"}:
+                if name in {
+                    "user.is_mod", "user.is_subscriber", "obs.enabled", "obs.muted",
+                    "subscription.is_gift", "subscription.is_prime",
+                    "subscription.is_anonymous", "event.is_anonymous",
+                }:
                     value = str(value).strip().casefold() in {"1", "true", "yes", "on"}
                 return True, value, ""
         return False, None, "Only available during a matching trigger event."

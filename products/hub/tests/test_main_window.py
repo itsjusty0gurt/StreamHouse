@@ -587,7 +587,8 @@ class MainWindowTests(unittest.TestCase):
                 "Subscription › Gift",
                 "Subscription › Message",
                 "Cheer",
-                "Raid",
+                "Incoming Raid",
+                "Outgoing Raid",
                 "Stream › Online",
                 "Stream › Offline",
             ],
@@ -2159,6 +2160,69 @@ class MainWindowTests(unittest.TestCase):
             card.findChild(QLabel, "activityFeedAge").text(),
             "just now",
         )
+
+    def test_subscription_chat_notice_enriches_without_duplicate_automation(self) -> None:
+        direct = TwitchEvent(
+            subscription_type="channel.subscription.message",
+            version="1",
+            received_at=datetime.now(timezone.utc),
+            message_id="resub-1",
+            broadcaster_user_id="42",
+            broadcaster_user_login="channel",
+            broadcaster_user_name="Channel",
+            transport=TwitchEventTransport.WEBSOCKET,
+            payload={
+                "event": {
+                    "broadcaster_user_id": "42",
+                    "user_id": "viewer-1",
+                    "user_login": "viewer",
+                    "user_name": "Viewer",
+                    "tier": "1000",
+                    "message": {"text": "17 months", "emotes": []},
+                    "cumulative_months": 17,
+                    "duration_months": 1,
+                }
+            },
+        )
+        notice = TwitchEvent(
+            subscription_type="channel.chat.notification",
+            version="1",
+            received_at=datetime.now(timezone.utc),
+            message_id="notice-1",
+            broadcaster_user_id="42",
+            broadcaster_user_login="channel",
+            broadcaster_user_name="Channel",
+            transport=TwitchEventTransport.WEBSOCKET,
+            payload={
+                "event": {
+                    "notice_type": "resub",
+                    "broadcaster_user_id": "42",
+                    "chatter_user_id": "viewer-1",
+                    "chatter_user_login": "viewer",
+                    "message": {"text": "17 months", "fragments": []},
+                    "resub": {
+                        "sub_tier": "1000",
+                        "is_prime": True,
+                        "is_gift": False,
+                        "cumulative_months": 17,
+                        "duration_months": 1,
+                    },
+                }
+            },
+        )
+        handled: list[TwitchEvent] = []
+        self.window._handle_twitch_automation_event = handled.append
+
+        self.window.handle_twitch_activity(direct)
+        self.assertEqual(handled, [])
+        self.window.handle_twitch_activity(notice)
+
+        self.assertEqual(len(handled), 1)
+        self.assertEqual(
+            handled[0].subscription_type,
+            "channel.subscription.message",
+        )
+        self.assertIs(handled[0].payload["event"]["is_prime"], True)
 
     def test_twitch_event_trigger_executes_connected_routine(self) -> None:
         routine_store = self.twitch_command_trigger_store.routine_store

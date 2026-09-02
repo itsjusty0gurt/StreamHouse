@@ -136,14 +136,16 @@ routine/task architecture. Potential future task types are:
 These task types are planned and are not currently registered with a task
 provider.
 
-Planned raid controls and events must distinguish:
+Raid controls and events distinguish:
 
 - **Raid Initiated**: Hub successfully starts the Twitch raid countdown.
 - **Outgoing Raid Sent**: Twitch confirms that the outgoing raid occurred.
 - **Incoming Raid**: another broadcaster raids the channel.
 
-The incoming-raid trigger is currently implemented. Outgoing raid controls and
-the two outgoing events are planned.
+Incoming Raid and Outgoing Raid Sent observation are implemented through the
+two official `channel.raid` conditions. Outgoing raid controls and a locally
+confirmed Raid Initiated action remain planned; Twitch exposes no separate
+raid-completed EventSub event.
 
 Stream Health may summarize:
 

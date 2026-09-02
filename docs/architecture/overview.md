@@ -532,7 +532,8 @@ writes. Valid types are `text`, `integer`, `number`,
 malformed names, duplicate names, provider collisions, alias collisions, and
 alias loops are rejected. Reserved built-in namespaces currently include
 `stream`, `user`, `chat`, `command`, `keyword`, `event`, `counter`, `obs`,
-`hub`, `custom`, `automation`, `ads`, `channel_points`, `soundboard`, `target`,
+`hub`, `custom`, `automation`, `ads`, `channel_points`, `subscription`, `raid`,
+`soundboard`, `target`,
 `channel`, `socials`, and `serverinfo`.
 Current providers expose:
 
@@ -549,6 +550,11 @@ Current providers expose:
 - contextual Channel Point Redemption data as `channel_points.*`, including
   stable reward/redemption IDs, title, cost, prompt, optional viewer input,
   status, and redemption time;
+- contextual subscription/resub/gift data as `subscription.*`, including
+  normalized tier, gift/Prime/anonymous state, month counts, message text, and
+  gift totals when Twitch supplies them;
+- contextual incoming/outgoing raid data as `raid.*`, including direction,
+  source, target, and viewer count;
 - automatically available Hub-owned Channel Information as `channel.schedule`,
   `channel.rules`, `socials.<service>`, and `serverinfo.details`;
 - stable shared counter totals as `counter.<counter_id>.stream` and contextual
@@ -563,7 +569,8 @@ Availability/lifetime is metadata, not a sample-value inference:
   A provider can still report one unavailable while disconnected or before a
   cached value has been observed.
 - **Contextual** definitions require trigger/event data. `user.*`, `chat.*`,
-  `command.*`, `keyword.*`, `ads.requester.*`, `channel_points.*`, and
+  `command.*`, `keyword.*`, `ads.requester.*`, `channel_points.*`,
+  `subscription.*`, `raid.*`, and
   `counter.<id>.viewer` never
   invent a viewer, message, requester, or fallback value.
 - **Temporary** definitions describe task/action outputs that exist only in the
@@ -593,6 +600,7 @@ unavailable and does not substitute the shared value or create a viewer entry.
 The Automation **Variables** tab is a definition reference as well as a live
 value view. It always lists registry definitions, including contextual
 `command.*`, `keyword.*`, `ads.requester.*`, `channel_points.*`,
+`subscription.*`, `raid.*`,
 viewer/chat/user, and OBS event definitions when no matching routine is
 running. **Current Value** and
 **Status** distinguish a known definition from a value that is presently
@@ -770,7 +778,7 @@ Adding a task requires more than a handler. See **Adding an automation task**.
 | Provider | Store | Persisted file | Examples |
 | --- | --- | --- | --- |
 | Twitch commands | `TwitchCommandTriggerStore` | `twitch/commands.json` | configured `!command` triggers, aliases, permissions, cooldowns, statistics, and default-template provenance |
-| Twitch activity | `TwitchEventTriggerStore` | `twitch/event_triggers.json` | follow, sub, gift, cheer, raid, reward, online/offline |
+| Twitch activity | `TwitchEventTriggerStore` | `twitch/event_triggers.json` | follow, sub/resub/gift, cheer, incoming/outgoing raid, reward, online/offline |
 | Twitch Channel Point Redemption | same as above | same | one broadcaster EventSub subscription, local matching by stable reward ID or Any Custom Reward |
 | Twitch first message | same as above | same | once per viewer per stream with offline grace reset |
 | Twitch Keyword / Phrase | same as above | same | Contains/Exact/Starts With/Ends With chat matching with case and whole-word controls |
@@ -781,9 +789,11 @@ Adding a task requires more than a handler. See **Adding an automation task**.
 | Soundboard | button record in `SoundboardStore` | `twitch/soundboard.json` | local preview or Extension button |
 
 The first-message trigger is synthesized from accepted chat messages, not a
-native EventSub subscription. It ignores broadcaster/bot messages, tracks
-viewer identity per trigger, resets on a new stream ID, and preserves state
-through brief offline periods according to `reset_minutes`.
+native EventSub subscription. It ignores broadcaster/bot messages, tracks the
+stable Twitch viewer ID per trigger, resets on a new stream ID, and preserves
+current-stream state through Hub restarts and brief offline periods according
+to `reset_minutes`. `twitch/first_message_state.json` is bounded trigger
+bookkeeping for the current stream, not historical viewer analytics.
 
 Keyword/Phrase is a separate chat concept from Chat Command. Its trigger
 context is fresh for one routine execution, keeps normal `user.*`/`chat.*`
@@ -1271,6 +1281,7 @@ identifiers or filename formats are accepted.
 | `counters/index.json` | Hub | pre-alpha schema v2 definitions: stable ID, labels, scopes, numeric type, reset/minimum, and display precision |
 | `counters/<counter_id>.json` | Hub | schema v2 atomic values stored as exact decimal strings; shared/current-stream and Twitch-user-ID keyed values |
 | `twitch/event_triggers.json` | Hub | schema v3 EventSub, stable-ID Channel Point Redemption, first-message, Keyword/Phrase, and Ads triggers |
+| `twitch/first_message_state.json` | Hub | schema v1 current-stream First Message viewer IDs and offline-grace timestamp; obsolete/malformed pre-alpha state resets |
 | `twitch/soundboard.json` | Hub | schema v1 pages, buttons, routine IDs |
 | `twitch/soundboard-relay.json` | Hub | v1 non-secret relay URL/channel/autoconnect |
 | `obs/connection.json` | Hub | v1 non-secret OBS host/port/autoconnect |

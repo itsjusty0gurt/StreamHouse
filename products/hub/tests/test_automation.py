@@ -226,6 +226,8 @@ class AutomationServiceTests(unittest.TestCase):
         supplied = {
             "user.id": "viewer-1",
             "command.data": "coffee 0.5",
+            "subscription.is_prime": "true",
+            "raid.direction": "outgoing",
             "automation.result": "done",
             "custom.private_note": "not historical context",
             "event.oauth_token": "do-not-record",
@@ -244,6 +246,8 @@ class AutomationServiceTests(unittest.TestCase):
         self.assertGreaterEqual(result.duration_ms, 0)
         self.assertEqual(snapshot["user.id"], "viewer-1")
         self.assertEqual(snapshot["command.data"], "coffee 0.5")
+        self.assertEqual(snapshot["subscription.is_prime"], "true")
+        self.assertEqual(snapshot["raid.direction"], "outgoing")
         self.assertEqual(snapshot["automation.result"], "done")
         self.assertNotIn("custom.private_note", snapshot)
         self.assertNotIn("event.oauth_token", snapshot)

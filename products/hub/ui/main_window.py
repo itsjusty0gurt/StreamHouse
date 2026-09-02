@@ -155,7 +155,10 @@ from products.hub.obs_service.service import ObsWebSocketService
 from products.hub.obs_service.tasks import register_obs_tasks
 from products.hub.obs_service.triggers import ObsTriggerStore
 from products.hub.twitch.ads import AdsDomainEvent, AdsService
-from products.hub.twitch.automation_triggers import TwitchEventTriggerStore
+from products.hub.twitch.automation_triggers import (
+    TwitchEventTriggerStore,
+    TwitchSubscriptionEventCorrelator,
+)
 from products.hub.twitch.models import (
     TwitchChatNotice,
     TwitchEvent,
@@ -412,6 +415,7 @@ class MainWindow(QMainWindow):
                 routine_store=self.twitch_command_trigger_store.routine_store
             )
         )
+        self.twitch_subscription_correlator = TwitchSubscriptionEventCorrelator()
         routine_store = self.twitch_command_trigger_store.routine_store
         self.core_trigger_store = core_trigger_store or CoreTriggerStore(
             path=routine_store.path.with_name("core_triggers.json"),
@@ -883,6 +887,12 @@ class MainWindow(QMainWindow):
             "twitch_event",
             self.twitch_bridge.handle_activity_received,
         )
+        self.twitch_subscription_correlation_timer = QTimer(self)
+        self.twitch_subscription_correlation_timer.setInterval(100)
+        self.twitch_subscription_correlation_timer.timeout.connect(
+            self._flush_twitch_subscription_automation
+        )
+        self.twitch_subscription_correlation_timer.start()
         Events.subscribe("obs_event", self._handle_obs_automation_event)
 
         self.ui.dashboardButton.clicked.connect(self.show_dashboard)
@@ -3700,6 +3710,8 @@ class MainWindow(QMainWindow):
     ) -> None:
         connected = state is TwitchConnectionState.CONNECTED
         connecting = state is TwitchConnectionState.CONNECTING
+        if not connected:
+            self.twitch_subscription_correlator.clear()
 
         page_status = state.value
         dashboard_status = state.value
@@ -5290,7 +5302,10 @@ class MainWindow(QMainWindow):
                         received_at=twitch_event.received_at,
                     )
                 )
-        self._handle_twitch_automation_event(twitch_event)
+        for automation_event in self.twitch_subscription_correlator.observe(
+            twitch_event
+        ):
+            self._handle_twitch_automation_event(automation_event)
         if twitch_event.subscription_type in {
             "stream.online",
             "stream.offline",
@@ -5419,6 +5434,11 @@ class MainWindow(QMainWindow):
                     f'Twitch automation failed for "{twitch_event.subscription_type}".',
                     source="AUTOMATION",
                 )
+
+    @Slot()
+    def _flush_twitch_subscription_automation(self) -> None:
+        for twitch_event in self.twitch_subscription_correlator.flush():
+            self._handle_twitch_automation_event(twitch_event)
 
     def _publish_ads_event(self, event: AdsDomainEvent) -> None:
         for trigger in self.twitch_event_trigger_store.evaluate_named(
@@ -7984,6 +8004,8 @@ class MainWindow(QMainWindow):
         self.ai_health_pool.waitForDone(2_000)
         self.channel_points_page.shutdown()
         self.soundboard_page.shutdown()
+        self.twitch_subscription_correlation_timer.stop()
+        self.twitch_subscription_correlator.clear()
         self.memory_reasoning_thread_pool.clear()
         self.memory_reasoning_thread_pool.waitForDone(2_000)
         self.memory_message_buffers.clear()

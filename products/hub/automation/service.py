@@ -399,6 +399,8 @@ class AutomationService:
             "event.",
             "obs.",
             "ads.requester.",
+            "subscription.",
+            "raid.",
             "automation.",
         )
         sensitive_parts = {

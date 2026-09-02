@@ -114,6 +114,37 @@ def test_contextual_resolution_and_safe_placeholder_rendering() -> None:
     assert definition.context_label == "Channel Point Redemption"
 
 
+def test_subscription_and_raid_context_definitions_are_typed_and_contextual() -> None:
+    registry = VariableRegistry()
+    registry.register(context_provider())
+
+    subscription = {
+        "subscription.tier": "1000",
+        "subscription.is_prime": "true",
+        "subscription.cumulative_months": "17",
+        "subscription.message": "Prime resub!",
+    }
+    assert registry.resolve("subscription.is_prime", subscription).value is True
+    assert registry.resolve("subscription.cumulative_months", subscription).value == "17"
+    assert registry.resolve("subscription.message", subscription).value == "Prime resub!"
+    assert registry.definition("subscription.cumulative_months").data_type == VariableDataType.INTEGER
+    assert registry.definition("subscription.tier").context_label == "Subscription event"
+    assert registry.definition("subscription.tier").lifetime_label == "Routine"
+    assert not registry.resolve("subscription.is_prime", {}).available
+
+    raid = {
+        "raid.direction": "outgoing",
+        "raid.source.login": "streamer",
+        "raid.target.name": "Friend",
+        "raid.viewers": "25",
+    }
+    assert registry.resolve("raid.direction", raid).value == "outgoing"
+    assert registry.resolve("raid.viewers", raid).value == "25"
+    assert registry.definition("raid.viewers").data_type == VariableDataType.INTEGER
+    assert registry.definition("raid.direction").context_label == "Raid event"
+    assert not registry.resolve("raid.target.name", subscription).available
+
+
 def test_channel_information_definitions_always_exist_and_follow_committed_state() -> None:
     with TemporaryDirectory() as temporary:
         store = ChannelInformationStore(Path(temporary) / "channel-information.json")
