@@ -462,8 +462,11 @@ def test_variables_page_and_picker_search_canonical_names() -> None:
         picker = VariablePickerDialog(registry)
         picker.search_edit.setText("game_mode")
         assert picker.selected_placeholder() == "{custom.game_mode}"
+        assert picker.table.horizontalHeaderItem(1).text() == "Actual Value"
+        assert picker.table.item(0, 1).text() == "Hardcore"
         picker.search_edit.setText("user.id")
         assert picker.selected_placeholder() == "{user.id}"
+        assert picker.table.item(0, 1).text() == "Not currently available"
         assert picker.table.item(0, 4).text() == "Not currently available"
         assert picker.table.item(0, 5).text() == "Viewer context"
         assert picker.table.item(0, 6).text() == "Routine"

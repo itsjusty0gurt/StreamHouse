@@ -62,7 +62,7 @@ class VariablePickerDialog(QDialog):
         self.table.setHorizontalHeaderLabels(
             (
                 "Name",
-                "Value / Preview",
+                "Actual Value",
                 "Source",
                 "Type",
                 "Status",
@@ -125,9 +125,11 @@ class VariablePickerDialog(QDialog):
             name = QTableWidgetItem(definition.name)
             name.setData(Qt.ItemDataRole.UserRole, definition.name)
             self.table.setItem(row, 0, name)
-            value = snapshot.display_value
-            if not snapshot.available and definition.preview_value is not None:
-                value = f"{definition.preview_value} (preview)"
+            value = (
+                snapshot.display_value
+                if snapshot.available
+                else "Not currently available"
+            )
             self.table.setItem(row, 1, QTableWidgetItem(value))
             self.table.setItem(row, 2, QTableWidgetItem(definition.source))
             self.table.setItem(row, 3, QTableWidgetItem(definition.data_type.value.title()))

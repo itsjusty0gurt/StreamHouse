@@ -582,8 +582,9 @@ Availability/lifetime is metadata, not a sample-value inference:
 Registry text rendering accepts only canonical dotted `{variable.name}`
 placeholders. Unavailable values retain the original placeholder by default and
 registry resolution emits a debug diagnostic; callers may explicitly supply a
-fallback. Preview/sample
-values are UI examples only and never define a variable's type or availability.
+fallback. Definition preview/sample values are documentation metadata only:
+authoring tables, pickers, and message previews never present them as current
+runtime values.
 
 Provider writes are opt-in. `custom.*` writes use `CustomVariableStore`, and a
 writable `counter.<id>.stream` value uses `CounterService.set_value()` for the

@@ -616,7 +616,10 @@ class TaskEditorTests(unittest.TestCase):
     def test_variable_reference_shows_only_actual_runtime_values(self) -> None:
         dialog = TaskEditorDialog("twitch.send_chat_message", variable_registry=self.variables())
         message = dialog.field_widgets["twitch.send_chat_message"]["message"]
-        message.setPlainText("Scene is {obs.current_scene} while playing {stream.category}.")
+        message.setPlainText(
+            "Hello {user.name}; command {command.data}; keyword {keyword.message}. "
+            "Scene is {obs.current_scene} while playing {stream.category}."
+        )
 
         rows = {
             dialog.variable_table.item(row, 0).text(): row
@@ -638,6 +641,21 @@ class TaskEditorTests(unittest.TestCase):
             dialog.variable_table.item(user_row, 1).text(),
             "Not currently available",
         )
+        for placeholder in (
+            "{user.name}",
+            "{command.data}",
+            "{keyword.message}",
+        ):
+            self.assertEqual(
+                dialog.variable_table.item(rows[placeholder], 1).text(),
+                "Not currently available",
+            )
+        preview = dialog.variable_preview_label.text()
+        self.assertIn("{user.name}", preview)
+        self.assertIn("{command.data}", preview)
+        self.assertIn("{keyword.message}", preview)
+        self.assertNotIn("TestViewer", preview)
+        self.assertNotIn("123456", preview)
         definition = dialog.variable_registry.definition("user.display_name")
         self.assertIsNotNone(definition)
         self.assertEqual(definition.source, "Twitch Context")

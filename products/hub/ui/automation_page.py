@@ -4825,7 +4825,7 @@ class AutomationPage(QWidget):
             task_type,
             self,
             obs_service=self.obs_service,
-            variables=self._preview_context_for_routine(routine),
+            variables=self._current_variable_values(),
             routine_store=self.routine_store,
             queue_store=self.queue_store,
             counter_service=self.counter_service,
@@ -4874,7 +4874,7 @@ class AutomationPage(QWidget):
             self,
             task,
             self.obs_service,
-            self._preview_context_for_routine(routine, task.task_id),
+            self._current_variable_values(),
             self.routine_store,
             self.queue_store,
             self.counter_service,
@@ -5432,23 +5432,9 @@ class AutomationPage(QWidget):
                 definitions[definition.name] = definition
         return tuple(definitions.values())
 
-    def _preview_context_for_routine(
-        self,
-        routine,
-        before_task_id: str = "",
-    ) -> dict[str, str]:
-        context = {
-            definition.name: str(definition.preview_value)
-            for definition in self.variable_registry.definitions()
-            if definition.preview_value is not None
-        }
-        context.update(self.variable_registry.context_values(context))
-        for definition in self._output_definitions_before(routine, before_task_id):
-            context.setdefault(
-                definition.name,
-                str(definition.preview_value or "Example"),
-            )
-        return context
+    def _current_variable_values(self) -> dict[str, str]:
+        """Return only values that providers can resolve from current Hub state."""
+        return self.variable_registry.context_values({})
 
     def _test_selected_task(self) -> None:
         routine = self.routine_store.get(self._selected_routine_id)
@@ -5457,7 +5443,7 @@ class AutomationPage(QWidget):
             return
         dialog = TaskTestDialog(
             task,
-            self._preview_context_for_routine(routine, task.task_id),
+            self._current_variable_values(),
             self._task_external_effect(task),
             self,
         )

@@ -703,7 +703,7 @@ class MainWindowTests(unittest.TestCase):
         self.assertEqual(triggers[0].filters, {})
         self.assertTrue(triggers[0].enabled)
 
-    def test_variable_help_uses_selected_routine_trigger_context(self) -> None:
+    def test_variable_help_does_not_fabricate_trigger_context(self) -> None:
         routine = self.twitch_command_trigger_store.routine_store.add(
             "OBS variables"
         )
@@ -711,13 +711,21 @@ class MainWindowTests(unittest.TestCase):
             routine.routine_id,
             "CurrentProgramSceneChanged",
         )
-        context = self.window.automation_page._preview_context_for_routine(routine)
+        values = self.window.automation_page._current_variable_values()
+        definitions = {
+            item.name for item in self.window.variable_registry.definitions()
+        }
 
-        self.assertEqual(context["obs.scene"], "Gameplay")
-        self.assertEqual(context["obs.source"], "Camera")
-        self.assertEqual(context["event.reward_id"], "reward-123")
+        self.assertNotIn("obs.scene", values)
+        self.assertNotIn("user.name", values)
+        self.assertNotIn("command.data", values)
+        self.assertNotIn("keyword.message", values)
+        self.assertIn("obs.scene", definitions)
+        self.assertIn("user.name", definitions)
+        self.assertIn("command.data", definitions)
+        self.assertIn("keyword.message", definitions)
 
-    def test_variable_help_includes_values_generated_by_routine_tasks(self) -> None:
+    def test_variable_help_does_not_fabricate_generated_output_values(self) -> None:
         routine = self.twitch_command_trigger_store.routine_store.add(
             "Random greeting"
         )
@@ -731,9 +739,14 @@ class MainWindowTests(unittest.TestCase):
             routine.routine_id
         )
 
-        context = self.window.automation_page._preview_context_for_routine(routine)
+        values = self.window.automation_page._current_variable_values()
+        outputs = self.window.automation_page._output_definitions_before(routine)
 
-        self.assertEqual(context["automation.random_line"], "Example")
+        self.assertNotIn("automation.random_line", values)
+        self.assertEqual(
+            tuple(definition.name for definition in outputs),
+            ("automation.random_line",),
+        )
 
     def test_generated_output_discovery_respects_task_order(self) -> None:
         store = self.twitch_command_trigger_store.routine_store
@@ -772,9 +785,9 @@ class MainWindowTests(unittest.TestCase):
             tuple(item.name for item in all_outputs),
             ("automation.first_value", "automation.later_value"),
         )
-        preview = page._preview_context_for_routine(routine, consumer.task_id)
-        self.assertIn("automation.first_value", preview)
-        self.assertNotIn("automation.later_value", preview)
+        values = page._current_variable_values()
+        self.assertNotIn("automation.first_value", values)
+        self.assertNotIn("automation.later_value", values)
 
     def test_twitch_command_manager_lists_existing_and_respects_routine_limit(self) -> None:
         existing = self.twitch_command_trigger_store.add("hello", "Hello!")
