@@ -217,7 +217,9 @@ Streamhouse AI owns:
 Streamhouse AI remains a separately installable application. It does not own
 Twitch sockets, OBS control, automation execution, or final permission to
 perform stream actions. Live Twitch and automation actions continue to pass
-through Streamhouse Hub.
+through Streamhouse Hub. Hub Alpha 0.1 does not expose a permanent AI workspace
+or AI settings section; any future Hub AI surface must be introduced
+intentionally and may be conditional on Streamhouse AI availability.
 
 Implementation mapping:
 

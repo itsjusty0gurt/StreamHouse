@@ -15,7 +15,6 @@ class AppSettings:
     STARTUP_PAGES: ClassVar[tuple[str, ...]] = (
         "Dashboard",
         "Twitch",
-        "AI",
         "Automation",
         "Logs",
         "Settings",

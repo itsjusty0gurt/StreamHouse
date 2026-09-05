@@ -42,7 +42,6 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QSplitter,
     QSpinBox,
-    QStackedWidget,
     QTabWidget,
     QTableWidget,
     QTableWidgetItem,
@@ -799,6 +798,7 @@ class MainWindow(QMainWindow):
         self.ui.twitchChannelEdit.setReadOnly(True)
         self._build_developer_dock()
         self._build_channel_workspace()
+        self._build_ai_connection_runtime()
         self._build_ai_page()
         self._build_automation_page()
         self._build_counters_page()
@@ -815,7 +815,6 @@ class MainWindow(QMainWindow):
         for button in (
             self.ui.dashboardButton,
             self.ui.twitchButton,
-            self.ai_button,
             self.automation_button,
             self.connections_button,
             self.ui.logsButton,
@@ -898,7 +897,6 @@ class MainWindow(QMainWindow):
 
         self.ui.dashboardButton.clicked.connect(self.show_dashboard)
         self.ui.twitchButton.clicked.connect(self.show_twitch)
-        self.ai_button.clicked.connect(self.show_ai)
         self.automation_button.clicked.connect(self.show_automation)
         self.connections_button.clicked.connect(self.show_connections)
         self.ui.logsButton.clicked.connect(self.show_logs)
@@ -1117,7 +1115,6 @@ class MainWindow(QMainWindow):
                 ),
             ),
             ("Chat", (self.ui.twitchChatSettingsGroup,)),
-            ("AI", (self.local_ai_settings_group,)),
             ("Developer", (self.ui.developerSettingsGroup,)),
         )
         for title, groups in tab_groups:
@@ -1210,7 +1207,6 @@ class MainWindow(QMainWindow):
         for button in (
             self.ui.dashboardButton,
             self.ui.twitchButton,
-            self.ai_button,
             self.automation_button,
             self.connections_button,
             self.ui.logsButton,
@@ -1683,15 +1679,10 @@ class MainWindow(QMainWindow):
         )
 
     def _build_ai_page(self) -> None:
-        self.ai_button = QPushButton("AI")
-        self.ai_button.setCheckable(True)
-        self.ui.verticalLayout.insertWidget(2, self.ai_button)
         self.ai_page = QWidget()
         ai_page_layout = QVBoxLayout(self.ai_page)
         self.ai_tabs = QTabWidget()
         ai_page_layout.addWidget(self.ai_tabs)
-        self.ai_tabs.hide()
-        self._build_ai_remote_dashboard(ai_page_layout)
         self.memories_page = QWidget()
         page_layout = QHBoxLayout(self.memories_page)
         splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -1980,7 +1971,6 @@ class MainWindow(QMainWindow):
         self._build_channel_information_tab()
         self._build_twitch_commands_tab()
         self._build_channel_points_tab()
-        self.ui.mainStack.addWidget(self.ai_page)
         self.memory_search_edit.textChanged.connect(
             self._refresh_memory_viewer_list
         )
@@ -2040,68 +2030,11 @@ class MainWindow(QMainWindow):
         )
         self._refresh_analytics()
 
-    def _build_ai_remote_dashboard(self, layout: QVBoxLayout) -> None:
-        self.ai_remote_stack = QStackedWidget(self.ai_page)
-        disconnected = QWidget(self.ai_remote_stack)
-        disconnected_layout = QVBoxLayout(disconnected)
-        disconnected_layout.addStretch()
-        disconnected_title = QLabel("Streamhouse AI is not connected")
-        disconnected_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        disconnected_title.setStyleSheet("font-size:24px; font-weight:600;")
-        disconnected_help = QLabel(
-            "Open Streamhouse AI, then connect here. Streamhouse Hub does not "
-            "load AI models or reasoning on its own."
-        )
-        disconnected_help.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        disconnected_help.setWordWrap(True)
-        endpoint_row = QHBoxLayout()
-        self.ai_remote_endpoint_edit = QLineEdit("http://127.0.0.1:8765")
-        self.ai_remote_connect_button = QPushButton("Connect to Streamhouse AI")
-        endpoint_row.addStretch()
-        endpoint_row.addWidget(self.ai_remote_endpoint_edit)
-        endpoint_row.addWidget(self.ai_remote_connect_button)
-        endpoint_row.addStretch()
-        self.ai_remote_connection_detail = QLabel("")
-        self.ai_remote_connection_detail.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        disconnected_layout.addWidget(disconnected_title)
-        disconnected_layout.addWidget(disconnected_help)
-        disconnected_layout.addLayout(endpoint_row)
-        disconnected_layout.addWidget(self.ai_remote_connection_detail)
-        disconnected_layout.addStretch()
-
-        dashboard = QWidget(self.ai_remote_stack)
-        dashboard_layout = QVBoxLayout(dashboard)
-        connection_group = QGroupBox("Streamhouse AI")
-        connection_form = QFormLayout(connection_group)
-        self.ai_remote_state_label = QLabel("Connected")
-        self.ai_remote_model_label = QLabel("--")
-        self.ai_remote_ollama_label = QLabel("--")
-        self.ai_remote_protocol_label = QLabel("--")
-        connection_form.addRow("Status", self.ai_remote_state_label)
-        connection_form.addRow("Model", self.ai_remote_model_label)
-        connection_form.addRow("Ollama", self.ai_remote_ollama_label)
-        connection_form.addRow("Protocol", self.ai_remote_protocol_label)
-        dashboard_layout.addWidget(connection_group)
-        dashboard_help = QLabel(
-            "Reasoning, memories, training, personality, and diagnostics are "
-            "managed in the Streamhouse AI window. This page is Hub's "
-            "connection remote."
-        )
-        dashboard_help.setWordWrap(True)
-        dashboard_layout.addWidget(dashboard_help)
-        self.ai_remote_refresh_button = QPushButton("Refresh Connection")
-        dashboard_layout.addWidget(self.ai_remote_refresh_button)
-        dashboard_layout.addStretch()
-
-        self.ai_remote_stack.addWidget(disconnected)
-        self.ai_remote_stack.addWidget(dashboard)
-        layout.addWidget(self.ai_remote_stack, 1)
+    def _build_ai_connection_runtime(self) -> None:
+        """Create the optional Hub-to-AI health worker without UI ownership."""
         self.ai_health_pool = QThreadPool(self)
         self.ai_health_pool.setMaxThreadCount(1)
         self.ai_health_in_flight = False
-        self.ai_remote_connect_button.clicked.connect(self._check_streamhouse_ai)
-        self.ai_remote_refresh_button.clicked.connect(self._check_streamhouse_ai)
-        self.ai_remote_endpoint_edit.returnPressed.connect(self._check_streamhouse_ai)
 
     @Slot()
     def _check_streamhouse_ai(self) -> None:
@@ -2109,15 +2042,11 @@ class MainWindow(QMainWindow):
             self.ai_health_in_flight
             or self.ai_lifecycle.state is not AIConnectionState.VERIFYING
         ):
-            self.ai_remote_connection_detail.setText(
-                "Waiting for Streamhouse AI to announce its presence."
-            )
             return
         endpoint = self.ai_lifecycle.endpoint
         if not endpoint:
             return
         self.ai_health_in_flight = True
-        self.ai_remote_connection_detail.setText("Connecting…")
         worker = StreamhouseAIHealthWorker(endpoint, self.ai_lifecycle.generation)
         worker.signals.completed.connect(self._apply_streamhouse_ai_health)
         self.ai_health_pool.start(worker)
@@ -2141,7 +2070,6 @@ class MainWindow(QMainWindow):
             return
         if not self.ai_lifecycle.mark_ready(result.generation):
             return
-        self.ai_remote_stack.setCurrentIndex(1)
         endpoint = self.ai_lifecycle.endpoint
         for remote_store in (self.training_store, self.test_report_store):
             configure = getattr(remote_store, "configure", None)
@@ -2160,19 +2088,6 @@ class MainWindow(QMainWindow):
                 self.settings_store.save(self.settings)
             except OSError:
                 pass
-        self.ai_remote_state_label.setText("Connected")
-        self.ai_remote_state_label.setStyleSheet("color:#00d084; font-weight:600;")
-        self.ai_remote_model_label.setText(
-            str(result.settings.get("model", self.settings.local_ai_model))
-        )
-        self.ai_remote_ollama_label.setText(
-            str(
-                result.settings.get(
-                    "ollama_endpoint", self.settings.local_ai_endpoint
-                )
-            )
-        )
-        self.ai_remote_protocol_label.setText(str(status.protocol_version))
         self._start_next_response_batch()
 
     def nativeEvent(self, event_type, message):
@@ -2215,10 +2130,6 @@ class MainWindow(QMainWindow):
             return
         endpoint = f"http://127.0.0.1:{port}"
         self.ai_lifecycle.begin_verification(endpoint)
-        self.ai_remote_endpoint_edit.setText(endpoint)
-        self.ai_remote_connection_detail.setText(
-            "Streamhouse AI found; connecting..."
-        )
         self._check_streamhouse_ai()
 
     @property
@@ -2236,13 +2147,6 @@ class MainWindow(QMainWindow):
         self.response_decision_in_flight = False
         self.memory_extraction_in_flight.clear()
         self.ai_test_report_flush_timer.stop()
-        if hasattr(self, "ai_remote_stack"):
-            self.ai_remote_stack.setCurrentIndex(0)
-            self.ai_remote_connection_detail.setText(
-                reason or "Streamhouse AI is not running."
-            )
-            self.ai_remote_state_label.setText("Disconnected")
-            self.ai_remote_state_label.setStyleSheet("")
         if reason:
             Logger.warning(
                 f"Streamhouse AI disconnected: {reason}", source="AI"
@@ -5626,6 +5530,7 @@ class MainWindow(QMainWindow):
     def _build_ai_settings(self) -> None:
         group = QGroupBox("Streamhouse AI", self.ui.settingsPage)
         self.local_ai_settings_group = group
+        group.hide()
         layout = QFormLayout(group)
         self.local_ai_enabled_check = QCheckBox(
             "Use Streamhouse AI when available"
@@ -5834,7 +5739,6 @@ class MainWindow(QMainWindow):
             settings.twitch_chat_font_size
         )
         self.local_ai_enabled_check.setChecked(settings.local_ai_enabled)
-        self.ai_remote_endpoint_edit.setText(settings.streamhouse_ai_endpoint)
         self.streamhouse_ai_endpoint_edit.setText(settings.streamhouse_ai_endpoint)
         self.local_ai_endpoint_edit.setText(settings.local_ai_endpoint)
         self.local_ai_model_edit.setText(settings.local_ai_model)
@@ -6020,13 +5924,12 @@ class MainWindow(QMainWindow):
         page_actions = {
             "Dashboard": self.show_dashboard,
             "Twitch": self.show_twitch,
-            "AI": self.show_ai,
             "Automation": self.show_automation,
             "Counters": self.show_counters,
             "Logs": self.show_logs,
             "Settings": self.show_settings,
         }
-        page_actions[self.settings.startup_page]()
+        page_actions.get(self.settings.startup_page, self.show_dashboard)()
 
     @Slot()
     def show_dashboard(self) -> None:
@@ -6039,12 +5942,6 @@ class MainWindow(QMainWindow):
         self.ui.twitchButton.setChecked(True)
 
     @Slot()
-    def show_ai(self) -> None:
-        self._refresh_memory_viewer_list()
-        self.ui.mainStack.setCurrentWidget(self.ai_page)
-        self.ai_button.setChecked(True)
-
-    @Slot()
     def show_automation(self) -> None:
         self.automation_page.refresh()
         self.ui.mainStack.setCurrentWidget(self.automation_page)
@@ -6055,10 +5952,6 @@ class MainWindow(QMainWindow):
         self.counters_page.refresh()
         self.show_twitch()
         self.channel_tabs.setCurrentWidget(self.counters_page)
-
-    def show_memories(self) -> None:
-        self.show_ai()
-        self.ai_tabs.setCurrentWidget(self.memories_page)
 
     @Slot(str)
     def _refresh_memory_viewer_list(self, _text: str = "") -> None:

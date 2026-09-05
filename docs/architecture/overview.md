@@ -255,11 +255,12 @@ import either product package.
 
 ### Important current compromise
 
-Streamhouse Hub contains the AI remote/control pages
-and coordinates RAM queues, recent chat, consent, and send policy. Heavy model
-code lives only in Streamhouse AI. The Hub
-PyInstaller command explicitly excludes `products.ai.engine` and
-`products.ai.streamhouse_ai`.
+Streamhouse Hub retains the lightweight AI client, presence lifecycle, remote
+store adapters, and internal hooks for RAM queues, recent chat, consent, and
+send policy. Hub Alpha 0.1 does not expose an AI navigation workspace or AI
+settings surface. Heavy model code and user-facing AI product configuration
+live only in Streamhouse AI. The Hub PyInstaller command explicitly excludes
+`products.ai.engine` and `products.ai.streamhouse_ai`.
 
 When moving an AI feature, separate:
 
@@ -1079,7 +1080,6 @@ Primary left navigation:
 
 - Dashboard
 - Your Channel
-- AI
 - Automation
 - Connections
 - Logs
@@ -1107,8 +1107,9 @@ These are the tabs currently implemented. The planned Hub workspace—including
 Stream Info, Engagement, Raids, and Moderation—is documented in
 [`product-family.md`](product-family.md) and must not be read as current UI.
 
-AI in Hub is a remote/control workspace. Streamhouse AI has its own left
-navigation:
+Hub Alpha 0.1 has no visible AI workspace or settings section. The lightweight
+Hub-to-AI protocol infrastructure remains available internally, while
+Streamhouse AI owns its own user interface and left navigation:
 
 - Dashboard
 - Memories
@@ -1477,8 +1478,10 @@ Ask which side owns the change:
 - deterministic eligibility/consent/send policy: Hub/shared;
 - DTO or protocol: shared + client + server, possibly version bump;
 - prompt/provider/extraction: Streamhouse AI `products/ai/engine/`;
-- UI-only AI controls: Hub remote page or Streamhouse AI page, depending ownership;
-- persistent AI data: Streamhouse AI store plus remote proxy if Hub displays it.
+- UI-only AI controls: Streamhouse AI page; a future Hub surface, if any, must
+  be introduced intentionally and may be conditional on AI availability;
+- persistent AI data: Streamhouse AI store plus a lightweight Hub remote proxy
+  only where an internal integration needs it.
 
 Test Streamhouse AI absent, Streamhouse AI present, protocol mismatch, timeout, stale
 result, and explicit memory disable.

@@ -174,8 +174,8 @@ class MainWindowTests(unittest.TestCase):
         cases = (
             (self.window.ui.dashboardButton, self.window.ui.dashboardPage),
             (self.window.ui.twitchButton, self.window.ui.twitchPage),
-            (self.window.ai_button, self.window.ai_page),
             (self.window.automation_button, self.window.automation_page),
+            (self.window.connections_button, self.window.connections_page),
             (self.window.ui.logsButton, self.window.ui.logsPage),
             (self.window.ui.settingsButton, self.window.settings_container),
         )
@@ -202,6 +202,18 @@ class MainWindowTests(unittest.TestCase):
             self.window.connections_page,
         )
         self.assertTrue(self.window.connections_button.isChecked())
+
+    def test_removed_ai_startup_destination_falls_back_to_dashboard(self) -> None:
+        self.window.settings = AppSettings(startup_page="AI")
+        self.window.show_logs()
+
+        self.window._show_startup_page()
+
+        self.assertIs(
+            self.window.ui.mainStack.currentWidget(),
+            self.window.ui.dashboardPage,
+        )
+        self.assertTrue(self.window.ui.dashboardButton.isChecked())
 
     def test_dashboard_reuses_live_twitch_and_obs_states(self) -> None:
         self.window._last_twitch_auth_state = TwitchAuthState.SIGNED_IN
@@ -233,16 +245,15 @@ class MainWindowTests(unittest.TestCase):
                 9123,
             )
         self.assertEqual(
-            self.window.ai_remote_endpoint_edit.text(),
+            self.window.ai_lifecycle.endpoint,
             "http://127.0.0.1:9123",
         )
         connect.assert_called_once_with()
 
         self.window._handle_streamhouse_ai_presence(PROTOCOL_VERSION, 0)
-        self.assertEqual(self.window.ai_remote_stack.currentIndex(), 0)
-        self.assertEqual(
-            self.window.ai_remote_connection_detail.text(),
-            "Streamhouse AI is not running.",
+        self.assertIs(
+            self.window.ai_connection_state,
+            AIConnectionState.DISCONNECTED,
         )
 
     def test_hub_starts_with_ai_disconnected(self) -> None:
@@ -1645,16 +1656,7 @@ class MainWindowTests(unittest.TestCase):
                 ],
             )
         }
-        self.window.show_memories()
-
-        self.assertIs(
-            self.window.ui.mainStack.currentWidget(),
-            self.window.ai_page,
-        )
-        self.assertIs(
-            self.window.ai_tabs.currentWidget(),
-            self.window.memories_page,
-        )
+        self.window._refresh_memory_viewer_list()
         self.assertEqual(self.window.memory_viewer_list.count(), 1)
         self.window.memory_viewer_list.setCurrentRow(0)
         self.assertEqual(self.window.memory_name_label.text(), "KnownViewer")
@@ -1668,24 +1670,10 @@ class MainWindowTests(unittest.TestCase):
         self.assertEqual(self.window.memory_viewer_list.count(), 0)
 
     def test_channel_workspace_keeps_stream_sessions_inside_analytics(self) -> None:
-        ai_tab_names = [
-            self.window.ai_tabs.tabText(index)
-            for index in range(self.window.ai_tabs.count())
-        ]
         channel_tab_names = [
             self.window.channel_tabs.tabText(index)
             for index in range(self.window.channel_tabs.count())
         ]
-        self.assertEqual(
-            ai_tab_names,
-            [
-                "Memories",
-                "Reply Review",
-                "Test Report",
-                "Training",
-                "Personality",
-            ],
-        )
         self.assertEqual(
             channel_tab_names,
             [
@@ -1707,17 +1695,30 @@ class MainWindowTests(unittest.TestCase):
         self.assertTrue(self.window.ui.twitchDetailTabs.tabBar().isHidden())
         self.assertTrue(self.window.ui.twitchChatCountLabel.isHidden())
 
-    def test_every_primary_page_and_ai_tab_is_constructed(self) -> None:
+    def test_every_alpha_primary_page_is_constructed_without_ai_workspace(self) -> None:
         pages = (
             self.window.ui.dashboardPage,
             self.window.ui.twitchPage,
-            self.window.ai_page,
+            self.window.automation_page,
             self.window.connections_page,
             self.window.ui.logsPage,
-            self.window.ui.settingsPage,
+            self.window.settings_container,
         )
         self.assertTrue(all(page is not None for page in pages))
-        self.assertEqual(self.window.ai_tabs.count(), 5)
+        self.assertFalse(hasattr(self.window, "ai_button"))
+        self.assertEqual(self.window.ui.mainStack.indexOf(self.window.ai_page), -1)
+        self.assertTrue(self.window.ai_page.isHidden())
+        self.assertEqual(
+            [button.text() for button in self.window.navigation_group.buttons()],
+            [
+                "Dashboard",
+                "Your Channel",
+                "Automation",
+                "Connections",
+                "Logs",
+                "Settings",
+            ],
+        )
         self.assertEqual(self.window.channel_tabs.count(), 8)
         self.assertEqual(
             [
@@ -2090,10 +2091,10 @@ class MainWindowTests(unittest.TestCase):
                 self.window.settings_tabs.tabText(index)
                 for index in range(self.window.settings_tabs.count())
             ],
-            ["Application", "Chat", "AI", "Developer"],
+            ["Application", "Chat", "Developer"],
         )
         self.assertIsNotNone(self.window.ui.generalSettingsGroup.parentWidget())
-        self.assertIsNotNone(self.window.local_ai_settings_group.parentWidget())
+        self.assertTrue(self.window.local_ai_settings_group.isHidden())
 
     def test_memory_buttons_follow_viewer_and_memory_selection(self) -> None:
         buttons = (

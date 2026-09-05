@@ -155,6 +155,12 @@ class SettingsStoreTests(unittest.TestCase):
         self.assertTrue(settings.ai_allow_mild_profanity)
         self.assertTrue(settings.ai_allow_strong_profanity)
 
+    def test_removed_ai_startup_page_defaults_to_dashboard(self) -> None:
+        settings = AppSettings.from_dict({"startup_page": "AI"})
+
+        self.assertEqual(settings.startup_page, "Dashboard")
+        self.assertNotIn("AI", AppSettings.STARTUP_PAGES)
+
     def test_non_object_json_is_rejected(self) -> None:
         self.settings_path.write_text("[]", encoding="utf-8")
 

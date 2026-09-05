@@ -1,12 +1,10 @@
 # Viewer Memories
 
 Viewer memories support Sally, the default personality inside Streamhouse AI.
-In the current Streamhouse Hub UI, Memories is the first internal tab in the AI
-remote/control workspace. This leaves the AI page free to grow with additional
-tools without adding a new left-navigation button for every feature. Memories
-currently reads the Hub-owned local chatter-history store and shows observed
-participation statistics and Twitch roles. Streamhouse AI may propose memories
-but does not approve or own live viewer authorization.
+Hub Alpha 0.1 has no visible AI or Memories workspace. Hub still owns viewer
+consent and the local chatter-history records used by the internal integration;
+Streamhouse AI may propose memories but does not approve or own live viewer
+authorization.
 
 ## Current data
 
