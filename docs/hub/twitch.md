@@ -186,8 +186,10 @@ thread.
   are Chat, Analytics, Commands, Channel Information, Channel Points,
   Soundboard, Counters, and User. Session data is
   currently presented within Analytics. Chat includes the overview, grouped
-  chatters, Activity Feed, and eligible ad controls. The broadcaster is
-  excluded from the grouped chatter total. Chat and the chatter list share
+  chatters, Activity Feed, and eligible ad controls. In narrow and portrait
+  layouts, Chat remains the primary pane while Chatters and Activity stay
+  stacked in a resizable side column; they do not move below Chat. The broadcaster
+  is excluded from the grouped chatter total. Chat and the chatter list share
   right-click local grouping and permission-aware Twitch moderation actions.
   Chat is a bounded structured timeline: normal rows remain compact and
   borderless, while Twitch, moderation, and Hub-system notices may use an

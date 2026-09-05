@@ -196,6 +196,7 @@ from products.hub.ui.automation_page import AutomationPage
 from products.hub.ui.channel_points_page import ChannelPointsPage
 from products.hub.ui.channel_information_page import ChannelInformationPage
 from products.hub.ui.soundboard_page import SoundboardPageWidget
+from products.hub.ui.twitch_chat_workspace import TwitchChatWorkspaceLayout
 from shared.streamhouse_shared.responsive import (
     LAYOUT_MODE_AUTOMATIC,
     LAYOUT_MODE_LANDSCAPE,
@@ -1247,27 +1248,7 @@ class MainWindow(QMainWindow):
         self.ad_footer_layout.setDirection(QBoxLayout.Direction.LeftToRight)
         self.ad_manager_group.setMaximumHeight(165 if portrait else 132)
         self.stream_tools_container.setMaximumHeight(175 if portrait else 138)
-        self.twitch_channel_splitter.setOrientation(
-            Qt.Orientation.Vertical
-            if portrait
-            else Qt.Orientation.Horizontal
-        )
-        if portrait:
-            self.chatter_panel.setMinimumWidth(0)
-            self.chatter_panel.setMaximumWidth(maximum)
-            self.activity_panel.setMinimumWidth(0)
-            self.twitch_channel_splitter.setStretchFactor(0, 9)
-            self.twitch_channel_splitter.setStretchFactor(1, 1)
-            self.twitch_channel_splitter.setSizes([900, 180])
-            self.channel_side_splitter.setSizes([1, 2])
-        else:
-            self.chatter_panel.setMinimumWidth(80)
-            self.chatter_panel.setMaximumWidth(180)
-            self.activity_panel.setMinimumWidth(140)
-            self.twitch_channel_splitter.setStretchFactor(0, 4)
-            self.twitch_channel_splitter.setStretchFactor(1, 2)
-            self.twitch_channel_splitter.setSizes([1000, 590])
-            self.channel_side_splitter.setSizes([170, 420])
+        self.twitch_chat_workspace_layout.apply_responsive_layout()
         self.automation_page.set_responsive_orientation(portrait)
         self.soundboard_page.set_responsive_orientation(portrait)
         self.ui.horizontalLayout.invalidate()
@@ -1624,8 +1605,6 @@ class MainWindow(QMainWindow):
         self.chatter_title_label.setStyleSheet("font-weight:bold;")
         self.chatter_list = QTreeWidget()
         self.chatter_list.setHeaderHidden(True)
-        chatter_panel.setMinimumWidth(80)
-        chatter_panel.setMaximumWidth(180)
         chatter_layout.addWidget(self.chatter_title_label)
         chatter_layout.addWidget(self.chatter_list)
         activity_panel = QWidget()
@@ -1672,21 +1651,18 @@ class MainWindow(QMainWindow):
         )
         self._rebuild_activity_feed()
         self.channel_side_splitter = QSplitter(
-            Qt.Orientation.Horizontal,
+            Qt.Orientation.Vertical,
             self.ui.twitchPage,
         )
         self.channel_side_splitter.setObjectName("channelSideSplitter")
         self.channel_side_splitter.addWidget(chatter_panel)
         self.channel_side_splitter.addWidget(activity_panel)
-        self.channel_side_splitter.setStretchFactor(0, 1)
-        self.channel_side_splitter.setStretchFactor(1, 2)
-        self.channel_side_splitter.setSizes([170, 420])
         self.twitch_channel_splitter.addWidget(self.channel_side_splitter)
-        self.twitch_channel_splitter.setStretchFactor(0, 4)
-        self.twitch_channel_splitter.setStretchFactor(1, 2)
-        self.twitch_channel_splitter.setCollapsible(0, False)
-        self.twitch_channel_splitter.setCollapsible(1, True)
-        activity_panel.setMinimumWidth(140)
+        self.twitch_chat_workspace_layout = TwitchChatWorkspaceLayout(
+            self.twitch_channel_splitter,
+            self.channel_side_splitter,
+            self.ui.twitchDetailTabs,
+        )
 
         self.channel_tabs = QTabWidget(self.ui.twitchPage)
         self.channel_tabs.setObjectName("channelTabs")
@@ -2197,7 +2173,6 @@ class MainWindow(QMainWindow):
             )
         )
         self.ai_remote_protocol_label.setText(str(status.protocol_version))
-        self.twitch_channel_splitter.setSizes([1000, 170, 420])
         self._start_next_response_batch()
 
     def nativeEvent(self, event_type, message):
@@ -2733,6 +2708,7 @@ class MainWindow(QMainWindow):
             queue_manager=self.automation_queue_manager,
             counter_service=self.counter_service,
             variable_registry=self.variable_registry,
+            soundboard_store=self.soundboard_store,
         )
         self.ui.mainStack.addWidget(self.automation_page)
         self.automation_timer_scheduler.start()

@@ -64,6 +64,7 @@ from products.hub.ui.main_window import MainWindow
 from products.hub.ui.automation_page import RunHistoryDetailsDialog, TaskEditorDialog
 from products.hub.ui.automation_task_cards import (
     IfTaskCardWidget,
+    RoutineCardWidget,
     TaskCardWidget,
     task_category_accent,
 )
@@ -302,7 +303,7 @@ class MainWindowTests(unittest.TestCase):
         )
         self.assertEqual(
             self.window.twitch_channel_splitter.orientation(),
-            Qt.Orientation.Vertical,
+            Qt.Orientation.Horizontal,
         )
         self.assertEqual(
             self.window.automation_page.routines_splitter.orientation(),
@@ -310,7 +311,7 @@ class MainWindowTests(unittest.TestCase):
         )
         self.assertEqual(
             self.window.channel_side_splitter.orientation(),
-            Qt.Orientation.Horizontal,
+            Qt.Orientation.Vertical,
         )
         self.assertIs(
             self.window.stream_tools_layout.itemAt(0).widget(),
@@ -329,6 +330,49 @@ class MainWindowTests(unittest.TestCase):
             ),
             (0, 0, 1, 2),
         )
+
+    def test_twitch_chat_keeps_stacked_side_column_across_layouts(self) -> None:
+        chat = self.window.ui.twitchDetailTabs
+        side = self.window.channel_side_splitter
+        chatters = self.window.chatter_panel
+        activity = self.window.activity_panel
+        self.window.twitch_channel_splitter.setSizes([680, 320])
+
+        for portrait in (True, False, True):
+            self.window._apply_responsive_layout(portrait)
+            self.assertEqual(
+                self.window.twitch_channel_splitter.orientation(),
+                Qt.Orientation.Horizontal,
+            )
+            self.assertEqual(side.orientation(), Qt.Orientation.Vertical)
+            self.assertEqual(self.window.twitch_channel_splitter.count(), 2)
+            self.assertEqual(side.count(), 2)
+            self.assertIs(self.window.twitch_channel_splitter.widget(0), chat)
+            self.assertIs(self.window.twitch_channel_splitter.widget(1), side)
+            self.assertIs(side.widget(0), chatters)
+            self.assertIs(side.widget(1), activity)
+
+        self.assertEqual(chat.sizePolicy().horizontalStretch(), 2)
+        self.assertEqual(side.sizePolicy().horizontalStretch(), 1)
+        self.assertEqual(chat.minimumWidth(), 300)
+        self.assertEqual(side.minimumWidth(), 180)
+        self.assertFalse(self.window.twitch_channel_splitter.isCollapsible(0))
+        self.assertFalse(self.window.twitch_channel_splitter.isCollapsible(1))
+        self.assertFalse(side.isCollapsible(0))
+        self.assertFalse(side.isCollapsible(1))
+        self.window.ui.mainStack.setCurrentWidget(self.window.ui.twitchPage)
+        self.window.resize(1080, 1600)
+        self.window.show()
+        self.application.processEvents()
+        chat_size, side_size = self.window.twitch_channel_splitter.sizes()
+        chatter_size, activity_size = side.sizes()
+        self.assertGreater(chat_size, side_size)
+        self.assertGreater(chatter_size, 0)
+        self.assertGreater(activity_size, 0)
+        self.assertTrue(
+            self.window.ui.twitchPage.isAncestorOf(self.window.ad_manager_group)
+        )
+        self.assertTrue(self.window.ad_manager_group.isVisible())
 
     def test_automation_page_edits_grouped_routine_and_shows_tasks(self) -> None:
         store = self.twitch_command_trigger_store.routine_store
@@ -1086,17 +1130,86 @@ class MainWindowTests(unittest.TestCase):
         )
         self.assertTrue(page.routine_tree.property("routine_reorder_enabled"))
 
-    def test_routine_rows_show_validation_and_counts(self) -> None:
+    def test_routine_cards_show_name_manual_queue_disabled_and_selection(self) -> None:
         store = self.twitch_command_trigger_store.routine_store
-        routine = store.add("Needs tasks")
+        queue = self.window.automation_page.queue_store.add(
+            "Gaming Queue With A Long Descriptive Name"
+        )
+        routine = store.add(
+            "Needs tasks with a very long name for elision",
+            enabled=False,
+            queue_id=queue.queue_id,
+        )
         page = self.window.automation_page
         page.select_routine(routine.routine_id)
         item = page.routine_tree.topLevelItem(0).child(0)
+        card = page.routine_tree.itemWidget(item, 0)
 
-        self.assertIn("[!]", item.text(0))
-        self.assertIn("Manual", item.text(0))
-        self.assertIn("0 tasks", item.text(0))
-        self.assertIn("no tasks", item.toolTip(0).lower())
+        self.assertIsInstance(card, RoutineCardWidget)
+        self.assertEqual(card.name_label.full_text, routine.name)
+        self.assertEqual(card.trigger_label.full_text, "Manual")
+        self.assertEqual(card.queue_label.full_text, queue.name)
+        self.assertEqual(card.queue_label.toolTip(), queue.name)
+        self.assertEqual(card.queue_label.maximumWidth(), 130)
+        self.assertFalse(card.disabled_label.isHidden())
+        self.assertFalse(card.warning_label.isHidden())
+        self.assertTrue(card.property("selected"))
+        self.assertIn("no tasks", card.toolTip().lower())
+        self.assertEqual(card.name_label.toolTip(), routine.name)
+
+    def test_routine_card_trigger_summaries_use_existing_trigger_stores(self) -> None:
+        store = self.twitch_command_trigger_store.routine_store
+        command = self.twitch_command_trigger_store.add("death", "Deaths")
+        raid_routine = store.add("Incoming raid")
+        self.twitch_event_trigger_store.add(raid_routine.routine_id, "channel.raid")
+        timer_routine = store.add("Discord promo")
+        self.window.core_trigger_store.add(
+            timer_routine.routine_id,
+            "timer",
+            timer_mode="random",
+            timer_minimum="5",
+            timer_minimum_unit="minutes",
+            timer_maximum="10",
+            timer_maximum_unit="minutes",
+        )
+        obs_routine = store.add("BRB scene")
+        self.window.obs_trigger_store.add(
+            obs_routine.routine_id,
+            "CurrentProgramSceneChanged",
+            filters={"sceneName": "BRB"},
+        )
+        soundboard_routine = store.add("Air horn")
+        soundboard_page = self.window.soundboard_store.snapshot()[0]
+        self.window.soundboard_store.add_button(
+            soundboard_page.page_id,
+            "Air Horn",
+            soundboard_routine.routine_id,
+        )
+        page = self.window.automation_page
+
+        summaries = {
+            routine_id: page._routine_card_content(
+                store.get(routine_id),
+                [],
+            ).trigger_summary
+            for routine_id in (
+                command.routine_id,
+                raid_routine.routine_id,
+                timer_routine.routine_id,
+                obs_routine.routine_id,
+                soundboard_routine.routine_id,
+            )
+        }
+
+        self.assertEqual(summaries[command.routine_id], "Twitch • Command !death")
+        self.assertEqual(summaries[raid_routine.routine_id], "Twitch • Incoming Raid")
+        self.assertEqual(summaries[timer_routine.routine_id], "Timer • 5–10 minutes")
+        self.assertEqual(summaries[obs_routine.routine_id], "OBS • Scene Changed → BRB")
+        self.assertEqual(
+            summaries[soundboard_routine.routine_id],
+            "Soundboard • Air Horn",
+        )
+        self.assertEqual(store.get(command.routine_id).managed_by, "twitch.command")
 
     def test_run_history_exposes_task_details_and_duration(self) -> None:
         store = self.twitch_command_trigger_store.routine_store
@@ -2101,9 +2214,13 @@ class MainWindowTests(unittest.TestCase):
             len(overview.findChildren(type(self.window.stream_status_card))),
             5,
         )
-        self.assertLessEqual(
-            self.window.chatter_list.parentWidget().maximumWidth(),
-            210,
+        self.assertIs(
+            self.window.chatter_list.parentWidget().parentWidget(),
+            self.window.channel_side_splitter,
+        )
+        self.assertEqual(
+            self.window.channel_side_splitter.orientation(),
+            Qt.Orientation.Vertical,
         )
         self.assertLessEqual(
             self.window.activity_feed_list.parentWidget().minimumWidth(),

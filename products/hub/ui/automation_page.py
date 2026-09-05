@@ -106,6 +106,7 @@ from products.hub.obs_service.triggers import (
     ObsAutomationTrigger,
     ObsTriggerStore,
 )
+from products.hub.soundboard.store import SoundboardStore
 from products.hub.twitch.commands import (
     TwitchCommandPermission,
     TwitchCommandTriggerStore,
@@ -125,6 +126,8 @@ from products.hub.twitch.service import TwitchService
 from products.hub.ui.channel_point_trigger_dialog import ChannelPointRedemptionTriggerDialog
 from products.hub.ui.automation_task_cards import (
     IfTaskCardWidget,
+    RoutineCardContent,
+    RoutineCardWidget,
     TaskCardContent,
     TaskCardWidget,
 )
@@ -2628,6 +2631,7 @@ class AutomationPage(QWidget):
         queue_manager: AutomationQueueManager | None = None,
         counter_service: CounterService | None = None,
         variable_registry: VariableRegistry | None = None,
+        soundboard_store: SoundboardStore | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -2648,6 +2652,7 @@ class AutomationPage(QWidget):
         self.queue_manager = queue_manager or AutomationQueueManager(self.queue_store)
         self.counter_service = counter_service
         self.variable_registry = variable_registry or VariableRegistry()
+        self.soundboard_store = soundboard_store
         self.history: list[dict[str, object]] = []
         self._selected_routine_id = ""
         self.setObjectName("automationPage")
@@ -2720,7 +2725,14 @@ class AutomationPage(QWidget):
         browser_layout.addWidget(self.search_edit)
         self.routine_tree = RoutineTreeWidget()
         self.routine_tree.setHeaderHidden(True)
-        self.routine_tree.setAlternatingRowColors(True)
+        self.routine_tree.setAlternatingRowColors(False)
+        self.routine_tree.setIndentation(16)
+        self.routine_tree.setStyleSheet(
+            "QTreeWidget { background:transparent; border:1px solid #34343a; }"
+            "QTreeWidget::item { border:none; padding:2px 0; }"
+            "QTreeWidget::item:selected { background:transparent; }"
+            "QTreeWidget::item:hover { background:transparent; }"
+        )
         self.routine_tree.setDragEnabled(True)
         self.routine_tree.setAcceptDrops(True)
         self.routine_tree.setDropIndicatorShown(True)
@@ -3406,29 +3418,22 @@ class AutomationPage(QWidget):
             for routine in routines:
                 trigger_count = self._routine_trigger_count(routine.routine_id)
                 issues = self._routine_issues(routine, trigger_count)
-                prefix = "[!] " if issues else ("[Off] " if not routine.enabled else "")
-                trigger_text = (
-                    f"{trigger_count} trigger{'s' if trigger_count != 1 else ''}"
-                    if trigger_count
-                    else "Manual"
-                )
-                item = QTreeWidgetItem(
-                    (f"{prefix}{routine.name}  —  {trigger_text} • {len(routine.tasks)} tasks",)
-                )
+                card_content = self._routine_card_content(routine, issues)
+                item = QTreeWidgetItem((routine.name,))
                 item.setData(0, Qt.ItemDataRole.UserRole, routine.routine_id)
                 item.setData(0, self.KIND_ROLE, "routine")
-                item.setToolTip(
-                    0,
-                    "\n".join(issues)
-                    if issues
-                    else "Ready. Drag to reorder or move between groups.",
-                )
+                item.setToolTip(0, "\n".join((*card_content.trigger_details, *issues)))
                 item.setFlags(
                     item.flags()
                     | Qt.ItemFlag.ItemIsDragEnabled
                     | Qt.ItemFlag.ItemIsDropEnabled
                 )
                 group_item.addChild(item)
+                card = RoutineCardWidget(card_content, self.routine_tree)
+                self.routine_tree.setItemWidget(item, 0, card)
+                item.setToolTip(0, card.toolTip())
+                card.adjustSize()
+                item.setSizeHint(0, card.sizeHint())
                 visible_count += 1
                 if routine.routine_id == selected_routine_id:
                     selected_item = item
@@ -3460,6 +3465,12 @@ class AutomationPage(QWidget):
         current: QTreeWidgetItem | None,
         _previous: QTreeWidgetItem | None,
     ) -> None:
+        for item, selected in ((_previous, False), (current, True)):
+            if item is None:
+                continue
+            card = self.routine_tree.itemWidget(item, 0)
+            if isinstance(card, RoutineCardWidget):
+                card.set_selected(selected)
         routine_id = ""
         if current is not None and current.data(0, self.KIND_ROLE) == "routine":
             routine_id = str(current.data(0, Qt.ItemDataRole.UserRole) or "")
@@ -3474,6 +3485,85 @@ class AutomationPage(QWidget):
             + len(self.core_trigger_store.for_routine(routine_id))
             + len(self.obs_trigger_store.for_routine(routine_id))
         )
+
+    def _routine_card_content(self, routine, issues: list[str]) -> RoutineCardContent:
+        summaries: list[tuple[str, str]] = []
+        command = self.trigger_store.for_routine(routine.routine_id)
+        if command is not None:
+            summaries.append(("Twitch", f"Twitch • Command !{command.name}"))
+        for trigger in self.event_trigger_store.for_routine(routine.routine_id):
+            if trigger.event_type == KEYWORD_PHRASE_EVENT_TYPE:
+                phrase = trigger.filters.get("phrase", "")
+                summary = f'Twitch • Keyword “{phrase}”' if phrase else "Twitch • Keyword"
+            elif trigger.event_type == CHANNEL_POINT_REDEMPTION_EVENT_TYPE:
+                reward = trigger.reward_title or trigger.reward_id or "Any Custom Reward"
+                summary = f'Twitch • Channel Point “{reward}”'
+            elif trigger.event_type in ADS_TRIGGER_TYPES:
+                summary = f"Twitch • {ADS_TRIGGER_TYPES[trigger.event_type]}"
+            else:
+                summary = f"Twitch • {_event_display_name(trigger.event_type)}"
+            summaries.append(("Twitch", summary))
+        for trigger in self.core_trigger_store.for_routine(routine.routine_id):
+            if trigger.event_type == "timer":
+                description = self.core_trigger_store.timer_description(trigger)
+                if description.startswith("Fixed "):
+                    description = f"Every {description.removeprefix('Fixed ')}"
+                elif description.startswith("Random "):
+                    description = description.removeprefix("Random ")
+                summary = f"Timer • {description}"
+                family = "Timer"
+            else:
+                summary = (
+                    "Core • "
+                    f"{CORE_TRIGGER_TYPES.get(trigger.event_type, trigger.event_type)}"
+                )
+                family = "Core"
+            summaries.append((family, summary))
+        for trigger in self.obs_trigger_store.for_routine(routine.routine_id):
+            label = OBS_TRIGGER_TYPES.get(trigger.event_type, trigger.event_type)
+            detail = self._obs_trigger_detail(trigger.filters)
+            summaries.append(("OBS", f"OBS • {label}{detail}"))
+        if self.soundboard_store is not None:
+            for page in self.soundboard_store.snapshot():
+                for button in page.buttons:
+                    if button.routine_id != routine.routine_id:
+                        continue
+                    state = "" if button.enabled else " (disabled)"
+                    summaries.append(
+                        ("Soundboard", f"Soundboard • {button.label}{state}")
+                    )
+
+        if not summaries:
+            summaries.append(("Manual", "Manual"))
+        families = {family for family, _summary in summaries}
+        family = next(iter(families)) if len(families) == 1 else "Other"
+        visible_summary = summaries[0][1]
+        if len(summaries) > 1:
+            visible_summary += f"  +{len(summaries) - 1} more"
+        queue = self.queue_store.resolve(routine.queue_id)
+        return RoutineCardContent(
+            routine_name=routine.name,
+            trigger_family=family,
+            trigger_summary=visible_summary,
+            queue_name=queue.name,
+            enabled=routine.enabled,
+            issues=tuple(issues),
+            trigger_details=tuple(summary for _family, summary in summaries),
+        )
+
+    @staticmethod
+    def _obs_trigger_detail(filters: dict[str, str]) -> str:
+        for key in (
+            "sceneName",
+            "scene-name",
+            "scene_name",
+            "inputName",
+            "sourceName",
+        ):
+            value = filters.get(key, "").strip()
+            if value:
+                return f" → {value}"
+        return ""
 
     def _task_issues(self, task: TaskDefinition) -> list[str]:
         issues: list[str] = []

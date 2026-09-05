@@ -1159,6 +1159,9 @@ composition root.
 - five-percent hysteresis prevents resize flicker;
 - manual landscape and portrait overrides are persisted;
 - portrait uses top navigation and rearranges splitters/panels;
+- the Twitch Chat workspace keeps Chat beside a vertically stacked
+  Chatters/Activity side column in both orientations, with Chat receiving the
+  larger initial share;
 - adjustable splitter and table-column state should remain user-controlled.
 
 New pages must remain usable in both orientations and should use scroll areas

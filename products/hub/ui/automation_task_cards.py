@@ -4,7 +4,14 @@ from dataclasses import dataclass
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QFontMetrics, QResizeEvent
-from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QSizePolicy,
+    QVBoxLayout,
+    QWidget,
+)
 
 
 TASK_CATEGORY_ACCENTS = {
@@ -21,6 +28,16 @@ TASK_CATEGORY_ACCENTS = {
     "Soundboard": "#e879b2",
 }
 DEFAULT_TASK_ACCENT = "#8f8f9d"
+
+ROUTINE_TRIGGER_ACCENTS = {
+    "Twitch": TASK_CATEGORY_ACCENTS["Twitch"],
+    "OBS": TASK_CATEGORY_ACCENTS["OBS"],
+    "Core": TASK_CATEGORY_ACCENTS["Core"],
+    "Timer": "#d9b957",
+    "Soundboard": TASK_CATEGORY_ACCENTS["Soundboard"],
+    "Manual": DEFAULT_TASK_ACCENT,
+    "Other": DEFAULT_TASK_ACCENT,
+}
 
 
 def task_category_accent(category: str) -> str:
@@ -75,6 +92,135 @@ class TaskCardContent:
     instance_name: str = ""
     status: str = ""
     issues: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class RoutineCardContent:
+    routine_name: str
+    trigger_family: str
+    trigger_summary: str
+    queue_name: str
+    enabled: bool = True
+    issues: tuple[str, ...] = ()
+    trigger_details: tuple[str, ...] = ()
+
+
+class RoutineCardWidget(QFrame):
+    """Compact card presentation for one routine in the grouped tree."""
+
+    def __init__(
+        self,
+        content: RoutineCardContent,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.content = content
+        self.setObjectName("automationRoutineCard")
+        self.setProperty("selected", False)
+        self.setProperty("enabledState", content.enabled)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+
+        accent = ROUTINE_TRIGGER_ACCENTS.get(
+            content.trigger_family,
+            ROUTINE_TRIGGER_ACCENTS["Other"],
+        )
+        self.setStyleSheet(
+            "QFrame#automationRoutineCard {"
+            "background-color:#242427; border:1px solid #3c3c42; border-radius:6px;"
+            "}"
+            "QFrame#automationRoutineCard[selected=\"true\"] {"
+            "background-color:#2b2930; border-color:#bf94ff;"
+            "}"
+            "QFrame#automationRoutineCard[enabledState=\"false\"] {"
+            "background-color:#202023; border-color:#34343a;"
+            "}"
+            "QFrame#automationRoutineCard[selected=\"true\"][enabledState=\"false\"] {"
+            "background-color:#29272d; border-color:#9f7dce;"
+            "}"
+            "QLabel { border:none; background:transparent; }"
+        )
+
+        outer = QHBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        self.accent_bar = QFrame(self)
+        self.accent_bar.setObjectName("automationRoutineAccent")
+        self.accent_bar.setFixedWidth(4)
+        self.accent_bar.setStyleSheet(
+            f"background-color:{accent}; border:none;"
+            "border-top-left-radius:5px; border-bottom-left-radius:5px;"
+        )
+        outer.addWidget(self.accent_bar)
+
+        body = QVBoxLayout()
+        body.setContentsMargins(9, 5, 9, 5)
+        body.setSpacing(1)
+        primary = QHBoxLayout()
+        primary.setSpacing(7)
+        self.name_label = ElidingLabel(content.routine_name, self)
+        self.name_label.setObjectName("automationRoutineName")
+        self.name_label.setStyleSheet(
+            "font-weight:650; color:#efeff1;"
+            if content.enabled
+            else "font-weight:650; color:#9999a3;"
+        )
+        self.name_label.setMinimumWidth(0)
+        self.name_label.setSizePolicy(
+            QSizePolicy.Policy.Ignored,
+            QSizePolicy.Policy.Preferred,
+        )
+        primary.addWidget(self.name_label, 1)
+        self.disabled_label = QLabel("Disabled", self)
+        self.disabled_label.setObjectName("automationRoutineDisabled")
+        self.disabled_label.setStyleSheet(
+            "color:#9b9ba5; font-size:10px; font-weight:600;"
+        )
+        self.disabled_label.setVisible(not content.enabled)
+        primary.addWidget(self.disabled_label)
+        self.warning_label = QLabel("Needs attention", self)
+        self.warning_label.setObjectName("automationRoutineWarning")
+        self.warning_label.setStyleSheet(
+            "color:#d9b957; font-size:10px; font-weight:600;"
+        )
+        self.warning_label.setVisible(bool(content.issues))
+        primary.addWidget(self.warning_label)
+        body.addLayout(primary)
+
+        secondary = QHBoxLayout()
+        secondary.setSpacing(8)
+        self.trigger_label = ElidingLabel(content.trigger_summary, self)
+        self.trigger_label.setObjectName("automationRoutineTrigger")
+        self.trigger_label.setStyleSheet("color:#adadb8; font-size:10px;")
+        self.trigger_label.setMinimumWidth(0)
+        self.trigger_label.setSizePolicy(
+            QSizePolicy.Policy.Ignored,
+            QSizePolicy.Policy.Preferred,
+        )
+        secondary.addWidget(self.trigger_label, 1)
+        self.queue_label = ElidingLabel(content.queue_name, self)
+        self.queue_label.setObjectName("automationRoutineQueue")
+        self.queue_label.setStyleSheet("color:#85858f; font-size:10px;")
+        self.queue_label.setAlignment(
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+        )
+        self.queue_label.setMaximumWidth(130)
+        secondary.addWidget(self.queue_label)
+        body.addLayout(secondary)
+        outer.addLayout(body, 1)
+
+        details = [*content.trigger_details, *content.issues]
+        self.setToolTip("\n".join(details) or "Ready. Drag to reorder or regroup.")
+        state = "disabled" if not content.enabled else "enabled"
+        self.setAccessibleName(
+            f"{content.routine_name}, {content.trigger_summary}, "
+            f"{content.queue_name}, {state}"
+        )
+        self.setMinimumHeight(46)
+
+    def set_selected(self, selected: bool) -> None:
+        self.setProperty("selected", selected)
+        self.style().unpolish(self)
+        self.style().polish(self)
 
 
 class TaskCardWidget(QFrame):
