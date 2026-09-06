@@ -1,0 +1,109 @@
+name: Bug report
+description: Report a reproducible problem in a Streamhouse product
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: dropdown
+    id: product
+    attributes:
+      label: Product
+      description: Which Streamhouse product is affected?
+      options:
+        - Streamhouse Hub
+        - Streamhouse AI
+        - Shared / Runtime
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: What happened?
+      description: Briefly describe the problem.
+      placeholder: Tell us what went wrong.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What did you expect to happen instead?
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Give the shortest reliable sequence that reproduces the bug.
+      placeholder: |
+        1. Open ...
+        2. Click ...
+        3. Change ...
+        4. Observe ...
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Streamhouse version / build
+      description: Enter the version, build, commit, or approximate date if known.
+      placeholder: e.g. Alpha 0.1 / commit abc123
+
+  - type: input
+    id: windows
+    attributes:
+      label: Windows version
+      placeholder: e.g. Windows 11 24H2
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Relevant setup details
+      description: Include monitor layout/resolution, Twitch/OBS connection state, hardware, or anything else that may matter.
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / screenshots
+      description: Paste logs or drag screenshots here. Remove secrets or tokens first.
+      render: shell
+
+  - type: dropdown
+    id: reproducibility
+    attributes:
+      label: How often does it happen?
+      options:
+        - Every time
+        - Often
+        - Sometimes
+        - Once
+        - Not sure
+    validations:
+      required: true
+
+  - type: dropdown
+    id: severity
+    attributes:
+      label: Impact
+      options:
+        - Blocker - cannot continue using/testing the app
+        - High - major feature is unusable
+        - Medium - feature is impaired but workaround exists
+        - Low - minor or cosmetic problem
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I checked existing open issues for the same problem.
+          required: true
+        - label: I removed passwords, OAuth tokens, stream keys, and other secrets from logs/screenshots.
+          required: true
