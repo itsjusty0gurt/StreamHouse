@@ -25,6 +25,7 @@ class DashboardPageTests(unittest.TestCase):
     def test_product_version_build_and_alpha_scope_are_present(self) -> None:
         page = DashboardPage(build_description="Test build")
 
+        self.assertEqual(page.page_header.title_label.text(), "Dashboard")
         self.assertEqual(page.version_label.text(), f"Version {VERSION}")
         self.assertEqual(page.build_label.text(), "Test build")
         visible_text = " ".join(

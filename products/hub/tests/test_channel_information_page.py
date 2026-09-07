@@ -54,6 +54,9 @@ class ChannelInformationPageTests(unittest.TestCase):
         return registry
 
     def test_clean_definitions_are_always_discoverable_without_exposure_controls(self) -> None:
+        self.assertEqual(
+            self.page.page_header.title_label.text(), "Channel Information"
+        )
         registry = self.registry()
         for service_id in self.page.social_rows:
             snapshot = registry.resolve(f"socials.{service_id}")

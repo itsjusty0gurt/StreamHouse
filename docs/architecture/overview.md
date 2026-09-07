@@ -1139,6 +1139,12 @@ instantiate components, inject dependencies, connect signals/slots, register
 pages, and perform small application-shell orchestration. It should not become
 the implementation owner of a new feature domain.
 
+Visible top-level Hub workspaces and substantial workspace tabs use the small
+reusable `products.hub.ui.page_header.PageHeader` for consistent title,
+optional description, and page-level action alignment. Feature-specific
+toolbars and selection actions remain owned by their focused page rather than
+being forced into the shared heading.
+
 Substantial features should generally follow the existing ownership shape:
 
 ```text

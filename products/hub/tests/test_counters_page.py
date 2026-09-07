@@ -35,6 +35,11 @@ class CountersPageTests(unittest.TestCase):
         self.page.deleteLater(); self.application.processEvents(); self.temp.cleanup()
 
     def test_list_search_manual_adjustment_and_viewer_removal_are_scoped(self) -> None:
+        self.assertEqual(self.page.page_header.title_label.text(), "Counters")
+        self.assertIs(
+            self.page.new_button.parentWidget(),
+            self.page.page_header.action_widget,
+        )
         self.assertEqual(self.page.list.count(), 1)
         self.page.plus.click()
         self.assertEqual(self.service.get_values("farts").channel_total, 1)

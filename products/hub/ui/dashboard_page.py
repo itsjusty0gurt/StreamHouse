@@ -31,6 +31,7 @@ from products.hub.core.resources import resource_path
 from products.hub.obs_service.models import ObsConnectionState
 from products.hub.twitch.auth import TwitchAuthState
 from products.hub.twitch.service import TwitchConnectionState
+from products.hub.ui.page_header import PageHeader
 from shared.streamhouse_runtime.version import VERSION
 
 
@@ -180,6 +181,12 @@ class DashboardPage(QWidget):
         layout.setSpacing(14)
         scroll.setWidget(content)
 
+        self.page_header = PageHeader(
+            "Dashboard",
+            "Hub status, connections, version, and Alpha support links.",
+            content,
+        )
+        layout.addWidget(self.page_header)
         layout.addWidget(self._build_branding(content))
         layout.addWidget(self._build_connection_summary(content))
         layout.addWidget(self._build_attention_area(content))

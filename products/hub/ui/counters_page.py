@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
 
 from products.hub.counters.models import CounterDefinition, counter_id_from_name
 from products.hub.counters.service import CounterService
+from products.hub.ui.page_header import PageHeader
 
 
 class CounterDefinitionDialog(QDialog):
@@ -131,8 +132,17 @@ class CountersPage(QWidget):
     def __init__(self, service: CounterService, stream_id_provider: Callable[[], str], routine_store=None, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.service = service; self.stream_id_provider = stream_id_provider; self.routine_store = routine_store
-        root = QVBoxLayout(self); header = QHBoxLayout(); self.search = QLineEdit(); self.search.setPlaceholderText("Search counters…")
-        self.new_button = QPushButton("+ New Counter"); header.addWidget(QLabel("COUNTERS")); header.addWidget(self.search, 1); header.addWidget(self.new_button); root.addLayout(header)
+        root = QVBoxLayout(self)
+        self.page_header = PageHeader(
+            "Counters",
+            "Track shared, stream, and viewer totals for routines and commands.",
+            self,
+        )
+        self.new_button = QPushButton("+ New Counter")
+        self.page_header.add_action(self.new_button)
+        root.addWidget(self.page_header)
+        header = QHBoxLayout(); self.search = QLineEdit(); self.search.setPlaceholderText("Search counters…")
+        header.addWidget(self.search, 1); root.addLayout(header)
         self.empty_state = QWidget(); empty_layout = QVBoxLayout(self.empty_state)
         empty_message = QLabel("No counters yet.\nCreate a counter to use it in commands and automation routines.")
         empty_message.setAlignment(Qt.AlignmentFlag.AlignCenter); self.empty_create_button = QPushButton("Create Counter")

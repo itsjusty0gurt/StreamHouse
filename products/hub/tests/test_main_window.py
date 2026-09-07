@@ -45,6 +45,7 @@ from products.hub.automation.models import (
 )
 from products.hub.obs_service.triggers import OBS_TRIGGER_TYPES
 from products.hub.obs_service.models import ObsConnectionState, ObsEvent
+from products.hub.soundboard.store import SoundboardStore
 from products.hub.twitch.commands import TwitchCommandTriggerStore
 from products.hub.twitch.channel_information import ChannelInformationStore
 from products.hub.twitch.automation_triggers import TwitchEventTriggerStore
@@ -154,6 +155,7 @@ class MainWindowTests(unittest.TestCase):
                 command_root / "channel-information.json"
             ),
             twitch_event_trigger_store=self.twitch_event_trigger_store,
+            soundboard_store=SoundboardStore(command_root / "soundboard.json"),
             auto_upgrade_permissions=False,
         )
         if self._testMethodName != "test_hub_starts_with_ai_disconnected":
@@ -1718,6 +1720,34 @@ class MainWindowTests(unittest.TestCase):
             self.window.settings_container,
         )
         self.assertTrue(all(page is not None for page in pages))
+        self.assertEqual(
+            self.window.dashboard_page.page_header.title_label.text(),
+            "Dashboard",
+        )
+        self.assertEqual(
+            self.window.twitch_page_header.title_label.text(),
+            "Your Channel",
+        )
+        self.assertEqual(
+            self.window.automation_page.page_header.title_label.text(),
+            "Automation",
+        )
+        self.assertEqual(
+            self.window.connections_page_header.title_label.text(),
+            "Connections",
+        )
+        self.assertEqual(self.window.logs_page_header.title_label.text(), "Logs")
+        self.assertEqual(
+            self.window.settings_page_header.title_label.text(), "Settings"
+        )
+        self.assertIs(
+            self.window.automation_page.new_routine_button.parentWidget(),
+            self.window.automation_page.page_header.action_widget,
+        )
+        self.assertIs(
+            self.window.ui.saveSettingsButton.parentWidget(),
+            self.window.settings_page_header.action_widget,
+        )
         self.assertFalse(hasattr(self.window, "ai_button"))
         self.assertEqual(self.window.ui.mainStack.indexOf(self.window.ai_page), -1)
         self.assertTrue(self.window.ai_page.isHidden())

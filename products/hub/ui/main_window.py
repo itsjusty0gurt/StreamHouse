@@ -172,6 +172,7 @@ from products.hub.twitch.analytics import AnalyticsSnapshot, build_analytics
 from products.hub.twitch.simulator import create_eventsub_notification
 from products.hub.ui.generated.ui_mainwindow import Ui_MainWindow
 from products.hub.ui.dashboard_page import DashboardPage
+from products.hub.ui.page_header import PageHeader
 from products.hub.ui.counters_page import CountersPage
 from products.hub.ui.log_handler import QtLogHandler
 from products.hub.ui.twitch_bridge import TwitchEventBridge
@@ -806,6 +807,7 @@ class MainWindow(QMainWindow):
         self._build_ai_settings()
         self._build_responsive_settings()
         self._build_settings_tabs()
+        self._install_page_headers()
         self._make_layout_responsive()
         self.twitch_status_bar_label = QLabel("Twitch: Signed out")
         self.statusBar().addPermanentWidget(self.twitch_status_bar_label)
@@ -1126,6 +1128,40 @@ class MainWindow(QMainWindow):
             page_layout.addStretch()
             self.settings_tabs.addTab(page, title)
         self.ui.settingsLayout.insertWidget(1, self.settings_tabs, 1)
+
+    def _install_page_headers(self) -> None:
+        """Apply the shared heading pattern to the visible shell workspaces."""
+        self.twitch_page_header = PageHeader(
+            "Your Channel",
+            "Chat, channel tools, community activity, and Twitch management.",
+            self.ui.twitchPage,
+        )
+        self.ui.twitchPageLayout.insertWidget(0, self.twitch_page_header)
+
+        self.connections_page_header = PageHeader(
+            "Connections",
+            "Connect Twitch and OBS, then review their current health.",
+            self.connections_page,
+        )
+        self.connections_page.layout().insertWidget(
+            0, self.connections_page_header
+        )
+
+        self.logs_page_header = PageHeader(
+            "Logs",
+            "Review Hub activity and diagnostics.",
+            self.ui.logsPage,
+        )
+        self.ui.logsLayout.insertWidget(0, self.logs_page_header)
+
+        self.settings_page_header = PageHeader(
+            "Settings",
+            "Configure Hub behavior, chat appearance, and developer tools.",
+            self.ui.settingsPage,
+        )
+        self.settings_page_header.add_action(self.ui.resetSettingsButton)
+        self.settings_page_header.add_action(self.ui.saveSettingsButton)
+        self.ui.settingsLayout.insertWidget(0, self.settings_page_header)
 
     def _make_layout_responsive(self) -> None:
         """Keep hidden pages from imposing their full size on the main window."""
@@ -1874,6 +1910,11 @@ class MainWindow(QMainWindow):
         self._build_personality_tab()
         analytics_page = QWidget()
         analytics_layout = QVBoxLayout(analytics_page)
+        analytics_header = PageHeader(
+            "Analytics",
+            "Review stream sessions and community activity retained by Hub.",
+            analytics_page,
+        )
         analytics_toolbar = QHBoxLayout()
         self.analytics_range_combo = QComboBox()
         self.analytics_range_combo.addItem("All time", None)
@@ -1885,8 +1926,9 @@ class MainWindow(QMainWindow):
         analytics_toolbar.addWidget(QLabel("Range"))
         analytics_toolbar.addWidget(self.analytics_range_combo)
         analytics_toolbar.addStretch()
-        analytics_toolbar.addWidget(self.analytics_export_csv_button)
-        analytics_toolbar.addWidget(self.analytics_export_json_button)
+        analytics_header.add_action(self.analytics_export_csv_button)
+        analytics_header.add_action(self.analytics_export_json_button)
+        analytics_layout.addWidget(analytics_header)
         analytics_layout.addLayout(analytics_toolbar)
         self.session_summary_label = QLabel("No active stream session")
         self.session_summary_label.setWordWrap(True)
@@ -2155,13 +2197,14 @@ class MainWindow(QMainWindow):
     def _build_twitch_commands_tab(self) -> None:
         page = QWidget(self.channel_tabs)
         layout = QVBoxLayout(page)
-        introduction = QLabel(
+        command_header = PageHeader(
+            "Commands",
             "Chat commands trigger editable automation routines locally. A command "
             "can optionally send a response through the configured bot account; "
-            "it does not invoke Streamhouse AI reasoning."
+            "it does not invoke Streamhouse AI reasoning.",
+            page,
         )
-        introduction.setWordWrap(True)
-        layout.addWidget(introduction)
+        layout.addWidget(command_header)
         section_help = QLabel(
             "DEFAULT COMMANDS appear first in their stable built-in order. "
             "CUSTOM COMMANDS follow alphabetically."
@@ -2212,7 +2255,7 @@ class MainWindow(QMainWindow):
         self.configure_channel_information_button = QPushButton(
             "Configure Channel Information"
         )
-        actions.addWidget(self.add_twitch_command_button)
+        command_header.add_action(self.add_twitch_command_button)
         actions.addWidget(self.edit_twitch_command_button)
         actions.addWidget(self.toggle_twitch_command_button)
         actions.addWidget(self.delete_twitch_command_button)

@@ -24,6 +24,7 @@ from products.hub.twitch.channel_information import (
     normalize_social_url,
 )
 from products.hub.twitch.commands import TwitchCommandTriggerStore
+from products.hub.ui.page_header import PageHeader
 
 
 class ChannelInformationPage(QWidget):
@@ -68,12 +69,13 @@ class ChannelInformationPage(QWidget):
         self.content_widget.setObjectName("channelInformationContent")
         self.scroll_area.setWidget(self.content_widget)
         layout = QVBoxLayout(self.content_widget)
-        introduction = QLabel(
+        self.page_header = PageHeader(
+            "Channel Information",
             "Reusable channel details for Twitch commands and automation routines. "
-            "Links remain saved even when they are not included in !socials."
+            "Links remain saved even when they are not included in !socials.",
+            self.content_widget,
         )
-        introduction.setWordWrap(True)
-        layout.addWidget(introduction)
+        layout.addWidget(self.page_header)
 
         social_group = QGroupBox("Social Links")
         social_layout = QVBoxLayout(social_group)

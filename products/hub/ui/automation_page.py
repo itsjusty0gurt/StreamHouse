@@ -135,6 +135,7 @@ from products.hub.ui.twitch_command_dialog import TwitchCommandDialog, TwitchCom
 from products.hub.ui.counters_page import CounterDefinitionDialog
 from products.hub.ui.variables_page import VariablesPage
 from products.hub.ui.variable_picker import VariablePickerDialog
+from products.hub.ui.page_header import PageHeader
 
 
 def _event_display_name(event_type: str) -> str:
@@ -2661,7 +2662,13 @@ class AutomationPage(QWidget):
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
-        root.setContentsMargins(0, 0, 0, 0)
+        root.setContentsMargins(12, 10, 12, 12)
+        self.page_header = PageHeader(
+            "Automation",
+            "Manage routines, triggers, tasks, queues, and run history.",
+            self,
+        )
+        root.addWidget(self.page_header)
         self.tabs = QTabWidget()
         self.tabs.setObjectName("automationTabs")
         root.addWidget(self.tabs)
@@ -2670,6 +2677,7 @@ class AutomationPage(QWidget):
         self._build_task_library_tab()
         self._build_variables_tab()
         self._build_history_tab()
+        self.page_header.add_action(self.new_routine_button)
         self.queue_timer = QTimer(self)
         self.queue_timer.setInterval(100)
         self.queue_timer.timeout.connect(self._poll_queues)
@@ -2710,7 +2718,6 @@ class AutomationPage(QWidget):
         self.sort_routines_button.setToolTip(
             "Show groups and routines alphabetically. Ungrouped always stays first."
         )
-        toolbar.addWidget(self.new_routine_button)
         toolbar.addWidget(self.new_group_button)
         browser_layout.addLayout(toolbar)
         transfer_toolbar = QHBoxLayout()

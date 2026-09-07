@@ -33,6 +33,7 @@ from products.hub.automation.variable_registry import (
     VariableSnapshot,
 )
 from products.hub.ui.variable_picker import VariablePickerDialog
+from products.hub.ui.page_header import PageHeader
 
 
 @dataclass(frozen=True, slots=True)
@@ -113,6 +114,12 @@ class VariablesPage(QWidget):
         self.routine_store = routine_store
         self._entries_by_key: dict[str, VariablePageEntry] = {}
         layout = QVBoxLayout(self)
+        self.page_header = PageHeader(
+            "Variables",
+            "Browse placeholders and values currently available to Automation.",
+            self,
+        )
+        layout.addWidget(self.page_header)
         toolbar = QHBoxLayout()
         self.search_edit = QLineEdit()
         self.search_edit.setPlaceholderText("Search variables...")
@@ -121,10 +128,10 @@ class VariablesPage(QWidget):
         self.edit_button = QPushButton("Edit")
         self.delete_button = QPushButton("Delete")
         self.picker_button = QPushButton("{x} Variable Picker")
+        self.page_header.add_action(self.picker_button)
+        self.page_header.add_action(self.new_button)
         toolbar.addWidget(self.search_edit, 1)
         toolbar.addWidget(self.source_combo)
-        toolbar.addWidget(self.picker_button)
-        toolbar.addWidget(self.new_button)
         layout.addLayout(toolbar)
         self.table = QTableWidget(0, 8)
         self.table.setHorizontalHeaderLabels(

@@ -22,6 +22,7 @@ from products.hub.twitch.auth import TwitchAuthService
 from products.hub.twitch.models import TwitchCustomReward
 from products.hub.twitch.service import TwitchService
 from products.hub.ui.channel_point_reward_dialog import ChannelPointRewardDialog
+from products.hub.ui.page_header import PageHeader
 
 
 class _RewardWorkerSignals(QObject):
@@ -64,18 +65,24 @@ class ChannelPointsPage(QWidget):
         self._workers: set[_RewardWorker] = set()
 
         layout = QVBoxLayout(self)
-        toolbar = QHBoxLayout()
+        self.page_header = PageHeader(
+            "Channel Points",
+            "Manage custom Twitch rewards owned by Streamhouse Hub.",
+            self,
+        )
         self.create_button = QPushButton("Create Reward")
+        self.refresh_button = QPushButton("Refresh")
+        self.page_header.add_action(self.refresh_button)
+        self.page_header.add_action(self.create_button)
+        layout.addWidget(self.page_header)
+        toolbar = QHBoxLayout()
         self.edit_button = QPushButton("Edit Selected")
         self.toggle_button = QPushButton("Disable Selected")
         self.delete_button = QPushButton("Delete Selected")
-        self.refresh_button = QPushButton("Refresh")
-        toolbar.addWidget(self.create_button)
         toolbar.addWidget(self.edit_button)
         toolbar.addWidget(self.toggle_button)
         toolbar.addWidget(self.delete_button)
         toolbar.addStretch()
-        toolbar.addWidget(self.refresh_button)
         layout.addLayout(toolbar)
 
         self.table = QTableWidget(0, 8)
