@@ -1100,13 +1100,18 @@ Your Channel top tabs:
 - Commands
 - Channel Information
 - Channel Points
-- Soundboard
 - Counters
 - User
 
 These are the tabs currently implemented. The planned Hub workspace—including
 Stream Info, Engagement, Raids, and Moderation—is documented in
 [`product-family.md`](product-family.md) and must not be read as current UI.
+
+Hub Alpha 0.1 does not expose the Soundboard page while Twitch Extension
+approval is pending. Its store, local server, relay client, Automation
+integration, and Twitch Extension code remain implemented, and the isolated
+external relay compatibility contract below remains intentional. The page can
+be composed again after approval without rebuilding the subsystem.
 
 Hub Alpha 0.1 has no visible AI workspace or settings section. The lightweight
 Hub-to-AI protocol infrastructure remains available internally, while

@@ -334,15 +334,7 @@ class MainWindowTests(unittest.TestCase):
             self.window.stream_tools_layout.itemAt(1).widget(),
             self.window.ad_manager_group,
         )
-        preview_index = self.window.soundboard_page.editor_grid.indexOf(
-            self.window.soundboard_page.preview_panel
-        )
-        self.assertEqual(
-            self.window.soundboard_page.editor_grid.getItemPosition(
-                preview_index
-            ),
-            (0, 0, 1, 2),
-        )
+        self.assertFalse(hasattr(self.window, "soundboard_page"))
 
     def test_twitch_chat_keeps_stacked_side_column_across_layouts(self) -> None:
         chat = self.window.ui.twitchDetailTabs
@@ -1694,7 +1686,6 @@ class MainWindowTests(unittest.TestCase):
             [
                 "Chat",
                 "Analytics",
-                "Soundboard",
                 "Channel Information",
                 "Commands",
                 "Channel Points",
@@ -1762,7 +1753,18 @@ class MainWindowTests(unittest.TestCase):
                 "Settings",
             ],
         )
-        self.assertEqual(self.window.channel_tabs.count(), 8)
+        self.assertEqual(self.window.channel_tabs.count(), 7)
+        self.assertNotIn(
+            "Soundboard",
+            [
+                self.window.channel_tabs.tabText(index)
+                for index in range(self.window.channel_tabs.count())
+            ],
+        )
+        self.assertFalse(hasattr(self.window, "soundboard_page"))
+        self.assertIsNotNone(self.window.soundboard_store)
+        self.assertIsNotNone(self.window.soundboard_server)
+        self.assertIsNotNone(self.window.soundboard_relay_client)
         self.assertEqual(
             [
                 self.window.automation_page.tabs.tabText(index)

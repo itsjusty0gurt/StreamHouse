@@ -195,7 +195,6 @@ from products.hub.ui.streamhouse_ai_worker import StreamhouseAIHealthResult, Str
 from products.hub.ui.automation_page import AutomationPage
 from products.hub.ui.channel_points_page import ChannelPointsPage
 from products.hub.ui.channel_information_page import ChannelInformationPage
-from products.hub.ui.soundboard_page import SoundboardPageWidget
 from products.hub.ui.twitch_chat_workspace import TwitchChatWorkspaceLayout
 from shared.streamhouse_shared.responsive import (
     LAYOUT_MODE_AUTOMATIC,
@@ -1282,7 +1281,6 @@ class MainWindow(QMainWindow):
         self.stream_tools_container.setMaximumHeight(175 if portrait else 138)
         self.twitch_chat_workspace_layout.apply_responsive_layout()
         self.automation_page.set_responsive_orientation(portrait)
-        self.soundboard_page.set_responsive_orientation(portrait)
         self.ui.horizontalLayout.invalidate()
         self.ui.verticalLayout.invalidate()
 
@@ -2009,7 +2007,6 @@ class MainWindow(QMainWindow):
         retention_layout.addStretch()
         analytics_layout.addLayout(retention_layout)
         self.channel_tabs.addTab(analytics_page, "Analytics")
-        self._build_soundboard_tab()
         self._build_channel_information_tab()
         self._build_twitch_commands_tab()
         self._build_channel_points_tab()
@@ -2342,6 +2339,10 @@ class MainWindow(QMainWindow):
         )
 
     def _build_soundboard_tab(self) -> None:
+        # Kept as an isolated composition hook so the UI can be re-enabled
+        # after Twitch approval without rebuilding the Soundboard subsystem.
+        from products.hub.ui.soundboard_page import SoundboardPageWidget
+
         self.soundboard_page = SoundboardPageWidget(
             self.soundboard_store,
             self.twitch_command_trigger_store.routine_store,
@@ -2359,8 +2360,6 @@ class MainWindow(QMainWindow):
     def _channel_workspace_tab_changed(self, index: int) -> None:
         if self.channel_tabs.widget(index) is self.channel_points_page:
             self.channel_points_page.activate()
-        elif self.channel_tabs.widget(index) is self.soundboard_page:
-            self.soundboard_page.activate()
 
     @Slot(str, str, dict)
     def _handle_soundboard_trigger(
@@ -7915,7 +7914,8 @@ class MainWindow(QMainWindow):
         self.ai_health_pool.clear()
         self.ai_health_pool.waitForDone(2_000)
         self.channel_points_page.shutdown()
-        self.soundboard_page.shutdown()
+        self.soundboard_server.stop()
+        self.soundboard_relay_client.disconnect_relay()
         self.twitch_subscription_correlation_timer.stop()
         self.twitch_subscription_correlator.clear()
         self.memory_reasoning_thread_pool.clear()
