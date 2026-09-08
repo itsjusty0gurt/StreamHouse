@@ -339,8 +339,10 @@ correlates the same viewer's `channel.chat.notification` metadata to add
 second, expires transient entries, clears them on disconnect, and falls back to
 the direct event without inventing a Prime value. The chat notification never
 creates a second subscription Automation execution. A gift aggregate remains
-one gift event with `subscription.gift_count`; Twitch's separate
-gifted-recipient subscribe events remain independent events.
+one Gift Subscription execution with `subscription.gift_count`. Twitch's
+separate `channel.subscribe` events for individual gifted recipients remain
+available to Activity and subscriber/user state, but are excluded from
+Subscribe Automation by default; users do not need an `is_gift=false` filter.
 
 Hub creates both official `channel.raid` v1 conditions on the broadcaster
 EventSub socket: `to_broadcaster_user_id` for **Incoming Raid** and

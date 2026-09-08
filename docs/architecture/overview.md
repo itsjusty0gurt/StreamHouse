@@ -810,6 +810,12 @@ scheduled timestamp and reset when Twitch moves the schedule. Ads Ended is an
 estimated Hub event derived from the EventSub start time plus duration because
 Twitch does not publish a public ad-break-end EventSub event.
 
+Subscribe Automation represents a direct paid or Prime subscription and
+therefore excludes `channel.subscribe` events whose official `is_gift` field is
+true. Gift Subscription owns the one aggregate gifting execution and exposes
+its count; gifted-recipient subscribe events may still update Activity and
+subscriber/user state without publishing Subscribe routine triggers.
+
 Built-in Chat Command definitions remain code-owned templates until explicitly
 configured. Templates do not create trigger or routine records at startup.
 Committing social setup can configure/enable its existing default and `!socials`

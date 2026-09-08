@@ -49,7 +49,10 @@ from products.hub.obs_service.models import ObsConnectionState, ObsEvent
 from products.hub.soundboard.store import SoundboardStore
 from products.hub.twitch.commands import TwitchCommandTriggerStore
 from products.hub.twitch.channel_information import ChannelInformationStore
-from products.hub.twitch.automation_triggers import TwitchEventTriggerStore
+from products.hub.twitch.automation_triggers import (
+    TwitchEventTriggerStore,
+    TwitchSubscriptionEventCorrelator,
+)
 from products.hub.twitch.service import TwitchConnectionState
 from products.hub.twitch.session_history import StreamSession
 from products.hub.twitch.models import (
@@ -2386,6 +2389,48 @@ class MainWindowTests(unittest.TestCase):
             "channel.subscription.message",
         )
         self.assertIs(handled[0].payload["event"]["is_prime"], True)
+
+    def test_gift_recipient_updates_internal_state_without_subscribe_automation(self) -> None:
+        routine = self.twitch_command_trigger_store.routine_store.add(
+            "Direct subscriptions"
+        )
+        self.twitch_event_trigger_store.add(
+            routine.routine_id,
+            "channel.subscribe",
+        )
+        self.window.twitch_subscription_correlator = (
+            TwitchSubscriptionEventCorrelator(wait_seconds=0)
+        )
+        self.window.automation_service.publish_trigger = Mock()
+        self.activity_history_store.add.reset_mock()
+        self.chatter_history_store.record_event.reset_mock()
+        event = TwitchEvent(
+            subscription_type="channel.subscribe",
+            version="1",
+            received_at=datetime.now(timezone.utc),
+            message_id="gift-recipient-1",
+            broadcaster_user_id="42",
+            broadcaster_user_login="channel",
+            broadcaster_user_name="Channel",
+            transport=TwitchEventTransport.WEBSOCKET,
+            payload={
+                "event": {
+                    "broadcaster_user_id": "42",
+                    "user_id": "recipient-1",
+                    "user_login": "recipient",
+                    "user_name": "Recipient",
+                    "tier": "1000",
+                    "is_gift": True,
+                }
+            },
+        )
+
+        self.window.handle_twitch_activity(event)
+        self.window._flush_twitch_subscription_automation()
+
+        self.window.automation_service.publish_trigger.assert_not_called()
+        self.activity_history_store.add.assert_called_once()
+        self.chatter_history_store.record_event.assert_called_once()
 
     def test_twitch_event_trigger_executes_connected_routine(self) -> None:
         routine_store = self.twitch_command_trigger_store.routine_store

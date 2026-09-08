@@ -480,6 +480,15 @@ class TwitchEventTriggerStore:
         if not isinstance(event, dict):
             event = {}
         effective_type = self._automation_event_type(twitch_event)
+        if (
+            effective_type == "channel.subscribe"
+            and self._bool_text(event.get("is_gift")) == "true"
+        ):
+            # Twitch also emits channel.subscribe for individual recipients of
+            # an aggregate channel.subscription.gift. Those remain useful to
+            # Activity/subscriber state, but Gift Subscription exclusively
+            # owns the user-facing gifting Automation execution.
+            return ()
         context = self.context_for(
             twitch_event,
             event,

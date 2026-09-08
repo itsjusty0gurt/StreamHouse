@@ -99,6 +99,18 @@ class TwitchSubscriptionEventCorrelatorTests(unittest.TestCase):
         user_id: str = "viewer-1",
         message_id: str = "direct-1",
     ) -> TwitchEvent:
+        event = {
+            "broadcaster_user_id": "1000",
+            "user_id": user_id,
+            "user_login": user_id,
+            "user_name": "Viewer",
+            "tier": "1000",
+            "message": {"text": "Direct message", "emotes": []},
+            "cumulative_months": 17,
+            "duration_months": 1,
+        }
+        if event_type == "channel.subscribe":
+            event["is_gift"] = False
         return TwitchEvent(
             subscription_type=event_type,
             version="1",
@@ -108,18 +120,7 @@ class TwitchSubscriptionEventCorrelatorTests(unittest.TestCase):
             broadcaster_user_login="streamer",
             broadcaster_user_name="Streamer",
             transport=TwitchEventTransport.SIMULATOR,
-            payload={
-                "event": {
-                    "broadcaster_user_id": "1000",
-                    "user_id": user_id,
-                    "user_login": user_id,
-                    "user_name": "Viewer",
-                    "tier": "1000",
-                    "message": {"text": "Direct message", "emotes": []},
-                    "cumulative_months": 17,
-                    "duration_months": 1,
-                }
-            },
+            payload={"event": event},
         )
 
     def test_notification_before_direct_enriches_one_direct_event(self) -> None:
@@ -326,6 +327,102 @@ class TwitchEventTriggerStoreTests(unittest.TestCase):
         self.assertEqual(context["subscription.cumulative_months"], "17")
         self.assertNotIn("subscription.streak_months", context)
         self.assertEqual(context["subscription.duration_months"], "1")
+
+    def test_subscribe_excludes_gifted_recipients_without_manual_filter(self) -> None:
+        routine = self.routines.add("Direct subscriptions")
+        trigger = self.store.add(routine.routine_id, "channel.subscribe")
+        gifted_recipient = twitch_event(
+            "channel.subscribe",
+            {
+                "user_id": "recipient-1",
+                "user_login": "recipient",
+                "user_name": "Recipient",
+                "tier": "1000",
+                "is_gift": True,
+            },
+        )
+        direct = twitch_event(
+            "channel.subscribe",
+            {
+                "user_id": "viewer-1",
+                "user_login": "viewer",
+                "user_name": "Viewer",
+                "tier": "2000",
+                "is_gift": False,
+            },
+        )
+
+        self.assertEqual(self.store.evaluate(gifted_recipient), ())
+        result = self.store.evaluate(direct)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0].trigger_id, trigger.trigger_id)
+        self.assertEqual(result[0].context["subscription.is_gift"], "false")
+
+    def test_prime_subscribe_enrichment_still_fires_once(self) -> None:
+        routine = self.routines.add("Prime subscriptions")
+        self.store.add(routine.routine_id, "channel.subscribe")
+        correlator = TwitchSubscriptionEventCorrelator()
+
+        correlator.observe(chat_subscription_notice("sub"), now=1.0)
+        enriched = correlator.observe(
+            TwitchSubscriptionEventCorrelatorTests.direct(
+                "channel.subscribe",
+                message_id="direct-prime",
+            ),
+            now=1.1,
+        )
+
+        self.assertEqual(len(enriched), 1)
+        result = self.store.evaluate(enriched[0])
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0].context["subscription.is_prime"], "true")
+
+    def test_one_aggregate_gift_owns_single_and_multi_gift_automation(self) -> None:
+        subscribe_routine = self.routines.add("Direct subscriptions")
+        self.store.add(subscribe_routine.routine_id, "channel.subscribe")
+        gift_routine = self.routines.add("Gift subscriptions")
+        gift_trigger = self.store.add(
+            gift_routine.routine_id,
+            "channel.subscription.gift",
+        )
+
+        for total in (1, 10):
+            gift = twitch_event(
+                "channel.subscription.gift",
+                {
+                    "user_id": "gifter-1",
+                    "user_login": "gifter",
+                    "user_name": "Gifter",
+                    "total": total,
+                    "tier": "1000",
+                    "cumulative_total": 42,
+                    "is_anonymous": False,
+                },
+            )
+            result = self.store.evaluate(gift)
+            self.assertEqual(len(result), 1)
+            self.assertEqual(result[0].trigger_id, gift_trigger.trigger_id)
+            self.assertEqual(
+                result[0].context["subscription.gift_count"],
+                str(total),
+            )
+
+        for index in range(10):
+            self.assertEqual(
+                self.store.evaluate(
+                    twitch_event(
+                        "channel.subscribe",
+                        {
+                            "user_id": f"recipient-{index}",
+                            "user_login": f"recipient{index}",
+                            "user_name": f"Recipient {index}",
+                            "tier": "1000",
+                            "is_gift": True,
+                        },
+                    )
+                ),
+                (),
+            )
 
     def test_gift_context_preserves_aggregate_and_anonymous_metadata(self) -> None:
         routine = self.routines.add("Gift")
