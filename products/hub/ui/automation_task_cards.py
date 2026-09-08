@@ -98,11 +98,9 @@ class TaskCardContent:
 class RoutineCardContent:
     routine_name: str
     trigger_family: str
-    trigger_summary: str
     queue_name: str
     enabled: bool = True
     issues: tuple[str, ...] = ()
-    trigger_details: tuple[str, ...] = ()
 
 
 class RoutineCardWidget(QFrame):
@@ -152,11 +150,9 @@ class RoutineCardWidget(QFrame):
         )
         outer.addWidget(self.accent_bar)
 
-        body = QVBoxLayout()
-        body.setContentsMargins(9, 5, 9, 5)
-        body.setSpacing(1)
-        primary = QHBoxLayout()
-        primary.setSpacing(7)
+        body = QHBoxLayout()
+        body.setContentsMargins(9, 3, 9, 3)
+        body.setSpacing(8)
         self.name_label = ElidingLabel(content.routine_name, self)
         self.name_label.setObjectName("automationRoutineName")
         self.name_label.setStyleSheet(
@@ -169,53 +165,41 @@ class RoutineCardWidget(QFrame):
             QSizePolicy.Policy.Ignored,
             QSizePolicy.Policy.Preferred,
         )
-        primary.addWidget(self.name_label, 1)
-        self.disabled_label = QLabel("Disabled", self)
-        self.disabled_label.setObjectName("automationRoutineDisabled")
-        self.disabled_label.setStyleSheet(
-            "color:#9b9ba5; font-size:10px; font-weight:600;"
-        )
-        self.disabled_label.setVisible(not content.enabled)
-        primary.addWidget(self.disabled_label)
-        self.warning_label = QLabel("Needs attention", self)
+        body.addWidget(self.name_label, 1)
+        self.warning_label = QLabel("!", self)
         self.warning_label.setObjectName("automationRoutineWarning")
         self.warning_label.setStyleSheet(
-            "color:#d9b957; font-size:10px; font-weight:600;"
+            "color:#d9b957; font-size:10px; font-weight:700;"
         )
+        self.warning_label.setToolTip("\n".join(content.issues))
         self.warning_label.setVisible(bool(content.issues))
-        primary.addWidget(self.warning_label)
-        body.addLayout(primary)
-
-        secondary = QHBoxLayout()
-        secondary.setSpacing(8)
-        self.trigger_label = ElidingLabel(content.trigger_summary, self)
-        self.trigger_label.setObjectName("automationRoutineTrigger")
-        self.trigger_label.setStyleSheet("color:#adadb8; font-size:10px;")
-        self.trigger_label.setMinimumWidth(0)
-        self.trigger_label.setSizePolicy(
-            QSizePolicy.Policy.Ignored,
-            QSizePolicy.Policy.Preferred,
-        )
-        secondary.addWidget(self.trigger_label, 1)
+        body.addWidget(self.warning_label)
         self.queue_label = ElidingLabel(content.queue_name, self)
         self.queue_label.setObjectName("automationRoutineQueue")
         self.queue_label.setStyleSheet("color:#85858f; font-size:10px;")
         self.queue_label.setAlignment(
             Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
         )
+        self.queue_label.setMinimumWidth(0)
         self.queue_label.setMaximumWidth(130)
-        secondary.addWidget(self.queue_label)
-        body.addLayout(secondary)
+        self.queue_label.setSizePolicy(
+            QSizePolicy.Policy.Preferred,
+            QSizePolicy.Policy.Preferred,
+        )
+        body.addWidget(self.queue_label)
         outer.addLayout(body, 1)
 
-        details = [*content.trigger_details, *content.issues]
-        self.setToolTip("\n".join(details) or "Ready. Drag to reorder or regroup.")
-        state = "disabled" if not content.enabled else "enabled"
-        self.setAccessibleName(
-            f"{content.routine_name}, {content.trigger_summary}, "
-            f"{content.queue_name}, {state}"
+        state_details = [] if content.enabled else ["Disabled"]
+        state_details.extend(content.issues)
+        self.setToolTip(
+            "\n".join(state_details) or "Ready. Drag to reorder or regroup."
         )
-        self.setMinimumHeight(46)
+        state = "disabled" if not content.enabled else "enabled"
+        attention = ", needs attention" if content.issues else ""
+        self.setAccessibleName(
+            f"{content.routine_name}, {content.queue_name}, {state}{attention}"
+        )
+        self.setMinimumHeight(32)
 
     def set_selected(self, selected: bool) -> None:
         self.setProperty("selected", selected)

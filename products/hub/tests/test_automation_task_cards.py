@@ -8,6 +8,8 @@ from products.hub.automation.task_catalog import BUILTIN_TASK_METADATA
 from products.hub.automation.tasks import TaskMetadata, TaskRegistry
 from products.hub.ui.automation_task_cards import (
     ElidingLabel,
+    RoutineCardContent,
+    RoutineCardWidget,
     TASK_CATEGORY_ACCENTS,
     TaskCardContent,
     TaskCardWidget,
@@ -93,4 +95,56 @@ def test_long_summary_elides_without_changing_font_or_full_text() -> None:
     assert label.toolTip() == label.full_text
     assert label.font().pointSizeF() == original_size
     label.close()
+    app.processEvents()
+
+
+def test_routine_card_is_one_row_with_only_name_and_queue_content() -> None:
+    app = _app()
+    card = RoutineCardWidget(
+        RoutineCardContent(
+            routine_name="Incoming Raid",
+            trigger_family="Twitch",
+            queue_name="Default Queue",
+        )
+    )
+
+    assert card.name_label.full_text == "Incoming Raid"
+    assert card.queue_label.full_text == "Default Queue"
+    assert card.findChild(ElidingLabel, "automationRoutineTrigger") is None
+    assert card.findChild(ElidingLabel, "automationRoutineSummary") is None
+    assert card.minimumHeight() == 32
+    assert card.layout().count() == 2
+    card.close()
+    app.processEvents()
+
+
+def test_routine_card_elides_long_names_and_preserves_visual_states() -> None:
+    app = _app()
+    card = RoutineCardWidget(
+        RoutineCardContent(
+            routine_name="A routine name that is much too long for a narrow row",
+            trigger_family="Manual",
+            queue_name="A queue name that is also much too long for a narrow row",
+            enabled=False,
+            issues=("Routine has no tasks.",),
+        )
+    )
+    card.resize(220, 32)
+    card.show()
+    app.processEvents()
+
+    assert card.name_label.full_text.startswith("A routine name")
+    assert card.queue_label.full_text.startswith("A queue name")
+    assert card.queue_label.maximumWidth() == 130
+    assert card.queue_label.width() > 0
+    assert card.queue_label.text().endswith("…")
+    assert "Disabled" in card.toolTip()
+    assert "no tasks" in card.toolTip().lower()
+    assert not card.warning_label.isHidden()
+    assert "disabled" in card.accessibleName()
+    assert "needs attention" in card.accessibleName()
+
+    card.set_selected(True)
+    assert card.property("selected") is True
+    card.close()
     app.processEvents()

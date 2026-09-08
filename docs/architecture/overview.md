@@ -430,6 +430,12 @@ the next task after If. Child failure or cancellation propagates through the
 normal task failure semantics. The real **End Routine** action remains a normal
 compact task rather than a visual `End If` sentinel.
 
+The grouped routine tree uses the same card language as compact list rows. A
+routine row shows only its elided name and queue on one line; its surrounding
+tree supplies group organization, while trigger and task details remain in the
+routine editor. Selection, disabled, and attention states are visual/card
+states rather than extra descriptive rows.
+
 `core.end_routine` returns the explicit `end_routine` control action. This is a
 successful early completion, not a task failure or cooperative cancellation.
 The action propagates out of structured containers such as If until the current

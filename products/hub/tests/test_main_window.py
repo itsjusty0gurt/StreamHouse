@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QMenu,
     QMessageBox,
+    QWidget,
 )
 from PySide6.QtTest import QSignalSpy, QTest
 
@@ -1148,7 +1149,7 @@ class MainWindowTests(unittest.TestCase):
         )
         self.assertTrue(page.routine_tree.property("routine_reorder_enabled"))
 
-    def test_routine_cards_show_name_manual_queue_disabled_and_selection(self) -> None:
+    def test_routine_cards_show_compact_name_queue_and_visual_states(self) -> None:
         store = self.twitch_command_trigger_store.routine_store
         queue = self.window.automation_page.queue_store.add(
             "Gaming Queue With A Long Descriptive Name"
@@ -1165,17 +1166,19 @@ class MainWindowTests(unittest.TestCase):
 
         self.assertIsInstance(card, RoutineCardWidget)
         self.assertEqual(card.name_label.full_text, routine.name)
-        self.assertEqual(card.trigger_label.full_text, "Manual")
         self.assertEqual(card.queue_label.full_text, queue.name)
         self.assertEqual(card.queue_label.toolTip(), queue.name)
         self.assertEqual(card.queue_label.maximumWidth(), 130)
-        self.assertFalse(card.disabled_label.isHidden())
-        self.assertFalse(card.warning_label.isHidden())
+        self.assertIsNone(card.findChild(QWidget, "automationRoutineTrigger"))
+        self.assertEqual(card.minimumHeight(), 32)
         self.assertTrue(card.property("selected"))
+        self.assertFalse(card.warning_label.isHidden())
+        self.assertIn("disabled", card.accessibleName())
+        self.assertIn("needs attention", card.accessibleName())
         self.assertIn("no tasks", card.toolTip().lower())
         self.assertEqual(card.name_label.toolTip(), routine.name)
 
-    def test_routine_card_trigger_summaries_use_existing_trigger_stores(self) -> None:
+    def test_routine_card_accents_use_existing_trigger_stores_without_summaries(self) -> None:
         store = self.twitch_command_trigger_store.routine_store
         command = self.twitch_command_trigger_store.add("death", "Deaths")
         raid_routine = store.add("Incoming raid")
@@ -1205,11 +1208,11 @@ class MainWindowTests(unittest.TestCase):
         )
         page = self.window.automation_page
 
-        summaries = {
+        families = {
             routine_id: page._routine_card_content(
                 store.get(routine_id),
                 [],
-            ).trigger_summary
+            ).trigger_family
             for routine_id in (
                 command.routine_id,
                 raid_routine.routine_id,
@@ -1219,14 +1222,11 @@ class MainWindowTests(unittest.TestCase):
             )
         }
 
-        self.assertEqual(summaries[command.routine_id], "Twitch • Command !death")
-        self.assertEqual(summaries[raid_routine.routine_id], "Twitch • Incoming Raid")
-        self.assertEqual(summaries[timer_routine.routine_id], "Timer • 5–10 minutes")
-        self.assertEqual(summaries[obs_routine.routine_id], "OBS • Scene Changed → BRB")
-        self.assertEqual(
-            summaries[soundboard_routine.routine_id],
-            "Soundboard • Air Horn",
-        )
+        self.assertEqual(families[command.routine_id], "Twitch")
+        self.assertEqual(families[raid_routine.routine_id], "Twitch")
+        self.assertEqual(families[timer_routine.routine_id], "Timer")
+        self.assertEqual(families[obs_routine.routine_id], "OBS")
+        self.assertEqual(families[soundboard_routine.routine_id], "Soundboard")
         self.assertEqual(store.get(command.routine_id).managed_by, "twitch.command")
 
     def test_run_history_exposes_task_details_and_duration(self) -> None:

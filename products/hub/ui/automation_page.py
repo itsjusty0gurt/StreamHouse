@@ -3429,7 +3429,6 @@ class AutomationPage(QWidget):
                 item = QTreeWidgetItem((routine.name,))
                 item.setData(0, Qt.ItemDataRole.UserRole, routine.routine_id)
                 item.setData(0, self.KIND_ROLE, "routine")
-                item.setToolTip(0, "\n".join((*card_content.trigger_details, *issues)))
                 item.setFlags(
                     item.flags()
                     | Qt.ItemFlag.ItemIsDragEnabled
@@ -3494,83 +3493,38 @@ class AutomationPage(QWidget):
         )
 
     def _routine_card_content(self, routine, issues: list[str]) -> RoutineCardContent:
-        summaries: list[tuple[str, str]] = []
+        families: set[str] = set()
         command = self.trigger_store.for_routine(routine.routine_id)
         if command is not None:
-            summaries.append(("Twitch", f"Twitch • Command !{command.name}"))
+            families.add("Twitch")
         for trigger in self.event_trigger_store.for_routine(routine.routine_id):
-            if trigger.event_type == KEYWORD_PHRASE_EVENT_TYPE:
-                phrase = trigger.filters.get("phrase", "")
-                summary = f'Twitch • Keyword “{phrase}”' if phrase else "Twitch • Keyword"
-            elif trigger.event_type == CHANNEL_POINT_REDEMPTION_EVENT_TYPE:
-                reward = trigger.reward_title or trigger.reward_id or "Any Custom Reward"
-                summary = f'Twitch • Channel Point “{reward}”'
-            elif trigger.event_type in ADS_TRIGGER_TYPES:
-                summary = f"Twitch • {ADS_TRIGGER_TYPES[trigger.event_type]}"
-            else:
-                summary = f"Twitch • {_event_display_name(trigger.event_type)}"
-            summaries.append(("Twitch", summary))
+            families.add("Twitch")
         for trigger in self.core_trigger_store.for_routine(routine.routine_id):
             if trigger.event_type == "timer":
-                description = self.core_trigger_store.timer_description(trigger)
-                if description.startswith("Fixed "):
-                    description = f"Every {description.removeprefix('Fixed ')}"
-                elif description.startswith("Random "):
-                    description = description.removeprefix("Random ")
-                summary = f"Timer • {description}"
                 family = "Timer"
             else:
-                summary = (
-                    "Core • "
-                    f"{CORE_TRIGGER_TYPES.get(trigger.event_type, trigger.event_type)}"
-                )
                 family = "Core"
-            summaries.append((family, summary))
-        for trigger in self.obs_trigger_store.for_routine(routine.routine_id):
-            label = OBS_TRIGGER_TYPES.get(trigger.event_type, trigger.event_type)
-            detail = self._obs_trigger_detail(trigger.filters)
-            summaries.append(("OBS", f"OBS • {label}{detail}"))
+            families.add(family)
+        if self.obs_trigger_store.for_routine(routine.routine_id):
+            families.add("OBS")
         if self.soundboard_store is not None:
             for page in self.soundboard_store.snapshot():
                 for button in page.buttons:
                     if button.routine_id != routine.routine_id:
                         continue
-                    state = "" if button.enabled else " (disabled)"
-                    summaries.append(
-                        ("Soundboard", f"Soundboard • {button.label}{state}")
-                    )
+                    families.add("Soundboard")
 
-        if not summaries:
-            summaries.append(("Manual", "Manual"))
-        families = {family for family, _summary in summaries}
+        if not families:
+            families.add("Manual")
         family = next(iter(families)) if len(families) == 1 else "Other"
-        visible_summary = summaries[0][1]
-        if len(summaries) > 1:
-            visible_summary += f"  +{len(summaries) - 1} more"
         queue = self.queue_store.resolve(routine.queue_id)
         return RoutineCardContent(
             routine_name=routine.name,
             trigger_family=family,
-            trigger_summary=visible_summary,
             queue_name=queue.name,
             enabled=routine.enabled,
             issues=tuple(issues),
-            trigger_details=tuple(summary for _family, summary in summaries),
         )
-
-    @staticmethod
-    def _obs_trigger_detail(filters: dict[str, str]) -> str:
-        for key in (
-            "sceneName",
-            "scene-name",
-            "scene_name",
-            "inputName",
-            "sourceName",
-        ):
-            value = filters.get(key, "").strip()
-            if value:
-                return f" → {value}"
-        return ""
 
     def _task_issues(self, task: TaskDefinition) -> list[str]:
         issues: list[str] = []
