@@ -252,6 +252,7 @@ class TwitchServiceTests(unittest.TestCase):
             "channel.chat.message_delete",
             {
                 "event": {
+                    "target_user_id": "viewer-1",
                     "target_user_login": "viewer",
                     "message_id": "message-1",
                 }
@@ -261,6 +262,28 @@ class TwitchServiceTests(unittest.TestCase):
         self.assertEqual(len(notices), 1)
         self.assertEqual(notices[0].kind, "delete")
         self.assertEqual(notices[0].target_message_id, "message-1")
+        self.assertEqual(notices[0].target_user_id, "viewer-1")
+
+    def test_clear_user_notice_preserves_stable_target_identity(self) -> None:
+        notices = []
+        Events.subscribe(
+            "twitch_notice_received",
+            lambda notice: notices.append(notice),
+        )
+
+        self.service._receive_notification(
+            "channel.chat.clear_user_messages",
+            {
+                "event": {
+                    "target_user_id": "viewer-1",
+                    "target_user_login": "Viewer",
+                }
+            },
+        )
+
+        self.assertEqual(len(notices), 1)
+        self.assertEqual(notices[0].kind, "clear_user")
+        self.assertEqual(notices[0].target_user_id, "viewer-1")
 
     def test_moderation_actions_use_signed_in_identity(self) -> None:
         token = TwitchToken(

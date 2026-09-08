@@ -864,6 +864,12 @@ Accepted chat becomes `TwitchMessage`; non-chat notifications become
 `TwitchEvent`. Raw diagnostic records remain separate from the human activity
 feed.
 
+The in-memory live Chat timeline retains Twitch message and user IDs so chat
+moderation notifications can remove one message, one user's visible messages,
+or the whole visible timeline authoritatively. This does not delete persistent
+Activity or chatter/user records. Moderation notifications reach widgets only
+through the Twitch Qt bridge's queued signal boundary.
+
 Stream online/offline notifications update the operational live state and Ads
 controls immediately; snapshot requests predating that transition are ignored.
 Periodic channel snapshots continue to detect already-live channels and supply

@@ -50,6 +50,14 @@ published to both:
 Chat messages also produce typed `TwitchMessage` objects. The raw developer
 diagnostic stream is separate from the human-readable Activity Feed.
 
+The bounded live Chat view mirrors Twitch's v1 chat moderation events. A
+`channel.chat.message_delete` notification removes the visible entry matching
+Twitch's stable message ID, `channel.chat.clear_user_messages` removes visible
+messages matching the target's stable Twitch user ID, and `channel.chat.clear`
+clears the live pane. This presentation cleanup does not erase Activity,
+chatter/user, or other historical records. EventSub-originated UI changes cross
+the queued Twitch Qt bridge before the widget is touched.
+
 Custom commands are Twitch triggers evaluated by
 `TwitchCommandTriggerDispatcher`. Ready matches publish a normalized
 `TriggerEvent`; rejected matches publish a named outcome without exposing chat

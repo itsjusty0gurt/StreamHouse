@@ -175,6 +175,42 @@ class TwitchChatView(QWebEngineView):
         self._render()
         return True
 
+    def remove_message(self, message_id: str) -> bool:
+        entry = self.history.remove_message(message_id)
+        if entry is None:
+            return False
+        self._remove_entries((entry,))
+        return True
+
+    def remove_user_messages(self, user_id: str) -> int:
+        entries = self.history.remove_user_messages(user_id)
+        self._remove_entries(entries)
+        return len(entries)
+
+    def _remove_entries(self, entries: tuple[TwitchChatEntry, ...]) -> None:
+        if not entries:
+            return
+        entry_ids = {entry.entry_id for entry in entries}
+        for entry_id in entry_ids:
+            self._options.pop(entry_id, None)
+        self._html_by_entry = [
+            (entry_id, html)
+            for entry_id, html in self._html_by_entry
+            if entry_id not in entry_ids
+        ]
+        if not self._loaded:
+            self._render()
+            return
+        self.page().runJavaScript(
+            "(() => {"
+            f"const ids=new Set({json.dumps(sorted(entry_ids))});"
+            "const root=document.getElementById('chat-root'); if(!root)return;"
+            "root.querySelectorAll('[data-entry-id]').forEach((entry) => {"
+            "if(ids.has(entry.dataset.entryId))entry.remove();"
+            "});"
+            "})();"
+        )
+
     def _add_entry(self, entry: TwitchChatEntry) -> None:
         self._static_html = ""
         removed = self.history.add(entry)

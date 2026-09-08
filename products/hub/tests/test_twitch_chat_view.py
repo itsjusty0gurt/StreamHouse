@@ -84,6 +84,66 @@ class TwitchChatViewTests(unittest.TestCase):
         self.assertNotIn("border-radius", view.toHtml())
         view.close()
 
+    def test_moderation_removes_message_and_user_entries_without_placeholders(self) -> None:
+        view = TwitchChatView()
+        view.append_message(
+            TwitchMessage(
+                "Viewer",
+                "remove one",
+                datetime.now(timezone.utc),
+                message_id="message-1",
+                user_id="viewer-1",
+            )
+        )
+        view.append_message(
+            TwitchMessage(
+                "Viewer",
+                "keep same name",
+                datetime.now(timezone.utc),
+                message_id="message-2",
+                user_id="viewer-2",
+            )
+        )
+        view.append_message(
+            TwitchMessage(
+                "VIEWER",
+                "remove by stable user",
+                datetime.now(timezone.utc),
+                message_id="message-3",
+                user_id="viewer-1",
+            )
+        )
+
+        self.assertTrue(view.remove_message("message-1"))
+        self.assertFalse(view.remove_message("unknown"))
+        self.assertEqual(view.remove_user_messages("viewer-1"), 1)
+        self.assertEqual(view.remove_user_messages("unknown"), 0)
+
+        self.assertNotIn("remove one", view.toPlainText())
+        self.assertNotIn("remove by stable user", view.toPlainText())
+        self.assertIn("keep same name", view.toPlainText())
+        self.assertNotIn("[message deleted]", view.toPlainText())
+        view.close()
+
+    def test_full_clear_is_idempotent_and_leaves_empty_history(self) -> None:
+        view = TwitchChatView()
+        view.append_message(
+            TwitchMessage(
+                "Viewer",
+                "hello",
+                datetime.now(timezone.utc),
+                message_id="message-1",
+                user_id="viewer-1",
+            )
+        )
+
+        view.clear()
+        view.clear()
+
+        self.assertEqual(view.history.entries, ())
+        self.assertEqual(view.toPlainText(), "")
+        view.close()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -5206,8 +5206,22 @@ class MainWindow(QMainWindow):
     def handle_twitch_notice(self, notice: TwitchChatNotice) -> None:
         if notice.kind == "clear":
             self.clear_twitch_chat()
-        elif notice.target_message_id:
-            self.ui.twitchChatOutput.mark_deleted(notice.target_message_id)
+            return
+        removed_count = 0
+        if notice.kind == "clear_user" and notice.target_user_id:
+            removed_count = self.ui.twitchChatOutput.remove_user_messages(
+                notice.target_user_id
+            )
+        elif notice.kind == "delete" and notice.target_message_id:
+            removed_count = int(
+                self.ui.twitchChatOutput.remove_message(notice.target_message_id)
+            )
+        if removed_count:
+            self.twitch_message_count = max(
+                0,
+                self.twitch_message_count - removed_count,
+            )
+            self._update_twitch_chat_count()
         if not self.twitch_chat_has_content:
             self.ui.twitchChatOutput.clear()
         self.ui.twitchChatOutput.append_notice(notice)

@@ -2,7 +2,7 @@ import logging
 import os
 import tempfile
 import unittest
-from threading import Event
+from threading import Event, Thread
 from time import monotonic
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -4399,6 +4399,114 @@ class MainWindowTests(unittest.TestCase):
             "A message from viewer was deleted.",
             self.window.ui.twitchChatOutput.toPlainText(),
         )
+
+    def test_twitch_moderation_events_remove_only_authoritative_live_entries(self) -> None:
+        view = self.window.ui.twitchChatOutput
+        view.clear()
+        for message_id, user_id, text in (
+            ("message-1", "viewer-1", "spam one"),
+            ("message-2", "viewer-2", "same display name remains"),
+            ("message-3", "viewer-1", "spam two"),
+        ):
+            view.append_message(
+                TwitchMessage(
+                    username="Viewer",
+                    text=text,
+                    received_at=datetime.now(timezone.utc),
+                    message_id=message_id,
+                    user_id=user_id,
+                )
+            )
+        self.window.twitch_chat_has_content = True
+        self.window.twitch_message_count = 3
+
+        self.window.handle_twitch_notice(
+            TwitchChatNotice(
+                kind="delete",
+                text="A message was deleted.",
+                received_at=datetime.now(timezone.utc),
+                target_message_id="message-1",
+                target_user_id="viewer-1",
+            )
+        )
+        self.window.handle_twitch_notice(
+            TwitchChatNotice(
+                kind="clear_user",
+                text="Messages from Viewer were cleared.",
+                received_at=datetime.now(timezone.utc),
+                target_user_id="viewer-1",
+                target_user_login="Viewer",
+            )
+        )
+
+        self.assertNotIn("spam one", view.toPlainText())
+        self.assertNotIn("spam two", view.toPlainText())
+        self.assertIn("same display name remains", view.toPlainText())
+        self.assertEqual(self.window.twitch_message_count, 1)
+        self.chatter_history_store.delete.assert_not_called()
+
+    def test_twitch_full_chat_clear_leaves_sane_empty_live_state(self) -> None:
+        view = self.window.ui.twitchChatOutput
+        view.clear()
+        view.append_message(
+            TwitchMessage(
+                username="Viewer",
+                text="hello",
+                received_at=datetime.now(timezone.utc),
+                message_id="message-1",
+                user_id="viewer-1",
+            )
+        )
+        self.window.twitch_chat_has_content = True
+        self.window.twitch_message_count = 1
+
+        self.window.handle_twitch_notice(
+            TwitchChatNotice(
+                kind="clear",
+                text="Chat was cleared by a moderator.",
+                received_at=datetime.now(timezone.utc),
+            )
+        )
+
+        self.assertEqual(view.history.entries, ())
+        self.assertFalse(self.window.twitch_chat_has_content)
+        self.assertEqual(self.window.twitch_message_count, 0)
+        self.assertIn("No chat messages yet", view.toPlainText())
+        self.assertNotIn("Chat was cleared", view.toPlainText())
+
+    def test_worker_originating_moderation_notice_crosses_qt_bridge(self) -> None:
+        view = self.window.ui.twitchChatOutput
+        view.clear()
+        view.append_message(
+            TwitchMessage(
+                username="Viewer",
+                text="worker spam",
+                received_at=datetime.now(timezone.utc),
+                message_id="message-1",
+                user_id="viewer-1",
+            )
+        )
+        self.window.twitch_chat_has_content = True
+        notice = TwitchChatNotice(
+            kind="delete",
+            text="A message was deleted.",
+            received_at=datetime.now(timezone.utc),
+            target_message_id="message-1",
+            target_user_id="viewer-1",
+        )
+
+        worker = Thread(
+            target=self.window.twitch_bridge.handle_notice_received,
+            args=(notice,),
+        )
+        worker.start()
+        worker.join()
+
+        self.assertIsNotNone(view.history.get("message-message-1"))
+        self.assertIn("worker spam", view.toPlainText())
+        self.application.processEvents()
+        self.assertIsNone(view.history.get("message-message-1"))
+        self.assertNotIn("worker spam", view.toPlainText())
 
     def test_twitch_timestamp_can_be_hidden(self) -> None:
         self.window.settings = AppSettings(

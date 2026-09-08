@@ -48,6 +48,33 @@ def test_recent_user_messages_and_deletion_are_entry_scoped() -> None:
     assert history.get("message-message-2").deleted is False
 
 
+def test_message_removal_uses_stable_message_id_and_is_idempotent() -> None:
+    history = TwitchChatHistory()
+    history.add(TwitchChatEntry.from_message(message(1)))
+    history.add(TwitchChatEntry.from_message(message(2)))
+
+    removed = history.remove_message("message-1")
+
+    assert removed is not None
+    assert removed.message_id == "message-1"
+    assert [entry.message_id for entry in history.entries] == ["message-2"]
+    assert history.remove_message("unknown") is None
+
+
+def test_user_message_removal_uses_stable_user_id_not_display_name() -> None:
+    history = TwitchChatHistory()
+    history.add(TwitchChatEntry.from_message(message(1, user_id="viewer-1")))
+    same_name = message(2, user_id="viewer-2")
+    history.add(TwitchChatEntry.from_message(same_name))
+    history.add(TwitchChatEntry.from_message(message(3, user_id="viewer-1")))
+
+    removed = history.remove_user_messages("viewer-1")
+
+    assert [entry.message_id for entry in removed] == ["message-1", "message-3"]
+    assert [entry.message_id for entry in history.entries] == ["message-2"]
+    assert history.remove_user_messages("unknown") == ()
+
+
 def test_notice_types_allow_special_rendering_without_changing_messages() -> None:
     moderation = TwitchChatEntry.from_notice(
         TwitchChatNotice(

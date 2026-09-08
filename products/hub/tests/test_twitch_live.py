@@ -29,6 +29,38 @@ class _JsonResponse:
 
 
 class TwitchHelixClientTests(unittest.TestCase):
+    def test_chat_subscriptions_include_moderation_sync_events(self) -> None:
+        client = TwitchHelixClient()
+        client._create_subscription = Mock()
+        token = TwitchToken("access", "refresh", 999, ["user:read:chat"])
+
+        client.create_chat_subscriptions(
+            "session-1",
+            "channel-1",
+            "bot-1",
+            token,
+        )
+
+        calls = {
+            call.args[0]: (call.args[1], call.args[2])
+            for call in client._create_subscription.call_args_list
+        }
+        for event_type in (
+            "channel.chat.message_delete",
+            "channel.chat.clear_user_messages",
+            "channel.chat.clear",
+        ):
+            self.assertEqual(
+                calls[event_type],
+                (
+                    "1",
+                    {
+                        "broadcaster_user_id": "channel-1",
+                        "user_id": "bot-1",
+                    },
+                ),
+            )
+
     @patch("products.hub.twitch.live.urlopen")
     def test_user_stream_channel_and_follow_queries_use_helix_contract(
         self, open_url

@@ -756,6 +756,7 @@ class TwitchService:
                 "clear_user",
                 f"Messages from {login} were cleared.",
                 now,
+                target_user_id=str(event.get("target_user_id", "")),
                 target_user_login=login,
             )
         if subscription_type == "channel.chat.message_delete":
@@ -765,6 +766,7 @@ class TwitchService:
                 f"A message from {login} was deleted.",
                 now,
                 target_message_id=str(event.get("message_id", "")),
+                target_user_id=str(event.get("target_user_id", "")),
                 target_user_login=login,
             )
         if subscription_type == "channel.chat.notification":
