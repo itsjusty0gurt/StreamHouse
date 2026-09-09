@@ -30,8 +30,8 @@ from products.hub.ui.page_header import PageHeader
 class ChannelInformationPage(QWidget):
     saved = Signal()
 
-    _COMPACT_WIDTH = 720
-    _COMPACT_HYSTERESIS = 24
+    _TWO_COLUMN_WIDTH = 1160
+    _LAYOUT_HYSTERESIS = 32
 
     def __init__(
         self,
@@ -46,6 +46,8 @@ class ChannelInformationPage(QWidget):
             str, tuple[QCheckBox, QLineEdit, QPushButton, QLabel]
         ] = {}
         self._social_labels: dict[str, QLabel] = {}
+        self._social_entries: dict[str, QWidget] = {}
+        self._social_entry_layouts: dict[str, QGridLayout] = {}
         self._other_headings: dict[str, QLabel] = {}
         self._compact_layout = False
         self._enable_default_id = ""
@@ -83,18 +85,21 @@ class ChannelInformationPage(QWidget):
         social_help.setWordWrap(True)
         social_layout.addWidget(social_help)
         self.social_grid = QGridLayout()
-        self.social_headers = (
-            QLabel("Include in !socials"),
-            QLabel("Service"),
-            QLabel("Link"),
-            QLabel(""),
-        )
-        for row, (service_id, label) in enumerate(SOCIAL_SERVICES, start=1):
+        self.social_grid.setHorizontalSpacing(20)
+        self.social_grid.setVerticalSpacing(10)
+        for service_id, label in SOCIAL_SERVICES:
             include = QCheckBox()
             include.setObjectName(f"channelInformationInclude{service_id.title()}")
+            include.setToolTip("Include in !socials")
             edit = QLineEdit()
             edit.setObjectName(f"channelInformation{service_id.title()}Url")
             edit.setPlaceholderText("https://")
+            edit.setMinimumWidth(320)
+            edit.setMaximumWidth(400)
+            edit.setSizePolicy(
+                QSizePolicy.Policy.Expanding,
+                QSizePolicy.Policy.Fixed,
+            )
             update = QPushButton("Update")
             update.setObjectName(f"channelInformationUpdate{service_id.title()}")
             error = QLabel()
@@ -104,11 +109,28 @@ class ChannelInformationPage(QWidget):
             error.hide()
             service_label = QLabel(label)
             service_label.setWordWrap(True)
+            entry = QWidget(social_group)
+            entry.setObjectName(f"channelInformation{service_id.title()}Entry")
+            entry.setMaximumWidth(600)
+            entry_layout = QGridLayout(entry)
+            entry_layout.setContentsMargins(0, 0, 0, 0)
+            entry_layout.setHorizontalSpacing(8)
+            entry_layout.setVerticalSpacing(4)
             self._social_labels[service_id] = service_label
+            self._social_entries[service_id] = entry
+            self._social_entry_layouts[service_id] = entry_layout
             self.social_rows[service_id] = include, edit, update, error
             include.toggled.connect(lambda _value, key=service_id: self._social_changed(key))
             edit.textChanged.connect(lambda _value, key=service_id: self._social_changed(key))
             update.clicked.connect(lambda _checked=False, key=service_id: self.update_social(key))
+        previous_update: QPushButton | None = None
+        for service_id, _label in SOCIAL_SERVICES:
+            include, edit, update, _error = self.social_rows[service_id]
+            if previous_update is not None:
+                QWidget.setTabOrder(previous_update, edit)
+            QWidget.setTabOrder(edit, include)
+            QWidget.setTabOrder(include, update)
+            previous_update = update
         social_layout.addLayout(self.social_grid)
         preview_title = QLabel("!socials preview")
         preview_title.setStyleSheet("font-weight: 600;")
@@ -187,25 +209,31 @@ class ChannelInformationPage(QWidget):
         self.setProperty("compactLayout", compact)
         self._clear_grid(self.social_grid)
         self._clear_grid(self.other_layout)
-        for column in range(5):
-            self.social_grid.setColumnStretch(column, 0)
+        for entry_layout in self._social_entry_layouts.values():
+            self._clear_grid(entry_layout)
+        self.social_grid.setColumnStretch(0, 1)
+        self.social_grid.setColumnStretch(1, 0 if compact else 1)
 
         if compact:
-            for header in self.social_headers:
-                header.hide()
             for row, (service_id, _label) in enumerate(SOCIAL_SERVICES):
                 include, edit, update, error = self.social_rows[service_id]
+                entry = self._social_entries[service_id]
+                entry_layout = self._social_entry_layouts[service_id]
                 include.setText("Include in !socials")
-                base_row = row * 4
+                entry_layout.addWidget(self._social_labels[service_id], 0, 0, 1, 2)
+                entry_layout.addWidget(edit, 1, 0, 1, 2)
+                entry_layout.addWidget(include, 2, 0)
+                entry_layout.addWidget(update, 2, 1, Qt.AlignmentFlag.AlignRight)
+                entry_layout.addWidget(error, 3, 0, 1, 2)
+                entry_layout.setColumnStretch(0, 1)
+                entry_layout.setColumnStretch(1, 0)
                 self.social_grid.addWidget(
-                    self._social_labels[service_id], base_row, 0, 1, 2
+                    entry,
+                    row,
+                    0,
+                    alignment=Qt.AlignmentFlag.AlignLeft
+                    | Qt.AlignmentFlag.AlignTop,
                 )
-                self.social_grid.addWidget(edit, base_row + 1, 0)
-                self.social_grid.addWidget(update, base_row + 1, 1)
-                self.social_grid.addWidget(include, base_row + 2, 0, 1, 2)
-                self.social_grid.addWidget(error, base_row + 3, 0, 1, 2)
-            self.social_grid.setColumnStretch(0, 1)
-            self.social_grid.setColumnStretch(1, 0)
 
             for row, (field_id, editor) in enumerate(
                 (
@@ -222,27 +250,28 @@ class ChannelInformationPage(QWidget):
             self.other_layout.setColumnStretch(0, 1)
             self.other_layout.setColumnStretch(1, 0)
             self.content_widget.layout().activate()
-            self.content_widget.adjustSize()
             return
 
-        for column, header in enumerate(self.social_headers):
-            header.show()
-            self.social_grid.addWidget(header, 0, column)
-        for row, (service_id, _label) in enumerate(SOCIAL_SERVICES, start=1):
+        for index, (service_id, _label) in enumerate(SOCIAL_SERVICES):
             include, edit, update, error = self.social_rows[service_id]
-            include.setText("")
-            include.setToolTip("Include in !socials")
-            base_row = row * 2 - 1
-            self.social_grid.addWidget(include, base_row, 0)
-            self.social_grid.addWidget(self._social_labels[service_id], base_row, 1)
-            self.social_grid.addWidget(edit, base_row, 2)
-            self.social_grid.addWidget(update, base_row, 3)
-            self.social_grid.addWidget(error, base_row + 1, 1, 1, 3)
-        self.social_grid.setColumnStretch(0, 0)
-        self.social_grid.setColumnStretch(1, 0)
-        self.social_grid.setColumnStretch(2, 1)
-        self.social_grid.setColumnStretch(3, 0)
-        self.social_grid.setColumnStretch(4, 0)
+            entry = self._social_entries[service_id]
+            entry_layout = self._social_entry_layouts[service_id]
+            include.setText("Include")
+            entry_layout.addWidget(self._social_labels[service_id], 0, 0, 1, 3)
+            entry_layout.addWidget(edit, 1, 0)
+            entry_layout.addWidget(include, 1, 1)
+            entry_layout.addWidget(update, 1, 2)
+            entry_layout.addWidget(error, 2, 0, 1, 3)
+            entry_layout.setColumnStretch(0, 1)
+            entry_layout.setColumnStretch(1, 0)
+            entry_layout.setColumnStretch(2, 0)
+            self.social_grid.addWidget(
+                entry,
+                index // 2,
+                index % 2,
+                alignment=Qt.AlignmentFlag.AlignLeft
+                | Qt.AlignmentFlag.AlignTop,
+            )
 
         for row, (field_id, editor) in enumerate(
             (
@@ -257,16 +286,17 @@ class ChannelInformationPage(QWidget):
         self.other_layout.setColumnStretch(1, 1)
         self.other_layout.setColumnStretch(2, 0)
         self.content_widget.layout().activate()
-        self.content_widget.adjustSize()
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
         width = self.scroll_area.viewport().width()
         if self._compact_layout:
-            compact = width < self._COMPACT_WIDTH + self._COMPACT_HYSTERESIS
+            compact = width < self._TWO_COLUMN_WIDTH + self._LAYOUT_HYSTERESIS
         else:
-            compact = width < self._COMPACT_WIDTH
+            compact = width < self._TWO_COLUMN_WIDTH
         self._apply_responsive_layout(compact=compact)
+        if compact and self.content_widget.width() > width:
+            self.content_widget.resize(width, self.content_widget.height())
 
     def load_values(self) -> None:
         self._loading = True

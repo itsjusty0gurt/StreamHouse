@@ -16,7 +16,10 @@ from products.hub.ui.variable_picker import VariablePickerDialog
 from products.hub.automation.routines import RoutineStore
 from products.hub.automation.variable_providers import ChannelInformationVariableProvider
 from products.hub.automation.variable_registry import VariableRegistry
-from products.hub.twitch.channel_information import ChannelInformationStore
+from products.hub.twitch.channel_information import (
+    SOCIAL_SERVICES,
+    ChannelInformationStore,
+)
 from products.hub.twitch.commands import (
     TwitchCommandTriggerStore, TwitchCommandSetupState, TwitchCommandTriggerDispatcher,
     TwitchCommandTriggerOutcome,
@@ -316,12 +319,40 @@ class ChannelInformationPageTests(unittest.TestCase):
 
     def test_resize_keeps_typography_stable_and_reflows_controls(self) -> None:
         self.page.show()
-        self.page.resize(900, 700)
+        self.page.resize(1400, 800)
         self.application.processEvents()
         body_size = self.page.font().pointSizeF()
         editor_size = self.page.rules_edit.font().pointSizeF()
         wide_editor_width = self.page.rules_edit.width()
         self.assertFalse(self.page.property("compactLayout"))
+        self.assertEqual(self.page.social_grid.count(), len(SOCIAL_SERVICES))
+        for index, (service_id, _label) in enumerate(SOCIAL_SERVICES):
+            entry = self.page._social_entries[service_id]
+            layout_index = self.page.social_grid.indexOf(entry)
+            row, column, row_span, column_span = (
+                self.page.social_grid.getItemPosition(layout_index)
+            )
+            self.assertEqual((row, column), (index // 2, index % 2))
+            self.assertEqual((row_span, column_span), (1, 1))
+            include, edit, update, error = self.page.social_rows[service_id]
+            for control in (include, edit, update, error):
+                self.assertIs(control.parentWidget(), entry)
+            self.assertLessEqual(edit.maximumWidth(), 400)
+            self.assertGreaterEqual(edit.minimumWidth(), 320)
+            self.assertGreaterEqual(edit.width(), 320)
+            self.assertLessEqual(edit.width(), 400)
+
+        include, edit, update, _error = self.page.social_rows["discord"]
+        edit.setText("discord.gg/draft")
+        include.setChecked(True)
+        self.assertTrue(update.isEnabled())
+
+        self.page.resize(1080, 700)
+        self.application.processEvents()
+        self.assertTrue(self.page.property("compactLayout"))
+        self.assertEqual(self.page.scroll_area.horizontalScrollBar().maximum(), 0)
+        self.assertEqual(edit.text(), "discord.gg/draft")
+        self.assertTrue(include.isChecked())
 
         self.page.resize(420, 520)
         self.application.processEvents()
@@ -334,18 +365,36 @@ class ChannelInformationPageTests(unittest.TestCase):
         self.assertGreaterEqual(self.page.rules_edit.height(), 72)
         self.assertGreater(self.page.scroll_area.verticalScrollBar().maximum(), 0)
         self.assertEqual(self.page.scroll_area.horizontalScrollBar().maximum(), 0)
-        include, edit, update, _error = self.page.social_rows["discord"]
+        self.assertEqual(self.page.social_grid.count(), len(SOCIAL_SERVICES))
+        for row, (service_id, _label) in enumerate(SOCIAL_SERVICES):
+            entry = self.page._social_entries[service_id]
+            layout_index = self.page.social_grid.indexOf(entry)
+            self.assertEqual(
+                self.page.social_grid.getItemPosition(layout_index),
+                (row, 0, 1, 1),
+            )
         for control in (include, edit):
             self.assertTrue(control.isEnabled())
         for control in (include, edit, update, self.page.save_button):
             self.assertTrue(control.isVisible())
+        self.assertEqual(edit.text(), "discord.gg/draft")
+        self.assertTrue(include.isChecked())
+        self.assertTrue(update.isEnabled())
 
-        self.page.resize(900, 700)
+        self.page.resize(1400, 800)
         self.application.processEvents()
         self.assertFalse(self.page.property("compactLayout"))
         self.assertEqual(self.page.font().pointSizeF(), body_size)
         self.assertEqual(self.page.rules_edit.font().pointSizeF(), editor_size)
         self.assertGreater(self.page.rules_edit.width(), wide_editor_width - 5)
+        for editor in (
+            self.page.schedule_edit,
+            self.page.rules_edit,
+            self.page.server_info_edit,
+        ):
+            self.assertGreater(editor.width(), edit.width())
+        self.assertEqual(edit.text(), "discord.gg/draft")
+        self.assertTrue(include.isChecked())
 
     def test_long_text_uses_editor_and_page_scrolling(self) -> None:
         self.page.rules_edit.setPlainText("\n".join(f"Rule {index}" for index in range(40)))
