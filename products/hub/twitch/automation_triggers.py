@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import re
 from time import monotonic
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 from uuid import uuid4
 
 from products.hub.automation.models import TriggerEvent
@@ -303,14 +303,17 @@ class TwitchEventAutomationTrigger:
 
 
 class TwitchEventTriggerStore:
-    VERSION = 3
-    FIRST_MESSAGE_STATE_VERSION = 1
+    VERSION = 4
+    FIRST_MESSAGE_STATE_VERSION = 2
+    DEFAULT_RAID_SUPPRESSION_MINUTES = 3
+    MAX_RAID_SUPPRESSION_MINUTES = 30
 
     def __init__(
         self,
         path: Path | None = None,
         routine_store: RoutineStore | None = None,
         first_message_state_path: Path | None = None,
+        monotonic_clock: Callable[[], float] = monotonic,
     ) -> None:
         self.path = path or user_data_root() / "twitch" / "event_triggers.json"
         self.first_message_state_path = (
@@ -319,9 +322,16 @@ class TwitchEventTriggerStore:
         )
         self.routine_store = routine_store or RoutineStore()
         self.triggers: list[TwitchEventAutomationTrigger] = []
+        self.first_message_raid_suppression_enabled = True
+        self.first_message_raid_suppression_minutes = (
+            self.DEFAULT_RAID_SUPPRESSION_MINUTES
+        )
         self._first_message_seen: dict[str, set[str]] = {}
         self._stream_key = ""
         self._offline_since: datetime | None = None
+        self._raid_suppression_until: datetime | None = None
+        self._raid_suppression_deadline: float | None = None
+        self._monotonic = monotonic_clock
 
     def load(self) -> list[TwitchEventAutomationTrigger]:
         if not self.routine_store.routines and self.routine_store.path.exists():
@@ -342,6 +352,15 @@ class TwitchEventTriggerStore:
         values = payload.get("triggers", [])
         if not isinstance(values, list):
             raise ValueError("Twitch event triggers must contain a trigger list.")
+        first_message = payload.get("first_message", {})
+        if not isinstance(first_message, Mapping):
+            raise ValueError("Twitch First Message settings must contain an object.")
+        suppression_enabled = first_message.get("raid_suppression_enabled")
+        suppression_minutes = first_message.get("raid_suppression_minutes")
+        self._validate_raid_suppression(
+            suppression_enabled,
+            suppression_minutes,
+        )
         loaded: list[TwitchEventAutomationTrigger] = []
         for value in values:
             if not isinstance(value, dict):
@@ -356,6 +375,8 @@ class TwitchEventTriggerStore:
                 continue
             loaded.append(trigger)
         self.triggers = loaded
+        self.first_message_raid_suppression_enabled = suppression_enabled
+        self.first_message_raid_suppression_minutes = suppression_minutes
         self._load_first_message_state()
         return list(loaded)
 
@@ -364,6 +385,14 @@ class TwitchEventTriggerStore:
             self.path,
             {
                 "version": self.VERSION,
+                "first_message": {
+                    "raid_suppression_enabled": (
+                        self.first_message_raid_suppression_enabled
+                    ),
+                    "raid_suppression_minutes": (
+                        self.first_message_raid_suppression_minutes
+                    ),
+                },
                 "triggers": [asdict(trigger) for trigger in self.triggers],
             },
         )
@@ -378,6 +407,8 @@ class TwitchEventTriggerStore:
         reset_minutes: int = 15,
         reward_id: str = "",
         reward_title: str = "",
+        raid_suppression_enabled: bool | None = None,
+        raid_suppression_minutes: int | None = None,
     ) -> TwitchEventAutomationTrigger:
         trigger = TwitchEventAutomationTrigger(
             trigger_id=uuid4().hex,
@@ -392,6 +423,17 @@ class TwitchEventTriggerStore:
         self._validate(trigger)
         if self.routine_store.get(routine_id) is None:
             raise ValueError("The selected routine no longer exists.")
+        previous_suppression = (
+            self.first_message_raid_suppression_enabled,
+            self.first_message_raid_suppression_minutes,
+            self._raid_suppression_until,
+            self._raid_suppression_deadline,
+        )
+        self._apply_raid_suppression_settings(
+            event_type,
+            raid_suppression_enabled,
+            raid_suppression_minutes,
+        )
         self.routine_store.link_trigger(routine_id, trigger.trigger_id)
         self.triggers.append(trigger)
         try:
@@ -399,7 +441,15 @@ class TwitchEventTriggerStore:
         except OSError:
             self.triggers.remove(trigger)
             self.routine_store.unlink_trigger(routine_id, trigger.trigger_id)
+            (
+                self.first_message_raid_suppression_enabled,
+                self.first_message_raid_suppression_minutes,
+                self._raid_suppression_until,
+                self._raid_suppression_deadline,
+            ) = previous_suppression
             raise
+        if not self.first_message_raid_suppression_enabled:
+            self._persist_first_message_state()
         return trigger
 
     def update(
@@ -412,6 +462,8 @@ class TwitchEventTriggerStore:
         reset_minutes: int | None = None,
         reward_id: str = "",
         reward_title: str = "",
+        raid_suppression_enabled: bool | None = None,
+        raid_suppression_minutes: int | None = None,
     ) -> TwitchEventAutomationTrigger:
         trigger = self.get(trigger_id)
         if trigger is None:
@@ -431,13 +483,32 @@ class TwitchEventTriggerStore:
             reward_title=reward_title.strip(),
         )
         self._validate(candidate)
+        previous_suppression = (
+            self.first_message_raid_suppression_enabled,
+            self.first_message_raid_suppression_minutes,
+            self._raid_suppression_until,
+            self._raid_suppression_deadline,
+        )
+        self._apply_raid_suppression_settings(
+            event_type,
+            raid_suppression_enabled,
+            raid_suppression_minutes,
+        )
         index = self.triggers.index(trigger)
         self.triggers[index] = candidate
         try:
             self.save()
         except OSError:
             self.triggers[index] = trigger
+            (
+                self.first_message_raid_suppression_enabled,
+                self.first_message_raid_suppression_minutes,
+                self._raid_suppression_until,
+                self._raid_suppression_deadline,
+            ) = previous_suppression
             raise
+        if not self.first_message_raid_suppression_enabled:
+            self._persist_first_message_state()
         return candidate
 
     def delete(self, trigger_id: str) -> bool:
@@ -480,6 +551,8 @@ class TwitchEventTriggerStore:
         if not isinstance(event, dict):
             event = {}
         effective_type = self._automation_event_type(twitch_event)
+        if self._is_incoming_raid(twitch_event):
+            self._activate_raid_suppression(twitch_event.received_at)
         if (
             effective_type == "channel.subscribe"
             and self._bool_text(event.get("is_gift")) == "true"
@@ -663,6 +736,7 @@ class TwitchEventTriggerStore:
             stream_key = self._first(stream, "id", "started_at")
             if self._stream_key and stream_key and stream_key != self._stream_key:
                 self._first_message_seen.clear()
+                self._clear_raid_suppression()
             changed = bool(stream_key and stream_key != self._stream_key)
             if self._offline_since is not None:
                 changed = self._expire_first_message_state(now) or changed
@@ -724,6 +798,7 @@ class TwitchEventTriggerStore:
             "uses": "--",
         }
         matches: list[TriggerEvent] = []
+        suppression_active = self._raid_suppression_active(now)
         for trigger in self.triggers:
             if (
                 not trigger.enabled
@@ -736,6 +811,8 @@ class TwitchEventTriggerStore:
                 continue
             seen.add(identity)
             self._persist_first_message_state()
+            if suppression_active:
+                continue
             matches.append(
                 TriggerEvent(
                     trigger_id=trigger.trigger_id,
@@ -825,6 +902,7 @@ class TwitchEventTriggerStore:
         ):
             if self._stream_key:
                 self._stream_key = ""
+                self._clear_raid_suppression()
                 changed = True
         return changed
 
@@ -842,6 +920,7 @@ class TwitchEventTriggerStore:
         self._first_message_seen = {}
         self._stream_key = ""
         self._offline_since = None
+        self._clear_raid_suppression()
         if not self.first_message_state_path.exists():
             return
         try:
@@ -856,8 +935,13 @@ class TwitchEventTriggerStore:
                 )
             stream_id = payload.get("stream_id", "")
             offline_since = payload.get("offline_since", "")
+            raid_suppression_until = payload.get("raid_suppression_until", "")
             seen = payload.get("seen_by_trigger", {})
-            if not isinstance(stream_id, str) or not isinstance(offline_since, str):
+            if (
+                not isinstance(stream_id, str)
+                or not isinstance(offline_since, str)
+                or not isinstance(raid_suppression_until, str)
+            ):
                 raise ValueError("First Message stream state is invalid.")
             if not isinstance(seen, Mapping):
                 raise ValueError("First Message viewer state is invalid.")
@@ -887,10 +971,23 @@ class TwitchEventTriggerStore:
                 self._aware(parsed_offline) if parsed_offline is not None else None
             )
             self._first_message_seen = loaded_seen if self._stream_key else {}
+            if self._stream_key and raid_suppression_until:
+                parsed_suppression = self._aware(
+                    datetime.fromisoformat(
+                        raid_suppression_until.replace("Z", "+00:00")
+                    )
+                )
+                remaining = (
+                    parsed_suppression - datetime.now(timezone.utc)
+                ).total_seconds()
+                if remaining > 0 and self.first_message_raid_suppression_enabled:
+                    self._raid_suppression_until = parsed_suppression
+                    self._raid_suppression_deadline = self._monotonic() + remaining
         except (OSError, TypeError, ValueError) as error:
             self._first_message_seen = {}
             self._stream_key = ""
             self._offline_since = None
+            self._clear_raid_suppression()
             Logger.warning(
                 f"Could not load First Message trigger state; reset it: {error}",
                 source="TWITCH",
@@ -905,6 +1002,11 @@ class TwitchEventTriggerStore:
                 "offline_since": (
                     self._offline_since.isoformat()
                     if self._offline_since is not None
+                    else ""
+                ),
+                "raid_suppression_until": (
+                    self._raid_suppression_until.isoformat()
+                    if self._raid_suppression_until is not None
                     else ""
                 ),
                 "seen_by_trigger": {
@@ -923,6 +1025,96 @@ class TwitchEventTriggerStore:
                 f"Could not save First Message trigger state: {error}",
                 source="TWITCH",
             )
+
+    def _apply_raid_suppression_settings(
+        self,
+        event_type: str,
+        enabled: bool | None,
+        minutes: int | None,
+    ) -> None:
+        if event_type != "channel.chat.first_message":
+            return
+        next_enabled = (
+            self.first_message_raid_suppression_enabled
+            if enabled is None
+            else enabled
+        )
+        next_minutes = (
+            self.first_message_raid_suppression_minutes
+            if minutes is None
+            else minutes
+        )
+        self._validate_raid_suppression(next_enabled, next_minutes)
+        self.first_message_raid_suppression_enabled = next_enabled
+        self.first_message_raid_suppression_minutes = next_minutes
+        if not next_enabled:
+            self._clear_raid_suppression()
+
+    @classmethod
+    def _validate_raid_suppression(cls, enabled: object, minutes: object) -> None:
+        if type(enabled) is not bool:
+            raise ValueError(
+                "First Message raid suppression must be enabled or disabled."
+            )
+        if (
+            type(minutes) is not int
+            or not 1 <= minutes <= cls.MAX_RAID_SUPPRESSION_MINUTES
+        ):
+            raise ValueError(
+                "First Message raid suppression must be between 1 and "
+                f"{cls.MAX_RAID_SUPPRESSION_MINUTES} minutes."
+            )
+
+    def _activate_raid_suppression(self, observed_at: datetime) -> None:
+        if not self.first_message_raid_suppression_enabled:
+            return
+        duration = timedelta(minutes=self.first_message_raid_suppression_minutes)
+        suppression_until = self._aware(observed_at) + duration
+        if (
+            self._raid_suppression_until is not None
+            and suppression_until <= self._raid_suppression_until
+        ):
+            return
+        self._raid_suppression_until = suppression_until
+        self._raid_suppression_deadline = (
+            self._monotonic() + duration.total_seconds()
+        )
+        self._persist_first_message_state()
+
+    def _raid_suppression_active(self, observed_at: datetime) -> bool:
+        if (
+            not self.first_message_raid_suppression_enabled
+            or self._raid_suppression_until is None
+            or self._raid_suppression_deadline is None
+        ):
+            return False
+        active = (
+            self._monotonic() < self._raid_suppression_deadline
+            and self._aware(observed_at) < self._raid_suppression_until
+        )
+        if not active:
+            self._clear_raid_suppression()
+            self._persist_first_message_state()
+        return active
+
+    def _clear_raid_suppression(self) -> None:
+        self._raid_suppression_until = None
+        self._raid_suppression_deadline = None
+
+    @staticmethod
+    def _is_incoming_raid(twitch_event: TwitchEvent) -> bool:
+        if twitch_event.subscription_type != "channel.raid":
+            return False
+        subscription = twitch_event.payload.get("subscription", {})
+        condition = (
+            subscription.get("condition", {})
+            if isinstance(subscription, Mapping)
+            else {}
+        )
+        return bool(
+            isinstance(condition, Mapping)
+            and condition.get("to_broadcaster_user_id")
+        )
 
     @staticmethod
     def _aware(value: datetime) -> datetime:

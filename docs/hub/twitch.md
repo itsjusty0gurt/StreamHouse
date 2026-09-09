@@ -292,7 +292,7 @@ rejected authorization distinctly from a genuine not-following result.
 ## Automation event triggers
 
 Twitch EventSub automation triggers persist at
-`twitch/event_triggers.json` in the exact current v3 schema; unversioned and
+`twitch/event_triggers.json` in the exact current v4 schema; unversioned and
 obsolete private-development formats are rejected rather than migrated. The
 live-ready set is follow, subscribe, subscription gift, subscription message,
 cheer, incoming and outgoing raid, custom channel point redemption, stream
@@ -351,6 +351,17 @@ EventSub socket: `to_broadcaster_user_id` for **Incoming Raid** and
 Variables. `user.*` represents the initiating/source broadcaster. Twitch does
 not publish a separate completed-raid EventSub event, so Hub does not expose a
 fake Raid Completed trigger.
+
+An incoming raid also starts the shared First Message raid-suppression window,
+enabled by default for three minutes and configurable with First Message. The
+newest incoming raid restarts the window. Eligible chatters are still recorded
+as seen during suppression, so they do not receive a delayed welcome afterward;
+Chat Commands and Keyword/Phrase triggers continue normally. The current-stream
+expiry survives a same-stream Hub restart and is cleared with a new stream.
+Outgoing raids never activate it, and suppressed welcomes do not create fake
+Run History entries. Twitch's raid event includes source, target, and viewer
+count but no viewer roster, so this protection intentionally applies to all
+first-time chatters during the short grace period.
 
 The Twitch trigger tree also provides an Ads category with 5-, 3-, 2-, and
 1-minute warnings, Ads Started, and Ads Ended. Warning state belongs to

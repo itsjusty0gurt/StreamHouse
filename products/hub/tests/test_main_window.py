@@ -66,7 +66,11 @@ from products.hub.twitch.models import (
     TwitchReply,
 )
 from products.hub.ui.main_window import MainWindow
-from products.hub.ui.automation_page import RunHistoryDetailsDialog, TaskEditorDialog
+from products.hub.ui.automation_page import (
+    RunHistoryDetailsDialog,
+    TaskEditorDialog,
+    TwitchEventTriggerDialog,
+)
 from products.hub.ui.automation_task_cards import (
     IfTaskCardWidget,
     RoutineCardWidget,
@@ -3507,6 +3511,90 @@ class MainWindowTests(unittest.TestCase):
         )
         self.assertEqual(trigger.trigger_type, "first_message")
         self.assertEqual(trigger.context["user"], "Viewer")
+
+    def test_first_message_editor_shows_shared_raid_suppression_settings(self) -> None:
+        dialog = TwitchEventTriggerDialog(
+            self.window,
+            raid_suppression_enabled=False,
+            raid_suppression_minutes=5,
+        )
+        dialog.event_type_combo.setCurrentIndex(
+            dialog.event_type_combo.findData("channel.chat.first_message")
+        )
+        dialog.show()
+        QApplication.processEvents()
+
+        self.assertTrue(dialog.raid_suppression_check.isVisible())
+        self.assertFalse(dialog.raid_suppression_check.isChecked())
+        self.assertFalse(dialog.raid_suppression_spin.isVisible())
+        dialog.raid_suppression_check.setChecked(True)
+        self.assertTrue(dialog.raid_suppression_spin.isVisible())
+        self.assertEqual(dialog.values()["raid_suppression_minutes"], 5)
+
+        dialog.close()
+
+    def test_raid_suppression_keeps_command_and_keyword_automation_active(self) -> None:
+        welcome = self.twitch_command_trigger_store.routine_store.add("Welcome")
+        first = self.twitch_event_trigger_store.add(
+            welcome.routine_id,
+            "channel.chat.first_message",
+        )
+        keyword = self.twitch_command_trigger_store.routine_store.add("Coffee")
+        self.twitch_event_trigger_store.add_keyword_phrase(
+            keyword.routine_id,
+            "coffee",
+        )
+        self.twitch_command_trigger_store.add("hello", "Hello!")
+        started = datetime.now(timezone.utc)
+        self.twitch_event_trigger_store.observe_stream({"id": "stream-1"}, started)
+        self.twitch_event_trigger_store.evaluate(
+            TwitchEvent(
+                subscription_type="channel.raid",
+                version="1",
+                received_at=started,
+                message_id="raid-1",
+                broadcaster_user_id="streamer-1",
+                broadcaster_user_login="streamer",
+                broadcaster_user_name="Streamer",
+                transport=TwitchEventTransport.WEBSOCKET,
+                payload={
+                    "subscription": {
+                        "condition": {"to_broadcaster_user_id": "streamer-1"}
+                    },
+                    "event": {
+                        "from_broadcaster_user_id": "raider-1",
+                        "to_broadcaster_user_id": "streamer-1",
+                        "viewers": 80,
+                    },
+                },
+            )
+        )
+        self.window.stream_is_live = True
+        self.window.settings.ai_response_decisions_enabled = False
+        execution = Mock(succeeded=True, handled=True)
+        self.window.automation_service.publish_trigger = Mock(return_value=execution)
+        self.window.automation_page.record_execution = Mock()
+        message = TwitchMessage(
+            username="Raider",
+            user_id="viewer-raid",
+            user_login="raider",
+            text="!hello coffee",
+            message_id="message-raid",
+            received_at=started + timedelta(seconds=1),
+            broadcaster_user_id="streamer-1",
+        )
+
+        self.window.handle_twitch_message(message)
+
+        trigger_types = [
+            call.args[0].trigger_type
+            for call in self.window.automation_service.publish_trigger.call_args_list
+        ]
+        self.assertCountEqual(trigger_types, ["keyword_phrase", "command"])
+        self.assertIn(
+            "id:viewer-raid",
+            self.twitch_event_trigger_store._first_message_seen[first.trigger_id],
+        )
 
     def test_keyword_phrase_chat_trigger_publishes_accurate_context(self) -> None:
         routine = self.twitch_command_trigger_store.routine_store.add(

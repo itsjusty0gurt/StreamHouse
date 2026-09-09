@@ -36,12 +36,13 @@ def event_with_condition(
     condition: dict[str, str],
     *,
     message_id: str = "event-1",
+    received_at: datetime | None = None,
 ) -> TwitchEvent:
     value = twitch_event(event_type, event)
     return TwitchEvent(
         subscription_type=value.subscription_type,
         version=value.version,
-        received_at=value.received_at,
+        received_at=received_at or value.received_at,
         message_id=message_id,
         broadcaster_user_id=value.broadcaster_user_id,
         broadcaster_user_login=value.broadcaster_user_login,
@@ -237,6 +238,44 @@ class TwitchEventTriggerStoreTests(unittest.TestCase):
             saved.trigger_id,
             loaded_routines.get(routine.routine_id).trigger_ids,
         )
+
+    def test_first_message_raid_suppression_settings_round_trip(self) -> None:
+        self.assertTrue(self.store.first_message_raid_suppression_enabled)
+        self.assertEqual(self.store.first_message_raid_suppression_minutes, 3)
+        routine = self.routines.add("Welcome viewers")
+        self.store.add(
+            routine.routine_id,
+            "channel.chat.first_message",
+            raid_suppression_enabled=True,
+            raid_suppression_minutes=7,
+        )
+
+        loaded_routines = RoutineStore(self.routines.path)
+        loaded = TwitchEventTriggerStore(self.store.path, loaded_routines)
+        loaded.load()
+        payload = json.loads(self.store.path.read_text(encoding="utf-8"))
+
+        self.assertEqual(payload["version"], 4)
+        self.assertEqual(
+            payload["first_message"],
+            {
+                "raid_suppression_enabled": True,
+                "raid_suppression_minutes": 7,
+            },
+        )
+        self.assertTrue(loaded.first_message_raid_suppression_enabled)
+        self.assertEqual(loaded.first_message_raid_suppression_minutes, 7)
+
+    def test_first_message_raid_suppression_duration_is_validated(self) -> None:
+        for index, value in enumerate((0, 31, float("nan"), float("inf"))):
+            with self.subTest(value=value):
+                routine = self.routines.add(f"Invalid duration {index}")
+                with self.assertRaisesRegex(ValueError, "between 1 and 30"):
+                    self.store.add(
+                        routine.routine_id,
+                        "channel.chat.first_message",
+                        raid_suppression_minutes=value,
+                    )
 
     def test_filters_match_nested_event_fields_case_insensitively(self) -> None:
         routine = self.routines.add("Hydrate")
@@ -563,7 +602,7 @@ class TwitchEventTriggerStoreTests(unittest.TestCase):
         trigger = self.store.add_channel_point_redemption(
             routine.routine_id, reward_id="reward-1", reward_title="Hydrate"
         )
-        self.assertEqual(json.loads(self.store.path.read_text(encoding="utf-8"))["version"], 3)
+        self.assertEqual(json.loads(self.store.path.read_text(encoding="utf-8"))["version"], 4)
 
         loaded = TwitchEventTriggerStore(self.store.path, self.routines)
         saved = loaded.load()[0]
@@ -628,6 +667,168 @@ class TwitchEventTriggerStoreTests(unittest.TestCase):
         self.assertEqual(first[0].context["user"], "Viewer")
         self.assertEqual(first[0].context["message"], "hello")
         self.assertEqual(repeated, ())
+
+    def test_incoming_raid_suppresses_first_messages_but_marks_viewers_seen(self) -> None:
+        clock = [0.0]
+        store = TwitchEventTriggerStore(
+            self.store.path,
+            self.routines,
+            self.store.first_message_state_path,
+            monotonic_clock=lambda: clock[0],
+        )
+        routine = self.routines.add("Welcome viewers")
+        trigger = store.add(routine.routine_id, "channel.chat.first_message")
+        started = datetime.now(timezone.utc)
+        store.observe_stream({"id": "stream-1"}, started)
+        store.evaluate(
+            event_with_condition(
+                "channel.raid",
+                {"from_broadcaster_user_id": "raider-1", "viewers": 80},
+                {"to_broadcaster_user_id": "1000"},
+            )
+        )
+        viewers = [
+            TwitchMessage(
+                username=f"Viewer {index}",
+                user_id=f"viewer-{index}",
+                text="raid",
+                received_at=started + timedelta(seconds=index),
+            )
+            for index in range(3)
+        ]
+
+        for message in viewers:
+            self.assertEqual(
+                store.evaluate_first_message(message, stream_is_live=True),
+                (),
+            )
+        self.assertEqual(
+            store._first_message_seen[trigger.trigger_id],
+            {"id:viewer-0", "id:viewer-1", "id:viewer-2"},
+        )
+
+        clock[0] = 181.0
+        self.assertEqual(
+            store.evaluate_first_message(viewers[0], stream_is_live=True),
+            (),
+        )
+        unseen = TwitchMessage(
+            username="Late Viewer",
+            user_id="viewer-late",
+            text="hello",
+            received_at=started + timedelta(minutes=4),
+        )
+        self.assertEqual(
+            len(store.evaluate_first_message(unseen, stream_is_live=True)),
+            1,
+        )
+
+    def test_outgoing_raid_does_not_suppress_first_message(self) -> None:
+        routine = self.routines.add("Welcome viewers")
+        self.store.add(routine.routine_id, "channel.chat.first_message")
+        started = datetime.now(timezone.utc)
+        self.store.observe_stream({"id": "stream-1"}, started)
+        self.store.evaluate(
+            event_with_condition(
+                "channel.raid",
+                {"from_broadcaster_user_id": "streamer-1"},
+                {"from_broadcaster_user_id": "streamer-1"},
+            )
+        )
+        message = TwitchMessage(
+            username="Viewer",
+            user_id="viewer-1",
+            text="hello",
+            received_at=started,
+        )
+
+        self.assertEqual(
+            len(self.store.evaluate_first_message(message, stream_is_live=True)),
+            1,
+        )
+
+    def test_disabled_setting_does_not_suppress_incoming_raid(self) -> None:
+        routine = self.routines.add("Welcome viewers")
+        self.store.add(
+            routine.routine_id,
+            "channel.chat.first_message",
+            raid_suppression_enabled=False,
+        )
+        started = datetime.now(timezone.utc)
+        self.store.observe_stream({"id": "stream-1"}, started)
+        self.store.evaluate(
+            event_with_condition(
+                "channel.raid",
+                {"from_broadcaster_user_id": "raider-1"},
+                {"to_broadcaster_user_id": "1000"},
+            )
+        )
+        message = TwitchMessage(
+            username="Viewer",
+            user_id="viewer-1",
+            text="hello",
+            received_at=started,
+        )
+
+        self.assertEqual(
+            len(self.store.evaluate_first_message(message, stream_is_live=True)),
+            1,
+        )
+
+    def test_second_incoming_raid_restarts_custom_suppression_duration(self) -> None:
+        clock = [0.0]
+        store = TwitchEventTriggerStore(
+            self.store.path,
+            self.routines,
+            self.store.first_message_state_path,
+            monotonic_clock=lambda: clock[0],
+        )
+        routine = self.routines.add("Welcome viewers")
+        store.add(
+            routine.routine_id,
+            "channel.chat.first_message",
+            raid_suppression_minutes=2,
+        )
+        started = datetime.now(timezone.utc)
+        store.observe_stream({"id": "stream-1"}, started)
+        incoming = event_with_condition(
+            "channel.raid",
+            {"from_broadcaster_user_id": "raider-1"},
+            {"to_broadcaster_user_id": "1000"},
+            received_at=started,
+        )
+        store.evaluate(incoming)
+        clock[0] = 90.0
+        store.evaluate(
+            event_with_condition(
+                "channel.raid",
+                {"from_broadcaster_user_id": "raider-2"},
+                {"to_broadcaster_user_id": "1000"},
+                received_at=started + timedelta(seconds=90),
+            )
+        )
+        clock[0] = 150.0
+        during_extension = TwitchMessage(
+            username="During Extension",
+            user_id="viewer-during",
+            text="hello",
+            received_at=started + timedelta(seconds=100),
+        )
+        self.assertEqual(
+            store.evaluate_first_message(during_extension, stream_is_live=True),
+            (),
+        )
+        clock[0] = 211.0
+        after_extension = TwitchMessage(
+            username="After Extension",
+            user_id="viewer-after",
+            text="hello",
+            received_at=started + timedelta(minutes=3),
+        )
+        self.assertEqual(
+            len(store.evaluate_first_message(after_extension, stream_is_live=True)),
+            1,
+        )
 
     def test_short_offline_period_does_not_repeat_welcome(self) -> None:
         routine = self.routines.add("Welcome viewers")
@@ -759,8 +960,9 @@ class TwitchEventTriggerStoreTests(unittest.TestCase):
         state = json.loads(
             self.store.first_message_state_path.read_text(encoding="utf-8")
         )
-        self.assertEqual(state["version"], 1)
+        self.assertEqual(state["version"], 2)
         self.assertEqual(state["stream_id"], "stream-2")
+        self.assertEqual(state["raid_suppression_until"], "")
         self.assertEqual(
             sum(len(values) for values in state["seen_by_trigger"].values()),
             1,
@@ -773,8 +975,14 @@ class TwitchEventTriggerStoreTests(unittest.TestCase):
             "channel.chat.first_message",
         )
         for payload in (
-            {"version": 2, "stream_id": "old", "seen_by_trigger": {}},
-            {"version": 1, "stream_id": [], "seen_by_trigger": {}},
+            {"version": 1, "stream_id": "old", "seen_by_trigger": {}},
+            {
+                "version": 2,
+                "stream_id": [],
+                "offline_since": "",
+                "raid_suppression_until": "",
+                "seen_by_trigger": {},
+            },
         ):
             with self.subTest(payload=payload):
                 self.store.first_message_state_path.write_text(
@@ -790,6 +998,101 @@ class TwitchEventTriggerStoreTests(unittest.TestCase):
                 self.assertIsNotNone(loaded.get(trigger.trigger_id))
                 self.assertEqual(loaded._stream_key, "")
                 self.assertEqual(loaded._first_message_seen, {})
+
+    def test_active_raid_suppression_survives_same_stream_restart(self) -> None:
+        clock = [0.0]
+        routine = self.routines.add("Welcome viewers")
+        trigger = self.store.add(routine.routine_id, "channel.chat.first_message")
+        started = datetime.now(timezone.utc)
+        self.store.observe_stream({"id": "stream-1"}, started)
+        self.store.evaluate(
+            event_with_condition(
+                "channel.raid",
+                {"from_broadcaster_user_id": "raider-1"},
+                {"to_broadcaster_user_id": "1000"},
+                received_at=started,
+            )
+        )
+        seen_during_raid = TwitchMessage(
+            username="Seen During Raid",
+            user_id="viewer-seen",
+            text="raid",
+            received_at=started + timedelta(seconds=1),
+        )
+        self.assertEqual(
+            self.store.evaluate_first_message(seen_during_raid, stream_is_live=True),
+            (),
+        )
+
+        loaded_routines = RoutineStore(self.routines.path)
+        loaded = TwitchEventTriggerStore(
+            self.store.path,
+            loaded_routines,
+            self.store.first_message_state_path,
+            monotonic_clock=lambda: clock[0],
+        )
+        loaded.load()
+        loaded.observe_stream({"id": "stream-1"}, started + timedelta(seconds=30))
+        new_during_raid = TwitchMessage(
+            username="New During Raid",
+            user_id="viewer-new",
+            text="hello",
+            received_at=started + timedelta(seconds=30),
+        )
+
+        self.assertEqual(
+            loaded.evaluate_first_message(new_during_raid, stream_is_live=True),
+            (),
+        )
+        clock[0] = 181.0
+        self.assertEqual(
+            loaded.evaluate_first_message(seen_during_raid, stream_is_live=True),
+            (),
+        )
+        after_restart_grace = TwitchMessage(
+            username="After Grace",
+            user_id="viewer-after-grace",
+            text="hello",
+            received_at=started + timedelta(minutes=4),
+        )
+        self.assertEqual(
+            len(
+                loaded.evaluate_first_message(
+                    after_restart_grace,
+                    stream_is_live=True,
+                )
+            ),
+            1,
+        )
+        self.assertIn("id:viewer-seen", loaded._first_message_seen[trigger.trigger_id])
+
+    def test_new_stream_clears_active_raid_suppression(self) -> None:
+        routine = self.routines.add("Welcome viewers")
+        self.store.add(routine.routine_id, "channel.chat.first_message")
+        started = datetime.now(timezone.utc)
+        self.store.observe_stream({"id": "stream-1"}, started)
+        self.store.evaluate(
+            event_with_condition(
+                "channel.raid",
+                {"from_broadcaster_user_id": "raider-1"},
+                {"to_broadcaster_user_id": "1000"},
+                received_at=started,
+            )
+        )
+
+        self.store.observe_stream({"id": "stream-2"}, started + timedelta(hours=4))
+        message = TwitchMessage(
+            username="New Stream Viewer",
+            user_id="viewer-new-stream",
+            text="hello",
+            received_at=started + timedelta(hours=4),
+        )
+
+        self.assertEqual(
+            len(self.store.evaluate_first_message(message, stream_is_live=True)),
+            1,
+        )
+        self.assertIsNone(self.store._raid_suppression_until)
 
     def test_keyword_phrase_contains_context_and_normal_chat_identity(self) -> None:
         routine = self.routines.add("Coffee response")
@@ -925,7 +1228,7 @@ class TwitchEventTriggerStoreTests(unittest.TestCase):
             {"version": 1, "triggers": []},
             {"version": 2, "triggers": []},
             {"version": "2", "triggers": []},
-            {"version": 4, "triggers": []},
+            {"version": 3, "triggers": []},
         ):
             with self.subTest(payload=payload):
                 self.store.path.write_text(json.dumps(payload), encoding="utf-8")
@@ -938,6 +1241,10 @@ class TwitchEventTriggerStoreTests(unittest.TestCase):
             json.dumps(
                 {
                     "version": self.store.VERSION,
+                    "first_message": {
+                        "raid_suppression_enabled": True,
+                        "raid_suppression_minutes": 3,
+                    },
                     "triggers": [
                         {
                             "routine_id": routine.routine_id,

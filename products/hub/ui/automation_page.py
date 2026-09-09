@@ -163,7 +163,12 @@ def _parse_event_filters(text: str) -> dict[str, str]:
 
 
 class NewRoutineDialog(QDialog):
-    def __init__(self, store: RoutineStore, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        store: RoutineStore,
+        parent: QWidget | None = None,
+        event_trigger_store: TwitchEventTriggerStore | None = None,
+    ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Create Routine")
         self.setMinimumWidth(560)
@@ -249,9 +254,38 @@ class NewRoutineDialog(QDialog):
         self.event_reset_spin.setRange(1, 180)
         self.event_reset_spin.setValue(15)
         self.event_reset_spin.setSuffix(" minutes offline")
+        self.event_raid_suppression_check = QCheckBox(
+            "Suppress First Message after incoming raids"
+        )
+        self.event_raid_suppression_check.setChecked(
+            event_trigger_store.first_message_raid_suppression_enabled
+            if event_trigger_store is not None
+            else True
+        )
+        self.event_raid_suppression_spin = QSpinBox()
+        self.event_raid_suppression_spin.setRange(
+            1,
+            TwitchEventTriggerStore.MAX_RAID_SUPPRESSION_MINUTES,
+        )
+        self.event_raid_suppression_spin.setValue(
+            event_trigger_store.first_message_raid_suppression_minutes
+            if event_trigger_store is not None
+            else TwitchEventTriggerStore.DEFAULT_RAID_SUPPRESSION_MINUTES
+        )
+        self.event_raid_suppression_spin.setSuffix(" minutes")
+        self.event_raid_suppression_help = QLabel(
+            "This setting is shared by all First Message triggers."
+        )
+        self.event_raid_suppression_help.setWordWrap(True)
         event_form.addRow("Event", self.event_type_combo)
         event_form.addRow("Field filters", self.event_filters_edit)
         event_form.addRow("Reset welcomes after", self.event_reset_spin)
+        event_form.addRow("", self.event_raid_suppression_check)
+        event_form.addRow(
+            "Raid suppression duration",
+            self.event_raid_suppression_spin,
+        )
+        event_form.addRow("", self.event_raid_suppression_help)
         event_form.addRow("", event_help)
         layout.addWidget(self.event_group)
         self.event_group.hide()
@@ -290,6 +324,10 @@ class NewRoutineDialog(QDialog):
         self.event_type_combo.currentIndexChanged.connect(
             self._update_trigger_fields
         )
+        self.event_raid_suppression_check.toggled.connect(
+            self._update_trigger_fields
+        )
+        self._update_trigger_fields()
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Save
@@ -317,6 +355,18 @@ class NewRoutineDialog(QDialog):
         )
         if reset_label is not None:
             reset_label.setVisible(reset_visible)
+        self.event_raid_suppression_check.setVisible(reset_visible)
+        self.event_raid_suppression_spin.setVisible(
+            reset_visible and self.event_raid_suppression_check.isChecked()
+        )
+        self.event_raid_suppression_help.setVisible(reset_visible)
+        suppression_label = self.event_group.layout().labelForField(
+            self.event_raid_suppression_spin
+        )
+        if suppression_label is not None:
+            suppression_label.setVisible(
+                reset_visible and self.event_raid_suppression_check.isChecked()
+            )
 
     def values(self) -> dict[str, object]:
         aliases = [
@@ -340,6 +390,12 @@ class NewRoutineDialog(QDialog):
             "event_type": str(self.event_type_combo.currentData()),
             "event_filters": _parse_event_filters(self.event_filters_edit.text()),
             "event_reset_minutes": self.event_reset_spin.value(),
+            "event_raid_suppression_enabled": (
+                self.event_raid_suppression_check.isChecked()
+            ),
+            "event_raid_suppression_minutes": (
+                self.event_raid_suppression_spin.value()
+            ),
             "core_event_type": str(self.core_event_combo.currentData()),
             "obs_event_type": str(self.obs_event_combo.currentData()),
             "obs_filters": _parse_event_filters(self.obs_filters_edit.text()),
@@ -351,6 +407,10 @@ class TwitchEventTriggerDialog(QDialog):
         self,
         parent: QWidget | None = None,
         trigger: TwitchEventAutomationTrigger | None = None,
+        raid_suppression_enabled: bool = True,
+        raid_suppression_minutes: int = (
+            TwitchEventTriggerStore.DEFAULT_RAID_SUPPRESSION_MINUTES
+        ),
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Edit Twitch Trigger" if trigger else "Add Twitch Trigger")
@@ -376,9 +436,27 @@ class TwitchEventTriggerDialog(QDialog):
         self.reset_spin.setRange(1, 180)
         self.reset_spin.setValue(trigger.reset_minutes if trigger else 15)
         self.reset_spin.setSuffix(" minutes offline")
+        self.raid_suppression_check = QCheckBox(
+            "Suppress First Message after incoming raids"
+        )
+        self.raid_suppression_check.setChecked(raid_suppression_enabled)
+        self.raid_suppression_spin = QSpinBox()
+        self.raid_suppression_spin.setRange(
+            1,
+            TwitchEventTriggerStore.MAX_RAID_SUPPRESSION_MINUTES,
+        )
+        self.raid_suppression_spin.setValue(raid_suppression_minutes)
+        self.raid_suppression_spin.setSuffix(" minutes")
+        self.raid_suppression_help = QLabel(
+            "This setting is shared by all First Message triggers."
+        )
+        self.raid_suppression_help.setWordWrap(True)
         form.addRow("Event", self.event_type_combo)
         form.addRow("Optional field filters", self.filters_edit)
         form.addRow("Reset welcomes after", self.reset_spin)
+        form.addRow("", self.raid_suppression_check)
+        form.addRow("Raid suppression duration", self.raid_suppression_spin)
+        form.addRow("", self.raid_suppression_help)
         form.addRow("", self.enabled_check)
         layout.addLayout(form)
         help_label = QLabel(
@@ -389,6 +467,9 @@ class TwitchEventTriggerDialog(QDialog):
         help_label.setWordWrap(True)
         layout.addWidget(help_label)
         self.event_type_combo.currentIndexChanged.connect(
+            self._update_reset_visibility
+        )
+        self.raid_suppression_check.toggled.connect(
             self._update_reset_visibility
         )
         self._update_reset_visibility()
@@ -406,6 +487,8 @@ class TwitchEventTriggerDialog(QDialog):
             "filters": _parse_event_filters(self.filters_edit.text()),
             "enabled": self.enabled_check.isChecked(),
             "reset_minutes": self.reset_spin.value(),
+            "raid_suppression_enabled": self.raid_suppression_check.isChecked(),
+            "raid_suppression_minutes": self.raid_suppression_spin.value(),
         }
 
     def _update_reset_visibility(self) -> None:
@@ -418,6 +501,16 @@ class TwitchEventTriggerDialog(QDialog):
         label = form.labelForField(self.reset_spin)
         if label is not None:
             label.setVisible(visible)
+        self.raid_suppression_check.setVisible(visible)
+        self.raid_suppression_spin.setVisible(
+            visible and self.raid_suppression_check.isChecked()
+        )
+        self.raid_suppression_help.setVisible(visible)
+        suppression_label = form.labelForField(self.raid_suppression_spin)
+        if suppression_label is not None:
+            suppression_label.setVisible(
+                visible and self.raid_suppression_check.isChecked()
+            )
 
 
 class KeywordPhraseTriggerDialog(QDialog):
@@ -3863,7 +3956,11 @@ class AutomationPage(QWidget):
         return existing.group_id if existing else self.routine_store.add_group(clean).group_id
 
     def _new_routine(self) -> None:
-        dialog = NewRoutineDialog(self.routine_store, self)
+        dialog = NewRoutineDialog(
+            self.routine_store,
+            self,
+            self.event_trigger_store,
+        )
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         values = dialog.values()
@@ -3903,6 +4000,12 @@ class AutomationPage(QWidget):
                         filters=values["event_filters"],
                         enabled=bool(values["enabled"]),
                         reset_minutes=int(values["event_reset_minutes"]),
+                        raid_suppression_enabled=bool(
+                            values["event_raid_suppression_enabled"]
+                        ),
+                        raid_suppression_minutes=int(
+                            values["event_raid_suppression_minutes"]
+                        ),
                     )
                 elif values["trigger_type"] == "core.lifecycle":
                     self.core_trigger_store.add(
@@ -4347,7 +4450,15 @@ class AutomationPage(QWidget):
         if routine is None:
             return
         if event_type is None:
-            dialog = TwitchEventTriggerDialog(self)
+            dialog = TwitchEventTriggerDialog(
+                self,
+                raid_suppression_enabled=(
+                    self.event_trigger_store.first_message_raid_suppression_enabled
+                ),
+                raid_suppression_minutes=(
+                    self.event_trigger_store.first_message_raid_suppression_minutes
+                ),
+            )
             if dialog.exec() != QDialog.DialogCode.Accepted:
                 return
             values = dialog.values()
@@ -4606,7 +4717,12 @@ class AutomationPage(QWidget):
     def _edit_event_trigger(
         self, routine_id: str, trigger: TwitchEventAutomationTrigger
     ) -> None:
-        dialog = TwitchEventTriggerDialog(self, trigger)
+        dialog = TwitchEventTriggerDialog(
+            self,
+            trigger,
+            self.event_trigger_store.first_message_raid_suppression_enabled,
+            self.event_trigger_store.first_message_raid_suppression_minutes,
+        )
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         try:
