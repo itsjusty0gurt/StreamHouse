@@ -109,7 +109,7 @@ class TwitchTaskTests(unittest.TestCase):
 
     def test_canonical_dotted_variables_are_valid_templates(self) -> None:
         SendTwitchChatMessageTask.validate_template(
-            "{user.name}: {custom.game_mode} / {counter.deaths.stream}"
+            "{user.name}: {custom.game_mode} / {counter.deaths.total}"
         )
         self.assertEqual(
             SendTwitchChatMessageTask.render(

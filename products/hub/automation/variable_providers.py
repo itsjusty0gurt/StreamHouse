@@ -122,6 +122,40 @@ class CustomVariableProvider:
 
 class CounterVariableProvider:
     source = "Counters"
+    _SCOPES = (
+        (
+            "total",
+            "Total",
+            "Channel lifetime total",
+            "channel_total",
+            False,
+            False,
+        ),
+        (
+            "stream",
+            "Stream",
+            "Channel total for the current Twitch stream",
+            "stream_total",
+            False,
+            True,
+        ),
+        (
+            "user.total",
+            "User Total",
+            "Current user's lifetime total",
+            "viewer_total",
+            True,
+            False,
+        ),
+        (
+            "user.stream",
+            "User Stream",
+            "Current user's total for the current Twitch stream",
+            "viewer_stream_total",
+            True,
+            True,
+        ),
+    )
 
     def __init__(
         self,
@@ -134,82 +168,109 @@ class CounterVariableProvider:
     def definitions(self) -> tuple[VariableDefinition, ...]:
         definitions: list[VariableDefinition] = []
         for counter in self.service.list_counters():
-            stream_name = f"counter.{counter.counter_id}.stream"
-            definitions.extend(
-                (
-                    VariableDefinition(
-                        name=stream_name,
-                        display_name=f"{counter.display_name} - Stream",
-                        description=f"Shared channel counter value for {counter.display_name}.",
-                        data_type=(
-                            VariableDataType.INTEGER
-                            if counter.numeric_type == "integer"
-                            else VariableDataType.NUMBER
-                        ),
-                        source=self.source,
-                        category="Counters",
-                        writable=counter.enabled and counter.track_channel_total,
-                    ),
-                    VariableDefinition(
-                        name=f"counter.{counter.counter_id}.viewer",
-                        display_name=f"{counter.display_name} - Viewer",
-                        description=(
-                            f"Lifetime value for {counter.display_name} associated "
-                            "with the current viewer."
-                        ),
-                        data_type=(
-                            VariableDataType.INTEGER
-                            if counter.numeric_type == "integer"
-                            else VariableDataType.NUMBER
-                        ),
-                        source=self.source,
-                        category="Counters",
-                        availability=VariableAvailability.CONTEXTUAL,
-                        writable=False,
-                        required_context=("user.id",),
-                        context_label="Viewer context",
-                    ),
-                )
+            data_type = (
+                VariableDataType.INTEGER
+                if counter.numeric_type == "integer"
+                else VariableDataType.NUMBER
             )
+            for (
+                suffix,
+                label,
+                description,
+                scope,
+                needs_user,
+                _needs_stream,
+            ) in self._SCOPES:
+                definitions.append(
+                    VariableDefinition(
+                        name=f"counter.{counter.counter_id}.{suffix}",
+                        display_name=f"{counter.display_name} - {label}",
+                        description=f"{description} for {counter.display_name}.",
+                        data_type=data_type,
+                        source=self.source,
+                        category="Counters",
+                        availability=(
+                            VariableAvailability.CONTEXTUAL
+                            if needs_user
+                            else VariableAvailability.GLOBAL
+                        ),
+                        writable=(
+                            suffix == "total"
+                            and counter.enabled
+                            and counter.tracks(scope)
+                        ),
+                        required_context=("user.id",) if needs_user else (),
+                        context_label="User context" if needs_user else "",
+                    )
+                )
         return tuple(definitions)
 
     def resolve(self, name: str, context: Mapping[str, object]) -> VariableSnapshot:
-        counter_id, scope = self._parts(name)
+        counter_id, suffix = self._parts(name)
         definition = next(item for item in self.definitions() if item.name == name)
         counter = self.service.get_counter(counter_id)
-        tracked = counter and (
-            counter.track_channel_total
-            if scope == "stream"
-            else counter.track_viewer_total
-        )
-        if counter is None or not counter.enabled or not tracked:
+        if counter is None or not counter.enabled:
             return VariableSnapshot(definition, None, False, "Counter is unavailable.")
-        user_id = self._context_user_id(context)
-        if scope == "viewer" and not user_id:
-            return VariableSnapshot(definition, None, False, "Requires viewer context.")
+        scope, needs_user, needs_stream = self._scope(suffix)
+        if not counter.tracks(scope):
+            return VariableSnapshot(
+                definition,
+                None,
+                False,
+                "Counter scope is not enabled.",
+            )
+        user_id = self._context_user_id(context) if needs_user else ""
+        if needs_user and not user_id:
+            return VariableSnapshot(definition, None, False, "Requires user context.")
+        stream_id = self.stream_id() if needs_stream else ""
+        if needs_stream and not stream_id:
+            return VariableSnapshot(
+                definition,
+                None,
+                False,
+                "Requires an active Twitch stream.",
+            )
         values = self.service.get_values(
             counter_id,
             user_id=user_id,
-            stream_id=self.stream_id(),
+            stream_id=stream_id,
         )
-        value = values.channel_total if scope == "stream" else values.viewer_total
+        value = getattr(values, scope)
         return VariableSnapshot(definition, value, True)
 
     def set_value(self, name: str, value: object) -> VariableSnapshot:
-        counter_id, scope = self._parts(name)
-        if scope != "stream":
+        counter_id, suffix = self._parts(name)
+        if suffix != "total":
             raise PermissionError(f'Variable "{name}" is read-only.')
         result = self.service.set_value(counter_id, "channel_total", value)
         if result.status not in {"success", "minimum_reached"}:
             raise ValueError(result.detail or f"Counter update failed: {result.status}.")
         return self.resolve(name, {})
 
-    @staticmethod
-    def _parts(name: str) -> tuple[str, str]:
-        prefix, counter_id, scope = name.split(".", 2)
-        if prefix != "counter" or scope not in {"stream", "viewer"}:
+    @classmethod
+    def _parts(cls, name: str) -> tuple[str, str]:
+        parts = name.split(".")
+        if len(parts) < 3 or parts[0] != "counter":
             raise KeyError(f'Unknown counter variable "{name}".')
-        return counter_id, scope
+        counter_id = parts[1]
+        suffix = ".".join(parts[2:])
+        if suffix not in {item[0] for item in cls._SCOPES}:
+            raise KeyError(f'Unknown counter variable "{name}".')
+        return counter_id, suffix
+
+    @classmethod
+    def _scope(cls, suffix: str) -> tuple[str, bool, bool]:
+        for (
+            candidate,
+            _label,
+            _description,
+            scope,
+            needs_user,
+            needs_stream,
+        ) in cls._SCOPES:
+            if candidate == suffix:
+                return scope, needs_user, needs_stream
+        raise KeyError(f'Unknown counter variable scope "{suffix}".')
 
     @staticmethod
     def _context_user_id(context: Mapping[str, object]) -> str:

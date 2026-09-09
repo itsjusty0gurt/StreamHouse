@@ -919,7 +919,7 @@ class MainWindowTests(unittest.TestCase):
                     "core.if",
                     "Inner If",
                     {
-                        "left": "{counter.deaths.stream}",
+                        "left": "{counter.deaths.total}",
                         "operator": "greater_or_equal",
                         "right": "10",
                     },

@@ -362,7 +362,7 @@ class CounterTaskTests(unittest.TestCase):
             variable_registry=variables,
         ).run_routine(routine.routine_id)
         self.assertTrue(result.succeeded)
-        self.assertEqual(capture.context["counter.farts.stream"], "1")
+        self.assertEqual(capture.context["counter.farts.total"], "1")
 
     def test_chat_command_data_drives_decimal_set_and_increase_routines(self) -> None:
         service = CounterService(CounterStore(Path(self.temp.name) / "commands"))

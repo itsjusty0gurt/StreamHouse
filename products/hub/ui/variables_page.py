@@ -229,7 +229,9 @@ class VariablesPage(QWidget):
                 row,
                 4,
                 QTableWidgetItem(
-                    "Available" if snapshot.available else "Not currently available"
+                    "Available"
+                    if snapshot.available
+                    else snapshot.detail or "Not currently available"
                 ),
             )
             self.table.setItem(row, 5, QTableWidgetItem(entry.context_label))
@@ -296,6 +298,8 @@ class VariablesPage(QWidget):
             f"Lifetime: {definition.lifetime_label}",
             f"Current value: {'Available' if snapshot.available else 'Not currently available'}",
         ]
+        if not snapshot.available and snapshot.detail:
+            details.append(f"Status: {snapshot.detail}")
         reference = entry.output_reference
         if reference is not None:
             details.extend(

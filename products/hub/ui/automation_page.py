@@ -1353,7 +1353,7 @@ class TaskEditorDialog(QDialog):
             {"key": "stop_on_failure", "label": "", "kind": "bool", "default": True, "text": "Stop the routine if the file cannot be read"},
         ),
         "core.if": (
-            {"key": "left", "label": "Left Value", "kind": "text", "default": "", "required": True, "placeholder": "{counter.deaths.stream}"},
+            {"key": "left", "label": "Left Value", "kind": "text", "default": "", "required": True, "placeholder": "{counter.deaths.total}"},
             {"key": "operator", "label": "Comparison", "kind": "choice", "default": "equals", "choices": IF_COMPARISON_CHOICES},
             {"key": "right", "label": "Right Value", "kind": "text", "default": ""},
             {"key": "ignore_case", "label": "", "kind": "bool", "default": False, "text": "Ignore uppercase and lowercase differences"},

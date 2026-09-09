@@ -530,8 +530,8 @@ historical ones. Run History is not persisted across Hub restarts.
 `products/hub/automation/variable_registry.py` is the authoritative metadata,
 resolution, placeholder, alias, and write-routing layer for modern Hub
 variables. Canonical names use `namespace.name` or deeper dotted scopes such as
-`counter.<stable_id>.viewer`. `VariableDefinition` records the canonical name,
-display name, description, type, source, category, availability, required
+`counter.<stable_id>.user.stream`. `VariableDefinition` records the canonical
+name, display name, description, type, source, category, availability, required
 context keys, a provider-owned human-readable context label, optional default
 and preview values, alias status, and whether the owning provider supports
 writes. Valid types are `text`, `integer`, `number`,
@@ -564,8 +564,8 @@ Current providers expose:
   source, target, and viewer count;
 - automatically available Hub-owned Channel Information as `channel.schedule`,
   `channel.rules`, `socials.<service>`, and `serverinfo.details`;
-- stable shared counter totals as `counter.<counter_id>.stream` and contextual
-  lifetime viewer totals as `counter.<counter_id>.viewer`;
+- configured counter scopes as `counter.<counter_id>.total`, `.stream`,
+  `.user.total`, and `.user.stream`;
 - the observed OBS program scene as `obs.current_scene`;
 - Hub uptime and Twitch/OBS connection booleans as `hub.*`;
 - persisted/session custom values as `custom.<name>`.
@@ -578,7 +578,7 @@ Availability/lifetime is metadata, not a sample-value inference:
 - **Contextual** definitions require trigger/event data. `user.*`, `chat.*`,
   `command.*`, `keyword.*`, `ads.requester.*`, `channel_points.*`,
   `subscription.*`, `raid.*`, and
-  `counter.<id>.viewer` never
+  `counter.<id>.user.total` and `.user.stream` never
   invent a viewer, message, requester, or fallback value.
 - **Temporary** definitions describe task/action outputs that exist only in the
   current routine execution after their producing task has run. They are not
@@ -593,17 +593,24 @@ authoring tables, pickers, and message previews never present them as current
 runtime values.
 
 Provider writes are opt-in. `custom.*` writes use `CustomVariableStore`, and a
-writable `counter.<id>.stream` value uses `CounterService.set_value()` for the
-existing shared channel total. `counter.<id>.viewer` is read-only because a
-registry write does not carry a safe viewer identity. Twitch, chat, OBS, and Hub
-runtime state remain read-only; the variable layer is not a backdoor around
-their service actions.
+writable `counter.<id>.total` value uses `CounterService.set_value()` for the
+existing channel lifetime total. The other counter scopes are read-only;
+especially, a registry write does not carry a safe viewer identity. Twitch,
+chat, OBS, and Hub runtime state remain read-only; the variable layer is not a
+backdoor around their service actions.
 
 Counter variable names always use the immutable counter ID, never the editable
-display label. Stream and viewer scope are explicit: `counter.<id>.stream` and
-`counter.<id>.viewer`. The `.viewer` scope uses the
-triggering viewer's stable Twitch user ID. Without that context it is explicitly
-unavailable and does not substitute the shared value or create a viewer entry.
+display label. The four canonical mappings are `counter.<id>.total` for channel
+lifetime, `.stream` for the current Twitch stream, `.user.total` for the
+triggering user's lifetime value, and `.user.stream` for that user's current-
+stream value. User scopes resolve only from the triggering viewer's stable
+Twitch user ID. Without that context they remain discoverable but explicitly
+unavailable and never substitute the channel value, invent zero, or create a
+viewer entry. All four definitions remain discoverable; a scope disabled in
+Counter Setup reports **Counter scope is not enabled**. Stream scopes use the
+existing Twitch stream identity and are unavailable while no stream is active.
+There is no ambiguous `counter.<id>` definition or compatibility alias. Integer
+and Decimal definitions retain their configured numeric behavior.
 
 The Automation **Variables** tab is a definition reference as well as a live
 value view. It always lists registry definitions, including contextual
@@ -635,7 +642,7 @@ routine-scoped task outputs use `automation.<name>`. Typed output definitions in
 type, source task, lifetime, description, and preview without globally
 registering temporary values. Same-name temporary outputs retain deterministic
 task-order overwrite behavior. Counter tasks do not manufacture outputs: later
-tasks read the refreshed `counter.<id>.stream` or `.viewer` provider value.
+tasks read the refreshed canonical `counter.<id>.*` provider value.
 
 The Variables page also derives read-only configured-output references from
 the current `RoutineStore` using the same
@@ -737,7 +744,7 @@ shared is the beginner default, while viewer/current-broadcast choices remain
 available when the definition tracks them. Increase/Decrease default to `1`.
 Their Amount fields and Set's Value field accept an exact numeric literal or a
 single resolvable modern placeholder such as `{command.data}`,
-`{custom.some_number}`, or `{counter.other.stream}`. Invalid, unavailable, or
+`{custom.some_number}`, or `{counter.other.total}`. Invalid, unavailable, or
 non-numeric input fails the task without writing Counter state. Reset restores
 the definition's configured reset value. Counter tasks do not own triggers or
 outputs: triggers supply context, tasks mutate through `CounterService`, and

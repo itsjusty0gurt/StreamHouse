@@ -1,5 +1,6 @@
 import json
 import os
+from decimal import Decimal
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -223,38 +224,178 @@ def test_custom_metadata_type_persistence_deletion_and_reserved_names() -> None:
             loaded.validate_custom_name("bad-name")
 
 
-def test_counter_variable_uses_stable_id_and_domain_service_for_writes() -> None:
+def test_counter_variables_map_all_scopes_and_use_stable_user_id() -> None:
     with TemporaryDirectory() as temporary:
         service = CounterService(CounterStore(Path(temporary) / "counters"))
-        service.create_counter(CounterDefinition("deaths", "Deaths", "death", "deaths", reset_value="5"))
-        provider = CounterVariableProvider(service)
+        service.create_counter(
+            CounterDefinition(
+                "deaths",
+                "Deaths",
+                "death",
+                "deaths",
+                reset_value="5",
+                track_viewer_stream_total=True,
+            )
+        )
+        stream_id = ["stream-1"]
+        provider = CounterVariableProvider(service, lambda: stream_id[0])
         registry = VariableRegistry()
         registry.register(provider)
 
-        assert registry.resolve("counter.deaths.stream").display_value == "5"
+        assert {item.name for item in provider.definitions()} == {
+            "counter.deaths.total",
+            "counter.deaths.stream",
+            "counter.deaths.user.total",
+            "counter.deaths.user.stream",
+        }
+        assert all(
+            item.data_type is VariableDataType.INTEGER
+            for item in provider.definitions()
+        )
         assert registry.resolve("counter.deaths") is None
-        registry.set_value("counter.deaths.stream", 9)
+        assert registry.resolve("counter.deaths.viewer") is None
+        registry.set_value("counter.deaths.total", 9)
         assert service.get_values("deaths").channel_total == 9
-        assert not registry.resolve("counter.deaths.viewer", {}).available
+        service.set_value("deaths", "stream_total", 7, stream_id="stream-1")
         service.set_value("deaths", "viewer_total", 3, user_id="111")
-        viewer = registry.resolve("counter.deaths.viewer", {"user_id": "111"})
-        assert viewer.available and viewer.value == 3
+        service.set_value(
+            "deaths",
+            "viewer_stream_total",
+            2,
+            user_id="111",
+            stream_id="stream-1",
+        )
+        service.set_value("deaths", "viewer_total", 8, user_id="222")
+        service.set_value(
+            "deaths",
+            "viewer_stream_total",
+            6,
+            user_id="222",
+            stream_id="stream-1",
+        )
+
+        assert registry.resolve("counter.deaths.total").value == 9
+        assert registry.resolve("counter.deaths.stream").value == 7
+        assert registry.resolve(
+            "counter.deaths.user.total", {"user.id": "111"}
+        ).value == 3
+        assert registry.resolve(
+            "counter.deaths.user.stream", {"user.id": "111"}
+        ).value == 2
+        assert registry.resolve(
+            "counter.deaths.user.total", {"user.id": "222"}
+        ).value == 8
+        assert registry.resolve(
+            "counter.deaths.user.stream", {"user.id": "222"}
+        ).value == 6
+        template = (
+            "{counter.deaths.total}|{counter.deaths.stream}|"
+            "{counter.deaths.user.total}|{counter.deaths.user.stream}"
+        )
+        assert registry.render(template, {"user.id": "111"}) == "9|7|3|2"
+        assert registry.render(template, {"user.id": "222"}) == "9|7|8|6"
+
+        missing_total = registry.resolve("counter.deaths.user.total", {})
+        missing_stream = registry.resolve("counter.deaths.user.stream", {})
+        assert not missing_total.available
+        assert missing_total.detail == "Requires user context."
+        assert not missing_stream.available
+        assert missing_stream.detail == "Requires user context."
         with pytest.raises(PermissionError, match="read-only"):
-            registry.set_value("counter.deaths.viewer", 4)
+            registry.set_value("counter.deaths.user.total", 4)
         service.update_counter("deaths", display_name="Boss Deaths")
-        assert provider.definitions()[0].name == "counter.deaths.stream"
-        assert registry.resolve("counter.deaths.stream").definition.display_name.startswith("Boss Deaths")
+        assert provider.definitions()[0].name == "counter.deaths.total"
+        assert registry.resolve(
+            "counter.deaths.total"
+        ).definition.display_name.startswith("Boss Deaths")
+
+        stream_id[0] = "stream-2"
+        assert registry.resolve("counter.deaths.total").value == 9
+        assert registry.resolve("counter.deaths.stream").value == 5
+        assert registry.resolve(
+            "counter.deaths.user.total", {"user.id": "111"}
+        ).value == 3
+        assert registry.resolve(
+            "counter.deaths.user.stream", {"user.id": "111"}
+        ).value == 5
+        stream_id[0] = ""
+        missing_channel_stream = registry.resolve("counter.deaths.stream")
+        missing_user_stream = registry.resolve(
+            "counter.deaths.user.stream", {"user.id": "111"}
+        )
+        assert not missing_channel_stream.available
+        assert missing_channel_stream.detail == "Requires an active Twitch stream."
+        assert not missing_user_stream.available
+        assert missing_user_stream.detail == "Requires an active Twitch stream."
+
         service.create_counter(
             CounterDefinition(
                 "coffee", "Coffee", "cup", "cups",
                 numeric_type="decimal", display_precision=2,
+                track_viewer_stream_total=True,
             )
         )
-        decimal_definition = next(
-            item for item in provider.definitions()
-            if item.name == "counter.coffee.stream"
+        service.set_value("coffee", "channel_total", "0.3")
+        service.set_value("coffee", "viewer_total", "0.75", user_id="111")
+        decimal_definitions = {
+            item.name: item for item in provider.definitions()
+            if item.name.startswith("counter.coffee.")
+        }
+        assert all(
+            item.data_type is VariableDataType.NUMBER
+            for item in decimal_definitions.values()
         )
-        assert decimal_definition.data_type is VariableDataType.NUMBER
+        assert registry.resolve("counter.coffee.total").value == Decimal("0.3")
+        assert registry.resolve(
+            "counter.coffee.user.total", {"user.id": "111"}
+        ).value == Decimal("0.75")
+
+        application = QApplication.instance() or QApplication([])
+        picker = VariablePickerDialog(registry)
+        picker.search_edit.setText("counter.deaths.user.total")
+        assert picker.selected_placeholder() == "{counter.deaths.user.total}"
+        assert picker.table.item(0, 1).text() == "Not currently available"
+        assert picker.table.item(0, 4).text() == "Requires user context."
+        picker.close()
+        application.processEvents()
+
+
+def test_counter_variable_definitions_report_untracked_and_missing_context() -> None:
+    with TemporaryDirectory() as temporary:
+        service = CounterService(CounterStore(Path(temporary) / "counters"))
+        service.create_counter(
+            CounterDefinition(
+                "deaths",
+                "Deaths",
+                "death",
+                "deaths",
+                track_stream_total=False,
+                track_viewer_total=False,
+                track_viewer_stream_total=False,
+            )
+        )
+        registry = VariableRegistry()
+        registry.register(CounterVariableProvider(service, lambda: "stream-1"))
+
+        definitions = {
+            item.name: item for item in registry.definitions()
+            if item.name.startswith("counter.deaths.")
+        }
+        assert set(definitions) == {
+            "counter.deaths.total",
+            "counter.deaths.stream",
+            "counter.deaths.user.total",
+            "counter.deaths.user.stream",
+        }
+        assert registry.resolve("counter.deaths.total").available
+        for name in (
+            "counter.deaths.stream",
+            "counter.deaths.user.total",
+            "counter.deaths.user.stream",
+        ):
+            snapshot = registry.resolve(name, {"user.id": "111"})
+            assert not snapshot.available
+            assert snapshot.detail == "Counter scope is not enabled."
 
 
 def test_alias_metadata_collisions_and_loop_prevention() -> None:
@@ -467,7 +608,10 @@ def test_variables_page_and_picker_search_canonical_names() -> None:
         picker.search_edit.setText("user.id")
         assert picker.selected_placeholder() == "{user.id}"
         assert picker.table.item(0, 1).text() == "Not currently available"
-        assert picker.table.item(0, 4).text() == "Not currently available"
+        assert (
+            picker.table.item(0, 4).text()
+            == "Only available during a matching trigger event."
+        )
         assert picker.table.item(0, 5).text() == "Viewer context"
         assert picker.table.item(0, 6).text() == "Routine"
         editor = TaskEditorDialog(
@@ -533,7 +677,10 @@ def test_variables_page_lists_contextual_definitions_without_fake_values() -> No
         for name in expected:
             row = names[name]
             assert page.table.item(row, 1).text() == "Not currently available"
-            assert page.table.item(row, 4).text() == "Not currently available"
+            assert (
+                page.table.item(row, 4).text()
+                == "Only available during a matching trigger event."
+            )
             assert page.table.item(row, 6).text() == "Routine"
 
         command_row = names["{command.data}"]
@@ -583,8 +730,22 @@ def test_variables_page_refreshes_dynamic_providers() -> None:
             page.table.item(row, 0).text()
             for row in range(page.table.rowCount())
         }
-        assert "{counter.deaths.stream}" in names
-        assert "{counter.deaths.viewer}" in names
+        assert {
+            "{counter.deaths.total}",
+            "{counter.deaths.stream}",
+            "{counter.deaths.user.total}",
+            "{counter.deaths.user.stream}",
+        }.issubset(names)
+        user_total_row = next(
+            row for row in range(page.table.rowCount())
+            if page.table.item(row, 0).text() == "{counter.deaths.user.total}"
+        )
+        assert page.table.item(user_total_row, 1).text() == "Not currently available"
+        assert page.table.item(user_total_row, 4).text() == "Requires user context."
+        page.table.selectRow(user_total_row)
+        application.processEvents()
+        assert "Requires: User context" in page.details_label.text()
+        assert "Status: Requires user context." in page.details_label.text()
         assert "{socials.discord}" in names
 
         counter_service.delete_counter("deaths")

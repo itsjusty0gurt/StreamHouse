@@ -137,7 +137,9 @@ class VariablePickerDialog(QDialog):
                 row,
                 4,
                 QTableWidgetItem(
-                    "Available" if snapshot.available else "Not currently available"
+                    "Available"
+                    if snapshot.available
+                    else snapshot.detail or "Not currently available"
                 ),
             )
             self.table.setItem(
