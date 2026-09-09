@@ -243,6 +243,8 @@ class TwitchCommandTriggerStoreTests(unittest.TestCase):
 
         attached = self.routine_store.get(routine.routine_id)
         self.assertEqual(attached.trigger_id, trigger.trigger_id)
+        self.assertEqual(attached.group_id, "")
+        self.assertEqual(self.routine_store.groups, [])
         self.assertEqual([value.task_id for value in attached.tasks], [task.task_id])
         self.assertEqual(self.store.response_for(trigger), "")
 
@@ -311,7 +313,11 @@ class TwitchCommandTriggerStoreTests(unittest.TestCase):
         self.assertEqual(len(self.routine_store.get(trigger.routine_id).tasks), 2)
 
     def test_trigger_can_attach_to_and_detach_from_existing_routine(self) -> None:
-        routine = self.routine_store.add("Existing workflow")
+        group = self.routine_store.add_group("Fun Stuff")
+        routine = self.routine_store.add(
+            "Existing workflow",
+            group_id=group.group_id,
+        )
         extra = self.routine_store.add_task(
             routine.routine_id,
             task_type="test.audit",
@@ -327,6 +333,7 @@ class TwitchCommandTriggerStoreTests(unittest.TestCase):
         attached = self.routine_store.get(routine.routine_id)
         self.assertEqual(attached.trigger_id, trigger.trigger_id)
         self.assertEqual(attached.managed_by, self.store.MANAGED_BY)
+        self.assertEqual(attached.group_id, group.group_id)
         self.assertEqual(len(attached.tasks), 2)
         self.assertEqual(attached.tasks[1].task_id, extra.task_id)
         self.assertTrue(self.store.delete(trigger.trigger_id, delete_routine=False))
@@ -334,7 +341,64 @@ class TwitchCommandTriggerStoreTests(unittest.TestCase):
         self.assertIsNotNone(detached)
         self.assertEqual(detached.trigger_id, "")
         self.assertEqual(detached.managed_by, "")
+        self.assertEqual(detached.group_id, group.group_id)
         self.assertEqual(len(detached.tasks), 2)
+
+    def test_moved_custom_command_keeps_group_across_edit_reconcile_and_reload(self) -> None:
+        trigger = self.store.add("fartcount", "Count: {counter.farts.total}")
+        commands_group = self.routine_store.get(
+            trigger.routine_id
+        ).group_id
+        custom_group = self.routine_store.add_group("Fun Stuff")
+        self.routine_store.update(
+            trigger.routine_id,
+            group_id=custom_group.group_id,
+            queue_id="gaming-queue",
+        )
+
+        self.store.update(
+            trigger.trigger_id,
+            name="fartcount",
+            response="Updated",
+            aliases=["farts"],
+            permission="moderator",
+            global_cooldown_seconds=5,
+            user_cooldown_seconds=10,
+        )
+        self.store.set_enabled(trigger.trigger_id, False)
+        self.store.reconcile_managed_routines()
+
+        moved = self.routine_store.get(trigger.routine_id)
+        self.assertEqual(moved.group_id, custom_group.group_id)
+        self.assertEqual(moved.queue_id, "gaming-queue")
+        self.assertNotEqual(moved.group_id, commands_group)
+
+        loaded = TwitchCommandTriggerStore(
+            self.path,
+            RoutineStore(self.routine_store.path),
+        )
+        loaded.load()
+        reloaded = loaded.routine_store.get(trigger.routine_id)
+        self.assertEqual(reloaded.group_id, custom_group.group_id)
+        self.assertEqual(reloaded.queue_id, "gaming-queue")
+
+    def test_reconcile_and_detach_preserve_orphan_group(self) -> None:
+        group = self.routine_store.add_group("Archive")
+        orphan = self.routine_store.create_managed(
+            trigger_id="missing-command",
+            name="Retired command",
+            managed_by=self.store.MANAGED_BY,
+            group_id=group.group_id,
+            task_type="twitch.send_chat_message",
+            task_name="Keep response",
+            task_config={"message": "Still useful", "as_bot": True},
+        )
+
+        self.store.reconcile_managed_routines()
+
+        detached = self.routine_store.get(orphan.routine_id)
+        self.assertEqual(detached.managed_by, "")
+        self.assertEqual(detached.group_id, group.group_id)
 
     def test_load_releases_custom_orphans_and_removes_default_orphans(self) -> None:
         custom = self.routine_store.create_managed(
@@ -467,6 +531,40 @@ class TwitchCommandTriggerStoreTests(unittest.TestCase):
         self.store.delete(custom.trigger_id)
         self.assertEqual(self.routine_store.groups, [])
 
+    def test_moved_default_command_keeps_group_across_update_and_reconcile(self) -> None:
+        command = self.store.configure_default("uptime")
+        custom_group = self.routine_store.add_group("Stream Info")
+        self.routine_store.update(
+            command.routine_id,
+            group_id=custom_group.group_id,
+        )
+
+        self.store.update(
+            command.trigger_id,
+            name="uptime",
+            response="Still live",
+            aliases=[],
+            permission="everyone",
+            global_cooldown_seconds=4,
+            user_cooldown_seconds=8,
+        )
+        self.store.set_enabled(command.trigger_id, False)
+        self.store.reconcile_managed_routines()
+
+        self.assertEqual(
+            self.routine_store.get(command.routine_id).group_id,
+            custom_group.group_id,
+        )
+        loaded = TwitchCommandTriggerStore(
+            self.path,
+            RoutineStore(self.routine_store.path),
+        )
+        loaded.load()
+        self.assertEqual(
+            loaded.routine_store.get(command.routine_id).group_id,
+            custom_group.group_id,
+        )
+
     def test_version_five_seeded_defaults_are_rejected_before_alpha(self) -> None:
         self.path.write_text(
             json.dumps(
@@ -525,6 +623,12 @@ class TwitchCommandTriggerStoreTests(unittest.TestCase):
     def test_reset_default_restores_current_trigger_and_routine_definition(self) -> None:
         self.store.configure_default("title")
         command = self.store.default("title")
+        custom_group = self.routine_store.add_group("Channel Details")
+        self.routine_store.update(
+            command.routine_id,
+            group_id=custom_group.group_id,
+            queue_id="slow-queue",
+        )
         self.store.update(
             command.trigger_id,
             name="headline",
@@ -546,8 +650,11 @@ class TwitchCommandTriggerStoreTests(unittest.TestCase):
         self.assertEqual(reset.name, "title")
         self.assertEqual(reset.aliases, [])
         self.assertEqual(reset.permission, "everyone")
+        routine = self.routine_store.get(reset.routine_id)
+        self.assertEqual(routine.group_id, custom_group.group_id)
+        self.assertEqual(routine.queue_id, "slow-queue")
         self.assertEqual(
-            [task.task_type for task in self.routine_store.get(reset.routine_id).tasks],
+            [task.task_type for task in routine.tasks],
             [
                 "twitch.send_chat_message",
             ],

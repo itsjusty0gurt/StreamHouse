@@ -208,15 +208,8 @@ class TwitchCommandTriggerStore:
                 deleted += 1
             else:
                 self.routine_store.detach_managed(routine.routine_id, self.MANAGED_BY)
-                self.routine_store.update(routine.routine_id, group_id="")
                 detached += 1
-        if self.triggers:
-            group_id = self._ensure_commands_group()
-            for trigger in self.triggers:
-                routine = self.routine_store.get(trigger.routine_id)
-                if routine is not None and routine.group_id != group_id:
-                    self.routine_store.update(routine.routine_id, group_id=group_id)
-        else:
+        if not self.triggers:
             self._remove_empty_commands_group()
         return detached, deleted
 
@@ -309,17 +302,12 @@ class TwitchCommandTriggerStore:
                 else None
             ),
         )
-        self.routine_store.update(
-            routine_id,
-            group_id=self._ensure_commands_group(),
-        )
         self.triggers.append(trigger)
         try:
             self.save()
         except OSError:
             self.triggers.remove(trigger)
             self.routine_store.detach_managed(routine_id, self.MANAGED_BY)
-            self.routine_store.update(routine_id, group_id="")
             self._remove_empty_commands_group()
             raise
         return trigger
@@ -387,7 +375,6 @@ class TwitchCommandTriggerStore:
             self.routine_store.delete_managed(trigger.routine_id, self.MANAGED_BY)
         else:
             self.routine_store.detach_managed(trigger.routine_id, self.MANAGED_BY)
-            self.routine_store.update(trigger.routine_id, group_id="")
         self._remove_empty_commands_group()
         self.save()
         return True
@@ -490,8 +477,16 @@ class TwitchCommandTriggerStore:
                 f"Could not reset !{definition.name}: that name is used by another command."
             )
         routine = self.routine_store.get(existing.routine_id)
-        group_id = self._ensure_commands_group()
-        replacement = self._routine_for(definition, group_id=group_id)
+        replacement = self._routine_for(
+            definition,
+            group_id=(
+                routine.group_id
+                if routine is not None
+                else self._ensure_commands_group()
+            ),
+        )
+        if routine is not None:
+            replacement.queue_id = routine.queue_id
         routines = [
             replacement if value.routine_id == existing.routine_id else value
             for value in self.routine_store.routines

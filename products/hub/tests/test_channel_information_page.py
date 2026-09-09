@@ -111,6 +111,11 @@ class ChannelInformationPageTests(unittest.TestCase):
                          TwitchCommandSetupState.ENABLED)
         routine = self.commands.routine_store.get(routine_id)
         self.assertEqual(self.commands.routine_store.get_group(routine.group_id).name, "Commands")
+        custom_group = self.commands.routine_store.add_group("Community")
+        self.commands.routine_store.update(
+            routine_id,
+            group_id=custom_group.group_id,
+        )
         include.setChecked(True)
         update.click()
         socials_id = self.commands.default("socials").routine_id
@@ -119,9 +124,18 @@ class ChannelInformationPageTests(unittest.TestCase):
         self.assertIn("/first", self.information.build_social_links_message())
         update.click()
         self.assertEqual(self.commands.default("discord").routine_id, routine_id)
+        self.assertEqual(
+            self.commands.routine_store.get(routine_id).group_id,
+            custom_group.group_id,
+        )
         self.assertEqual(self.commands.default("socials").routine_id, socials_id)
         self.assertEqual(len(self.commands.triggers), 2)
-        self.assertEqual(len(self.commands.routine_store.groups), 1)
+        self.assertEqual(len(self.commands.routine_store.groups), 2)
+        socials_routine = self.commands.routine_store.get(socials_id)
+        self.assertEqual(
+            self.commands.routine_store.get_group(socials_routine.group_id).name,
+            "Commands",
+        )
         edit.clear()
         update.click()  # Empty + Include is allowed; it is simply unconfigured.
         self.assertFalse(self.commands.default("discord").enabled)
@@ -133,6 +147,10 @@ class ChannelInformationPageTests(unittest.TestCase):
         edit.setText("discord.gg/restored")
         update.click()
         self.assertEqual(self.commands.default("discord").routine_id, routine_id)
+        self.assertEqual(
+            self.commands.routine_store.get(routine_id).group_id,
+            custom_group.group_id,
+        )
         self.assertTrue(self.commands.default("socials").enabled)
 
     def test_multiple_socials_and_include_do_not_disable_individual_command(self) -> None:

@@ -835,11 +835,16 @@ configured. Templates do not create trigger or routine records at startup.
 Committing social setup can configure/enable its existing default and `!socials`
 without visiting Commands; clearing setup disables those managed defaults.
 Configuring a built-in template or creating a custom command creates a normal
-managed Automation routine in the shared **Commands** group; edits preserve
-that routine's identity. The group is created on demand and removed when the
-last command routine is deleted. `twitch/commands.json` therefore stores only
-configured commands, while `automation/routines.json` owns their routines and
-grouping.
+managed Automation routine in the shared **Commands** group by default. Group
+placement is user-owned organization, independent of trigger type: attaching a
+command to an existing routine preserves its group, and command edits,
+reconciliation, reload, and managed default/social synchronization never move a
+routine back to **Commands**. Managed command ownership covers trigger/routine
+identity and setup synchronization, not group ownership. The group is created
+on demand and removed under the existing empty-group cleanup rules.
+`twitch/commands.json` therefore stores only configured commands, while
+`automation/routines.json` remains authoritative for their routines and group
+placement.
 
 ## Twitch subsystem
 
