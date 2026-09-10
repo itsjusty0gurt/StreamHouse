@@ -38,6 +38,16 @@ class PackageBoundaryTests(unittest.TestCase):
     def test_ai_does_not_import_hub_product(self) -> None:
         self._assert_no_prefix(self.root / "products" / "ai", "products.hub")
 
+    def test_hub_and_shared_do_not_import_model_providers(self) -> None:
+        for root in (self.root / "products" / "hub", self.root / "shared"):
+            for provider in ("openai", "ollama", "transformers", "llama_cpp"):
+                self._assert_no_prefix(root, provider)
+
+    def test_shared_reply_policy_cannot_generate_fallback_text(self) -> None:
+        from shared.streamhouse_shared.response_policy import ResponsePolicy
+
+        self.assertFalse(hasattr(ResponsePolicy, "fallback_reply"))
+
     def test_shared_does_not_import_either_product(self) -> None:
         self._assert_no_prefix(self.root / "shared", "products")
 

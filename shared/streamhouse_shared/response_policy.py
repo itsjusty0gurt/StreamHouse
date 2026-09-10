@@ -4,11 +4,11 @@ import re
 from difflib import SequenceMatcher
 from typing import Iterable
 
-from shared.streamhouse_shared.models import ResponseDecision, ResponseMessage
+from shared.streamhouse_shared.models import ResponseMessage
 
 
 class ResponsePolicy:
-    """Tiny bot-side guarantees that do not require an AI backend."""
+    """Reply addressing and duplicate checks; never generates response text."""
 
     @staticmethod
     def requires_reply(text: str) -> bool:
@@ -43,37 +43,3 @@ class ResponsePolicy:
             ).ratio() >= 0.86:
                 return True
         return False
-
-    @classmethod
-    def fallback_reply(
-        cls,
-        message: ResponseMessage,
-        prior_replies: Iterable[str],
-    ) -> ResponseDecision:
-        options = (
-            f"@{message.user_name}, I'm here—tell me a little more.",
-            f"@{message.user_name}, I caught that. What do you want to dig into?",
-            f"@{message.user_name}, you've got me—what's on your mind?",
-        )
-        reply = next(
-            (item for item in options if not cls._is_duplicate_reply(item, prior_replies)),
-            options[0],
-        )
-        return ResponseDecision(
-            request_id=message.request_id,
-            message_id=message.message_id,
-            user_id=message.user_id,
-            user_name=message.user_name,
-            source_text=message.text,
-            received_at=message.received_at,
-            decision="reply",
-            reply=reply,
-            reason="Required response needed a fallback reply.",
-            confidence=1.0,
-            response_expected=message.response_expected,
-            engagement_type=(
-                "conversation" if message.conversation_continuation else "direct"
-            ),
-            conversation_state="continue",
-            solicited=True,
-        )

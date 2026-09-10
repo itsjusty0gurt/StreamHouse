@@ -58,6 +58,11 @@ capabilities and is not a claim that every feature is implemented:
 Hub must work independently. It must not require Streamhouse Studio,
 Streamhouse AI, Streamhouse Avatar, or Streamhouse Deck.
 
+Hub Alpha 0.1 contains no AI inference runtime, never automatically launches
+Streamhouse AI or calls model providers, and supplies no local Sally replies
+when AI is unavailable. Optional response generation requires the separately
+running Streamhouse AI product through the verified external integration.
+
 Hub variables use provider-owned dotted namespaces such as `stream.*`,
 `chat.*`, contextual `command.*` and `keyword.*`, global/contextual `ads.*`,
 the four scoped `counter.<stable_id>.*` definitions, `obs.*`, and `custom.*`.

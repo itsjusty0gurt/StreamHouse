@@ -4446,15 +4446,6 @@ class MainWindow(QMainWindow):
             addressed_to_other=addressed_to_other,
         )
         if self.ai_lifecycle.state is not AIConnectionState.READY:
-            if ResponsePolicy.message_requires_reply(request):
-                recent_replies = [
-                    str(item.get("message", ""))
-                    for item in self.recent_ai_chat
-                    if str(item.get("speaker", "")).casefold() == "sally"
-                ]
-                decision = ResponsePolicy.fallback_reply(request, recent_replies)
-                sent = self._maybe_auto_send_reply(decision)
-                self._add_reply_decision(decision, sent=sent)
             return
         if len(self.response_decision_queue) == self.response_decision_queue.maxlen:
             dropped = self.response_decision_queue.popleft()
@@ -4754,36 +4745,6 @@ class MainWindow(QMainWindow):
             and self.ai_lifecycle.transport_failed(error)
         ):
             return
-        for message in messages if isinstance(messages, tuple) else ():
-            if not isinstance(message, ResponseMessage):
-                continue
-            if ResponsePolicy.message_requires_reply(message):
-                recent_replies = [
-                    str(item.get("message", ""))
-                    for item in self.recent_ai_chat
-                    if str(item.get("speaker", "")).casefold() == "sally"
-                ]
-                decision = ResponsePolicy.fallback_reply(
-                    message, recent_replies
-                )
-            else:
-                decision = ResponseDecision(
-                    request_id=message.request_id,
-                    message_id=message.message_id,
-                    user_id=message.user_id,
-                    user_name=message.user_name,
-                    source_text=message.text,
-                    received_at=message.received_at,
-                    decision="ignore",
-                    reply="",
-                    reason=f"Streamhouse AI unavailable: {error}"[:300],
-                    confidence=0.0,
-                )
-            sent = self._maybe_auto_send_reply(decision)
-            self.auto_send_diagnostic_reasons[decision.request_id] = (
-                "local_ai_fallback_sent" if sent else "local_ai_fallback"
-            )
-            self._add_reply_decision(decision, sent=sent)
         self.reply_decision_status_label.setText(
             "Streamhouse AI reply evaluation failed; continuing with newer chat."
         )

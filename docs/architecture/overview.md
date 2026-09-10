@@ -58,6 +58,15 @@ require it. Streamhouse Studio, Streamhouse Deck, and Streamhouse Avatar are
 future products and have no implemented application, entry point, or package in
 this repository.
 
+Hub Alpha contains no inference engine, does not launch Streamhouse AI or a
+model provider, and never generates a local Sally fallback reply. Chat addressed
+to Sally is silent when the external AI lifecycle is not READY; a failed AI
+request is logged without producing a replacement Twitch reply. The neutral
+HTTP client, presence/lifecycle verification, protocol DTOs, and reply delivery
+checks remain. Only a separately running AI process generates response text;
+its absence is normal for Hub. Shared response policy supplies addressing and
+duplicate checks, not personality text or a fallback responder.
+
 ```mermaid
 flowchart LR
     Twitch["Twitch Helix + EventSub"] --> Hub["Streamhouse Hub"]

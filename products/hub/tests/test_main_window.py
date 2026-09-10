@@ -4232,7 +4232,7 @@ class MainWindowTests(unittest.TestCase):
         self.assertFalse(self.window._maybe_auto_send_reply(decision))
         self.window.twitch_service.send_message.assert_not_called()
 
-    def test_failed_model_still_falls_back_for_hey_sally(self) -> None:
+    def test_failed_model_does_not_reply_to_hey_sally(self) -> None:
         self.window.twitch_service.state = TwitchConnectionState.CONNECTED
         self.window.twitch_service.send_message = Mock(return_value=True)
         message = ResponseMessage(
@@ -4249,10 +4249,8 @@ class MainWindowTests(unittest.TestCase):
             ValueError("model offline"),
         )
 
-        self.window.twitch_service.send_message.assert_called_once()
-        self.assertEqual(
-            self.window.reply_review_table.item(0, 3).text(), "SENT"
-        )
+        self.window.twitch_service.send_message.assert_not_called()
+        self.assertEqual(self.window.reply_review_table.rowCount(), 0)
 
     def test_sent_invocation_discards_queued_duplicate_retries(self) -> None:
         duplicate = ResponseMessage(
@@ -4657,7 +4655,7 @@ class MainWindowTests(unittest.TestCase):
         )
 
 
-    def test_disconnected_chat_never_launches_ai_and_only_direct_gets_fallback(self) -> None:
+    def test_disconnected_chat_never_launches_ai_or_generates_replies(self) -> None:
         self.window.ai_lifecycle.disconnect()
         self.window.response_decision_thread_pool.start = Mock()
         self.window.twitch_service.state = TwitchConnectionState.CONNECTED
@@ -4675,7 +4673,7 @@ class MainWindowTests(unittest.TestCase):
         self.window.handle_twitch_message(
             TwitchMessage(
                 username="Viewer",
-                text="hey sally, are you there?",
+                text="sally what was y0gurt working on?",
                 received_at=datetime.now(timezone.utc),
                 message_id="direct",
                 user_id="viewer-1",
@@ -4683,8 +4681,28 @@ class MainWindowTests(unittest.TestCase):
         )
 
         self.window.response_decision_thread_pool.start.assert_not_called()
-        self.window.twitch_service.send_message.assert_called_once()
+        self.window.twitch_service.send_message.assert_not_called()
+        self.assertIn("sally what was y0gurt working on?", self.window.ui.twitchChatOutput.toPlainText())
         self.test_report_store.record.assert_not_called()
+
+    def test_external_ai_request_error_does_not_generate_a_local_reply(self) -> None:
+        self.window.twitch_service.state = TwitchConnectionState.CONNECTED
+        self.window.twitch_service.send_message = Mock(return_value=True)
+        message = ResponseMessage(
+            request_id="failed-request",
+            message_id="failed-message",
+            user_id="viewer-1",
+            user_name="Viewer",
+            text="hey sally, are you there?",
+            received_at=datetime.now(timezone.utc).isoformat(),
+            directed_at_ai=True,
+        )
+        self.window._response_batch_failed(
+            ((message,), self.window.ai_connection_generation),
+            ValueError("External AI rejected the request"),
+        )
+        self.window.twitch_service.send_message.assert_not_called()
+        self.assertFalse(self.window.response_decision_in_flight)
 
     def test_repeated_signed_in_events_do_not_restart_twitch(self) -> None:
         self.window.twitch_auth.token = Mock(scopes=[], user_id="channel-1")
