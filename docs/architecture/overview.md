@@ -151,12 +151,14 @@ Dependency direction is enforced by ownership and package audits:
 
 ### Streamhouse Hub
 
-`products/hub/hub_main.py` configures logging and calls
+`products/hub/hub_main.py` creates the Hub-owned `DiagnosticsService`, establishes
+the process session marker, configures the matching per-session log, installs
+Python exception/faulthandler capture, and calls
 `products.hub.streamhouse_hub.app.run()`.
 
 `products/hub/streamhouse_hub/app.py`:
 
-1. Creates `QApplication` and application metadata.
+1. Creates `QApplication`, application metadata, and Qt message capture.
 2. Creates separate broadcaster and optional bot `TwitchAuthService` objects.
 3. Creates `TwitchService`.
 4. Constructs `products.hub.ui.main_window.MainWindow`, the current composition
@@ -164,7 +166,8 @@ Dependency direction is enforced by ownership and package audits:
 5. Shows the window, restores both Twitch identities, fires Core startup, then
    schedules optional OBS and soundboard-relay auto-connect.
 6. Runs the Qt event loop.
-7. Clears the global event bus and shuts down logging after the window closes.
+7. Clears the global event bus, marks a zero-exit session clean, and shuts down
+   diagnostics/logging after the window closes.
 
 `MainWindow.__init__` creates or receives injectable instances of:
 
@@ -177,7 +180,7 @@ Dependency direction is enforced by ownership and package audits:
 - chatter, activity, and stream-session stores
 - training/test-report remote proxies
 - `TaskRegistry` and `AutomationService`
-- release, backup, health, window-state, and settings helpers
+- diagnostics, release/backup, health, window-state, and settings helpers
 
 The constructor loads recoverable stores independently. A corrupt optional
 store should log a warning and fall back to an empty/default state rather than
@@ -187,6 +190,41 @@ Core `application.started` fires after the Qt loop begins. Core
 `application.closing` fires before service teardown. Shutdown must stop timers,
 unsubscribe event handlers, close Twitch/OBS, stop soundboard threads/servers,
 save state, and only then let `products/hub/streamhouse_hub/app.py` clear the event bus.
+
+### Hub tester support and crash diagnostics
+
+`products/hub/core/diagnostics.py` owns one random session ID for the active Hub
+process, an active-session marker, exception/crash reporting, safe runtime-state
+providers, Diagnostic Summary rendering, and Support Bundle creation. A stale
+marker whose process is no longer running means only that the prior session did
+not shut down normally; the UI does not claim that every such incident was a
+software crash. A marker belonging to a live process is not reported as an
+abnormal shutdown. The current single marker cannot fully identify every edge
+case involving concurrent Hub processes; single-instance hardening remains a
+separate concern.
+
+`Logger` writes `latest.log` plus a uniquely named per-session Hub log and keeps
+the latest ten Hub session logs. Python main-thread, worker-thread, and
+unraisable exceptions create a concise sanitized crash report; Qt warnings and
+errors enter the same log, while `faulthandler` writes a persistent best-effort
+fatal-fault stream. The latest five crash reports and fault streams are kept.
+This is not a Windows minidump facility and cannot capture every native failure.
+
+Support Bundles contain diagnostic-severity excerpts from the current/previous
+session logs, latest relevant crash information, a human-readable summary, and
+structured safe application/system/state diagnostics. General informational log
+lines are excluded so the archive cannot become an activity or chat transcript.
+All copied text passes through defensive credential and local-home-path
+redaction. Providers expose connection states, display geometry,
+counts, and schema versions—not routine messages, Channel Information content,
+raw EventSub payloads, Twitch chat text, tokens, passwords, or configuration
+archives. Bundles are created locally, never uploaded automatically, and the
+Report a Bug action opens the existing Streamhouse GitHub issue tracker.
+
+Support/diagnostics and backup/restore are separate feature domains. Support
+Bundles are not backups and never include backup archives; backups do not gain
+logs or crash reports. The backup controller owns only data protection and
+restore, while `DiagnosticsService` owns shareable troubleshooting artifacts.
 
 ### Streamhouse AI
 
@@ -1167,6 +1205,9 @@ build kind, compact Twitch/OBS connection summaries sourced from the existing
 services, navigation to Connections, and the configured project/issue-tracker
 links. It does not duplicate connection controls or depend on Streamhouse AI;
 Alpha 0.1 has no in-app update checker.
+Its Help & About area and the Logs header expose the same Create Support Bundle,
+Copy Diagnostic Summary, and Report a Bug flows. An abnormal-shutdown notice on
+Dashboard offers those actions without blocking startup.
 
 Your Channel top tabs:
 
@@ -1382,7 +1423,10 @@ identifiers or filename formats are accepted.
 | `memory/stream_sessions.json` | Hub | schema v1 active/completed session analytics, including current incomplete-session recovery |
 | `training/examples.json` | Streamhouse AI | v1 consent-based classifier examples |
 | `diagnostics/ai_test_report.json` | Streamhouse AI | v1 AI outcomes/latency metadata |
-| `logs/` | each process | rotating application logs |
+| `diagnostics/active-session.json` | Hub diagnostics | v1 volatile process/session marker; removed only after clean shutdown and never treated as user configuration |
+| `logs/` | each process | `latest.log` plus rotating per-session logs; Hub retains ten session logs |
+| `crashes/` | Hub diagnostics | latest five sanitized Python crash reports and best-effort faulthandler streams |
+| `support/` | Hub diagnostics | user-created sanitized Support Bundles; not automatically rotated or backed up |
 | `backups/` | Hub | allowlisted local data archives |
 
 Window geometry/state uses Qt `QSettings`, not the JSON stores.

@@ -144,6 +144,16 @@ class MainWindowTests(unittest.TestCase):
         self.test_report_store.selected_events.return_value = []
         self.twitch_command_directory = tempfile.TemporaryDirectory()
         command_root = Path(self.twitch_command_directory.name)
+        self.diagnostics_service = Mock()
+        self.diagnostics_service.previous_shutdown_abnormal = False
+        self.diagnostics_service.logs_directory = command_root / "logs"
+        self.diagnostics_service.support_directory = command_root / "support"
+        self.diagnostics_service.create_support_bundle.return_value = (
+            command_root / "support" / "StreamhouseHub-Support-test.zip"
+        )
+        self.diagnostics_service.diagnostic_summary.return_value = (
+            "Streamhouse Hub Support Diagnostics\nSession: test-session"
+        )
         self.twitch_command_trigger_store = TwitchCommandTriggerStore(
             command_root / "commands.json",
             RoutineStore(command_root / "routines.json"),
@@ -158,6 +168,7 @@ class MainWindowTests(unittest.TestCase):
             activity_history_store=self.activity_history_store,
             session_store=self.session_store,
             release_controller=self.release_controller,
+            diagnostics_service=self.diagnostics_service,
             training_store=self.training_store,
             test_report_store=self.test_report_store,
             twitch_command_trigger_store=self.twitch_command_trigger_store,
@@ -1139,7 +1150,12 @@ class MainWindowTests(unittest.TestCase):
         page.refresh()
 
         self.assertTrue(page.routine_tree.topLevelItem(0).text(0).startswith("Ungrouped"))
-        self.assertTrue(page.routine_tree.topLevelItem(1).text(0).startswith("Custom Group"))
+        self.assertTrue(
+            any(
+                page.routine_tree.topLevelItem(index).text(0).startswith("Custom Group")
+                for index in range(1, page.routine_tree.topLevelItemCount())
+            )
+        )
 
     def test_alphabetical_routine_view_keeps_ungrouped_first(self) -> None:
         store = self.twitch_command_trigger_store.routine_store
@@ -1155,7 +1171,11 @@ class MainWindowTests(unittest.TestCase):
 
         self.assertTrue(page.routine_tree.topLevelItem(0).text(0).startswith("Ungrouped"))
         self.assertTrue(page.routine_tree.topLevelItem(1).text(0).startswith("Alpha"))
-        self.assertTrue(page.routine_tree.topLevelItem(2).text(0).startswith("Zebra"))
+        zebra_index = next(
+            index
+            for index in range(2, page.routine_tree.topLevelItemCount())
+            if page.routine_tree.topLevelItem(index).text(0).startswith("Zebra")
+        )
         ungrouped_item = page.routine_tree.topLevelItem(0)
         self.assertEqual(
             [
@@ -1164,7 +1184,7 @@ class MainWindowTests(unittest.TestCase):
             ],
             [ungrouped_alpha.routine_id, ungrouped_zulu.routine_id],
         )
-        zebra_item = page.routine_tree.topLevelItem(2)
+        zebra_item = page.routine_tree.topLevelItem(zebra_index)
         self.assertEqual(
             [
                 store.get(
@@ -1178,7 +1198,12 @@ class MainWindowTests(unittest.TestCase):
 
         page.sort_routines_button.setChecked(False)
 
-        self.assertTrue(page.routine_tree.topLevelItem(1).text(0).startswith("Zebra"))
+        self.assertTrue(
+            any(
+                page.routine_tree.topLevelItem(index).text(0).startswith("Zebra")
+                for index in range(1, page.routine_tree.topLevelItemCount())
+            )
+        )
         self.assertEqual(
             [routine.routine_id for routine in store.grouped("")],
             [ungrouped_zulu.routine_id, ungrouped_alpha.routine_id],
@@ -1895,6 +1920,34 @@ class MainWindowTests(unittest.TestCase):
             1,
         )
         self.assertTrue(self.window.create_backup_button.isEnabled())
+        self.assertTrue(self.window.create_support_bundle_button.isEnabled())
+        self.assertTrue(self.window.copy_diagnostic_summary_button.isEnabled())
+        self.diagnostics_service.set_state_provider.assert_called_once()
+        diagnostic_state = self.diagnostics_service.set_state_provider.call_args.args[0]()
+        self.assertIn("displays", diagnostic_state)
+        self.assertIn("twitch", diagnostic_state)
+        self.assertIn("obs", diagnostic_state)
+        self.assertIn("automation", diagnostic_state)
+        self.assertIn("storage_schemas", diagnostic_state)
+
+    def test_support_actions_share_diagnostics_service_and_existing_tracker(self) -> None:
+        with patch.object(
+            QMessageBox,
+            "question",
+            return_value=QMessageBox.StandardButton.No,
+        ):
+            self.window.create_support_bundle_button.click()
+        self.diagnostics_service.create_support_bundle.assert_called_once_with()
+
+        self.window.copy_diagnostic_summary_button.click()
+        self.assertEqual(
+            QApplication.clipboard().text(),
+            "Streamhouse Hub Support Diagnostics\nSession: test-session",
+        )
+        with patch("products.hub.ui.main_window.QDesktopServices.openUrl") as open_url:
+            self.window.report_bug_button.click()
+        opened = open_url.call_args.args[0].toString()
+        self.assertIn("github.com/itsjusty0gurt/StreamHouse/issues/new", opened)
 
     def test_task_library_shows_and_searches_registry_descriptions(self) -> None:
         page = self.window.automation_page

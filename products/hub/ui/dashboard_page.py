@@ -134,6 +134,8 @@ class DashboardPage(QWidget):
     """Lightweight Alpha landing page backed by existing service state."""
 
     connections_requested = Signal()
+    create_support_requested = Signal()
+    copy_diagnostics_requested = Signal()
 
     _STATUS_COLORS = {
         DashboardStatus.CONNECTED: "#37c98b",
@@ -187,12 +189,42 @@ class DashboardPage(QWidget):
             content,
         )
         layout.addWidget(self.page_header)
+        layout.addWidget(self._build_shutdown_notice(content))
         layout.addWidget(self._build_branding(content))
         layout.addWidget(self._build_connection_summary(content))
         layout.addWidget(self._build_attention_area(content))
         layout.addWidget(self._build_help(content))
         layout.addStretch()
         self._refresh_attention()
+
+    def _build_shutdown_notice(self, parent: QWidget) -> QWidget:
+        self.shutdown_notice = QFrame(parent)
+        self.shutdown_notice.setObjectName("abnormalShutdownNotice")
+        layout = QHBoxLayout(self.shutdown_notice)
+        message = QLabel(
+            "Streamhouse Hub did not shut down normally last time. "
+            "A Support Bundle may help identify what happened.",
+            self.shutdown_notice,
+        )
+        message.setWordWrap(True)
+        self.shutdown_support_button = QPushButton(
+            "Create Support Bundle", self.shutdown_notice
+        )
+        self.shutdown_report_button = QPushButton("Report a Bug", self.shutdown_notice)
+        self.shutdown_dismiss_button = QPushButton("Dismiss", self.shutdown_notice)
+        self.shutdown_support_button.clicked.connect(self.create_support_requested.emit)
+        self.shutdown_report_button.clicked.connect(lambda: self._open_issue("[Bug] "))
+        self.shutdown_report_button.setVisible(bool(self.issue_tracker_url))
+        self.shutdown_dismiss_button.clicked.connect(self.shutdown_notice.hide)
+        layout.addWidget(message, 1)
+        layout.addWidget(self.shutdown_support_button)
+        layout.addWidget(self.shutdown_report_button)
+        layout.addWidget(self.shutdown_dismiss_button)
+        self.shutdown_notice.hide()
+        return self.shutdown_notice
+
+    def show_abnormal_shutdown_notice(self, visible: bool = True) -> None:
+        self.shutdown_notice.setVisible(bool(visible))
 
     def _build_branding(self, parent: QWidget) -> QWidget:
         panel = QFrame(parent)
@@ -311,11 +343,17 @@ class DashboardPage(QWidget):
         layout.addWidget(explanation)
         actions = QHBoxLayout()
         self.report_bug_button = QPushButton("Report a Bug", group)
+        self.create_support_button = QPushButton("Create Support Bundle", group)
+        self.copy_diagnostics_button = QPushButton("Copy Diagnostic Summary", group)
         self.feedback_button = QPushButton("Feedback & Ideas", group)
         self.project_button = QPushButton("Project on GitHub", group)
         self.about_button = QPushButton("About", group)
         self.report_bug_button.clicked.connect(
             lambda: self._open_issue("[Bug] ")
+        )
+        self.create_support_button.clicked.connect(self.create_support_requested.emit)
+        self.copy_diagnostics_button.clicked.connect(
+            self.copy_diagnostics_requested.emit
         )
         self.feedback_button.clicked.connect(
             lambda: self._open_issue("[Idea] ")
@@ -328,6 +366,8 @@ class DashboardPage(QWidget):
         self.feedback_button.setVisible(bool(self.issue_tracker_url))
         self.project_button.setVisible(bool(self.project_url))
         for button in (
+            self.create_support_button,
+            self.copy_diagnostics_button,
             self.report_bug_button,
             self.feedback_button,
             self.project_button,

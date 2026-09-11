@@ -7,6 +7,7 @@ from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication
 
 from products.hub.core.events import Events
+from products.hub.core.diagnostics import DiagnosticsService
 from shared.streamhouse_runtime.logger import Logger
 from products.hub.twitch.service import TwitchService
 from products.hub.twitch.auth import TwitchAuthService
@@ -85,7 +86,7 @@ def configure_application(application: QApplication) -> None:
     )
 
 
-def run() -> None:
+def run(diagnostics: DiagnosticsService | None = None) -> None:
     """Create and run the Streamhouse Hub desktop application."""
 
     Logger.timer_start("Application startup")
@@ -97,6 +98,8 @@ def run() -> None:
 
     application = QApplication(sys.argv)
     configure_application(application)
+    if diagnostics is not None:
+        diagnostics.install_qt_message_handler()
 
     register_events()
 
@@ -122,6 +125,7 @@ def run() -> None:
         twitch_auth=twitch_auth,
         twitch_bot_auth=twitch_bot_auth,
         window_state_store=WindowStateStore(window_settings),
+        diagnostics_service=diagnostics,
     )
     window.show()
     twitch_auth.restore()
@@ -168,5 +172,10 @@ def run() -> None:
             source="APP",
         )
 
+    if diagnostics is not None:
+        if exit_code == 0:
+            diagnostics.clean_shutdown()
+        else:
+            diagnostics.uninstall_hooks()
     Logger.shutdown()
     sys.exit(exit_code)

@@ -11,8 +11,8 @@ from datetime import datetime, time, timedelta, timezone
 from html import escape
 from pathlib import Path
 
-from PySide6.QtCore import QThreadPool, QTime, QTimer, Qt, Slot
-from PySide6.QtGui import QCloseEvent, QColor, QCursor, QFont
+from PySide6.QtCore import QThreadPool, QTime, QTimer, Qt, Slot, QUrl
+from PySide6.QtGui import QCloseEvent, QColor, QCursor, QDesktopServices, QFont
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -54,6 +54,8 @@ from PySide6.QtWidgets import (
 )
 
 from products.hub.core.events import Events
+from products.hub.core.diagnostics import DiagnosticsService
+from products.hub.config.product import ISSUE_TRACKER_URL
 from shared.streamhouse_runtime.logger import Logger
 from shared.streamhouse_ui import install_window_chrome
 from products.hub.core.settings import AppSettings, SettingsStore
@@ -373,6 +375,7 @@ class MainWindow(QMainWindow):
         soundboard_server: SoundboardLocalServer | None = None,
         soundboard_relay_config_store: SoundboardRelayConfigStore | None = None,
         soundboard_relay_client: SoundboardRelayClient | None = None,
+        diagnostics_service: DiagnosticsService | None = None,
         auto_upgrade_permissions: bool = True,
     ) -> None:
         super().__init__()
@@ -405,6 +408,7 @@ class MainWindow(QMainWindow):
         self.session_tracker = StreamSessionTracker(self.session_store)
         self.twitch_health = TwitchHealth()
         self.release_controller = release_controller or ReleaseController()
+        self.diagnostics_service = diagnostics_service
         self.training_store = training_store or TrainingStore()
         self.test_report_store = test_report_store or AITestReportStore()
         for remote_store in (self.training_store, self.test_report_store):
@@ -796,6 +800,12 @@ class MainWindow(QMainWindow):
             self.ui.dashboardLayout.takeAt(0)
         self.dashboard_page = DashboardPage(self.ui.dashboardPage)
         self.dashboard_page.connections_requested.connect(self.show_connections)
+        self.dashboard_page.create_support_requested.connect(
+            self._create_support_bundle
+        )
+        self.dashboard_page.copy_diagnostics_requested.connect(
+            self._copy_diagnostic_summary
+        )
         self.ui.dashboardLayout.addWidget(self.dashboard_page, 1)
         old_chat_output = self.ui.twitchChatOutput
         self.ui.twitchChatOutput = TwitchChatView(self.ui.twitchChatTab)
@@ -1058,24 +1068,27 @@ class MainWindow(QMainWindow):
         self.activity_age_timer.timeout.connect(self._rebuild_activity_feed)
         self._schedule_activity_age_refresh()
         QTimer.singleShot(2_000, self._create_automatic_backup)
+        if self.diagnostics_service is not None:
+            self.diagnostics_service.set_state_provider(self._diagnostic_state)
+            self.dashboard_page.show_abnormal_shutdown_notice(
+                self.diagnostics_service.previous_shutdown_abnormal
+            )
         Logger.info("UI log viewer connected.", source="UI")
 
     def _build_release_tools(self) -> None:
-        group = QGroupBox("Data Safety & Diagnostics")
+        group = QGroupBox("Data Safety")
         self.release_tools_group = group
         layout = QVBoxLayout(group)
         explanation = QLabel(
-            "Create or restore local data backups, or export a sanitized "
-            "diagnostic bundle for troubleshooting."
+            "Create or restore local data backups. Support Bundles are separate "
+            "and available from Logs and Help & About."
         )
         explanation.setWordWrap(True)
         actions = QHBoxLayout()
         self.create_backup_button = QPushButton("Create Backup")
         self.restore_backup_button = QPushButton("Restore Latest")
-        self.export_diagnostics_button = QPushButton("Export Diagnostics")
         actions.addWidget(self.create_backup_button)
         actions.addWidget(self.restore_backup_button)
-        actions.addWidget(self.export_diagnostics_button)
         actions.addStretch()
         self.release_tools_status = QLabel("")
         self.release_tools_status.setWordWrap(True)
@@ -1088,9 +1101,6 @@ class MainWindow(QMainWindow):
         )
         self.create_backup_button.clicked.connect(self._create_manual_backup)
         self.restore_backup_button.clicked.connect(self._restore_latest_backup)
-        self.export_diagnostics_button.clicked.connect(
-            self._export_diagnostic_bundle
-        )
 
     def _build_responsive_settings(self) -> None:
         self.responsive_settings_group = QGroupBox("Window Layout")
@@ -1166,6 +1176,27 @@ class MainWindow(QMainWindow):
             "Review Hub activity and diagnostics.",
             self.ui.logsPage,
         )
+        self.create_support_bundle_button = QPushButton("Create Support Bundle")
+        self.copy_diagnostic_summary_button = QPushButton("Copy Diagnostic Summary")
+        self.report_bug_button = QPushButton("Report a Bug")
+        self.open_logs_folder_button = QPushButton("Open Logs Folder")
+        for button in (
+            self.create_support_bundle_button,
+            self.copy_diagnostic_summary_button,
+            self.report_bug_button,
+            self.open_logs_folder_button,
+        ):
+            self.logs_page_header.add_action(button)
+        self.create_support_bundle_button.clicked.connect(self._create_support_bundle)
+        self.copy_diagnostic_summary_button.clicked.connect(
+            self._copy_diagnostic_summary
+        )
+        self.report_bug_button.clicked.connect(self._report_bug)
+        self.open_logs_folder_button.clicked.connect(self._open_logs_folder)
+        support_available = self.diagnostics_service is not None
+        self.create_support_bundle_button.setEnabled(support_available)
+        self.copy_diagnostic_summary_button.setEnabled(support_available)
+        self.open_logs_folder_button.setEnabled(support_available)
         self.ui.logsLayout.insertWidget(0, self.logs_page_header)
 
         self.settings_page_header = PageHeader(
@@ -7908,40 +7939,108 @@ class MainWindow(QMainWindow):
             self.release_tools_status.setText(f"Restore failed: {error}")
 
     @Slot()
-    def _export_diagnostic_bundle(self) -> None:
-        filename, _selected_filter = QFileDialog.getSaveFileName(
-            self,
-            "Export Streamhouse Hub Diagnostics",
-            "streamhouse-hub-diagnostics.zip",
-            "ZIP archives (*.zip)",
-        )
-        if not filename:
+    @Slot()
+    def _create_support_bundle(self) -> None:
+        if self.diagnostics_service is None:
             return
-        health = {
-            "authentication": self.twitch_health.auth_state,
-            "connection": self.twitch_health.connection_state,
-            "eventsub": self.twitch_health.eventsub_state,
-            "last_channel_snapshot_success": (
-                self.twitch_health.last_channel_snapshot_success.isoformat()
-                if self.twitch_health.last_channel_snapshot_success
-                else None
-            ),
-            "last_channel_snapshot_error": self.twitch_health.last_channel_snapshot_error,
-            "missing_scopes": sorted(self.twitch_health.missing_scopes),
-        }
         try:
-            destination = self.release_controller.export_diagnostics(
-                Path(filename),
-                asdict(self.settings),
-                health,
-            )
-            self.release_tools_status.setText(
-                f"Diagnostics exported: {destination}"
-            )
+            destination = self.diagnostics_service.create_support_bundle()
         except OSError as error:
-            self.release_tools_status.setText(
-                f"Diagnostic export failed: {error}"
+            Logger.warning(f"Could not create Support Bundle: {error}", source="SUPPORT")
+            QMessageBox.warning(self, "Support Bundle", f"Support Bundle failed: {error}")
+            return
+        self.statusBar().showMessage(f"Support Bundle created: {destination}", 15_000)
+        if QMessageBox.question(
+            self,
+            "Support Bundle Created",
+            f"Created:\n{destination}\n\nOpen its folder now?",
+        ) is QMessageBox.StandardButton.Yes:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(destination.parent)))
+
+    @Slot()
+    def _copy_diagnostic_summary(self) -> None:
+        if self.diagnostics_service is None:
+            return
+        QApplication.clipboard().setText(
+            self.diagnostics_service.diagnostic_summary()
+        )
+        self.statusBar().showMessage("Diagnostic Summary copied.", 8_000)
+
+    @Slot()
+    def _report_bug(self) -> None:
+        QDesktopServices.openUrl(QUrl(f"{ISSUE_TRACKER_URL}/new?title=%5BBug%5D%20"))
+        self.statusBar().showMessage(
+            "If you created a Support Bundle, attach it to the GitHub issue.",
+            12_000,
+        )
+
+    @Slot()
+    def _open_logs_folder(self) -> None:
+        if self.diagnostics_service is not None:
+            QDesktopServices.openUrl(
+                QUrl.fromLocalFile(str(self.diagnostics_service.logs_directory))
             )
+
+    def _diagnostic_state(self) -> dict[str, object]:
+        displays = []
+        for screen in QApplication.screens():
+            geometry = screen.geometry()
+            available = screen.availableGeometry()
+            displays.append(
+                {
+                    "name": screen.name(),
+                    "resolution": f"{geometry.width()}x{geometry.height()}",
+                    "available": f"{available.width()}x{available.height()}",
+                    "device_pixel_ratio": screen.devicePixelRatio(),
+                    "primary": screen is QApplication.primaryScreen(),
+                }
+            )
+        return {
+            "displays": {"count": len(displays), "details": displays},
+            "twitch": {
+                "broadcaster_auth": self._last_twitch_auth_state.value,
+                "bot_auth": self._last_twitch_bot_auth_state.value,
+                "connection": self.twitch_health.connection_state,
+                "chat": self.twitch_service.state.value,
+                "eventsub": self.twitch_health.eventsub_state,
+                "missing_scope_count": len(self.twitch_health.missing_scopes),
+            },
+            "obs": {
+                "configured": self.obs_config_store.path.exists(),
+                "connected": self.obs_service.connected,
+                "state": self.obs_service.state.value,
+            },
+            "automation": {
+                "routines": len(self.twitch_command_trigger_store.routine_store.routines),
+                "triggers": (
+                    len(self.twitch_command_trigger_store.triggers)
+                    + len(self.twitch_event_trigger_store.triggers)
+                    + len(self.core_trigger_store.triggers)
+                    + len(self.obs_trigger_store.triggers)
+                ),
+                "commands": len(self.twitch_command_trigger_store.triggers),
+                "queues": len(self.automation_queue_store.queues),
+                "counters": len(self.counter_service.list_counters()),
+                "default_queue": bool(self.automation_queue_store.default()),
+                "running_queues": len(self.automation_queue_manager.current),
+            },
+            "storage_schemas": {
+                "routines": self.twitch_command_trigger_store.routine_store.VERSION,
+                "commands": self.twitch_command_trigger_store.VERSION,
+                "event_triggers": self.twitch_event_trigger_store.VERSION,
+                "core_triggers": self.core_trigger_store.VERSION,
+                "obs_triggers": self.obs_trigger_store.VERSION,
+                "queues": self.automation_queue_store.VERSION,
+                "chatter": self.chatter_history.VERSION,
+                "first_message": self.twitch_event_trigger_store.FIRST_MESSAGE_STATE_VERSION,
+            },
+            "window": {
+                "geometry": (
+                    f"{self.width()}x{self.height()}+{self.x()}+{self.y()}"
+                ),
+                "maximized": self.isMaximized(),
+            },
+        }
 
     def closeEvent(self, event: QCloseEvent) -> None:
         self.automation_timer_scheduler.shutdown()

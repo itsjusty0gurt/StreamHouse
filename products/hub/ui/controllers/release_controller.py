@@ -1,15 +1,13 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
 
 from products.hub.core.backup import BackupManager, RestoreReport
-from products.hub.core.diagnostics import export_diagnostics
 from shared.streamhouse_runtime.paths import user_data_root
 
 
 class ReleaseController:
-    """Own backup, restore, and sanitized diagnostic workflows."""
+    """Own Hub data backup and restore workflows."""
 
     def __init__(self, project_root: Path | None = None) -> None:
         self.project_root = project_root or user_data_root()
@@ -30,16 +28,3 @@ class ReleaseController:
 
     def scrub_viewer_data(self, user_id: str) -> int:
         return self.backups.scrub_viewer(user_id)
-
-    def export_diagnostics(
-        self,
-        destination: Path,
-        settings: dict[str, Any],
-        health: dict[str, Any],
-    ) -> Path:
-        return export_diagnostics(
-            destination,
-            self.project_root,
-            settings,
-            health,
-        )

@@ -127,6 +127,24 @@ class DashboardPageTests(unittest.TestCase):
         page.resize(420, 520)
         self.assertLessEqual(page.minimumSizeHint().width(), 420)
 
+    def test_support_actions_and_abnormal_shutdown_notice(self) -> None:
+        page = DashboardPage()
+        create_requests: list[bool] = []
+        copy_requests: list[bool] = []
+        page.create_support_requested.connect(lambda: create_requests.append(True))
+        page.copy_diagnostics_requested.connect(lambda: copy_requests.append(True))
+
+        page.create_support_button.click()
+        page.copy_diagnostics_button.click()
+        page.show_abnormal_shutdown_notice()
+        self.assertFalse(page.shutdown_notice.isHidden())
+        page.shutdown_support_button.click()
+        page.shutdown_dismiss_button.click()
+
+        self.assertEqual(create_requests, [True, True])
+        self.assertEqual(copy_requests, [True])
+        self.assertTrue(page.shutdown_notice.isHidden())
+
 
 if __name__ == "__main__":
     unittest.main()
