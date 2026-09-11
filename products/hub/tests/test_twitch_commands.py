@@ -7,6 +7,7 @@ from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
 
+from products.hub.automation.models import DEFAULT_AUTOMATION_QUEUE_ID
 from products.hub.automation.routines import RoutineStore
 from products.hub.automation.variable_providers import context_provider
 from products.hub.automation.variable_registry import VariableRegistry
@@ -59,6 +60,50 @@ class TwitchCommandTriggerStoreTests(unittest.TestCase):
         for definition in default_command_definitions():
             self.store.configure_default(definition.default_id)
 
+    def test_clean_load_installs_only_self_contained_defaults_once(self) -> None:
+        first = self.store.load()
+
+        self.assertEqual(
+            {trigger.default_id for trigger in first},
+            {"uptime", "followage", "accountage", "title", "game", "commands"},
+        )
+        self.assertTrue(all(trigger.enabled for trigger in first))
+        self.assertTrue(all(trigger.permission == "everyone" for trigger in first))
+        self.assertTrue(all(trigger.routine_id for trigger in first))
+        self.assertTrue(
+            all(
+                self.routine_store.get(trigger.routine_id).queue_id
+                == DEFAULT_AUTOMATION_QUEUE_ID
+                for trigger in first
+            )
+        )
+        for default_id in (
+            "discord", "socials", "youtube", "schedule", "rules", "server"
+        ):
+            self.assertIsNone(self.store.default(default_id))
+
+        uptime = self.store.default("uptime")
+        custom_group = self.routine_store.add_group("Stream Info")
+        self.routine_store.update(
+            uptime.routine_id,
+            group_id=custom_group.group_id,
+            queue_id="custom-queue",
+        )
+        reloaded = TwitchCommandTriggerStore(
+            self.path,
+            RoutineStore(self.routine_store.path),
+        )
+        second = reloaded.load()
+
+        self.assertEqual(len(second), 6)
+        self.assertEqual(len({trigger.trigger_id for trigger in second}), 6)
+        reloaded_uptime = reloaded.default("uptime")
+        self.assertEqual(reloaded_uptime.trigger_id, uptime.trigger_id)
+        self.assertEqual(reloaded_uptime.routine_id, uptime.routine_id)
+        routine = reloaded.routine_store.get(reloaded_uptime.routine_id)
+        self.assertEqual(routine.group_id, custom_group.group_id)
+        self.assertEqual(routine.queue_id, "custom-queue")
+
     def test_trigger_crud_round_trip_manages_its_routine_and_task(self) -> None:
         trigger = self.store.add(
             "Discord",
@@ -83,7 +128,7 @@ class TwitchCommandTriggerStoreTests(unittest.TestCase):
             RoutineStore(self.routine_store.path),
         )
         loaded.load()
-        saved = loaded.triggers[0]
+        saved = loaded.resolve("discord")
 
         self.assertEqual(saved.name, "discord")
         self.assertEqual(saved.aliases, ["dc"])
@@ -106,8 +151,10 @@ class TwitchCommandTriggerStoreTests(unittest.TestCase):
             "Community: {stream.channel}",
         )
         self.assertTrue(loaded.delete(saved.trigger_id))
-        self.assertEqual(loaded.triggers, [])
-        self.assertEqual(loaded.routine_store.routines, [])
+        self.assertEqual(
+            {trigger.default_id for trigger in loaded.triggers},
+            {"uptime", "followage", "accountage", "title", "game", "commands"},
+        )
 
     def test_version_one_flat_response_is_discarded_before_alpha(self) -> None:
         self.path.write_text(
@@ -168,8 +215,11 @@ class TwitchCommandTriggerStoreTests(unittest.TestCase):
             self.path,
             RoutineStore(self.routine_store.path),
         )
-        self.assertEqual(len(loaded.load()), 1)
-        self.assertEqual(loaded.response_for(loaded.triggers[0]), "Welcome {user.display_name}")
+        loaded.load()
+        self.assertEqual(
+            loaded.response_for(loaded.resolve("hello")),
+            "Welcome {user.display_name}",
+        )
 
     def test_command_response_accepts_variable_generated_by_another_task(self) -> None:
         trigger = self.store.add("random", "Placeholder")
@@ -194,9 +244,9 @@ class TwitchCommandTriggerStoreTests(unittest.TestCase):
             RoutineStore(self.routine_store.path),
         )
 
-        self.assertEqual(len(loaded.load()), 1)
+        loaded.load()
         self.assertEqual(
-            loaded.response_for(loaded.triggers[0]),
+            loaded.response_for(loaded.resolve("random")),
             "{automation.random_line}",
         )
 
@@ -224,7 +274,8 @@ class TwitchCommandTriggerStoreTests(unittest.TestCase):
         loaded.variable_registry = VariableRegistry()
         loaded.variable_registry.register(context_provider())
 
-        self.assertEqual(loaded.load(), [])
+        loaded.load()
+        self.assertIsNone(loaded.resolve("random"))
 
     def test_command_can_trigger_routine_without_chat_response(self) -> None:
         routine = self.routine_store.add("Toggle the lights")
@@ -273,8 +324,8 @@ class TwitchCommandTriggerStoreTests(unittest.TestCase):
             self.path,
             RoutineStore(self.routine_store.path),
         )
-        self.assertEqual(len(loaded.load()), 1)
-        self.assertEqual(loaded.response_for(loaded.triggers[0]), "")
+        loaded.load()
+        self.assertEqual(loaded.response_for(loaded.resolve("lights")), "")
 
     def test_clearing_response_removes_only_managed_response_task(self) -> None:
         trigger = self.store.add("hello", "Hello {user.display_name}")
@@ -413,7 +464,7 @@ class TwitchCommandTriggerStoreTests(unittest.TestCase):
         self.routine_store.routines.append(self.store._routine_for(default))
         self.routine_store.save()
 
-        self.assertEqual(self.store.load(), [])
+        self.store.load()
 
         released = self.routine_store.get(custom.routine_id)
         self.assertIsNotNone(released)
@@ -421,7 +472,7 @@ class TwitchCommandTriggerStoreTests(unittest.TestCase):
         self.assertEqual(released.trigger_id, "")
         self.assertEqual(released.tasks[0].managed_key, "")
         self.assertEqual(released.tasks[0].config["message"], "Yippie!")
-        self.assertIsNone(self.routine_store.get(default.routine_id))
+        self.assertIsNotNone(self.routine_store.get(default.routine_id))
 
     def test_attach_command_releases_stale_command_ownership(self) -> None:
         routine = self.routine_store.create_managed(
@@ -487,8 +538,8 @@ class TwitchCommandTriggerStoreTests(unittest.TestCase):
         loaded.load()
 
         customized = loaded.default("uptime")
-        self.assertEqual(len(loaded.triggers), 1)
-        self.assertEqual(len(loaded.routine_store.routines), 1)
+        self.assertEqual(len(loaded.triggers), 6)
+        self.assertEqual(len(loaded.routine_store.routines), 6)
         self.assertEqual(len(loaded.routine_store.groups), 1)
         self.assertEqual(loaded.routine_store.groups[0].name, "Commands")
         self.assertEqual(customized.routine_id, original_routine_id)
@@ -593,10 +644,11 @@ class TwitchCommandTriggerStoreTests(unittest.TestCase):
             self.path,
             RoutineStore(self.routine_store.path),
         )
-        self.assertEqual(loaded.load(), [])
+        loaded.load()
+        self.assertEqual(len(loaded.triggers), 6)
         self.assertIsNone(loaded.resolve(command.name))
 
-    def test_deleted_default_returns_to_template_without_a_routine(self) -> None:
+    def test_deleted_self_contained_default_is_restored_on_next_load(self) -> None:
         command = self.store.configure_default("game")
         self.assertTrue(self.store.delete(command.trigger_id))
 
@@ -605,11 +657,9 @@ class TwitchCommandTriggerStoreTests(unittest.TestCase):
             RoutineStore(self.routine_store.path),
         )
         loaded.load()
-        self.assertIsNone(loaded.default("game"))
-        self.assertIsNone(loaded.routine_store.get(command.routine_id))
-        self.assertEqual(loaded.routine_store.groups, [])
-
-        restored = loaded.configure_default("game")
+        restored = loaded.default("game")
+        self.assertIsNotNone(restored)
+        self.assertIsNotNone(loaded.routine_store.get(command.routine_id))
         self.assertEqual(restored.routine_id, command.routine_id)
 
     def test_default_name_conflict_is_reported_and_not_overwritten(self) -> None:
@@ -656,6 +706,7 @@ class TwitchCommandTriggerStoreTests(unittest.TestCase):
         self.assertEqual(
             [task.task_type for task in routine.tasks],
             [
+                "core.select_text",
                 "twitch.send_chat_message",
             ],
         )
@@ -808,6 +859,14 @@ class TwitchCommandTriggerDispatcherTests(unittest.TestCase):
             self.dispatcher.evaluate(incoming).outcome,
             TwitchCommandTriggerOutcome.COOLDOWN,
         )
+
+    def test_clean_state_builtin_is_ready_with_mixed_case_invocation(self) -> None:
+        self.store.load()
+
+        result = self.dispatcher.evaluate(message("!UpTiMe"))
+
+        self.assertEqual(result.outcome, TwitchCommandTriggerOutcome.READY)
+        self.assertEqual(result.trigger_id, "streamhouse.default.command.uptime")
 
     def test_global_and_per_viewer_cooldowns_are_both_enforced(self) -> None:
         self.store.add(

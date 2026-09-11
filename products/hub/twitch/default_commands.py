@@ -50,7 +50,10 @@ def _select(command: str, selector: str, cases: dict[str, str]):
         {
             "selector": selector,
             "cases": cases,
-            "default": cases.get("error", "I couldn't retrieve that information right now."),
+            "default": cases.get(
+                "default",
+                cases.get("error", "I couldn't retrieve that information right now."),
+            ),
             "output_variable": "command_response",
         },
     )
@@ -178,20 +181,30 @@ def default_command_definitions() -> tuple[DefaultCommandDefinition, ...]:
         "title",
         "title",
         (
-            _task(
-                "title", "send", "twitch.send_chat_message", "Send Twitch chat response",
-                {"message": "Current title: {stream.title}", "as_bot": True},
+            _select(
+                "title",
+                "{stream.title}",
+                {
+                    "--": "The current channel title is unavailable.",
+                    "default": "Current title: {stream.title}",
+                },
             ),
+            _send("title"),
         ),
     )
     game = DefaultCommandDefinition(
         "game",
         "game",
         (
-            _task(
-                "game", "send", "twitch.send_chat_message", "Send Twitch chat response",
-                {"message": "We're currently streaming {stream.category}.", "as_bot": True},
+            _select(
+                "game",
+                "{stream.category}",
+                {
+                    "--": "The channel does not currently have a category set.",
+                    "default": "We're currently streaming {stream.category}.",
+                },
             ),
+            _send("game"),
         ),
     )
     commands = DefaultCommandDefinition(
@@ -279,3 +292,12 @@ def default_command_order() -> dict[str, int]:
         definition.default_id: index
         for index, definition in enumerate(default_command_definitions())
     }
+
+
+def self_contained_default_commands() -> tuple[DefaultCommandDefinition, ...]:
+    """Return defaults whose response needs no user-owned setup data."""
+    return tuple(
+        definition
+        for definition in default_command_definitions()
+        if not definition.setup_requirement
+    )

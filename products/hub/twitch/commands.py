@@ -29,6 +29,7 @@ from products.hub.twitch.default_commands import (
     DefaultCommandDefinition,
     default_command_order,
     default_command_definitions,
+    self_contained_default_commands,
 )
 
 
@@ -153,7 +154,8 @@ class TwitchCommandTriggerStore:
         if not self.path.exists():
             self.triggers = []
             self.reconcile_managed_routines()
-            return []
+            self._ensure_self_contained_defaults()
+            return list(self.triggers)
         payload = load_json_with_backup(self.path)
         if not isinstance(payload, dict):
             raise ValueError("Twitch command triggers must contain a JSON object.")
@@ -180,7 +182,14 @@ class TwitchCommandTriggerStore:
                 continue
             loaded.append(trigger)
         self.reconcile_managed_routines()
-        return list(loaded)
+        self._ensure_self_contained_defaults()
+        return list(self.triggers)
+
+    def _ensure_self_contained_defaults(self) -> None:
+        """Materialize code-owned commands that need no user configuration."""
+        for definition in self_contained_default_commands():
+            if self.default(definition.default_id) is None:
+                self.configure_default(definition.default_id)
 
     def reconcile_managed_routines(self) -> tuple[int, int]:
         """Release routines whose owning command no longer exists.

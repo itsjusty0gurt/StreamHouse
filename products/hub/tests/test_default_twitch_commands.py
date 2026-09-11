@@ -88,8 +88,10 @@ class DefaultTwitchCommandTests(unittest.TestCase):
         root = Path(self.temporary.name)
         self.routines = RoutineStore(root / "routines.json")
         self.store = TwitchCommandTriggerStore(root / "commands.json", self.routines)
+        self.store.load()
         for definition in default_command_definitions():
-            self.store.configure_default(definition.default_id)
+            if definition.setup_requirement:
+                self.store.configure_default(definition.default_id)
         self.channel_information = ChannelInformationStore(
             root / "channel-information.json"
         )
@@ -218,17 +220,27 @@ class DefaultTwitchCommandTests(unittest.TestCase):
             "TargetViewer's Twitch account was created",
             self.run_command("accountage", target="targetviewer"),
         )
+        self.twitch.user_error = OSError("user API")
+        self.assertEqual(
+            self.run_command("accountage", target="targetviewer"),
+            "I couldn't retrieve that Twitch account right now.",
+        )
 
     def test_title_and_game_use_cached_stream_variables(self) -> None:
         self.assertEqual(self.run_command("title"), "Current title: Building Streamhouse")
         self.assertEqual(self.run_command("game"), "We're currently streaming Science & Technology.")
         self.twitch.channel = {"title": "Offline title", "game_name": "", "game_id": ""}
         self.assertEqual(self.run_command("title"), "Current title: Offline title")
-        command = self.store.resolve("game")
-        result = self.automation.publish_trigger(
-            TriggerEvent(command.trigger_id, "twitch", "command", {"user": "TestViewer"})
+        self.assertEqual(
+            self.run_command("game"),
+            "The channel does not currently have a category set.",
         )
-        self.assertFalse(result.succeeded)
+        self.twitch.channel = {"title": "", "game_name": "Just Chatting", "game_id": "509658"}
+        self.assertEqual(
+            self.run_command("title"),
+            "The current channel title is unavailable.",
+        )
+        self.assertEqual(self.run_command("game"), "We're currently streaming Just Chatting.")
 
     def test_commands_excludes_disabled_and_respects_permissions(self) -> None:
         game = self.store.resolve("game")
@@ -246,6 +258,12 @@ class DefaultTwitchCommandTests(unittest.TestCase):
         response = self.run_command("commands")
         self.assertNotIn("!game", response)
         self.assertNotIn("!followage", response)
+        for unavailable in (
+            "!discord", "!socials", "!youtube", "!schedule", "!rules", "!server"
+        ):
+            self.assertNotIn(unavailable, response)
+        for available in ("!uptime", "!accountage", "!title"):
+            self.assertIn(available, response)
         self.assertEqual(response.count("!commands"), 1)
 
     def enable(self, name: str) -> None:

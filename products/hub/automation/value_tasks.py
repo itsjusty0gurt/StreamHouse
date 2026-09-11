@@ -145,7 +145,7 @@ class SelectTextTask:
         except ValueError as error:
             return _result(task, False, str(error))
         selector = render_placeholders(
-            str(task.config.get("selector", "")), context
+            str(task.config.get("selector", "")), context, fallback="--"
         ).strip().casefold()
         raw_cases = task.config.get("cases", {})
         cases: Mapping[str, object] = raw_cases if isinstance(raw_cases, dict) else {}

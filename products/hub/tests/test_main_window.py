@@ -825,12 +825,16 @@ class MainWindowTests(unittest.TestCase):
             self.twitch_command_trigger_store,
             empty_routine.routine_id,
         )
-        self.assertEqual(manager.command_list.count(), 1)
-        self.assertIn("!hello", manager.command_list.item(0).text())
+        self.assertEqual(manager.command_list.count(), 7)
+        hello_row = next(
+            row
+            for row in range(manager.command_list.count())
+            if "!hello" in manager.command_list.item(row).text()
+        )
         self.assertTrue(manager.create_button.isEnabled())
         self.assertFalse(manager.edit_button.isEnabled())
         self.assertFalse(manager.select_button.isEnabled())
-        manager.command_list.setCurrentRow(0)
+        manager.command_list.setCurrentRow(hello_row)
         self.assertTrue(manager.edit_button.isEnabled())
         self.assertTrue(manager.select_button.isEnabled())
         manager.select_button.click()
@@ -2078,10 +2082,15 @@ class MainWindowTests(unittest.TestCase):
         self.assertFalse(self.window.delete_twitch_command_button.isEnabled())
         self.assertFalse(self.window.reset_twitch_command_button.isEnabled())
 
-    def test_default_template_configures_one_routine_then_supports_reset(self) -> None:
+    def test_self_contained_default_is_ready_then_supports_reset(self) -> None:
         self.window._refresh_twitch_commands()
-        self.assertEqual(self.twitch_command_trigger_store.routine_store.routines, [])
-        self.assertEqual(self.twitch_command_trigger_store.routine_store.groups, [])
+        self.assertEqual(
+            len(self.twitch_command_trigger_store.routine_store.routines), 6
+        )
+        self.assertEqual(
+            self.twitch_command_trigger_store.routine_store.groups[0].name,
+            "Commands",
+        )
         row = next(
             row
             for row in range(self.window.twitch_commands_table.rowCount())
@@ -2090,22 +2099,16 @@ class MainWindowTests(unittest.TestCase):
         self.window.twitch_commands_table.selectRow(row)
         self.assertEqual(
             self.window.twitch_commands_table.item(row, 0).text(),
-            "Not Configured",
+            "Enabled",
         )
         self.assertEqual(
             self.window.twitch_commands_table.item(row, 7).text(),
-            "Default Template",
+            "Default",
         )
-        self.assertEqual(self.window.edit_twitch_command_button.text(), "Configure Selected")
-        self.window.edit_twitch_command_button.click()
+        self.assertEqual(self.window.edit_twitch_command_button.text(), "Edit Selected")
 
         command = self.twitch_command_trigger_store.default("uptime")
         self.assertIsNotNone(command)
-        self.assertEqual(len(self.twitch_command_trigger_store.routine_store.routines), 1)
-        self.assertEqual(
-            self.twitch_command_trigger_store.routine_store.groups[0].name,
-            "Commands",
-        )
         command_group = next(
             self.window.automation_page.routine_tree.topLevelItem(index)
             for index in range(
@@ -2115,10 +2118,13 @@ class MainWindowTests(unittest.TestCase):
             .text(0)
             .startswith("Commands")
         )
-        self.assertEqual(command_group.childCount(), 1)
-        self.assertEqual(
-            command_group.child(0).data(0, Qt.ItemDataRole.UserRole),
+        self.assertEqual(command_group.childCount(), 6)
+        self.assertIn(
             command.routine_id,
+            {
+                command_group.child(index).data(0, Qt.ItemDataRole.UserRole)
+                for index in range(command_group.childCount())
+            },
         )
         self.assertTrue(self.window.reset_twitch_command_button.isEnabled())
 

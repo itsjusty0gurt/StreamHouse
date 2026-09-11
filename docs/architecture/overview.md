@@ -866,19 +866,21 @@ true. Gift Subscription owns the one aggregate gifting execution and exposes
 its count; gifted-recipient subscribe events may still update Activity and
 subscriber/user state without publishing Subscribe routine triggers.
 
-Built-in Chat Command definitions remain code-owned templates until explicitly
-configured. Templates do not create trigger or routine records at startup.
-Committing social setup can configure/enable its existing default and `!socials`
-without visiting Commands; clearing setup disables those managed defaults.
-Configuring a built-in template or creating a custom command creates a normal
-managed Automation routine in the shared **Commands** group by default. Group
+Built-in Chat Command definitions remain code-owned. The self-contained
+`!uptime`, `!followage`, `!accountage`, `!title`, `!game`, and `!commands`
+definitions materialize enabled managed routines when the command store loads,
+so a clean Hub can use them without a configuration step. Setup-dependent
+defaults remain unconfigured templates; committing social or Channel
+Information setup can create/enable those defaults without visiting Commands,
+and clearing setup disables them. Materialized defaults and custom commands use
+normal managed Automation routines in the shared **Commands** group by default. Group
 placement is user-owned organization, independent of trigger type: attaching a
 command to an existing routine preserves its group, and command edits,
 reconciliation, reload, and managed default/social synchronization never move a
 routine back to **Commands**. Managed command ownership covers trigger/routine
 identity and setup synchronization, not group ownership. The group is created
 on demand and removed under the existing empty-group cleanup rules.
-`twitch/commands.json` therefore stores only configured commands, while
+`twitch/commands.json` therefore stores materialized defaults and custom commands, while
 `automation/routines.json` remains authoritative for their routines and group
 placement.
 
