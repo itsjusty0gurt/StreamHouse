@@ -1697,7 +1697,7 @@ class MainWindowTests(unittest.TestCase):
                 "Commands",
                 "Channel Points",
                 "Counters",
-                "User",
+                "Users",
             ],
         )
         self.assertEqual(

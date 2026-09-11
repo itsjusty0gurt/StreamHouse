@@ -173,6 +173,7 @@ from products.hub.twitch.simulator import create_eventsub_notification
 from products.hub.ui.generated.ui_mainwindow import Ui_MainWindow
 from products.hub.ui.dashboard_page import DashboardPage
 from products.hub.ui.page_header import PageHeader
+from products.hub.ui.users_page import UsersPage
 from products.hub.ui.counters_page import CountersPage
 from products.hub.ui.log_handler import QtLogHandler
 from products.hub.ui.twitch_bridge import TwitchEventBridge
@@ -2708,7 +2709,16 @@ class MainWindow(QMainWindow):
         self._selected_chat_entry: TwitchChatEntry | None = None
         self._selected_chat_user_id = ""
         self._selected_chat_user_name = ""
-        self.channel_tabs.addTab(self.chat_user_page, "User")
+        profile = self.chat_user_page
+        self.chat_user_title.hide()
+        self.chat_user_details.hide()
+        self.chat_user_page = UsersPage(
+            self.chatter_history, self.counter_service,
+            lambda: self.current_memory_stream_id if self.stream_is_live else "",
+            profile, self._open_chat_user, self._show_chatter_context_menu,
+            self._set_local_chatter_group, self.channel_tabs,
+        )
+        self.channel_tabs.addTab(self.chat_user_page, "Users")
 
     def auto_connect_obs(self) -> None:
         """Connect to OBS after the real application event loop has started."""
@@ -3683,6 +3693,8 @@ class MainWindow(QMainWindow):
                 chat_message.username,
                 chat_message.received_at,
                 is_bot=twitch_identified_bot,
+                user_login=chat_message.user_login,
+                badges=tuple(badge.set_id for badge in chat_message.badges),
                 session_id=(
                     self.session_store.current.started_at
                     if self.session_store.current is not None
@@ -7199,6 +7211,7 @@ class MainWindow(QMainWindow):
         can_ban = can_ban and user_id != self.twitch_service.broadcaster_user_id
         self.chat_user_timeout_button.setEnabled(can_ban and bool(user_id))
         self.chat_user_ban_button.setEnabled(can_ban and bool(user_id))
+        self.chat_user_page.select_user(user_id)
         self.channel_tabs.setCurrentWidget(self.chat_user_page)
 
     def _reply_to_selected_chat_user(self) -> None:

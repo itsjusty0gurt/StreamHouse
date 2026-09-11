@@ -74,6 +74,8 @@ class ChatterRecord:
     daily_memory: list[dict[str, str]] = field(default_factory=list)
     daily_memory_updated_at: str = ""
     daily_memory_stream_id: str = ""
+    user_login: str = ""
+    twitch_status: dict[str, bool] = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, values: dict[str, Any]) -> ChatterRecord:
@@ -82,6 +84,15 @@ class ChatterRecord:
             user_name=str(values.get("user_name", "")),
             first_seen=str(values.get("first_seen", "")),
             last_seen=str(values.get("last_seen", "")),
+            user_login=str(values.get("user_login", "")),
+            twitch_status={
+                key: value
+                for key, value in values.get("twitch_status", {}).items()
+                if key in {"Moderator", "VIP", "Subscriber"}
+                and isinstance(value, bool)
+            }
+            if isinstance(values.get("twitch_status"), dict)
+            else {},
             active_days=[str(day) for day in values.get("active_days", [])][
                 -90:
             ],
@@ -155,7 +166,7 @@ class ChatterHistoryStore:
     REGULAR_SNAPSHOT_DAYS = 10
     MEMORY_REGULAR_STREAMS = 5
     MEMORY_CONSENT_VERSION = "1"
-    VERSION = 6
+    VERSION = 7
 
     def __init__(self, path: Path | None = None) -> None:
         self.path = path or user_data_root() / "memory" / "twitch_chatters.json"
@@ -195,14 +206,7 @@ class ChatterHistoryStore:
                 normalized = True
             loaded[user_id] = record
         self.records = loaded
-        # Rewriting removes unconsented activity-only profiles while retaining
-        # Hub-owned group assignments, observed bots, and explicit consent.
-        self.dirty = normalized or any(
-            record.memory_consent == "unknown"
-            and not record.is_bot
-            and not record.manual_group
-            for record in self.records.values()
-        )
+        self.dirty = normalized
 
     def observe_message(
         self,
@@ -211,9 +215,19 @@ class ChatterHistoryStore:
         observed_at: datetime | None = None,
         is_bot: bool = False,
         session_id: str = "",
+        user_login: str = "",
+        badges: Iterable[str] | None = None,
     ) -> None:
         record = self._observe(user_id, user_name, observed_at)
         if record is not None:
+            record.user_login = user_login or record.user_login
+            if badges is not None:
+                badge_names = set(badges)
+                record.twitch_status = {
+                    "Moderator": "moderator" in badge_names or "broadcaster" in badge_names,
+                    "VIP": "vip" in badge_names,
+                    "Subscriber": bool(badge_names & {"subscriber", "founder"}),
+                }
             record.message_count += 1
             record.is_bot = record.is_bot or is_bot
             if session_id:
@@ -246,6 +260,14 @@ class ChatterHistoryStore:
             if record is not None and session_id:
                 record.session_messages.setdefault(session_id, 0)
             if record is not None:
+                record.user_login = (
+                    str(chatter.get("user_login", "")) or record.user_login
+                )
+                record.twitch_status = {
+                    "Moderator": record.user_id in moderator_ids,
+                    "VIP": record.user_id in vip_ids,
+                    "Subscriber": record.user_id in subscriber_ids,
+                }
                 roles: list[str] = []
                 if record.user_id in moderator_ids:
                     roles.append("Moderator")
@@ -828,15 +850,35 @@ class ChatterHistoryStore:
         payload = {
             "version": self.VERSION,
             "chatters": {
-                user_id: asdict(record)
+                user_id: self._persisted_record(record)
                 for user_id, record in self.records.items()
-                if record.memory_consent in {"opted_in", "opted_out"}
-                or record.is_bot
-                or record.manual_group
             },
         }
         atomic_write_json(self.path, payload)
         self.dirty = False
+
+    @staticmethod
+    def _persisted_record(record: ChatterRecord) -> dict[str, Any]:
+        values = asdict(record)
+        if (
+            record.memory_consent == "unknown"
+            and not record.manual_group
+            and not record.is_bot
+        ):
+            # Management identity is durable without retaining conversation content.
+            keep = {
+                "user_id",
+                "user_name",
+                "user_login",
+                "first_seen",
+                "last_seen",
+                "manual_group",
+                "is_bot",
+                "roles",
+                "twitch_status",
+            }
+            values = {key: value for key, value in values.items() if key in keep}
+        return values
 
     def _observe(
         self,

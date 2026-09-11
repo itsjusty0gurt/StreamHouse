@@ -161,7 +161,8 @@ class ChatterHistoryStoreTests(unittest.TestCase):
 
             removed = ChatterHistoryStore(path)
             removed.load()
-            self.assertNotIn("1", removed.records)
+            self.assertEqual(removed.records["1"].manual_group, "")
+            self.assertFalse(removed.is_bot("1"))
 
     def test_twitch_refresh_updates_name_without_erasing_local_group(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -193,7 +194,7 @@ class ChatterHistoryStoreTests(unittest.TestCase):
             path.write_text(
                 json.dumps(
                     {
-                        "version": 6,
+                        "version": ChatterHistoryStore.VERSION,
                         "chatters": {
                             "stable-id": {
                                 "user_id": "display-name-key",
@@ -221,7 +222,8 @@ class ChatterHistoryStoreTests(unittest.TestCase):
 
             cleaned = ChatterHistoryStore(path)
             cleaned.load()
-            self.assertEqual(cleaned.records, {})
+            self.assertEqual(list(cleaned.records), ["stable-id"])
+            self.assertEqual(cleaned.records["stable-id"].manual_group, "")
 
     def test_snapshot_persists_all_observed_roles(self) -> None:
         store = ChatterHistoryStore(Path("unused.json"))
@@ -234,6 +236,10 @@ class ChatterHistoryStoreTests(unittest.TestCase):
         self.assertEqual(
             store.records["1"].roles,
             ["Moderator", "VIP", "Subscriber"],
+        )
+        self.assertEqual(
+            store.records["1"].twitch_status,
+            {"Moderator": True, "VIP": True, "Subscriber": True},
         )
 
     def test_follow_timestamp_is_recorded(self) -> None:
@@ -381,16 +387,37 @@ class ChatterHistoryStoreTests(unittest.TestCase):
             3,
         )
 
-    def test_unconsented_viewer_is_not_persisted(self) -> None:
+    def test_unconsented_viewer_persists_only_management_identity(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "chatters.json"
             store = ChatterHistoryStore(path)
-            store.observe_message("viewer", "Viewer")
+            store.observe_message(
+                "viewer", "Viewer", user_login="viewer_login",
+                badges=("moderator", "subscriber"), session_id="stream-1",
+            )
             store.save()
 
             restored = ChatterHistoryStore(path)
             restored.load()
-            self.assertNotIn("viewer", restored.records)
+            record = restored.records["viewer"]
+            self.assertEqual(record.user_name, "Viewer")
+            self.assertEqual(record.user_login, "viewer_login")
+            self.assertEqual(record.twitch_status["Moderator"], True)
+            self.assertEqual(record.twitch_status["VIP"], False)
+            self.assertEqual(record.first_seen, record.last_seen)
+            self.assertEqual(record.message_count, 0)
+            self.assertEqual(record.session_messages, {})
+
+    def test_observed_identity_updates_by_stable_user_id(self) -> None:
+        store = ChatterHistoryStore(Path("unused.json"))
+        store.observe_message("stable", "Old Name", user_login="old_login")
+        store.set_manual_group("stable", "Regulars")
+        store.observe_message("stable", "New Name", user_login="new_login")
+
+        self.assertEqual(list(store.records), ["stable"])
+        self.assertEqual(store.records["stable"].user_name, "New Name")
+        self.assertEqual(store.records["stable"].user_login, "new_login")
+        self.assertEqual(store.records["stable"].manual_group, "Regulars")
 
     def test_consent_and_five_distinct_streams_unlock_keynotes(self) -> None:
         store = ChatterHistoryStore(Path("unused.json"))

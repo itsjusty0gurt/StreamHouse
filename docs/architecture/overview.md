@@ -234,6 +234,8 @@ but does not emit another signed-in transition or restart chat/EventSub.
 - chat rendering, chatters, activity, ads, analytics, channel points
 - commands, routines, triggers, tasks, queues, and variable state
 - viewer consent, deletion, daily-context policy, and approved viewer records
+- stable-ID user management, observed Twitch status, groups, bot classification,
+  and first/last seen presentation through the Users workspace
 - soundboard configuration and local routine execution
 - deciding whether a draft may actually be sent
 
@@ -769,6 +771,14 @@ The Counters management page is presented inside Hub's Twitch workspace. This
 is a navigation ownership choice only: definitions, named value files,
 transactional updates, and automation providers remain in
 `products/hub/counters/`.
+
+The Users workspace reads viewer identity, groups, bot classification, observed
+Twitch roles, and first/last seen from the chatter-history store. Stable Twitch
+user ID is authoritative; a changed login or display name does not create a new
+record. Twitch role values remain Unknown until chat badges or a complete
+channel snapshot confirms them. The workspace reuses the chat moderation menu
+and edits only `viewer_total` and `viewer_stream_total` through `CounterService`;
+it does not own a parallel user, moderation, or counter store.
 
 A future Set-task option to ask for a value when a manual/button/hotkey routine
 runs is intentionally deferred. Alpha does not introduce a generic runtime
@@ -1348,7 +1358,7 @@ identifiers or filename formats are accepted.
 | `twitch/soundboard-relay.json` | Hub | v1 non-secret relay URL/channel/autoconnect |
 | `obs/connection.json` | Hub | v1 non-secret OBS host/port/autoconnect |
 | `obs/triggers.json` | Hub | schema v1 OBS trigger definitions |
-| `memory/twitch_chatters.json` | Hub | schema v6, stable-Twitch-ID profiles and Hub-owned local groups |
+| `memory/twitch_chatters.json` | Hub | schema v7, stable-Twitch-ID profiles, observed Twitch status, first/last seen, and Hub-owned local groups |
 | `memory/twitch_activity.json` | Hub | schema v2 bounded activity feed history with stable Twitch user references where applicable |
 | `memory/stream_sessions.json` | Hub | schema v1 active/completed session analytics, including current incomplete-session recovery |
 | `training/examples.json` | Streamhouse AI | v1 consent-based classifier examples |

@@ -8,7 +8,7 @@ authorization.
 
 ## Current data
 
-- Twitch user ID and latest observed display name
+- Twitch user ID and latest observed display name/login
 - first and last seen timestamps
 - distinct active days and days present in chatter snapshots
 - observed chat-message count
@@ -18,10 +18,11 @@ authorization.
 ## AI-memory boundary
 
 Viewer memory is opt-in. A viewer uses `!sallymemory on` in chat; records
-without an explicit consent record are not eligible. Unconsented activity-only
-records remain session-only. The store may still persist the minimum record
-needed for an explicit opt-out or a Hub-owned local group/bot classification;
-those fields do not authorize AI memory. Available commands are:
+without an explicit consent record are not eligible. Hub persists a compact
+user-management identity record (stable Twitch ID, latest name/login, observed
+role state, group/bot classification, and first/last seen timestamps) without
+retaining their conversation content. Those fields do not authorize AI memory.
+Available commands are:
 
 - `!sallymemory` - explain the feature and controls.
 - `!sallymemory on` - consent to daily context and regular qualification.
