@@ -103,6 +103,211 @@ class RoutineCardContent:
     issues: tuple[str, ...] = ()
 
 
+@dataclass(frozen=True, slots=True)
+class TriggerCardContent:
+    title: str
+    summary: str
+    family: str
+    enabled: bool = True
+    issues: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class QueueCardContent:
+    name: str
+    is_default: bool = False
+    paused: bool = False
+    active: bool = False
+    pending: int = 0
+
+
+def _card_style(object_name: str, *, supports_disabled: bool = False) -> str:
+    disabled = (
+        f'QFrame#{object_name}[enabledState="false"] {{'
+        "background-color:#202023; border-color:#34343a;"
+        "}"
+        f'QFrame#{object_name}[selected="true"][enabledState="false"] {{'
+        "background-color:#29272d; border-color:#9f7dce;"
+        "}"
+        if supports_disabled
+        else ""
+    )
+    return (
+        f"QFrame#{object_name} {{"
+        "background-color:#242427; border:1px solid #3c3c42; border-radius:6px;"
+        "}"
+        f'QFrame#{object_name}[selected="true"] {{'
+        "background-color:#2b2930; border-color:#bf94ff;"
+        "}"
+        f"{disabled}"
+        "QLabel { border:none; background:transparent; }"
+    )
+
+
+def _set_selected(card: QFrame, selected: bool) -> None:
+    card.setProperty("selected", selected)
+    card.style().unpolish(card)
+    card.style().polish(card)
+
+
+class TriggerCardWidget(QFrame):
+    """Compact human-readable presentation for an attached routine trigger."""
+
+    def __init__(
+        self,
+        content: TriggerCardContent,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.content = content
+        self.setObjectName("automationTriggerCard")
+        self.setProperty("selected", False)
+        self.setProperty("enabledState", content.enabled)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.setStyleSheet(_card_style(self.objectName(), supports_disabled=True))
+
+        outer = QHBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        accent = ROUTINE_TRIGGER_ACCENTS.get(
+            content.family,
+            ROUTINE_TRIGGER_ACCENTS["Other"],
+        )
+        self.accent_bar = QFrame(self)
+        self.accent_bar.setObjectName("automationTriggerAccent")
+        self.accent_bar.setFixedWidth(4)
+        self.accent_bar.setStyleSheet(
+            f"background-color:{accent}; border:none;"
+            "border-top-left-radius:5px; border-bottom-left-radius:5px;"
+        )
+        outer.addWidget(self.accent_bar)
+
+        row = QHBoxLayout()
+        row.setContentsMargins(9, 5, 9, 5)
+        row.setSpacing(8)
+        self.title_label = ElidingLabel(content.title, self)
+        self.title_label.setObjectName("automationTriggerTitle")
+        self.title_label.setStyleSheet(
+            "font-weight:650; color:#efeff1;"
+            if content.enabled
+            else "font-weight:650; color:#9999a3;"
+        )
+        self.title_label.setMinimumWidth(120)
+        self.title_label.setMaximumWidth(245)
+        row.addWidget(self.title_label)
+        self.summary_label = ElidingLabel(content.summary, self)
+        self.summary_label.setObjectName("automationTriggerSummary")
+        self.summary_label.setStyleSheet(
+            "color:#adadb8;" if content.enabled else "color:#777780;"
+        )
+        self.summary_label.setAlignment(
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+        )
+        self.summary_label.setMinimumWidth(20)
+        row.addWidget(self.summary_label, 1)
+        self.warning_label = QLabel("!", self)
+        self.warning_label.setObjectName("automationTriggerWarning")
+        self.warning_label.setStyleSheet(
+            "color:#d9b957; font-size:10px; font-weight:700;"
+        )
+        self.warning_label.setToolTip("\n".join(content.issues))
+        self.warning_label.setVisible(bool(content.issues))
+        row.addWidget(self.warning_label)
+        self.state_label = QLabel("Disabled", self)
+        self.state_label.setObjectName("automationTriggerState")
+        self.state_label.setStyleSheet("color:#85858f; font-size:10px;")
+        self.state_label.setVisible(not content.enabled)
+        row.addWidget(self.state_label)
+        outer.addLayout(row, 1)
+
+        details = [content.summary, *content.issues]
+        if not content.enabled:
+            details.append("Disabled")
+        self.setToolTip("\n".join(value for value in details if value) or "Ready")
+        state = "disabled" if not content.enabled else "enabled"
+        attention = ", needs attention" if content.issues else ""
+        self.setAccessibleName(
+            f"{content.title}, {content.summary}, {state}{attention}"
+        )
+        self.setMinimumHeight(38)
+
+    def set_selected(self, selected: bool) -> None:
+        _set_selected(self, selected)
+
+
+class QueueCardWidget(QFrame):
+    """Dense queue identity row with only meaningful runtime state."""
+
+    def __init__(
+        self,
+        content: QueueCardContent,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.content = content
+        self.setObjectName("automationQueueCard")
+        self.setProperty("selected", False)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.setStyleSheet(_card_style(self.objectName()))
+
+        outer = QHBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        accent = (
+            ROUTINE_TRIGGER_ACCENTS["Core"]
+            if content.is_default
+            else TASK_CATEGORY_ACCENTS["Core / Scripts"]
+        )
+        self.accent_bar = QFrame(self)
+        self.accent_bar.setObjectName("automationQueueAccent")
+        self.accent_bar.setFixedWidth(4)
+        self.accent_bar.setStyleSheet(
+            f"background-color:{accent}; border:none;"
+            "border-top-left-radius:5px; border-bottom-left-radius:5px;"
+        )
+        outer.addWidget(self.accent_bar)
+
+        row = QHBoxLayout()
+        row.setContentsMargins(9, 3, 9, 3)
+        row.setSpacing(8)
+        self.name_label = ElidingLabel(content.name, self)
+        self.name_label.setObjectName("automationQueueName")
+        self.name_label.setStyleSheet("font-weight:650; color:#efeff1;")
+        self.name_label.setMinimumWidth(0)
+        row.addWidget(self.name_label, 1)
+        states = []
+        if content.is_default:
+            states.append("Default")
+        if content.paused:
+            states.append("Paused")
+        elif content.active:
+            states.append("Active")
+        if content.pending:
+            states.append(f"{content.pending} pending")
+        self.state_label = ElidingLabel(" · ".join(states), self)
+        self.state_label.setObjectName("automationQueueState")
+        self.state_label.setStyleSheet(
+            "color:#d9b957; font-size:10px;"
+            if content.paused
+            else "color:#85858f; font-size:10px;"
+        )
+        self.state_label.setAlignment(
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+        )
+        self.state_label.setMaximumWidth(145)
+        self.state_label.setVisible(bool(states))
+        row.addWidget(self.state_label)
+        outer.addLayout(row, 1)
+
+        self.setToolTip(" · ".join(states) or "Ready")
+        accessible_state = ", ".join(states) if states else "ready"
+        self.setAccessibleName(f"{content.name}, {accessible_state}")
+        self.setMinimumHeight(32)
+
+    def set_selected(self, selected: bool) -> None:
+        _set_selected(self, selected)
+
+
 class RoutineCardWidget(QFrame):
     """Compact card presentation for one routine in the grouped tree."""
 
@@ -122,21 +327,7 @@ class RoutineCardWidget(QFrame):
             content.trigger_family,
             ROUTINE_TRIGGER_ACCENTS["Other"],
         )
-        self.setStyleSheet(
-            "QFrame#automationRoutineCard {"
-            "background-color:#242427; border:1px solid #3c3c42; border-radius:6px;"
-            "}"
-            "QFrame#automationRoutineCard[selected=\"true\"] {"
-            "background-color:#2b2930; border-color:#bf94ff;"
-            "}"
-            "QFrame#automationRoutineCard[enabledState=\"false\"] {"
-            "background-color:#202023; border-color:#34343a;"
-            "}"
-            "QFrame#automationRoutineCard[selected=\"true\"][enabledState=\"false\"] {"
-            "background-color:#29272d; border-color:#9f7dce;"
-            "}"
-            "QLabel { border:none; background:transparent; }"
-        )
+        self.setStyleSheet(_card_style(self.objectName(), supports_disabled=True))
 
         outer = QHBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -202,9 +393,7 @@ class RoutineCardWidget(QFrame):
         self.setMinimumHeight(32)
 
     def set_selected(self, selected: bool) -> None:
-        self.setProperty("selected", selected)
-        self.style().unpolish(self)
-        self.style().polish(self)
+        _set_selected(self, selected)
 
 
 class TaskCardWidget(QFrame):
@@ -225,15 +414,7 @@ class TaskCardWidget(QFrame):
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
 
         accent = task_category_accent(content.category)
-        self.setStyleSheet(
-            "QFrame#automationTaskCard {"
-            "background-color:#242427; border:1px solid #3c3c42; border-radius:6px;"
-            "}"
-            "QFrame#automationTaskCard[selected=\"true\"] {"
-            "background-color:#2b2930; border-color:#bf94ff;"
-            "}"
-            "QLabel { border:none; background:transparent; }"
-        )
+        self.setStyleSheet(_card_style(self.objectName()))
 
         outer = QHBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -298,9 +479,7 @@ class TaskCardWidget(QFrame):
         self.setMinimumHeight(34 if nested else 38)
 
     def set_selected(self, selected: bool) -> None:
-        self.setProperty("selected", selected)
-        self.style().unpolish(self)
-        self.style().polish(self)
+        _set_selected(self, selected)
 
 
 class IfTaskCardWidget(QFrame):
@@ -414,6 +593,4 @@ class IfTaskCardWidget(QFrame):
             layout.addWidget(wrapper)
 
     def set_selected(self, selected: bool) -> None:
-        self.setProperty("selected", selected)
-        self.style().unpolish(self)
-        self.style().polish(self)
+        _set_selected(self, selected)

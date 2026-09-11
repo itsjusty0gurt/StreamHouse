@@ -73,8 +73,10 @@ from products.hub.ui.automation_page import (
 )
 from products.hub.ui.automation_task_cards import (
     IfTaskCardWidget,
+    QueueCardWidget,
     RoutineCardWidget,
     TaskCardWidget,
+    TriggerCardWidget,
     task_category_accent,
 )
 from shared.streamhouse_shared.protocol import PROTOCOL_VERSION
@@ -466,6 +468,11 @@ class MainWindowTests(unittest.TestCase):
         self.assertEqual(page.tabs.tabText(1), "Queues")
         self.assertEqual(page.pending_queue_list.count(), 1)
         self.assertIn("Play sound", page.pending_queue_list.item(0).text())
+        queue_card = page.queue_list.itemWidget(page.queue_list.currentItem())
+        self.assertIsInstance(queue_card, QueueCardWidget)
+        self.assertEqual(queue_card.name_label.full_text, "Soundboard")
+        self.assertEqual(queue_card.state_label.full_text, "Paused · 1 pending")
+        self.assertTrue(queue_card.property("selected"))
         self.assertEqual(
             page.settings_queue_combo.currentData(),
             queue.queue_id,
@@ -486,6 +493,10 @@ class MainWindowTests(unittest.TestCase):
 
         self.assertEqual(page.queue_list.count(), 1)
         self.assertIn("Default Queue", page.queue_list.item(0).text())
+        queue_card = page.queue_list.itemWidget(page.queue_list.item(0))
+        self.assertIsInstance(queue_card, QueueCardWidget)
+        self.assertEqual(queue_card.name_label.full_text, "Default Queue")
+        self.assertEqual(queue_card.state_label.full_text, "Default")
         self.assertFalse(page.delete_queue_button.isEnabled())
         self.assertEqual(
             page.settings_queue_combo.currentData(),
@@ -517,6 +528,20 @@ class MainWindowTests(unittest.TestCase):
             ).queue_id,
             DEFAULT_AUTOMATION_QUEUE_ID,
         )
+
+    def test_queue_card_refresh_preserves_identity_after_rename(self) -> None:
+        page = self.window.automation_page
+        queue = self.window.automation_queue_store.add("Alerts")
+        page._refresh_queues(queue.queue_id)
+
+        self.window.automation_queue_store.update(queue.queue_id, name="OBS Effects")
+        page._refresh_queues(queue.queue_id)
+
+        self.assertEqual(page._selected_queue_id(), queue.queue_id)
+        card = page.queue_list.itemWidget(page.queue_list.currentItem())
+        self.assertIsInstance(card, QueueCardWidget)
+        self.assertEqual(card.name_label.full_text, "OBS Effects")
+        self.assertTrue(card.property("selected"))
 
     def test_task_add_menu_is_grouped_by_service(self) -> None:
         menu = QMenu()
@@ -1559,7 +1584,19 @@ class MainWindowTests(unittest.TestCase):
         page = self.window.automation_page
         self.assertEqual(page.trigger_list.count(), 3)
         self.assertEqual(page.editor_tabs.tabText(0), "Triggers (3)")
+        cards = [
+            page.trigger_list.itemWidget(page.trigger_list.item(index))
+            for index in range(page.trigger_list.count())
+        ]
+        self.assertTrue(all(isinstance(card, TriggerCardWidget) for card in cards))
+        self.assertEqual(cards[0].title_label.full_text, "Twitch — Command")
+        self.assertEqual(cards[0].summary_label.full_text, "!hello")
+        self.assertEqual(cards[1].title_label.full_text, "Twitch — Incoming Raid")
+        self.assertEqual(cards[1].summary_label.full_text, "From @friend")
+        self.assertNotIn("from_broadcaster_user_login", cards[1].accessibleName())
+        self.assertEqual(cards[2].title_label.full_text, "Core — Application Started")
         page._select_trigger("event", event_trigger.trigger_id)
+        self.assertTrue(cards[1].property("selected"))
         self.assertIn("channel.raid", page.trigger_detail_label.text())
         self.assertIn(
             "from_broadcaster_user_login=friend",
@@ -1567,6 +1604,68 @@ class MainWindowTests(unittest.TestCase):
         )
         page._select_trigger("core", core_trigger.trigger_id)
         self.assertIn("Application Started", page.trigger_detail_label.text())
+
+    def test_trigger_cards_summarize_keyword_reward_obs_and_timers(self) -> None:
+        store = self.twitch_command_trigger_store.routine_store
+        routine = store.add("Card examples")
+        self.twitch_event_trigger_store.add_keyword_phrase(
+            routine.routine_id,
+            "discord",
+            match_type="contains",
+        )
+        self.twitch_event_trigger_store.add_channel_point_redemption(
+            routine.routine_id,
+            reward_id="reward-internal-id",
+            reward_title="Hydrate",
+        )
+        self.twitch_event_trigger_store.add_channel_point_redemption(
+            routine.routine_id,
+        )
+        self.twitch_event_trigger_store.add(
+            routine.routine_id,
+            "channel.raid",
+        )
+        self.window.obs_trigger_store.add(
+            routine.routine_id,
+            "CurrentProgramSceneChanged",
+            filters={"sceneName": "BRB"},
+        )
+        self.window.core_trigger_store.add_timer(
+            routine.routine_id,
+            timer_mode="fixed",
+            timer_minimum="10",
+            timer_minimum_unit="minutes",
+        )
+        self.window.core_trigger_store.add_timer(
+            routine.routine_id,
+            timer_mode="random",
+            timer_minimum="5",
+            timer_minimum_unit="minutes",
+            timer_maximum="10",
+            timer_maximum_unit="minutes",
+            enabled=False,
+        )
+
+        page = self.window.automation_page
+        page.select_routine(routine.routine_id)
+        cards = [
+            page.trigger_list.itemWidget(page.trigger_list.item(index))
+            for index in range(page.trigger_list.count())
+        ]
+        contents = {(card.title_label.full_text, card.summary_label.full_text): card for card in cards}
+        self.assertIn(("Keyword / Phrase", "Contains “discord”"), contents)
+        self.assertIn(("Twitch — Channel Point Redemption", "Hydrate"), contents)
+        self.assertIn(
+            ("Twitch — Channel Point Redemption", "Any Custom Reward"),
+            contents,
+        )
+        self.assertIn(("Twitch — Incoming Raid", "Any raid"), contents)
+        self.assertIn(("OBS — Scene Changed", "Scene BRB"), contents)
+        self.assertIn(("Timer", "Every 10 minutes"), contents)
+        random_card = contents[("Timer", "Random 5–10 minutes")]
+        self.assertFalse(random_card.content.enabled)
+        self.assertFalse(random_card.state_label.isHidden())
+        self.assertNotIn("reward-internal-id", " ".join(card.accessibleName() for card in cards))
 
     def test_core_started_and_closing_triggers_execute_once(self) -> None:
         store = self.twitch_command_trigger_store.routine_store

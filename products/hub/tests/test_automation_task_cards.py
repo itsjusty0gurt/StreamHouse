@@ -8,11 +8,15 @@ from products.hub.automation.task_catalog import BUILTIN_TASK_METADATA
 from products.hub.automation.tasks import TaskMetadata, TaskRegistry
 from products.hub.ui.automation_task_cards import (
     ElidingLabel,
+    QueueCardContent,
+    QueueCardWidget,
     RoutineCardContent,
     RoutineCardWidget,
     TASK_CATEGORY_ACCENTS,
     TaskCardContent,
     TaskCardWidget,
+    TriggerCardContent,
+    TriggerCardWidget,
     task_category_accent,
 )
 
@@ -147,4 +151,74 @@ def test_routine_card_elides_long_names_and_preserves_visual_states() -> None:
     card.set_selected(True)
     assert card.property("selected") is True
     card.close()
+    app.processEvents()
+
+
+def test_trigger_card_is_compact_elides_and_preserves_attention_states() -> None:
+    app = _app()
+    card = TriggerCardWidget(
+        TriggerCardContent(
+            title="Twitch — Channel Point Redemption",
+            summary="A reward name that is too long for this narrow trigger row",
+            family="Twitch",
+            enabled=False,
+            issues=("The saved reward name is unavailable.",),
+        )
+    )
+    card.resize(280, 38)
+    card.show()
+    app.processEvents()
+
+    assert card.minimumHeight() == 38
+    assert card.title_label.full_text == "Twitch — Channel Point Redemption"
+    assert card.summary_label.full_text.startswith("A reward name")
+    assert card.summary_label.text().endswith("…")
+    assert card.state_label.text() == "Disabled"
+    assert not card.warning_label.isHidden()
+    assert "reward name" in card.toolTip()
+    card.set_selected(True)
+    assert card.property("selected") is True
+    card.close()
+    app.processEvents()
+
+
+def test_queue_card_keeps_name_primary_and_default_state_compact() -> None:
+    app = _app()
+    card = QueueCardWidget(
+        QueueCardContent(
+            name="Default Queue",
+            is_default=True,
+            active=True,
+            pending=2,
+        )
+    )
+
+    assert card.minimumHeight() == 32
+    assert card.name_label.full_text == "Default Queue"
+    assert card.state_label.full_text == "Default · Active · 2 pending"
+    assert "streamhouse.default.queue" not in card.accessibleName()
+    card.set_selected(True)
+    assert card.property("selected") is True
+    card.close()
+    app.processEvents()
+
+    custom = QueueCardWidget(QueueCardContent(name="Alerts"))
+    assert custom.name_label.full_text == "Alerts"
+    assert custom.state_label.isHidden()
+    custom.close()
+    app.processEvents()
+
+    narrow = QueueCardWidget(
+        QueueCardContent(
+            name="A queue name that is far too long for a narrow Automation pane",
+            is_default=True,
+        )
+    )
+    narrow.resize(210, 32)
+    narrow.show()
+    app.processEvents()
+    assert narrow.name_label.text().endswith("…")
+    assert narrow.name_label.toolTip().startswith("A queue name")
+    assert narrow.minimumHeight() == 32
+    narrow.close()
     app.processEvents()

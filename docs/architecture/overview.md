@@ -447,6 +447,14 @@ tree supplies group organization, while trigger and task details remain in the
 routine editor. Selection, disabled, and attention states are visual/card
 states rather than extra descriptive rows.
 
+Tasks, routines, attached triggers, and queues share one compact Automation
+card language: dense spacing, elided text with full tooltips, category accents,
+and consistent selection, disabled, and warning states. Their content remains
+purpose-specific. Tasks show an action and concise configuration; routines show
+their name and queue; triggers show a human trigger title and firing condition;
+queues show identity plus only Default, paused, active, or pending state when it
+is meaningful. Cards never expose persisted IDs or serialized configuration.
+
 `core.end_routine` returns the explicit `end_routine` control action. This is a
 successful early completion, not a task failure or cooperative cancellation.
 The action propagates out of structured containers such as If until the current

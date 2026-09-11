@@ -126,10 +126,14 @@ from products.hub.twitch.service import TwitchService
 from products.hub.ui.channel_point_trigger_dialog import ChannelPointRedemptionTriggerDialog
 from products.hub.ui.automation_task_cards import (
     IfTaskCardWidget,
+    QueueCardContent,
+    QueueCardWidget,
     RoutineCardContent,
     RoutineCardWidget,
     TaskCardContent,
     TaskCardWidget,
+    TriggerCardContent,
+    TriggerCardWidget,
 )
 from products.hub.ui.twitch_command_dialog import TwitchCommandDialog, TwitchCommandManagerDialog
 from products.hub.ui.counters_page import CounterDefinitionDialog
@@ -2928,7 +2932,14 @@ class AutomationPage(QWidget):
         queue_toolbar.addWidget(self.delete_queue_button)
         browser_layout.addLayout(queue_toolbar)
         self.queue_list = QListWidget()
-        self.queue_list.setAlternatingRowColors(True)
+        self.queue_list.setAlternatingRowColors(False)
+        self.queue_list.setSpacing(5)
+        self.queue_list.setStyleSheet(
+            "QListWidget { background:transparent; border:none; outline:none; }"
+            "QListWidget::item { background:transparent; border:none; padding:0; }"
+            "QListWidget::item:selected { background:transparent; }"
+            "QListWidget::item:hover { border:1px solid #52525a; border-radius:7px; }"
+        )
         browser_layout.addWidget(self.queue_list, 1)
         splitter.addWidget(browser)
 
@@ -3019,10 +3030,33 @@ class AutomationPage(QWidget):
         selected_item = None
         for queue in self.queue_store.queues:
             pending = self.queue_manager.count(queue.queue_id)
-            state = "Paused" if queue.paused else "Running"
-            item = QListWidgetItem(f"{queue.name}  —  {state} • {pending} pending")
+            current, _pending_items = self.queue_manager.state(queue.queue_id)
+            content = QueueCardContent(
+                name=queue.name,
+                is_default=queue.queue_id == DEFAULT_AUTOMATION_QUEUE_ID,
+                paused=queue.paused,
+                active=current is not None,
+                pending=pending,
+            )
+            state = []
+            if content.is_default:
+                state.append("Default")
+            if content.paused:
+                state.append("Paused")
+            elif content.active:
+                state.append("Active")
+            if content.pending:
+                state.append(f"{content.pending} pending")
+            item = QListWidgetItem(
+                f"{content.name} {' '.join(state)}".strip()
+            )
             item.setData(Qt.ItemDataRole.UserRole, queue.queue_id)
             self.queue_list.addItem(item)
+            card = QueueCardWidget(content, self.queue_list)
+            self.queue_list.setItemWidget(item, card)
+            item.setToolTip(card.toolTip())
+            card.adjustSize()
+            item.setSizeHint(card.sizeHint())
             if queue.queue_id == selected_queue_id:
                 selected_item = item
         self.queue_list.blockSignals(False)
@@ -3035,6 +3069,12 @@ class AutomationPage(QWidget):
         self._queue_state_snapshot = self._queue_snapshot()
 
     def _queue_selected(self) -> None:
+        current = self.queue_list.currentItem()
+        for index in range(self.queue_list.count()):
+            item = self.queue_list.item(index)
+            card = self.queue_list.itemWidget(item)
+            if isinstance(card, QueueCardWidget):
+                card.set_selected(item is current)
         self._show_queue(self._selected_queue())
 
     def _show_queue(self, queue: AutomationQueueDefinition | None) -> None:
@@ -3236,7 +3276,14 @@ class AutomationPage(QWidget):
         self.trigger_detail_label.setWordWrap(True)
         layout.addWidget(self.trigger_detail_label)
         self.trigger_list = QListWidget()
-        self.trigger_list.setAlternatingRowColors(True)
+        self.trigger_list.setAlternatingRowColors(False)
+        self.trigger_list.setSpacing(5)
+        self.trigger_list.setStyleSheet(
+            "QListWidget { background:transparent; border:none; outline:none; }"
+            "QListWidget::item { background:transparent; border:none; padding:0; }"
+            "QListWidget::item:selected { background:transparent; }"
+            "QListWidget::item:hover { border:1px solid #52525a; border-radius:7px; }"
+        )
         self.trigger_list.setContextMenuPolicy(
             Qt.ContextMenuPolicy.CustomContextMenu
         )
@@ -3820,59 +3867,33 @@ class AutomationPage(QWidget):
         self.trigger_list.blockSignals(True)
         self.trigger_list.clear()
         if command is not None:
-            state = "Enabled" if command.enabled else "Disabled"
-            item = QListWidgetItem(f"Twitch command — !{command.name} [{state}]")
-            item.setData(Qt.ItemDataRole.UserRole, command.trigger_id)
-            item.setData(Qt.ItemDataRole.UserRole + 1, "command")
-            self.trigger_list.addItem(item)
-        for trigger in event_triggers:
-            state = "Enabled" if trigger.enabled else "Disabled"
-            filtered = f" • {len(trigger.filters)} filter(s)" if trigger.filters else ""
-            if trigger.event_type == KEYWORD_PHRASE_EVENT_TYPE:
-                item = QListWidgetItem(
-                    f"Twitch chat — Keyword / Phrase: "
-                    f"{trigger.filters.get('phrase', '')} [{state}]"
-                )
-                kind = "keyword"
-            elif trigger.event_type in ADS_TRIGGER_TYPES:
-                item = QListWidgetItem(
-                    f"Twitch ads — {ADS_TRIGGER_TYPES[trigger.event_type]} [{state}]"
-                )
-                kind = "event"
-            elif trigger.event_type == CHANNEL_POINT_REDEMPTION_EVENT_TYPE:
-                reward = trigger.reward_title or trigger.reward_id or "Any Custom Reward"
-                item = QListWidgetItem(
-                    f"Twitch — Channel Point Redemption: {reward} [{state}]"
-                )
-                kind = "event"
-            else:
-                item = QListWidgetItem(
-                    f"Twitch event — {_event_display_name(trigger.event_type)} "
-                    f"[{state}{filtered}]"
-                )
-                kind = "event"
-            item.setData(Qt.ItemDataRole.UserRole, trigger.trigger_id)
-            item.setData(Qt.ItemDataRole.UserRole + 1, kind)
-            self.trigger_list.addItem(item)
-        for trigger in core_triggers:
-            state = "Enabled" if trigger.enabled else "Disabled"
-            label = (
-                self.core_trigger_store.timer_description(trigger)
-                if trigger.event_type == "timer"
-                else CORE_TRIGGER_TYPES.get(trigger.event_type, trigger.event_type)
+            self._add_trigger_card(
+                command.trigger_id,
+                "command",
+                self._command_trigger_card_content(command),
             )
-            item = QListWidgetItem(f"Core program — {label} [{state}]")
-            item.setData(Qt.ItemDataRole.UserRole, trigger.trigger_id)
-            item.setData(Qt.ItemDataRole.UserRole + 1, "core")
-            self.trigger_list.addItem(item)
+        for trigger in event_triggers:
+            if trigger.event_type == KEYWORD_PHRASE_EVENT_TYPE:
+                kind = "keyword"
+            else:
+                kind = "event"
+            self._add_trigger_card(
+                trigger.trigger_id,
+                kind,
+                self._event_trigger_card_content(trigger),
+            )
+        for trigger in core_triggers:
+            self._add_trigger_card(
+                trigger.trigger_id,
+                "core",
+                self._core_trigger_card_content(trigger),
+            )
         for trigger in obs_triggers:
-            state = "Enabled" if trigger.enabled else "Disabled"
-            filtered = f" • {len(trigger.filters)} filter(s)" if trigger.filters else ""
-            label = OBS_TRIGGER_TYPES.get(trigger.event_type, trigger.event_type)
-            item = QListWidgetItem(f"OBS — {label} [{state}{filtered}]")
-            item.setData(Qt.ItemDataRole.UserRole, trigger.trigger_id)
-            item.setData(Qt.ItemDataRole.UserRole + 1, "obs")
-            self.trigger_list.addItem(item)
+            self._add_trigger_card(
+                trigger.trigger_id,
+                "obs",
+                self._obs_trigger_card_content(trigger),
+            )
         self.trigger_list.blockSignals(False)
         self.editor_tabs.setTabText(0, f"Triggers ({self.trigger_list.count()})")
         if self.trigger_list.count() == 0:
@@ -3884,6 +3905,168 @@ class AutomationPage(QWidget):
             self.remove_trigger_button.setEnabled(False)
             return
         self.trigger_list.setCurrentRow(0)
+
+    def _add_trigger_card(
+        self,
+        trigger_id: str,
+        kind: str,
+        content: TriggerCardContent,
+    ) -> None:
+        item = QListWidgetItem(f"{content.title} {content.summary}".strip())
+        item.setData(Qt.ItemDataRole.UserRole, trigger_id)
+        item.setData(Qt.ItemDataRole.UserRole + 1, kind)
+        self.trigger_list.addItem(item)
+        card = TriggerCardWidget(content, self.trigger_list)
+        self.trigger_list.setItemWidget(item, card)
+        item.setToolTip(card.toolTip())
+        card.adjustSize()
+        item.setSizeHint(card.sizeHint())
+
+    @staticmethod
+    def _command_trigger_card_content(command) -> TriggerCardContent:
+        issues = () if command.name.strip() else ("Command is not configured.",)
+        return TriggerCardContent(
+            title="Twitch — Command",
+            summary=f"!{command.name}" if command.name.strip() else "Missing command",
+            family="Twitch",
+            enabled=command.enabled,
+            issues=issues,
+        )
+
+    def _event_trigger_card_content(
+        self,
+        trigger: TwitchEventAutomationTrigger,
+    ) -> TriggerCardContent:
+        event_type = trigger.event_type
+        issues: tuple[str, ...] = ()
+        if event_type == KEYWORD_PHRASE_EVENT_TYPE:
+            phrase = trigger.filters.get("phrase", "").strip()
+            match = KEYWORD_MATCH_TYPES.get(
+                trigger.filters.get("match_type", "contains"),
+                "Contains",
+            )
+            summary = f'{match} “{phrase}”' if phrase else "Missing phrase"
+            if not phrase:
+                issues = ("Keyword or phrase is not configured.",)
+            title = "Keyword / Phrase"
+        elif event_type == CHANNEL_POINT_REDEMPTION_EVENT_TYPE:
+            title = "Twitch — Channel Point Redemption"
+            if trigger.reward_title:
+                summary = trigger.reward_title
+            elif trigger.reward_id:
+                summary = "Specific reward"
+                issues = ("The saved reward name is unavailable.",)
+            else:
+                summary = "Any Custom Reward"
+        elif event_type in ADS_TRIGGER_TYPES:
+            title = f"Twitch — {ADS_TRIGGER_TYPES[event_type]}"
+            summary = "When this ad event occurs"
+        else:
+            display = {
+                "channel.chat.first_message": "First Message",
+                "channel.follow": "Follow",
+                "channel.subscribe": "Subscription",
+                "channel.subscription.message": "Resubscription",
+                "channel.subscription.gift": "Gift Subscription",
+                "channel.cheer": "Cheer",
+                "channel.raid": "Incoming Raid",
+                "channel.raid.outgoing": "Outgoing Raid",
+                "stream.online": "Stream Online",
+                "stream.offline": "Stream Offline",
+            }.get(event_type, _event_display_name(event_type))
+            title = f"Twitch — {display}"
+            defaults = {
+                "channel.chat.first_message": "First message of stream",
+                "channel.raid": "Any raid",
+                "channel.raid.outgoing": "Any raid",
+                "channel.follow": "Any follow",
+                "channel.subscribe": "Any direct subscription",
+                "channel.subscription.message": "Any resubscription",
+                "channel.subscription.gift": "Any gift",
+                "channel.cheer": "Any cheer",
+                "stream.online": "When the stream goes online",
+                "stream.offline": "When the stream goes offline",
+            }
+            summary = defaults.get(event_type, "Any matching event")
+            if trigger.filters:
+                summary = self._filter_summary(trigger.filters, summary)
+        return TriggerCardContent(
+            title=title,
+            summary=summary,
+            family="Twitch",
+            enabled=trigger.enabled,
+            issues=issues,
+        )
+
+    def _core_trigger_card_content(
+        self,
+        trigger: CoreAutomationTrigger,
+    ) -> TriggerCardContent:
+        if trigger.event_type == "timer":
+            description = self.core_trigger_store.timer_description(trigger)
+            summary = (
+                f"Every {description.removeprefix('Fixed ')}"
+                if trigger.timer_mode == "fixed"
+                else description
+            )
+            return TriggerCardContent(
+                title="Timer",
+                summary=summary,
+                family="Timer",
+                enabled=trigger.enabled,
+            )
+        label = CORE_TRIGGER_TYPES.get(trigger.event_type, "Program Event")
+        return TriggerCardContent(
+            title=f"Core — {label}",
+            summary="When this Hub event occurs",
+            family="Core",
+            enabled=trigger.enabled,
+        )
+
+    def _obs_trigger_card_content(
+        self,
+        trigger: ObsAutomationTrigger,
+    ) -> TriggerCardContent:
+        display = OBS_TRIGGER_TYPES.get(trigger.event_type, "OBS Event")
+        defaults = {
+            "ConnectionOpened": "When OBS connects",
+            "ConnectionClosed": "When OBS disconnects",
+            "CurrentProgramSceneChanged": "Any scene",
+            "CurrentPreviewSceneChanged": "Any preview scene",
+            "SceneItemEnableStateChanged": "Any source",
+            "InputMuteStateChanged": "Any input",
+            "InputVolumeChanged": "Any input",
+            "MediaInputPlaybackStarted": "Any media source",
+            "MediaInputPlaybackEnded": "Any media source",
+        }
+        summary = self._filter_summary(
+            trigger.filters,
+            defaults.get(trigger.event_type, "Any matching event"),
+        )
+        return TriggerCardContent(
+            title=f"OBS — {display}",
+            summary=summary,
+            family="OBS",
+            enabled=trigger.enabled,
+        )
+
+    @staticmethod
+    def _filter_summary(filters: dict[str, str], fallback: str) -> str:
+        if not filters:
+            return fallback
+        labels = {
+            "sceneName": "Scene",
+            "sourceName": "Source",
+            "inputName": "Input",
+            "from_broadcaster_user_login": "From",
+            "to_broadcaster_user_login": "To",
+        }
+        parts = [
+            f"{labels[key]} {('@' if key.endswith('_login') else '')}{value}"
+            for key, value in filters.items()
+            if key in labels and value
+        ]
+        return " · ".join(parts[:2]) or "Filtered event"
 
     def _refresh_tasks(self, routine) -> None:
         self.task_list.blockSignals(True)
@@ -4588,6 +4771,12 @@ class AutomationPage(QWidget):
 
     def _trigger_selection_changed(self) -> None:
         kind, trigger_id = self._selected_trigger()
+        current = self.trigger_list.currentItem()
+        for index in range(self.trigger_list.count()):
+            item = self.trigger_list.item(index)
+            card = self.trigger_list.itemWidget(item)
+            if isinstance(card, TriggerCardWidget):
+                card.set_selected(item is current)
         self.edit_trigger_button.setEnabled(bool(trigger_id))
         self.remove_trigger_button.setEnabled(bool(trigger_id))
         if kind == "command":
