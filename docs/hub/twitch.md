@@ -58,6 +58,14 @@ clears the live pane. This presentation cleanup does not erase Activity,
 chatter/user, or other historical records. EventSub-originated UI changes cross
 the queued Twitch Qt bridge before the widget is touched.
 
+The Chat input offers local autocomplete for the currently API-backed `/ban`,
+`/timeout`, and `/unban` actions, including suggestions from Hub's known-user
+records. Completion only prepares the command; explicit submission and the
+normal confirmation remain required. Sent-message Up/Down history is bounded
+and session-only. The live timeline follows while near the bottom, pauses when
+the streamer reads older messages, and shows a counted Jump to latest control
+until the streamer jumps or manually returns to the bottom.
+
 Custom commands are Twitch triggers evaluated by
 `TwitchCommandTriggerDispatcher`. Ready matches publish a normalized
 `TriggerEvent`; rejected matches publish a named outcome without exposing chat

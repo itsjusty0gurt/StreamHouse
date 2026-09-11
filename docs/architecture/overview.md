@@ -805,10 +805,19 @@ recent-message lookup and message deletion state.
 single Chromium surface rather than allocating one Qt widget per message.
 Normal messages remain compact and borderless. Special entries alone receive
 an accent/background. DOM rows are pruned with model history; new content
-scrolls only when the viewer was already near the bottom. The view emits the
-selected structured entry, while reply/copy/user details and moderation are
-coordinated by `MainWindow`. Twitch calls continue through
-`TwitchService.moderate_user()` and its Helix client.
+scrolls only when the viewer was already near the bottom. Scrolling upward
+pauses following and counts pending entries behind a compact Jump to latest
+control; manually returning to the bottom resumes following. Moderation
+removals preserve that reading state, while a full clear resets it. The view
+emits the selected structured entry, while reply/copy/user details and
+moderation are coordinated by `MainWindow`.
+
+`products/hub/ui/twitch_chat_input.py` owns UI-only slash completion and a
+bounded, session-only history of messages sent from Hub. Slash metadata exposes
+only actions backed by the current service (`ban`, `timeout`, and `unban`);
+selection prepares text but never executes it. Explicit submission resolves a
+known username off the UI thread and reuses `TwitchService.moderate_user()` and
+its Helix client. Unknown slash text is not sent blindly to Twitch.
 
 Python-script tasks expose trigger context only through `STREAMHOUSE_*`
 environment variables.

@@ -2928,6 +2928,57 @@ class MainWindowTests(unittest.TestCase):
             as_bot=False,
         )
         self.assertEqual(self.window.ui.twitchSendEdit.text(), "")
+        self.assertEqual(
+            tuple(self.window.twitch_chat_input.history),
+            ("Hello Twitch",),
+        )
+
+    def test_unknown_slash_command_is_not_sent_as_raw_chat(self) -> None:
+        self.window.twitch_service.send_message = Mock(return_value=True)
+        self.window.ui.twitchSendEdit.setText("/unsupported viewer")
+
+        self.window.send_twitch_message()
+
+        self.window.twitch_service.send_message.assert_not_called()
+        self.assertIn(
+            "Unsupported Twitch slash command",
+            self.window.ui.twitchErrorLabel.text(),
+        )
+        self.assertEqual(
+            self.window.ui.twitchSendEdit.text(),
+            "/unsupported viewer",
+        )
+
+    def test_accepted_slash_action_clears_input_without_sending_raw_chat(self) -> None:
+        self.window.twitch_service.send_message = Mock(return_value=True)
+        self.window._start_twitch_slash_action = Mock(return_value=True)
+        self.window.ui.twitchSendEdit.setText("/ban viewer spam")
+
+        self.window.send_twitch_message()
+
+        self.window._start_twitch_slash_action.assert_called_once_with(
+            "/ban viewer spam"
+        )
+        self.window.twitch_service.send_message.assert_not_called()
+        self.assertEqual(self.window.ui.twitchSendEdit.text(), "")
+
+    def test_slash_action_requires_confirmation_and_starts_worker(self) -> None:
+        self.window.slash_action_thread_pool.start = Mock()
+        with patch.object(
+            QMessageBox,
+            "question",
+            return_value=QMessageBox.StandardButton.Yes,
+        ):
+            accepted = self.window._start_twitch_slash_action(
+                "/timeout viewer 30 spam"
+            )
+
+        self.assertTrue(accepted)
+        worker = self.window.slash_action_thread_pool.start.call_args.args[0]
+        self.assertIn(worker, self.window._slash_action_workers)
+        self.assertEqual(worker.request.action, "timeout")
+        self.assertEqual(worker.request.user_reference, "viewer")
+        self.assertEqual(worker.request.duration, 30)
 
     def test_twitch_status_is_shown_in_bottom_status_bar(self) -> None:
         self.window.handle_twitch_status_changed(

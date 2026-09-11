@@ -6,10 +6,12 @@ from datetime import datetime
 from html import escape, unescape
 from urllib.parse import urlencode
 
-from PySide6.QtCore import QUrl, QUrlQuery, Signal
+from PySide6.QtCore import QObject, QUrl, QUrlQuery, Signal, Slot
 from PySide6.QtGui import QColor, QDesktopServices, QFont
 from PySide6.QtWebEngineCore import QWebEnginePage
 from PySide6.QtWebEngineWidgets import QWebEngineView
+from PySide6.QtWebChannel import QWebChannel
+from PySide6.QtWidgets import QPushButton
 
 from products.hub.twitch.chat_entries import (
     TwitchChatEntry,
@@ -30,6 +32,14 @@ class _ChatPage(QWebEnginePage):
         return super().acceptNavigationRequest(url, navigation_type, is_main_frame)
 
 
+class _ChatScrollBridge(QObject):
+    bottom_state_changed = Signal(bool)
+
+    @Slot(bool)
+    def report_bottom_state(self, at_bottom: bool) -> None:
+        self.bottom_state_changed.emit(bool(at_bottom))
+
+
 class TwitchChatView(QWebEngineView):
     """A bounded chat timeline backed by structured Twitch entries."""
 
@@ -47,8 +57,36 @@ class TwitchChatView(QWebEngineView):
         self._static_html = ""
         self._loaded = False
         self._font = QFont("Segoe UI", 10)
+        self._pinned_to_latest = True
+        self._pending_message_count = 0
+        self._scroll_bridge = _ChatScrollBridge(self)
+        self._scroll_bridge.bottom_state_changed.connect(
+            self._handle_bottom_state
+        )
+        self._web_channel = QWebChannel(page)
+        self._web_channel.registerObject("streamhouseChat", self._scroll_bridge)
+        page.setWebChannel(self._web_channel)
+        self.jump_to_latest_button = QPushButton("Jump to latest", self)
+        self.jump_to_latest_button.setObjectName("twitchChatJumpToLatest")
+        self.jump_to_latest_button.setStyleSheet(
+            "QPushButton#twitchChatJumpToLatest {"
+            "background: palette(button); color: palette(button-text);"
+            "border: 1px solid palette(mid); border-radius: 12px;"
+            "padding: 4px 12px; font-weight: 600;"
+            "}"
+        )
+        self.jump_to_latest_button.clicked.connect(self.jump_to_latest)
+        self.jump_to_latest_button.hide()
         self.loadFinished.connect(self._page_loaded)
         self._render()
+
+    @property
+    def pinned_to_latest(self) -> bool:
+        return self._pinned_to_latest
+
+    @property
+    def pending_message_count(self) -> int:
+        return self._pending_message_count
 
     def append_message(
         self,
@@ -92,6 +130,7 @@ class TwitchChatView(QWebEngineView):
         self._options.clear()
         self._html_by_entry.clear()
         self._static_html = ""
+        self._set_pinned_to_latest(True)
         if self._loaded:
             self.page().runJavaScript(
                 "const root=document.getElementById('chat-root');"
@@ -139,7 +178,11 @@ class TwitchChatView(QWebEngineView):
         return 0
 
     def setValue(self, value: int) -> None:
-        self._scroll_to_bottom()
+        self.jump_to_latest()
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._position_jump_to_latest_button()
 
     def contextMenuEvent(self, event) -> None:
         request = self.lastContextMenuRequest()
@@ -172,7 +215,18 @@ class TwitchChatView(QWebEngineView):
             (entry_id, self._entry_html(entry) if entry_id == entry.entry_id else html)
             for entry_id, html in self._html_by_entry
         ]
-        self._render()
+        if self._loaded:
+            replacement = self._entry_html(entry)
+            self.page().runJavaScript(
+                "(() => {"
+                f"const id={json.dumps(entry.entry_id)};"
+                "const item=[...document.querySelectorAll('[data-entry-id]')]"
+                ".find((candidate) => candidate.dataset.entryId === id);"
+                f"if(item)item.outerHTML={json.dumps(replacement)};"
+                "})();"
+            )
+        else:
+            self._render()
         return True
 
     def remove_message(self, message_id: str) -> bool:
@@ -300,7 +354,8 @@ class TwitchChatView(QWebEngineView):
         size = max(self._font.pointSize(), 8)
         self._loaded = False
         body = self._body_html()
-        page = f"""<!doctype html><html><head><style>
+        page = f"""<!doctype html><html><head>
+<script src='qrc:///qtwebchannel/qwebchannel.js'></script><style>
 html,body {{ background:#18181b; }}
 body {{ color:#efeff1; font-family:{self._font.family()}; font-size:{size}pt;
 margin:0; overflow-wrap:anywhere; }}
@@ -318,20 +373,48 @@ color:#adadb8; font-weight:700; }}
 background:#211d28; color:#dedee3; }}
 .moderation-event {{ border-left-color:#e91916; background:#2a1d20; }}
 .system-event {{ border-left-color:#f0b429; background:#29251b; }}
-</style></head><body><div id='chat-root'>{body}</div></body></html>"""
+</style></head><body><div id='chat-root'>{body}</div><script>
+window.streamhouseChatPinned = true;
+const streamhouseNearBottom = () =>
+  window.scrollY + window.innerHeight >= document.documentElement.scrollHeight - 48;
+const streamhouseReportBottom = () => {{
+  window.streamhouseChatPinned = streamhouseNearBottom();
+  if (window.streamhouseChatBridge)
+    window.streamhouseChatBridge.report_bottom_state(window.streamhouseChatPinned);
+}};
+new QWebChannel(qt.webChannelTransport, (channel) => {{
+  window.streamhouseChatBridge = channel.objects.streamhouseChat;
+  streamhouseReportBottom();
+}});
+window.addEventListener('scroll', streamhouseReportBottom, {{passive:true}});
+window.addEventListener('resize', () => {{
+  if (window.streamhouseChatPinned)
+    requestAnimationFrame(() => window.scrollTo(0, document.documentElement.scrollHeight));
+  else
+    streamhouseReportBottom();
+}});
+</script></body></html>"""
         super().setHtml(page, QUrl("about:blank"))
 
     def _page_loaded(self, success: bool) -> None:
         if success:
             self._loaded = True
-            self._scroll_to_bottom()
+            if self._pinned_to_latest:
+                self._scroll_to_bottom()
 
     def _append_html(self, html: str) -> None:
+        was_pinned = self._pinned_to_latest
+        if was_pinned:
+            self._pending_message_count = 0
+        else:
+            self._pending_message_count += 1
+        self._update_jump_to_latest_button()
         script = f"""
 (() => {{
   const root = document.getElementById('chat-root'); if (!root) return;
   const doc = document.documentElement;
-  const nearBottom = window.scrollY + window.innerHeight >= doc.scrollHeight - 48;
+  const nearBottom = window.streamhouseChatPinned !== false &&
+    window.scrollY + window.innerHeight >= doc.scrollHeight - 48;
   root.insertAdjacentHTML('beforeend', {json.dumps(html)});
   while (root.children.length > {self.history.limit}) root.firstElementChild.remove();
   const scroll = () => {{ if (nearBottom) window.scrollTo(0, doc.scrollHeight); }};
@@ -348,3 +431,40 @@ background:#211d28; color:#dedee3; }}
             self.page().runJavaScript(
                 "window.scrollTo(0, document.documentElement.scrollHeight)"
             )
+
+    @Slot()
+    def jump_to_latest(self) -> None:
+        self._set_pinned_to_latest(True)
+        self._scroll_to_bottom()
+
+    @Slot(bool)
+    def _handle_bottom_state(self, at_bottom: bool) -> None:
+        if at_bottom:
+            self._set_pinned_to_latest(True)
+        else:
+            self._pinned_to_latest = False
+
+    def _set_pinned_to_latest(self, pinned: bool) -> None:
+        self._pinned_to_latest = bool(pinned)
+        if pinned:
+            self._pending_message_count = 0
+        self._update_jump_to_latest_button()
+
+    def _update_jump_to_latest_button(self) -> None:
+        count = self._pending_message_count
+        if count:
+            noun = "message" if count == 1 else "messages"
+            self.jump_to_latest_button.setText(
+                f"{count} new {noun} — Jump to latest"
+            )
+        self.jump_to_latest_button.setVisible(count > 0)
+        self._position_jump_to_latest_button()
+
+    def _position_jump_to_latest_button(self) -> None:
+        button = self.jump_to_latest_button
+        button.adjustSize()
+        button.move(
+            max(8, (self.width() - button.width()) // 2),
+            max(8, self.height() - button.height() - 12),
+        )
+        button.raise_()

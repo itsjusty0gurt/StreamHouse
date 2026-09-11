@@ -179,6 +179,13 @@ from products.hub.ui.log_handler import QtLogHandler
 from products.hub.ui.twitch_bridge import TwitchEventBridge
 from products.hub.twitch.chat_entries import TwitchChatEntry
 from products.hub.ui.structured_twitch_chat_view import TwitchChatView
+from products.hub.ui.twitch_chat_input import (
+    TwitchChatInputController,
+    TwitchSlashActionWorker,
+    TwitchSlashRequest,
+    TwitchUserSuggestion,
+    parse_twitch_slash_request,
+)
 from products.hub.ui.twitch_command_dialog import TwitchCommandDialog
 from products.hub.ui.channel_snapshot_worker import (
     ChannelSnapshotResult,
@@ -711,6 +718,9 @@ class MainWindow(QMainWindow):
         self.command_thread_pool = QThreadPool(self)
         self.command_thread_pool.setMaxThreadCount(1)
         self._command_workers: set[CommandExecutionWorker] = set()
+        self.slash_action_thread_pool = QThreadPool(self)
+        self.slash_action_thread_pool.setMaxThreadCount(1)
+        self._slash_action_workers: set[TwitchSlashActionWorker] = set()
         self.ads_thread_pool = QThreadPool(self)
         self.ads_thread_pool.setMaxThreadCount(1)
         self._ads_workers: set[AdsActionWorker] = set()
@@ -794,6 +804,10 @@ class MainWindow(QMainWindow):
             self.ui.twitchChatOutput,
         )
         old_chat_output.deleteLater()
+        self.twitch_chat_input = TwitchChatInputController(
+            self.ui.twitchSendEdit,
+            self._known_twitch_chat_users,
+        )
         self.ui.twitchConnectButton.hide()
         self.ui.twitchDisconnectButton.hide()
         self.ui.twitchChannelEdit.setReadOnly(True)
@@ -3575,11 +3589,73 @@ class MainWindow(QMainWindow):
     @Slot()
     def send_twitch_message(self) -> None:
         self.ui.twitchErrorLabel.clear()
+        text = self.ui.twitchSendEdit.text()
+        if text.lstrip().startswith("/"):
+            if self._start_twitch_slash_action(text):
+                self.twitch_chat_input.record_sent(text)
+                self.ui.twitchSendEdit.clear()
+            return
         if self.twitch_service.send_message(
-            self.ui.twitchSendEdit.text(),
+            text,
             as_bot=False,
         ):
+            self.twitch_chat_input.record_sent(text)
             self.ui.twitchSendEdit.clear()
+
+    def _known_twitch_chat_users(self) -> tuple[TwitchUserSuggestion, ...]:
+        users: list[TwitchUserSuggestion] = []
+        for record in self.chatter_history.records.values():
+            login = record.user_login or record.user_name
+            if login:
+                users.append(
+                    TwitchUserSuggestion(
+                        login=login,
+                        display_name=record.user_name,
+                    )
+                )
+        return tuple(users)
+
+    def _start_twitch_slash_action(self, text: str) -> bool:
+        try:
+            request = parse_twitch_slash_request(text)
+        except ValueError as error:
+            self.handle_twitch_error(str(error))
+            return False
+        labels = {
+            "timeout": f"timeout @{request.user_reference}",
+            "ban": f"ban @{request.user_reference}",
+            "unban": f"remove the ban or timeout for @{request.user_reference}",
+        }
+        answer = QMessageBox.question(
+            self,
+            "Confirm Twitch moderation",
+            f"Are you sure you want to {labels[request.action]}?",
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return False
+        worker = TwitchSlashActionWorker(self.twitch_service, request)
+        self._slash_action_workers.add(worker)
+        worker.signals.finished.connect(self._finish_twitch_slash_action)
+        self.slash_action_thread_pool.start(worker)
+        return True
+
+    @Slot(object, object, bool, str, str)
+    def _finish_twitch_slash_action(
+        self,
+        worker: TwitchSlashActionWorker,
+        request: TwitchSlashRequest,
+        success: bool,
+        user_reference: str,
+        detail: str,
+    ) -> None:
+        self._slash_action_workers.discard(worker)
+        if success:
+            self.statusBar().showMessage(
+                f"Twitch {request.action} completed for @{user_reference}.",
+                5000,
+            )
+        elif detail:
+            self.handle_twitch_error(f"Twitch moderation failed: {detail}")
 
     @Slot()
     def simulate_twitch_message(self) -> None:
@@ -7896,6 +7972,9 @@ class MainWindow(QMainWindow):
         self.command_thread_pool.clear()
         self.command_thread_pool.waitForDone(2_000)
         self._command_workers.clear()
+        self.slash_action_thread_pool.clear()
+        self.slash_action_thread_pool.waitForDone(2_000)
+        self._slash_action_workers.clear()
         self.ads_thread_pool.clear()
         self.ads_thread_pool.waitForDone(2_000)
         self._ads_workers.clear()
