@@ -34,6 +34,7 @@ from extensions.twitch.app.relay_server import (
     _WARNED_COMPATIBILITY_EVENTS,
 )
 from products.hub.ui.soundboard_page import SoundboardPageWidget
+from shared.streamhouse_runtime.relay_config import resolve_environment_value
 
 
 class LegacyOnlyRelayHandler(RelayHandler):
@@ -168,6 +169,13 @@ class SoundboardStoreTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "HTTPS"):
             SoundboardRelayConfig("http://example.com", "123").validate()
         SoundboardRelayConfig("https://relay.example.com", "123").validate()
+        for unsafe_url in (
+            "https://user:password@relay.example.com",
+            "https://relay.example.com?token=secret",
+            "https://relay.example.com#access_token=secret",
+        ):
+            with self.subTest(unsafe_url=unsafe_url), self.assertRaises(ValueError):
+                SoundboardRelayConfig(unsafe_url, "123").validate()
         self.assertEqual(
             SoundboardRelayConfig().url,
             "https://streamhouse-soundboard-relay.onrender.com",
@@ -197,6 +205,33 @@ class SoundboardStoreTests(unittest.TestCase):
             ):
                 config, _key = store.load()
             self.assertEqual(config.url, "https://legacy.example")
+
+    def test_hub_does_not_resolve_hosted_relay_server_secret_environment(self) -> None:
+        store = SoundboardRelayConfigStore(self.path.with_name("relay.json"))
+        with (
+            patch.object(store.secret_store, "load", return_value=""),
+            patch(
+                "products.hub.soundboard.relay.resolve_environment_value",
+                wraps=resolve_environment_value,
+            ) as resolve,
+            patch.dict(
+                os.environ,
+                {
+                    "STREAMHOUSE_RELAY_BASE": "https://client.example",
+                    "STREAMHOUSE_RELAY_KEYS": '{"123":"server-key"}',
+                    "STREAMHOUSE_RELAY_DB": "server-database-secret",
+                },
+                clear=True,
+            ),
+        ):
+            config, _key = store.load()
+
+        self.assertEqual(config.url, "https://client.example")
+        resolve.assert_called_once()
+        self.assertEqual(
+            resolve.call_args.args[1:3],
+            ("STREAMHOUSE_RELAY_BASE", "SALLY_RELAY_BASE"),
+        )
 
     def test_relay_settings_require_the_exact_current_schema(self) -> None:
         path = self.path.with_name("relay.json")

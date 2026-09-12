@@ -10,14 +10,18 @@ from products.hub.counters.models import (
     parse_counter_number,
     validate_counter_id,
 )
-from shared.streamhouse_runtime.json_store import atomic_write_json, load_json_with_backup
+from shared.streamhouse_runtime.json_store import (
+    UnsupportedJsonSchemaError,
+    atomic_write_json,
+    load_validated_json,
+)
 from shared.streamhouse_runtime.logger import Logger
 
 INDEX_VERSION = 2
 COUNTER_VERSION = 2
 
 
-class UnsupportedCounterVersion(ValueError):
+class UnsupportedCounterVersion(UnsupportedJsonSchemaError):
     def __init__(self, actual: Any, expected: int, label: str) -> None:
         super().__init__(f"Unsupported {label} version {actual!r}; expected {expected}.")
         self.actual = actual
@@ -103,23 +107,13 @@ class CounterStore:
         with self._index_lock:
             if not self.index_path.exists() and not self.index_path.with_suffix(".json.bak").exists():
                 return []
-            payload = load_json_with_backup(self.index_path)
             try:
-                return self._definitions_from_payload(payload)
-            except (TypeError, ValueError) as primary_error:
-                backup = self.index_path.with_suffix(".json.bak")
-                if not backup.exists():
-                    if isinstance(primary_error, UnsupportedCounterVersion) and self._is_older_version(primary_error):
-                        self._quarantine_pre_alpha_data(primary_error.actual)
-                        return []
-                    raise
-                try:
-                    return self._definitions_from_payload(load_json_with_backup(backup))
-                except UnsupportedCounterVersion as backup_error:
-                    if self._is_older_version(primary_error) and self._is_older_version(backup_error):
-                        self._quarantine_pre_alpha_data(max(primary_error.actual, backup_error.actual))
-                        return []
-                    raise
+                return load_validated_json(self.index_path, self._definitions_from_payload)
+            except UnsupportedCounterVersion as error:
+                if self._is_older_version(error):
+                    self._quarantine_pre_alpha_data(error.actual)
+                    return []
+                raise
 
     def save_definitions(self, definitions: list[CounterDefinition]) -> None:
         with self._index_lock:
@@ -171,14 +165,9 @@ class CounterStore:
                 definition.reset_value if definition else "0",
                 definition.numeric_type if definition else "integer",
             )
-        payload = load_json_with_backup(path)
-        try:
-            return self._validate_counter_payload(payload, counter_id)
-        except (TypeError, ValueError):
-            backup = path.with_suffix(".json.bak")
-            if not backup.exists():
-                raise
-            return self._validate_counter_payload(load_json_with_backup(backup), counter_id)
+        return load_validated_json(
+            path, lambda payload: self._validate_counter_payload(payload, counter_id)
+        )
 
     @classmethod
     def _validate_counter_payload(cls, payload: Any, counter_id: str) -> dict[str, Any]:

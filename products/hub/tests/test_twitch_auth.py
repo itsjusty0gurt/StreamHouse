@@ -8,10 +8,24 @@ from unittest.mock import Mock, call, patch
 
 from products.hub.twitch.auth import TwitchAuthService, TwitchAuthState, TwitchToken
 from products.hub.twitch.token_store import TwitchTokenStore
+from products.hub.core.secret_store import SecretStore
 from products.hub.core.events import Events
 
 
 class TwitchTokenStoreTests(unittest.TestCase):
+    def test_protected_stores_use_current_user_dpapi_scope(self) -> None:
+        self.assertEqual(TwitchTokenStore.DPAPI_FLAGS, 0x1)
+        self.assertEqual(SecretStore.DPAPI_FLAGS, 0x1)
+
+    def test_generic_windows_secret_store_round_trip_is_not_plaintext(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = SecretStore(Path(directory) / "password.dat", "Test secret")
+
+            store.save("private-password")
+
+            self.assertEqual(store.load(), "private-password")
+            self.assertNotIn(b"private-password", store.path.read_bytes())
+
     def test_windows_encrypted_token_round_trip(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             store = TwitchTokenStore(Path(directory) / "token.dat")
@@ -30,6 +44,22 @@ class TwitchTokenStoreTests(unittest.TestCase):
             self.assertNotIn(b"access", store.path.read_bytes())
             store.clear()
             self.assertFalse(store.path.exists())
+
+    def test_missing_and_corrupt_protected_values_have_no_plaintext_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            token_store = TwitchTokenStore(root / "token.dat")
+            secret_store = SecretStore(root / "password.dat", "Test secret")
+
+            self.assertIsNone(token_store.load())
+            self.assertEqual(secret_store.load(), "")
+            token_store.path.write_bytes(b"not-a-dpapi-token")
+            secret_store.path.write_bytes(b"not-a-dpapi-secret")
+
+            with self.assertRaises(OSError):
+                token_store.load()
+            with self.assertRaises(OSError):
+                secret_store.load()
 
 
 class TwitchAuthServiceTests(unittest.TestCase):
@@ -183,6 +213,19 @@ class TwitchAuthServiceTests(unittest.TestCase):
             service._set_state(TwitchAuthState.SIGNED_IN, "channel")
 
         emit.assert_not_called()
+
+    def test_auth_state_errors_do_not_expose_credentials(self) -> None:
+        service = TwitchAuthService(client=Mock(), store=Mock())
+
+        with patch.object(Events, "emit") as emit:
+            service._set_state(
+                TwitchAuthState.ERROR,
+                "Request failed: Authorization: Bearer private-access-token",
+            )
+
+        detail = emit.call_args.kwargs["detail"]
+        self.assertNotIn("private-access-token", detail)
+        self.assertIn("<REDACTED>", detail)
 
     @patch("products.hub.twitch.auth.webbrowser.open")
     def test_device_flow_keeps_polling_while_authorization_is_pending(

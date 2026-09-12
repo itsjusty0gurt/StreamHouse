@@ -7,7 +7,12 @@ from threading import RLock
 from typing import Any, Mapping
 from urllib.parse import urlparse
 
-from shared.streamhouse_runtime.json_store import atomic_write_json, load_json_with_backup
+from shared.streamhouse_runtime.json_store import (
+    UnsupportedJsonSchemaError,
+    atomic_write_json,
+    json_store_exists,
+    load_validated_json,
+)
 from shared.streamhouse_runtime.paths import user_data_root
 
 
@@ -115,23 +120,25 @@ class ChannelInformationStore:
 
     def load(self) -> ChannelInformation:
         with self._lock:
-            if not self.path.exists():
+            if not json_store_exists(self.path):
                 self.information = ChannelInformation()
                 return self.snapshot()
-            payload = load_json_with_backup(self.path)
-            if not isinstance(payload, dict):
-                raise ValueError("Channel Information must contain a JSON object.")
-            try:
-                version = int(payload.get("version", 0))
-            except (TypeError, ValueError) as error:
-                raise ValueError("Channel Information has an invalid schema version.") from error
-            if version != self.VERSION:
-                raise ValueError(
-                    f"Unsupported Channel Information version {version}; "
-                    f"expected {self.VERSION}."
-                )
-            self.information = ChannelInformation.from_dict(payload)
+            self.information = load_validated_json(self.path, self._parse_payload)
             return self.snapshot()
+
+    def _parse_payload(self, payload: object) -> ChannelInformation:
+        if not isinstance(payload, dict):
+            raise ValueError("Channel Information must contain a JSON object.")
+        try:
+            version = int(payload.get("version", 0))
+        except (TypeError, ValueError) as error:
+            raise ValueError("Channel Information has an invalid schema version.") from error
+        if version != self.VERSION:
+            raise UnsupportedJsonSchemaError(
+                f"Unsupported Channel Information version {version}; "
+                f"expected {self.VERSION}."
+            )
+        return ChannelInformation.from_dict(payload)
 
     def save(
         self,

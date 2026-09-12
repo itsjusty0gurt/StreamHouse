@@ -14,6 +14,7 @@ from urllib.request import Request, urlopen
 from products.hub.config.twitch import TWITCH_CLIENT_ID, TWITCH_SCOPES
 from products.hub.core.events import Events
 from shared.streamhouse_runtime.logger import Logger
+from shared.streamhouse_runtime.redaction import redact_secret_text
 from products.hub.twitch.token_store import TwitchTokenStore
 
 
@@ -317,6 +318,7 @@ class TwitchAuthService:
         return reason, description
 
     def _set_state(self, state: TwitchAuthState, detail: str) -> None:
+        detail = redact_secret_text(detail)
         if state is self.state:
             return
         self.state = state

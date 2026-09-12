@@ -5,7 +5,7 @@ import json
 import os
 import re
 import sys
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
@@ -21,12 +21,14 @@ from products.hub.automation.models import DEFAULT_AUTOMATION_QUEUE_ID
 from products.hub.core.settings import SettingsStore
 from products.hub.counters.models import CounterDefinition
 from products.hub.counters.store import COUNTER_VERSION, INDEX_VERSION, CounterStore
+from products.hub.obs_service.config import ObsConnectionConfig
 from products.hub.obs_service.triggers import ObsTriggerStore
 from products.hub.twitch.automation_triggers import TwitchEventTriggerStore
 from products.hub.twitch.channel_information import ChannelInformationStore
 from products.hub.twitch.chatter_history import ChatterHistoryStore
 from products.hub.twitch.commands import TwitchCommandTriggerStore
 from shared.streamhouse_runtime.paths import user_data_root
+from shared.streamhouse_runtime.redaction import is_secret_key, redact_secret_text
 from shared.streamhouse_runtime.version import VERSION
 
 
@@ -127,17 +129,6 @@ _USER_MANAGEMENT_FIELDS = frozenset(
         "manual_group",
         "twitch_status",
     }
-)
-_SECRET_KEYS = re.compile(
-    r"(?i)(?:authorization|access[_-]?token|refresh[_-]?token|api[_-]?key|"
-    r"client[_-]?secret|password|cookie|session[_-]?secret|relay[_-]?(?:key|secret)|"
-    r"x-sally-[\w-]+|sally_relay_(?:base|keys|db))"
-)
-_SECRET_TEXT = re.compile(
-    r"(?i)(?:authorization\s*[:=]\s*(?:bearer|oauth)\s+\S+|"
-    r"(?:access_token|refresh_token|api_key|client_secret|password|secret)"
-    r"\s*[:=]\s*\S+|"
-    r"[?&](?:access_token|refresh_token|api_key|client_secret|token|key|secret|password)=)"
 )
 _CUSTOM_PLACEHOLDER = re.compile(
     r"\{custom\.([a-z][a-z0-9_]{0,63})(?:[^}]*)\}"
@@ -860,19 +851,7 @@ class BackupManager:
             },
         )
         self._expect_schema(payload, 1, "OBS configuration", "version")
-        return {
-            "version": 1,
-            **{
-                key: payload[key]
-                for key in (
-                    "host",
-                    "port",
-                    "auto_connect",
-                    "default_mute_input",
-                )
-                if key in payload
-            },
-        }
+        return {"version": 1, **asdict(ObsConnectionConfig.from_dict(payload))}
 
     # Restore ----------------------------------------------------------
 
@@ -1305,7 +1284,7 @@ class BackupManager:
         if isinstance(value, Mapping):
             for key, item in value.items():
                 key_text = str(key)
-                if _SECRET_KEYS.fullmatch(key_text):
+                if is_secret_key(key_text):
                     raise BackupError(
                         "Backup source contains an ineligible secret field at "
                         f'"{path}{key_text}".'
@@ -1314,7 +1293,7 @@ class BackupManager:
         elif isinstance(value, (list, tuple)):
             for index, item in enumerate(value):
                 cls._walk_for_secrets(item, f"{path}{index}.")
-        elif isinstance(value, str) and _SECRET_TEXT.search(value):
+        elif isinstance(value, str) and redact_secret_text(value) != value:
             location = path.rstrip(".") or "value"
             raise BackupError(
                 f'Backup source contains credential-like content at "{location}".'

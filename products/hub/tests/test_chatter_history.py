@@ -5,6 +5,7 @@ from datetime import datetime, time, timedelta, timezone
 from pathlib import Path
 
 from products.hub.twitch.chatter_history import ChatterHistoryStore
+from shared.streamhouse_runtime.json_store import JsonStoreCorruptionError
 
 
 class ChatterHistoryStoreTests(unittest.TestCase):
@@ -103,10 +104,10 @@ class ChatterHistoryStoreTests(unittest.TestCase):
             )
 
             store = ChatterHistoryStore(path)
-            store.load()
-
-            self.assertEqual(store.records["stable-id"].memories, [])
-            self.assertTrue(store.dirty)
+            with self.assertRaises(JsonStoreCorruptionError):
+                store.load()
+            self.assertEqual(store.records, {})
+            self.assertEqual(len(list((path.parent / "corrupt").glob("chatters-*.json"))), 1)
 
     def test_bot_identity_persists(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -212,18 +213,10 @@ class ChatterHistoryStoreTests(unittest.TestCase):
             )
 
             store = ChatterHistoryStore(path)
-            store.load()
-
-            self.assertEqual(list(store.records), ["stable-id"])
-            self.assertEqual(store.records["stable-id"].user_id, "stable-id")
-            self.assertEqual(store.records["stable-id"].manual_group, "")
-            self.assertTrue(store.dirty)
-            store.save()
-
-            cleaned = ChatterHistoryStore(path)
-            cleaned.load()
-            self.assertEqual(list(cleaned.records), ["stable-id"])
-            self.assertEqual(cleaned.records["stable-id"].manual_group, "")
+            with self.assertRaises(JsonStoreCorruptionError):
+                store.load()
+            self.assertEqual(store.records, {})
+            self.assertEqual(len(list((path.parent / "corrupt").glob("chatters-*.json"))), 1)
 
     def test_snapshot_persists_all_observed_roles(self) -> None:
         store = ChatterHistoryStore(Path("unused.json"))

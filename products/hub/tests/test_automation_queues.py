@@ -4,6 +4,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from products.hub.automation.models import (
     DEFAULT_AUTOMATION_QUEUE_ID,
@@ -24,6 +25,7 @@ from products.hub.twitch.automation_triggers import (
     TwitchEventTriggerStore,
 )
 from products.hub.twitch.commands import TwitchCommandTriggerStore
+from shared.streamhouse_runtime.json_store import JsonStoreCorruptionError
 
 
 class CaptureTask:
@@ -210,8 +212,41 @@ class AutomationQueueTests(unittest.TestCase):
             encoding="utf-8",
         )
 
-        with self.assertRaisesRegex(ValueError, "stable IDs"):
+        with self.assertRaisesRegex(JsonStoreCorruptionError, "stable IDs"):
             self.queue_store.load()
+
+        self.assertEqual(
+            len(
+                list(
+                    (self.queue_store.path.parent / "corrupt").glob("queues-*.json")
+                )
+            ),
+            1,
+        )
+
+    def test_invalid_current_queue_file_recovers_validated_backup(self) -> None:
+        self.queue_store.load()
+        self.queue_store.add("Alerts")
+        self.queue_store.path.write_text(
+            json.dumps({"version": self.queue_store.VERSION, "queues": "broken"}),
+            encoding="utf-8",
+        )
+
+        recovered = AutomationQueueStore(self.queue_store.path)
+        recovered.load()
+
+        self.assertEqual(
+            [queue.name for queue in recovered.queues],
+            [DEFAULT_AUTOMATION_QUEUE_NAME],
+        )
+        self.assertEqual(
+            len(
+                list(
+                    (self.queue_store.path.parent / "corrupt").glob("queues-*.json")
+                )
+            ),
+            1,
+        )
 
     def test_default_queue_cannot_be_deleted_or_renamed(self) -> None:
         self.assertFalse(self.queue_store.delete(DEFAULT_AUTOMATION_QUEUE_ID))
@@ -224,6 +259,20 @@ class AutomationQueueTests(unittest.TestCase):
             self.queue_store.default().name,
             DEFAULT_AUTOMATION_QUEUE_NAME,
         )
+
+    def test_failed_queue_save_does_not_publish_unpersisted_state(self) -> None:
+        self.queue_store.load()
+        original = self.queue_store.path.read_bytes()
+
+        with patch(
+            "products.hub.automation.queues.atomic_write_json",
+            side_effect=OSError("disk full"),
+        ):
+            with self.assertRaises(OSError):
+                self.queue_store.add("Must not appear")
+
+        self.assertFalse(any(queue.name == "Must not appear" for queue in self.queue_store.queues))
+        self.assertEqual(self.queue_store.path.read_bytes(), original)
 
     def test_unassigned_manual_routine_runs_through_default_queue(self) -> None:
         routine = self.routine_store.add("Default queued routine")

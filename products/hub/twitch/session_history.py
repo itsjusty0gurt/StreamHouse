@@ -5,7 +5,12 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from shared.streamhouse_runtime.json_store import atomic_write_json, load_json_with_backup
+from shared.streamhouse_runtime.json_store import (
+    UnsupportedJsonSchemaError,
+    atomic_write_json,
+    json_store_exists,
+    load_validated_json,
+)
 from shared.streamhouse_runtime.paths import user_data_root
 
 
@@ -46,36 +51,46 @@ class StreamSessionStore:
         self.retention_days = 365
 
     def load(self) -> None:
-        if not self.path.exists():
+        if not json_store_exists(self.path):
             return
-        values = load_json_with_backup(self.path)
+        sessions, current, retention_days = load_validated_json(
+            self.path, self._parse_payload
+        )
+        self.sessions = sessions
+        self.current = current
+        self.retention_days = retention_days
+        self.dirty = False
+
+    def _parse_payload(
+        self, values: object
+    ) -> tuple[list[StreamSession], StreamSession | None, int]:
         if not isinstance(values, dict):
             raise ValueError("Stream session history must be an object.")
         if int(values.get("version", 0)) != self.VERSION:
-            raise ValueError(
+            raise UnsupportedJsonSchemaError(
                 "Stream session history uses a discarded pre-alpha schema and must be reset."
             )
         raw_sessions = values.get("sessions", [])
         if not isinstance(raw_sessions, list):
             raise ValueError("Stream sessions must be a list.")
-        self.sessions = [
-            StreamSession.from_dict(value)
-            for value in raw_sessions[: self.LIMIT]
-            if isinstance(value, dict)
-        ]
+        if any(not isinstance(value, dict) for value in raw_sessions):
+            raise ValueError("Every stream session must be a JSON object.")
+        sessions = [StreamSession.from_dict(value) for value in raw_sessions[: self.LIMIT]]
         current = values.get("current")
-        self.current = (
+        if current is not None and not isinstance(current, dict):
+            raise ValueError("Current stream session must be an object or null.")
+        current_session = (
             StreamSession.from_dict(current)
             if isinstance(current, dict)
             else None
         )
         retention_days = values.get("retention_days", 365)
-        self.retention_days = (
+        clean_retention_days = (
             min(max(int(retention_days), 30), 3650)
             if not isinstance(retention_days, bool)
             else 365
         )
-        self.dirty = False
+        return sessions, current_session, clean_retention_days
 
     def save(self) -> None:
         if not self.dirty:

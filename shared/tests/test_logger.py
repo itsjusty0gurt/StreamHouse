@@ -1,3 +1,4 @@
+import io
 import logging
 import unittest
 from unittest.mock import patch
@@ -44,6 +45,46 @@ class LoggerTests(unittest.TestCase):
         record = handler.emit.call_args.args[0]
         self.assertEqual(record.source, "LONG-SOU")
         self.assertEqual(record.getMessage(), "Example")
+
+    def test_normal_logs_redact_credentials_headers_and_urls(self) -> None:
+        stream = io.StringIO()
+        handler = logging.StreamHandler(stream)
+        handler.setFormatter(logging.Formatter("%(message)s"))
+        self.test_logger.addHandler(handler)
+
+        Logger.warning(
+            "Authorization: Bearer bearer-secret "
+            "X-Streamhouse-Key=relay-secret "
+            "password=plain-password secret=plain-secret api_key=api-secret "
+            "https://user:password@example.test/path#token=url-secret"
+        )
+
+        rendered = stream.getvalue()
+        for secret in (
+            "bearer-secret",
+            "relay-secret",
+            "plain-password",
+            "plain-secret",
+            "api-secret",
+            "user:password",
+            "url-secret",
+        ):
+            self.assertNotIn(secret, rendered)
+        self.assertIn("<REDACTED>", rendered)
+
+    def test_exception_traceback_is_redacted_before_logging(self) -> None:
+        handler = logging.Handler()
+        handler.emit = unittest.mock.Mock()
+        self.test_logger.addHandler(handler)
+
+        try:
+            raise RuntimeError("refresh_token=private-refresh")
+        except RuntimeError:
+            Logger.exception("Credential operation failed")
+
+        record = handler.emit.call_args.args[0]
+        self.assertNotIn("private-refresh", record.getMessage())
+        self.assertIn("<REDACTED>", record.getMessage())
 
     def test_timer_reports_missing_start(self) -> None:
         with patch.object(Logger, "warning") as warning:

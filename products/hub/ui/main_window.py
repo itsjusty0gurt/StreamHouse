@@ -773,6 +773,7 @@ class MainWindow(QMainWindow):
         self.daily_memory_expiry_pending = True
         self._core_started_fired = False
         self._core_closing_fired = False
+        self.persistence_shutdown_ok = True
         self.followers_backfilled = False
         self.stream_is_live = False
         self.stream_started_at: datetime | None = None
@@ -2797,7 +2798,7 @@ class MainWindow(QMainWindow):
         password = self.obs_password_edit.text()
         try:
             self.obs_config_store.save(config, password)
-        except OSError as error:
+        except (OSError, ValueError) as error:
             self.obs_status_label.setText(f"Could not save: {error}")
             return False
         self.obs_service.configure(
@@ -7746,15 +7747,25 @@ class MainWindow(QMainWindow):
         return "Disconnected"
 
     @Slot()
-    def _save_chatter_history(self) -> None:
+    def _save_chatter_history(self) -> bool:
+        succeeded = True
         try:
             self.chatter_history.save()
-            self.session_store.save()
         except OSError as error:
-            Logger.warning(
+            succeeded = False
+            Logger.error(
                 f"Could not save Twitch chatter history: {error}",
                 source="TWITCH",
             )
+        try:
+            self.session_store.save()
+        except OSError as error:
+            succeeded = False
+            Logger.error(
+                f"Could not save Twitch stream sessions: {error}",
+                source="TWITCH",
+            )
+        return succeeded
 
     @Slot()
     def run_commercial(self) -> None:
@@ -8211,7 +8222,8 @@ class MainWindow(QMainWindow):
             self._core_closing_fired = True
             self._fire_core_automation_event("application.closing")
         self.window_state_store.save(self)
-        self._save_chatter_history()
+        if not self._save_chatter_history():
+            self.persistence_shutdown_ok = False
         self.ai_test_report_flush_timer.stop()
         try:
             self.test_report_store.save()

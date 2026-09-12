@@ -17,37 +17,15 @@ from zipfile import ZIP_DEFLATED, ZipFile
 from shared.streamhouse_runtime.json_store import atomic_write_json
 from shared.streamhouse_runtime.logger import Logger
 from shared.streamhouse_runtime.paths import user_data_root
+from shared.streamhouse_runtime.redaction import (
+    is_secret_key,
+    redact_secret_text,
+)
 from shared.streamhouse_runtime.version import VERSION
-
-
-_SECRET_PATTERNS = (
-    re.compile(
-        r"(?i)(authorization\s*[:=]\s*(?:bearer|oauth)\s+)([^\s,;]+)"
-    ),
-    re.compile(
-        r"(?i)((?:\"|')?(?:authorization|access[_ -]?token|refresh[_ -]?token|api[_ -]?key|"
-        r"client[_ -]?secret|password|obs[_ -]?password|relay[_ -]?(?:key|secret)|"
-        r"sally_relay_(?:base|keys|db)|cookie|session[_ -]?secret|"
-        r"x-sally-[\w-]+)(?:\"|')?\s*[:=]\s*)(\"[^\"]*\"|'[^']*'|[^\s,;]+)"
-    ),
-    re.compile(
-        r"(?i)([?&](?:access_token|refresh_token|api_key|client_secret|key|token|"
-        r"secret|password)=)"
-        r"([^&#\s]+)"
-    ),
-)
-_SECRET_KEY = re.compile(
-    r"(?i)^(?:authorization|access[_ -]?token|refresh[_ -]?token|api[_ -]?key|"
-    r"client[_ -]?secret|password|obs[_ -]?password|relay[_ -]?(?:key|secret)|"
-    r"sally_relay_(?:base|keys|db)|cookie|session[_ -]?secret|x-sally-[\w-]+)$"
-)
-
 
 def sanitize_support_text(value: object, *, home: Path | None = None) -> str:
     """Redact likely credentials and local user-home paths from a copied artifact."""
-    text = str(value)
-    for pattern in _SECRET_PATTERNS:
-        text = pattern.sub(r"\1<REDACTED>", text)
+    text = redact_secret_text(value)
     home_text = str(home or Path.home())
     if home_text:
         text = re.sub(re.escape(home_text), "<USER_HOME>", text, flags=re.IGNORECASE)
@@ -60,7 +38,7 @@ def sanitize_support_data(value: Any) -> Any:
         return {
             str(key): (
                 "<REDACTED>"
-                if _SECRET_KEY.fullmatch(str(key))
+                if is_secret_key(key)
                 else sanitize_support_data(item)
             )
             for key, item in value.items()

@@ -120,7 +120,7 @@ class BackupManagerTests(unittest.TestCase):
                     {
                         "trigger_id": "raid-trigger",
                         "routine_id": "parent",
-                        "event_key": "channel.raid.incoming",
+                        "event_type": "channel.raid",
                         "enabled": True,
                         "filters": {},
                     }
@@ -277,6 +277,15 @@ class BackupManagerTests(unittest.TestCase):
             },
         )
         (self.root / "obs/password.dat").write_bytes(b"encrypted-secret")
+        (self.root / "twitch/twitch-token.dat").write_bytes(b"twitch-access-secret")
+        (self.root / "twitch/twitch-bot-token.dat").write_bytes(b"bot-access-secret")
+        (self.root / "twitch/soundboard-relay-key.dat").write_bytes(
+            b"relay-key-secret"
+        )
+        write_json(
+            self.root / "config/provider-credentials.json",
+            {"api_key": "provider-secret"},
+        )
         (self.root / "logs").mkdir(parents=True)
         (self.root / "logs/session.log").write_text("private log", encoding="utf-8")
         (self.root / "support").mkdir()
@@ -347,6 +356,10 @@ class BackupManagerTests(unittest.TestCase):
             b"private note",
             b"must-not-appear",
             b"encrypted-secret",
+            b"twitch-access-secret",
+            b"bot-access-secret",
+            b"relay-key-secret",
+            b"provider-secret",
             b"private log",
             b"support",
         ):
@@ -364,6 +377,24 @@ class BackupManagerTests(unittest.TestCase):
         self.assertEqual(counter["channel_total"], "12.50")
         self.assertEqual(counter["viewers"]["viewer-1"]["total"], "3.75")
         self.assertEqual(counter["current_stream"]["stream_id"], "stream-1")
+
+    def test_obs_backup_cannot_package_credential_bearing_host(self) -> None:
+        payload = json.loads(
+            (self.root / "obs/connection.json").read_text(encoding="utf-8")
+        )
+        payload["host"] = "user:password@obs.example.test"
+        write_json(self.root / "obs/connection.json", payload)
+
+        archive = self.manager.create(
+            "manual",
+            preset=BackupPreset.CUSTOM,
+            components=[BackupComponent.OBS_CONFIGURATION],
+        )
+
+        with ZipFile(archive) as source:
+            obs = json.loads(source.read("components/obs_configuration.json"))
+        self.assertEqual(obs["host"], "127.0.0.1")
+        self.assertNotIn("password", json.dumps(obs))
 
     def test_viewer_scrub_removes_management_and_counter_records_from_archives(self) -> None:
         archive = self.manager.create(
@@ -783,17 +814,29 @@ class BackupManagerTests(unittest.TestCase):
         self.assertTrue(manual.exists())
 
     def test_secret_like_eligible_content_is_rejected_not_redacted(self) -> None:
-        settings = json.loads(
-            (self.root / "config/settings.json").read_text(encoding="utf-8")
-        )
-        settings["startup_page"] = "Authorization: Bearer secret-token"
+        for value in (
+            "Authorization: Bearer secret-token",
+            "X-Streamhouse-Key=relay-secret",
+            "https://user:password@example.test/path",
+            "https://example.test/path#access_token=fragment-secret",
+        ):
+            with self.subTest(value=value):
+                settings = json.loads(
+                    (self.root / "config/settings.json").read_text(encoding="utf-8")
+                )
+                settings["startup_page"] = value
+                write_json(self.root / "config/settings.json", settings)
+                with self.assertRaisesRegex(BackupError, "credential-like"):
+                    self.manager.create(
+                        "manual",
+                        preset=BackupPreset.CUSTOM,
+                        components=[BackupComponent.HUB_SETTINGS],
+                    )
+
+        with self.assertRaisesRegex(BackupError, "ineligible secret field"):
+            self.manager._walk_for_secrets({"token": "unlabeled-secret"})
+        settings["startup_page"] = "Dashboard"
         write_json(self.root / "config/settings.json", settings)
-        with self.assertRaisesRegex(BackupError, "credential-like"):
-            self.manager.create(
-                "manual",
-                preset=BackupPreset.CUSTOM,
-                components=[BackupComponent.HUB_SETTINGS],
-            )
 
     def test_manifest_schema_and_checksum_are_validated(self) -> None:
         archive = self.manager.create(

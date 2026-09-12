@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest.mock import Mock
 
 from products.hub.twitch.activity_history import ActivityHistoryStore, PersistedActivity
+from shared.streamhouse_runtime.json_store import JsonStoreCorruptionError
 
 
 class ActivityHistoryStoreTests(unittest.TestCase):
@@ -33,7 +34,7 @@ class ActivityHistoryStoreTests(unittest.TestCase):
             self.assertEqual(entries[0].text, "Viewer 204 followed")
             self.assertEqual(entries[-1].text, "Viewer 5 followed")
 
-    def test_skips_malformed_entries(self) -> None:
+    def test_current_schema_malformed_entry_is_preserved_as_corruption(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "activity.json"
             path.write_text(
@@ -53,8 +54,9 @@ class ActivityHistoryStoreTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            entries = ActivityHistoryStore(path).load()
-            self.assertEqual([entry.text for entry in entries], ["A raid"])
+            with self.assertRaises(JsonStoreCorruptionError):
+                ActivityHistoryStore(path).load()
+            self.assertEqual(len(list((path.parent / "corrupt").glob("activity-*.json"))), 1)
 
     def test_obsolete_schema_is_rejected_before_alpha(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

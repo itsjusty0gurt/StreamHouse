@@ -7,6 +7,7 @@ from urllib.error import HTTPError, URLError
 from products.hub.config.twitch import TWITCH_REDEMPTION_SCOPES
 from products.hub.core.events import Events
 from shared.streamhouse_runtime.logger import Logger
+from shared.streamhouse_runtime.redaction import redact_secret_text
 from products.hub.twitch.eventsub import EventSubWebhookProcessor, LocalEventSubListener
 from products.hub.twitch.auth import TwitchAuthService
 from products.hub.twitch.live import TwitchEventSubSocket, TwitchHelixClient
@@ -794,6 +795,7 @@ class TwitchService:
         )
 
     def _report_error(self, message: str, change_state: bool = True) -> None:
+        message = redact_secret_text(message)
         if change_state:
             self.state = TwitchConnectionState.ERROR
         Logger.error(message, source="TWITCH")

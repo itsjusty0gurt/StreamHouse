@@ -173,7 +173,7 @@ def run(diagnostics: DiagnosticsService | None = None) -> None:
         )
 
     if diagnostics is not None:
-        if exit_code == 0:
+        if exit_code == 0 and window.persistence_shutdown_ok:
             diagnostics.clean_shutdown()
         else:
             diagnostics.uninstall_hooks()

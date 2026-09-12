@@ -12,7 +12,12 @@ from products.hub.automation.models import (
     RoutineGroup,
     TaskDefinition,
 )
-from shared.streamhouse_runtime.json_store import atomic_write_json, load_json_with_backup
+from shared.streamhouse_runtime.json_store import (
+    UnsupportedJsonSchemaError,
+    atomic_write_json,
+    json_store_exists,
+    load_validated_json,
+)
 from shared.streamhouse_runtime.paths import user_data_root
 
 
@@ -32,16 +37,27 @@ class RoutineStore:
         self.routines: list[RoutineDefinition] = []
 
     def load(self) -> list[RoutineDefinition]:
-        if not self.path.exists():
+        if not json_store_exists(self.path):
             self.groups = []
             self.routines = []
             return []
-        payload = load_json_with_backup(self.path)
+        groups, routines, normalized_queues = load_validated_json(
+            self.path, self._parse_payload
+        )
+        self.groups = groups
+        self.routines = routines
+        if normalized_queues:
+            self._write(groups, routines)
+        return list(self.routines)
+
+    def _parse_payload(
+        self, payload: Any
+    ) -> tuple[list[RoutineGroup], list[RoutineDefinition], bool]:
         if not isinstance(payload, dict):
             raise ValueError("Routines must contain a JSON object.")
         version = int(payload.get("version", 0))
         if version != self.VERSION:
-            raise ValueError(
+            raise UnsupportedJsonSchemaError(
                 "Routine data uses a discarded pre-alpha schema and must be reset."
             )
         raw_groups = payload.get("groups", [])
@@ -50,27 +66,19 @@ class RoutineStore:
             raise ValueError("Routines must contain a group list.")
         if not isinstance(values, list):
             raise ValueError("Routines must contain a routine list.")
-        groups = [
-            RoutineGroup.from_dict(value)
-            for value in raw_groups
-            if isinstance(value, dict)
-        ]
-        routines = [
-            RoutineDefinition.from_dict(value)
-            for value in values
-            if isinstance(value, dict)
-        ]
+        if any(not isinstance(value, dict) for value in raw_groups):
+            raise ValueError("Every routine group must be a JSON object.")
+        if any(not isinstance(value, dict) for value in values):
+            raise ValueError("Every routine must be a JSON object.")
+        groups = [RoutineGroup.from_dict(value) for value in raw_groups]
+        routines = [RoutineDefinition.from_dict(value) for value in values]
         normalized_queues = any(
             isinstance(value, dict)
             and not str(value.get("queue_id", "")).strip()
             for value in values
         )
         self._validate_state(groups, routines)
-        self.groups = groups
-        self.routines = routines
-        if normalized_queues:
-            self._write(groups, routines)
-        return list(self.routines)
+        return groups, routines, normalized_queues
 
     def save(self) -> None:
         self._validate_state(self.groups, self.routines)

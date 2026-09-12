@@ -14,6 +14,7 @@ from products.hub.twitch.automation_triggers import (
 )
 from products.hub.twitch.commands import TwitchCommandTriggerStore
 from products.hub.twitch.models import TwitchEvent, TwitchEventTransport, TwitchMessage
+from shared.streamhouse_runtime.json_store import JsonStoreCorruptionError
 
 
 def twitch_event(event_type: str, event: dict) -> TwitchEvent:
@@ -1256,7 +1257,8 @@ class TwitchEventTriggerStoreTests(unittest.TestCase):
             encoding="utf-8",
         )
 
-        self.assertEqual(self.store.load(), [])
+        with self.assertRaises(JsonStoreCorruptionError):
+            self.store.load()
 
 
 if __name__ == "__main__":

@@ -1375,14 +1375,45 @@ Use these rules:
 
 Sally-era data roots and environment aliases are not read or migrated. Private
 pre-alpha data may be reset. Twitch token storage remains under the current
-Streamhouse root and is otherwise unchanged.
+Streamhouse root and uses the current-user DPAPI contract described below.
 
 Qt application metadata and QSettings use organization `Streamhouse` with
 application names `Streamhouse Hub` and `Streamhouse AI`. Sally-era QSettings
 stores are not copied. Current window-state keys use product/domain names.
 
-JSON stores use `atomic_write_json()` and `load_json_with_backup()`: write to a
-temporary file, keep an adjacent `.bak`, then replace atomically.
+JSON stores use the shared `atomic_write_json()` / `load_validated_json()`
+boundary. A save is fully serialized to a uniquely named same-directory temp
+file, flushed and fsynced, parsed again, and only then installed with
+`os.replace`; the adjacent `.bak` is itself prepared through a flushed temp
+file before replacement. On Windows, replacement is atomic when the underlying
+filesystem honors `os.replace`, but antivirus locks, permissions, and disk-full
+errors can still make the operation fail. Those failures are surfaced, the
+previous live file remains authoritative, and uncommitted temp files are
+cleaned rather than promoted.
+
+Current-schema stores parse and validate a complete candidate before publishing
+it to in-memory state. If the live file is malformed or structurally invalid,
+the loader tries the independently validated `.bak`. The bad file is moved to a
+timestamped `corrupt/` sibling directory, never silently rewritten; a valid
+backup is restored as the live copy. If neither copy validates, startup may use
+an empty in-memory feature state so Hub can open, but the evidence remains
+quarantined and the error is logged. An exact unsupported pre-Alpha schema uses
+`UnsupportedJsonSchemaError` and follows the disposable-development-data reset
+policy instead; unsupported schema and current-schema corruption are not the
+same condition. Stale temp files never outrank a valid live file.
+A missing live file with a validated `.bak` is recovered from that backup; an
+uncommitted temp file is never treated as the committed candidate.
+
+Twitch tokens, OBS passwords, and the Hub relay key are stored separately from
+normal JSON configuration and encrypted with current-user Windows DPAPI
+(`CRYPTPROTECT_UI_FORBIDDEN`, without machine scope). They use the same fsynced
+same-directory byte-replacement primitive without exposing plaintext. Older
+machine-scoped private-development values remain DPAPI-readable and are
+rewritten at current-user scope when their owning service next saves them.
+Chatter/session dirty flags are cleared only after a successful save. Shutdown
+attempts both stores independently; a failure keeps the diagnostics active
+marker so the next launch reports that the prior session did not complete a
+fully clean shutdown.
 
 Current pre-alpha stores require their exact current schema and direct
 developers to reset discarded private-development data. This includes Hub/AI
@@ -1391,6 +1422,19 @@ commands, Core/Twitch/OBS triggers, soundboard and relay configuration,
 activity, chatter, and stream sessions. Their loaders retain current-schema
 validation and same-schema backup recovery, but do not silently migrate
 unversioned or obsolete private-development formats.
+
+Ordinary store writes are atomic per file, not transactional across the entire
+data root. Channel Information plus managed-command updates and selective
+Backup/Restore have explicit staged rollback. Trigger/routine and other
+multi-store service operations use ordered writes and compensating rollback,
+but a process or power failure between separate file replacements can still
+leave references for startup reconciliation to repair. This is an unavoidable
+remaining file-store boundary, not a claim of database-level transactions.
+
+Hub currently has no single-instance guard or inter-process file locks. Two Hub
+processes can load the same snapshots and atomically replace each other's later
+writes; atomic files prevent truncation but cannot prevent lost updates.
+**SINGLE-INSTANCE PROTECTION REQUIRED BEFORE ALPHA.**
 
 Routine exports use `streamhouse.automation.routine` schema v2 and the
 `.streamhouse-routine.json` extension. Task clipboard payloads use
@@ -1442,9 +1486,11 @@ Window geometry/state uses Qt `QSettings`, not the JSON stores.
 | `obs/password.dat` | OBS WebSocket password |
 | `twitch/soundboard-relay-key.dat` | private relay key |
 
-Secrets use Windows DPAPI through `core.secret_store`/token stores. Never place
-them in JSON, backups, diagnostics, logs, test fixtures containing real values,
-Extension assets, or Git.
+Secrets use current-user Windows DPAPI through `core.secret_store`/token stores.
+Normal configuration contains only non-secret connection metadata. Never place
+credentials in JSON, backups, diagnostics, logs, test fixtures containing real
+values, Extension assets, or Git. OBS and relay password/key controls use Qt's
+password echo mode; Twitch tokens have no value-display UI.
 
 ### Selective Backup and Restore
 
@@ -1500,11 +1546,28 @@ progress/action state, and post-restore store refresh/restart guidance. Any new
 durable store must make an explicit component, privacy, dependency, schema,
 restore, and viewer-deletion decision rather than being picked up by filename.
 
+Eligibility is enforced through explicit component projections rather than
+directory copying. Every generated and restored component is also walked for
+credential keys, authorization headers, URL user-info, and secret query or
+fragment parameters; unsafe content stops the operation instead of being
+silently packaged or redacted. “Everything Eligible” therefore still excludes
+Twitch broadcaster/bot token files, the OBS password, the Hub relay key, hosted
+relay/server credentials, provider credentials, logs, and diagnostics.
+
 ## Security and privacy invariants
 
 - Local Streamhouse AI and preview servers bind only to `127.0.0.1`.
 - Hosted relay traffic must use HTTPS except explicit localhost development.
-- OAuth, OBS, relay, and Extension secrets are never logged.
+- OAuth, OBS, relay, and Extension secrets are never logged. The shared logger
+  defensively redacts labeled credentials, authorization headers, modern/legacy
+  relay key headers, URL user-info, and secret query/fragment parameters before
+  records reach normal handlers. Owning auth/transport boundaries also sanitize
+  user-visible failure details; Support Bundle sanitization remains an
+  independent final defense over copied diagnostics.
+- Hosted relay server keys/database settings remain extension-process
+  environment configuration. Hub reads only the relay base override and stores
+  its per-channel relay key with DPAPI. Relay base URLs cannot embed user-info,
+  query parameters, or fragments.
 - Chat content is intentionally absent from ordinary application logs.
 - General raw chat history is not persisted.
 - AI memory is opt-in and master-disabled by default.
@@ -1513,6 +1576,10 @@ restore, and viewer-deletion decision rather than being picked up by filename.
 - Broadcaster and bot identities remain separate.
 - Viewer deletion includes backup scrubbing where covered.
 - Diagnostic export includes sanitized warnings and non-secret health/settings.
+- Hub has no OpenAI, Ollama, or other model-provider credential owner. Its
+  optional AI boundary is the neutral versioned localhost transport; provider
+  credentials, if ever needed, belong solely to the separate Streamhouse AI
+  product and are not Hub settings, diagnostics, or backup components.
 - External payloads and imported routines are bounded and validated.
 - Python-script tasks are explicitly trusted local code and run out of process.
 

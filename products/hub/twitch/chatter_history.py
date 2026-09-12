@@ -6,7 +6,12 @@ from pathlib import Path
 from typing import Any, Iterable
 from uuid import uuid4
 
-from shared.streamhouse_runtime.json_store import atomic_write_json, load_json_with_backup
+from shared.streamhouse_runtime.json_store import (
+    UnsupportedJsonSchemaError,
+    atomic_write_json,
+    json_store_exists,
+    load_validated_json,
+)
 from shared.streamhouse_runtime.paths import user_data_root
 
 
@@ -174,13 +179,19 @@ class ChatterHistoryStore:
         self.dirty = False
 
     def load(self) -> None:
-        if not self.path.exists():
+        if not json_store_exists(self.path):
             return
-        values = load_json_with_backup(self.path)
+        loaded, normalized = load_validated_json(self.path, self._parse_payload)
+        self.records = loaded
+        self.dirty = normalized
+
+    def _parse_payload(
+        self, values: object
+    ) -> tuple[dict[str, ChatterRecord], bool]:
         if not isinstance(values, dict):
             raise ValueError("Chatter history must contain a JSON object.")
         if int(values.get("version", 0)) != self.VERSION:
-            raise ValueError(
+            raise UnsupportedJsonSchemaError(
                 "Chatter history uses a discarded pre-alpha schema and must be reset."
             )
         records = values.get("chatters", {})
@@ -191,22 +202,20 @@ class ChatterHistoryStore:
         for raw_user_id, raw_record in records.items():
             user_id = str(raw_user_id).strip()
             if not isinstance(raw_record, dict) or not user_id:
-                normalized = True
-                continue
+                raise ValueError("Every chatter must have a stable ID and JSON object record.")
             record = ChatterRecord.from_dict(raw_record)
             raw_memories = raw_record.get("memories", [])
             if not isinstance(raw_memories, list):
-                normalized = True
+                raise ValueError("Chatter memories must be a list.")
             elif len(record.memories) != len(raw_memories):
-                normalized = True
+                raise ValueError("Chatter memory data is invalid.")
             if record.user_id != user_id:
                 normalized = True
             record.user_id = user_id
             if str(raw_record.get("manual_group", "")).strip() != record.manual_group:
                 normalized = True
             loaded[user_id] = record
-        self.records = loaded
-        self.dirty = normalized
+        return loaded, normalized
 
     def observe_message(
         self,

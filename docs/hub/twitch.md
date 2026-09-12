@@ -8,8 +8,11 @@ dependencies are defined in the
 ## Authentication
 
 - `products/hub/twitch/auth.py` implements the public-client Device Code flow.
-- Access and refresh tokens are encrypted with Windows DPAPI by
-  `products/hub/twitch/token_store.py`.
+- The compiled Twitch client ID identifies this public application and is not a
+  credential. Hub uses no Twitch client secret.
+- Access and refresh tokens are encrypted for the current Windows account with
+  DPAPI by `products/hub/twitch/token_store.py`; broadcaster and bot token files
+  are separate from portable JSON configuration and Backup/Restore eligibility.
 - The broadcaster and optional bot identities use separate encrypted
   token files. The broadcaster token owns channel analytics and moderation;
   the bot token reads and sends chat as the bot account.

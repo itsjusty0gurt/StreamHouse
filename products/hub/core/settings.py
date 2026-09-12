@@ -4,7 +4,12 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, ClassVar
 
-from shared.streamhouse_runtime.json_store import atomic_write_json, load_json_with_backup
+from shared.streamhouse_runtime.json_store import (
+    UnsupportedJsonSchemaError,
+    atomic_write_json,
+    json_store_exists,
+    load_validated_json,
+)
 from shared.streamhouse_runtime.paths import user_data_root
 
 
@@ -357,15 +362,16 @@ class SettingsStore:
         self.path = path or user_data_root() / "config" / "settings.json"
 
     def load(self) -> AppSettings:
-        if not self.path.exists():
+        if not json_store_exists(self.path):
             return AppSettings()
 
-        values = load_json_with_backup(self.path)
+        return load_validated_json(self.path, self._parse_payload)
 
+    def _parse_payload(self, values: object) -> AppSettings:
         if not isinstance(values, dict):
             raise ValueError("Settings file must contain a JSON object.")
         if int(values.get("_version", 0)) != self.VERSION:
-            raise ValueError(
+            raise UnsupportedJsonSchemaError(
                 "Hub settings use a discarded pre-alpha schema and must be reset."
             )
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from threading import RLock
@@ -13,7 +14,12 @@ from products.hub.automation.models import (
     DEFAULT_AUTOMATION_QUEUE_NAME,
     TriggerEvent,
 )
-from shared.streamhouse_runtime.json_store import atomic_write_json, load_json_with_backup
+from shared.streamhouse_runtime.json_store import (
+    UnsupportedJsonSchemaError,
+    atomic_write_json,
+    json_store_exists,
+    load_validated_json,
+)
 from shared.streamhouse_runtime.paths import user_data_root
 
 
@@ -65,31 +71,32 @@ class AutomationQueueStore:
         self.queues: list[AutomationQueueDefinition] = [self._default_queue()]
 
     def load(self) -> list[AutomationQueueDefinition]:
-        if not self.path.exists():
+        if not json_store_exists(self.path):
             self.reset()
             return list(self.queues)
-        payload = load_json_with_backup(self.path)
+        queues = load_validated_json(self.path, self._parse_payload)
+        self.queues = queues
+        return list(self.queues)
+
+    def _parse_payload(self, payload: object) -> list[AutomationQueueDefinition]:
         if not isinstance(payload, dict):
             raise ValueError("Automation queues must contain a JSON object.")
         version = payload.get("version")
         if type(version) is not int or version != self.VERSION:
-            raise ValueError(
+            raise UnsupportedJsonSchemaError(
                 f"Unsupported Automation queue version {version}; "
                 f"expected {self.VERSION}."
             )
         raw = payload.get("queues", [])
         if not isinstance(raw, list):
             raise ValueError("Automation queues must contain a queue list.")
-        queues = [
-            AutomationQueueDefinition.from_dict(value)
-            for value in raw
-            if isinstance(value, dict)
-        ]
+        if any(not isinstance(value, dict) for value in raw):
+            raise ValueError("Every Automation queue must be a JSON object.")
+        queues = [AutomationQueueDefinition.from_dict(value) for value in raw]
         self._validate(queues)
         if queues[0].queue_id != DEFAULT_AUTOMATION_QUEUE_ID:
             raise ValueError("The Default Queue must be the first queue.")
-        self.queues = queues
-        return list(self.queues)
+        return queues
 
     def reset(self) -> AutomationQueueDefinition:
         self.queues = [self._default_queue()]
@@ -114,10 +121,7 @@ class AutomationQueueStore:
 
     def save(self) -> None:
         self._validate(self.queues)
-        atomic_write_json(
-            self.path,
-            {"version": self.VERSION, "queues": [asdict(queue) for queue in self.queues]},
-        )
+        self._write(self.queues)
 
     def get(self, queue_id: str) -> AutomationQueueDefinition | None:
         return next((queue for queue in self.queues if queue.queue_id == queue_id), None)
@@ -137,14 +141,15 @@ class AutomationQueueStore:
             duplicate_policy=duplicate_policy,
             delay_seconds=delay_seconds,
         )
-        values = [*self.queues, queue]
+        values = [*deepcopy(self.queues), queue]
         self._validate(values)
+        self._write(values)
         self.queues = values
-        self.save()
         return queue
 
     def update(self, queue_id: str, **changes) -> AutomationQueueDefinition:
-        queue = self.get(queue_id)
+        values = deepcopy(self.queues)
+        queue = next((item for item in values if item.queue_id == queue_id), None)
         if queue is None:
             raise ValueError("The selected queue no longer exists.")
         if (
@@ -156,9 +161,10 @@ class AutomationQueueStore:
         for key in ("name", "paused", "max_length", "duplicate_policy", "delay_seconds"):
             if key in changes:
                 setattr(queue, key, changes[key])
-        self._validate(self.queues)
-        self.save()
-        return queue
+        self._validate(values)
+        self._write(values)
+        self.queues = values
+        return self.get(queue_id)  # type: ignore[return-value]
 
     def delete(self, queue_id: str) -> bool:
         if queue_id == DEFAULT_AUTOMATION_QUEUE_ID:
@@ -166,9 +172,17 @@ class AutomationQueueStore:
         queue = self.get(queue_id)
         if queue is None:
             return False
-        self.queues.remove(queue)
-        self.save()
+        values = [item for item in deepcopy(self.queues) if item.queue_id != queue_id]
+        self._validate(values)
+        self._write(values)
+        self.queues = values
         return True
+
+    def _write(self, queues: Iterable[AutomationQueueDefinition]) -> None:
+        atomic_write_json(
+            self.path,
+            {"version": self.VERSION, "queues": [asdict(queue) for queue in queues]},
+        )
 
     @staticmethod
     def _validate(queues: Iterable[AutomationQueueDefinition]) -> None:

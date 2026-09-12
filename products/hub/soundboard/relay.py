@@ -6,19 +6,26 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from threading import Event, Thread
 from urllib.error import HTTPError, URLError
+from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
 from PySide6.QtCore import QObject, Signal
 
-from shared.streamhouse_runtime.json_store import atomic_write_json, load_json_with_backup
+from shared.streamhouse_runtime.json_store import (
+    UnsupportedJsonSchemaError,
+    atomic_write_json,
+    json_store_exists,
+    load_validated_json,
+)
 from shared.streamhouse_runtime.logger import Logger
 from shared.streamhouse_runtime.paths import user_data_root
+from shared.streamhouse_runtime.redaction import redact_secret_text
 from shared.streamhouse_runtime.relay_config import (
     LEGACY_RELAY_BASE_DEFAULT,
     RELAY_COMPATIBILITY_REMOVE_AFTER,
     RELAY_COMPATIBILITY_VERSION,
     STREAMHOUSE_RELAY_BASE_DEFAULT,
-    load_relay_environment,
+    resolve_environment_value,
 )
 from products.hub.core.secret_store import SecretStore
 from products.hub.soundboard.store import SoundboardStore
@@ -53,6 +60,11 @@ class SoundboardRelayConfig:
             ("http://127.0.0.1", "http://localhost")
         ):
             raise ValueError("The hosted relay must use HTTPS.")
+        parsed = urlsplit(self.url)
+        if parsed.username or parsed.password or parsed.query or parsed.fragment:
+            raise ValueError(
+                "The relay URL must not contain credentials, query parameters, or a fragment."
+            )
         if not self.channel_id.isdigit():
             raise ValueError("Enter the broadcaster's numeric Twitch channel ID.")
 
@@ -69,21 +81,17 @@ class SoundboardRelayConfigStore:
 
     def load(self) -> tuple[SoundboardRelayConfig, str]:
         config = SoundboardRelayConfig()
-        if self.path.exists():
-            payload = load_json_with_backup(self.path)
-            if not isinstance(payload, dict):
-                raise ValueError("Soundboard relay settings must be a JSON object.")
-            version = payload.get("version")
-            if type(version) is not int or version != self.VERSION:
-                raise ValueError(
-                    f"Unsupported soundboard relay settings version {version}; "
-                    f"expected {self.VERSION}."
-                )
-            config = SoundboardRelayConfig.from_dict(payload)
-        selection = load_relay_environment(
+        if json_store_exists(self.path):
+            config = load_validated_json(self.path, self._parse_payload)
+        # Hub owns only the relay base URL and its per-channel encrypted key.
+        # Hosted relay server keys/database environment values are deliberately
+        # not read into the Hub process.
+        selection = resolve_environment_value(
             os.environ,
-            base_default=config.url,
-        ).base
+            "STREAMHOUSE_RELAY_BASE",
+            "SALLY_RELAY_BASE",
+            default=config.url,
+        )
         if selection.used_legacy:
             _warn_relay_config_once(
                 "legacy-base-environment",
@@ -105,7 +113,19 @@ class SoundboardRelayConfigStore:
         config.url = selection.value.rstrip("/")[:500]
         return config, self.secret_store.load()
 
+    def _parse_payload(self, payload: object) -> SoundboardRelayConfig:
+        if not isinstance(payload, dict):
+            raise ValueError("Soundboard relay settings must be a JSON object.")
+        version = payload.get("version")
+        if type(version) is not int or version != self.VERSION:
+            raise UnsupportedJsonSchemaError(
+                f"Unsupported soundboard relay settings version {version}; "
+                f"expected {self.VERSION}."
+            )
+        return SoundboardRelayConfig.from_dict(payload)
+
     def save(self, config: SoundboardRelayConfig, key: str) -> None:
+        config.validate()
         atomic_write_json(self.path, {"version": self.VERSION, **asdict(config)})
         self.secret_store.save(key.strip())
 
@@ -345,6 +365,7 @@ class SoundboardRelayClient(QObject):
         )
 
     def _set_status(self, status: str) -> None:
+        status = redact_secret_text(status)
         if status == self._status:
             return
         self._status = status

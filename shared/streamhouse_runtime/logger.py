@@ -12,6 +12,7 @@ from uuid import uuid4
 
 from shared.streamhouse_runtime.version import VERSION
 from shared.streamhouse_runtime.paths import user_data_root
+from shared.streamhouse_runtime.redaction import redact_secret_text
 
 
 class DefaultLogFieldsFilter(logging.Filter):
@@ -104,7 +105,7 @@ class StreamhouseFormatter(logging.Formatter):
         )
 
         try:
-            formatted_message = super().format(record)
+            formatted_message = redact_secret_text(super().format(record))
         finally:
             record.source = original_source
 
@@ -327,7 +328,7 @@ class Logger:
 
         logger.log(
             level,
-            message,
+            redact_secret_text(message),
             extra={
                 "source": cls._clean_source(source),
             },
@@ -408,9 +409,8 @@ class Logger:
 
         cls._log(
             logging.ERROR,
-            message,
+            f"{message}\n{redact_secret_text(traceback.format_exc())}",
             source,
-            exc_info=True,
         )
 
     @classmethod

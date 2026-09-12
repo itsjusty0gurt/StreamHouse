@@ -5051,6 +5051,15 @@ class MainWindowTests(unittest.TestCase):
         self.window._start_next_response_batch()
         self.window.response_decision_thread_pool.start.assert_called_once()
 
+    def test_shutdown_persistence_attempts_both_dirty_stores_after_failure(self) -> None:
+        self.window.chatter_history.save = Mock(side_effect=OSError("disk full"))
+        self.window.session_store.save = Mock()
+
+        self.assertFalse(self.window._save_chatter_history())
+
+        self.window.chatter_history.save.assert_called_once_with()
+        self.window.session_store.save.assert_called_once_with()
+
 
 if __name__ == "__main__":
     unittest.main()

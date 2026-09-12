@@ -5,6 +5,7 @@ from pathlib import Path
 
 from products.hub.automation.core_triggers import CoreTriggerStore
 from products.hub.automation.routines import RoutineStore
+from shared.streamhouse_runtime.json_store import JsonStoreCorruptionError
 
 
 class CoreTriggerStoreTests(unittest.TestCase):
@@ -126,7 +127,8 @@ class CoreTriggerStoreTests(unittest.TestCase):
             encoding="utf-8",
         )
 
-        self.assertEqual(self.store.load(), [])
+        with self.assertRaises(JsonStoreCorruptionError):
+            self.store.load()
 
 
 if __name__ == "__main__":

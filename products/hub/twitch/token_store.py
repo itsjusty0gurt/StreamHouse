@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from shared.streamhouse_runtime.paths import user_data_root
+from shared.streamhouse_runtime.json_store import atomic_write_bytes
 
 if TYPE_CHECKING:
     from products.hub.twitch.auth import TwitchToken
@@ -20,6 +21,8 @@ class _DataBlob(ctypes.Structure):
 
 class TwitchTokenStore:
     """Store Twitch OAuth tokens encrypted for the current Windows user."""
+
+    DPAPI_FLAGS = 0x1  # CRYPTPROTECT_UI_FORBIDDEN; current-user scope.
 
     def __init__(self, path: Path | None = None) -> None:
         self.path = path or user_data_root() / "twitch-token.dat"
@@ -43,13 +46,12 @@ class TwitchTokenStore:
         output = _DataBlob()
         crypt32 = ctypes.windll.crypt32
         kernel32 = ctypes.windll.kernel32
-        # Machine-bound DPAPI remains decryptable when Streamhouse is launched from
-        # different desktop process contexts. The file itself remains inside
-        # the current user's LocalAppData directory and inherits its ACL.
-        cryptprotect_local_machine = 0x4
+        # Bind credentials to the current Windows account and forbid DPAPI UI.
+        # Existing machine-scoped development files remain readable and are
+        # rewritten with this stronger scope on the next successful auth save.
         if not crypt32.CryptProtectData(
             ctypes.byref(source), "Streamhouse Twitch token", None, None, None,
-            cryptprotect_local_machine,
+            TwitchTokenStore.DPAPI_FLAGS,
             ctypes.byref(output),
         ):
             raise ctypes.WinError()
@@ -68,7 +70,7 @@ class TwitchTokenStore:
         crypt32 = ctypes.windll.crypt32
         kernel32 = ctypes.windll.kernel32
         if not crypt32.CryptUnprotectData(
-            ctypes.byref(source), None, None, None, None, 0,
+            ctypes.byref(source), None, None, None, None, TwitchTokenStore.DPAPI_FLAGS,
             ctypes.byref(output),
         ):
             raise ctypes.WinError()
@@ -89,10 +91,7 @@ class TwitchTokenStore:
     def save(self, token: TwitchToken) -> None:
         payload = json.dumps(asdict(token), separators=(",", ":")).encode("utf-8")
         protected = self._protect(payload)
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = self.path.with_suffix(".tmp")
-        temporary.write_bytes(protected)
-        temporary.replace(self.path)
+        atomic_write_bytes(self.path, protected)
 
     def clear(self) -> None:
         self.path.unlink(missing_ok=True)

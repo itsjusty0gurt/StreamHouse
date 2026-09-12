@@ -23,6 +23,7 @@ from products.hub.twitch.channel_information import (
     ChannelInformationStore,
     SocialLink,
 )
+from shared.streamhouse_runtime.json_store import JsonStoreCorruptionError
 from products.hub.twitch.default_commands import default_command_definitions
 from products.hub.twitch.models import TwitchBadge, TwitchMessage
 from products.hub.twitch.tasks import SendTwitchChatMessageTask
@@ -274,8 +275,8 @@ class TwitchCommandTriggerStoreTests(unittest.TestCase):
         loaded.variable_registry = VariableRegistry()
         loaded.variable_registry.register(context_provider())
 
-        loaded.load()
-        self.assertIsNone(loaded.resolve("random"))
+        with self.assertRaises(JsonStoreCorruptionError):
+            loaded.load()
 
     def test_command_can_trigger_routine_without_chat_response(self) -> None:
         routine = self.routine_store.add("Toggle the lights")
@@ -644,9 +645,8 @@ class TwitchCommandTriggerStoreTests(unittest.TestCase):
             self.path,
             RoutineStore(self.routine_store.path),
         )
-        loaded.load()
-        self.assertEqual(len(loaded.triggers), 6)
-        self.assertIsNone(loaded.resolve(command.name))
+        with self.assertRaises(JsonStoreCorruptionError):
+            loaded.load()
 
     def test_deleted_self_contained_default_is_restored_on_next_load(self) -> None:
         command = self.store.configure_default("game")

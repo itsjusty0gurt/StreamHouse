@@ -5,6 +5,8 @@ import os
 from ctypes import wintypes
 from pathlib import Path
 
+from shared.streamhouse_runtime.json_store import atomic_write_bytes
+
 
 class _DataBlob(ctypes.Structure):
     _fields_ = (("cbData", wintypes.DWORD), ("pbData", ctypes.POINTER(ctypes.c_byte)))
@@ -12,6 +14,8 @@ class _DataBlob(ctypes.Structure):
 
 class SecretStore:
     """Small Windows-DPAPI encrypted secret file."""
+
+    DPAPI_FLAGS = 0x1  # CRYPTPROTECT_UI_FORBIDDEN; current-user scope.
 
     def __init__(
         self,
@@ -37,8 +41,11 @@ class SecretStore:
             raise OSError("Secure secret storage requires Windows.")
         source, source_buffer = self._blob(value.encode("utf-8"))
         output = _DataBlob()
+        # UI-forbidden, current-user DPAPI. Do not use LOCAL_MACHINE scope:
+        # LocalAppData ACLs are useful defense, but the encrypted payload itself
+        # must remain bound to the Windows account that owns it.
         if not ctypes.windll.crypt32.CryptProtectData(
-            ctypes.byref(source), self.description, None, None, None, 0x4,
+            ctypes.byref(source), self.description, None, None, None, self.DPAPI_FLAGS,
             ctypes.byref(output),
         ):
             raise ctypes.WinError()
@@ -47,10 +54,7 @@ class SecretStore:
         finally:
             ctypes.windll.kernel32.LocalFree(output.pbData)
             del source_buffer
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = self.path.with_suffix(".tmp")
-        temporary.write_bytes(encrypted)
-        temporary.replace(self.path)
+        atomic_write_bytes(self.path, encrypted)
 
     def load(self) -> str:
         if not self.path.exists():
@@ -60,7 +64,7 @@ class SecretStore:
         source, source_buffer = self._blob(self.path.read_bytes())
         output = _DataBlob()
         if not ctypes.windll.crypt32.CryptUnprotectData(
-            ctypes.byref(source), None, None, None, None, 0,
+            ctypes.byref(source), None, None, None, None, self.DPAPI_FLAGS,
             ctypes.byref(output),
         ):
             raise ctypes.WinError()

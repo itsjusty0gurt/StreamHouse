@@ -5,7 +5,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from shared.streamhouse_runtime.json_store import atomic_write_json, load_json_with_backup
+from shared.streamhouse_runtime.json_store import (
+    UnsupportedJsonSchemaError,
+    atomic_write_json,
+    json_store_exists,
+    load_validated_json,
+)
 from shared.streamhouse_runtime.paths import user_data_root
 
 
@@ -69,14 +74,18 @@ class ActivityHistoryStore:
         self.entries: list[PersistedActivity] = []
 
     def load(self) -> list[PersistedActivity]:
-        if not self.path.exists():
+        if not json_store_exists(self.path):
             self.entries = []
             return []
-        values = load_json_with_backup(self.path)
+        entries = load_validated_json(self.path, self._parse_payload)
+        self.entries = entries
+        return list(entries)
+
+    def _parse_payload(self, values: object) -> list[PersistedActivity]:
         if not isinstance(values, dict):
             raise ValueError("Activity history must contain a JSON object.")
         if int(values.get("version", 0)) != self.VERSION:
-            raise ValueError(
+            raise UnsupportedJsonSchemaError(
                 "Activity history uses a discarded pre-alpha schema and must be reset."
             )
         raw_entries = values.get("events", [])
@@ -85,15 +94,15 @@ class ActivityHistoryStore:
         entries: list[PersistedActivity] = []
         for value in raw_entries[: self.LIMIT]:
             if not isinstance(value, dict):
-                continue
+                raise ValueError("Every activity event must be a JSON object.")
             try:
                 entry = PersistedActivity.from_dict(value)
-            except (TypeError, ValueError):
-                continue
-            if entry.text:
-                entries.append(entry)
-        self.entries = entries
-        return list(entries)
+            except (TypeError, ValueError) as error:
+                raise ValueError("Activity history contains an invalid event.") from error
+            if not entry.text:
+                raise ValueError("Activity history contains an empty event.")
+            entries.append(entry)
+        return entries
 
     def add(self, entry: PersistedActivity) -> None:
         self.entries.insert(0, entry)

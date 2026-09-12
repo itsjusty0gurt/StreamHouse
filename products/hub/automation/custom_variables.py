@@ -6,7 +6,12 @@ from pathlib import Path
 from typing import Mapping
 
 from products.hub.automation.variable_registry import validate_variable_name
-from shared.streamhouse_runtime.json_store import atomic_write_json, load_json_with_backup
+from shared.streamhouse_runtime.json_store import (
+    UnsupportedJsonSchemaError,
+    atomic_write_json,
+    json_store_exists,
+    load_validated_json,
+)
 from shared.streamhouse_runtime.paths import user_data_root
 
 
@@ -31,16 +36,23 @@ class CustomVariableStore:
     def load(self) -> Mapping[str, str]:
         self.session_values = {}
         self.session_metadata = {}
-        if not self.path.exists():
+        if not json_store_exists(self.path):
             self.global_values = {}
             self.global_metadata = {}
             return self.values()
-        payload = load_json_with_backup(self.path)
+        loaded, metadata = load_validated_json(self.path, self._parse_payload)
+        self.global_values = loaded
+        self.global_metadata = metadata
+        return self.values()
+
+    def _parse_payload(
+        self, payload: object
+    ) -> tuple[dict[str, str], dict[str, dict[str, str]]]:
         if not isinstance(payload, dict):
             raise ValueError("Automation variables must contain a JSON object.")
         version = int(payload.get("version", 0))
         if version != self.VERSION:
-            raise ValueError(
+            raise UnsupportedJsonSchemaError(
                 "Automation variable data uses a discarded pre-alpha schema and must be reset."
             )
         raw_values = payload.get("global", {})
@@ -50,21 +62,24 @@ class CustomVariableStore:
         for name, value in raw_values.items():
             clean_name = self.validate_name(str(name))
             loaded[clean_name] = str(value)
-        self.global_values = loaded
         raw_metadata = payload.get("metadata", {})
         if not isinstance(raw_metadata, dict):
             raise ValueError("Automation variable metadata must be an object.")
-        self.global_metadata = {}
+        loaded_metadata: dict[str, dict[str, str]] = {}
         for name, metadata in raw_metadata.items():
             clean_name = self.validate_name(str(name))
-            if clean_name not in loaded or not isinstance(metadata, dict):
-                continue
+            if clean_name not in loaded:
+                raise ValueError("Automation variable metadata references an unknown variable.")
+            if not isinstance(metadata, dict):
+                raise ValueError("Automation variable metadata must contain JSON objects.")
             data_type = str(metadata.get("type", "text")).strip().casefold()
-            self.global_metadata[clean_name] = {
-                "type": data_type if data_type in self.DATA_TYPES else "text",
+            if data_type not in self.DATA_TYPES:
+                raise ValueError("Automation variable metadata contains an invalid type.")
+            loaded_metadata[clean_name] = {
+                "type": data_type,
                 "description": str(metadata.get("description", "")).strip()[:500],
             }
-        return self.values()
+        return loaded, loaded_metadata
 
     def values(self) -> dict[str, str]:
         return {**self.global_values, **self.session_values}

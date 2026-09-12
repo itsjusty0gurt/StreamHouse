@@ -16,17 +16,14 @@ from shared.streamhouse_runtime.logger import Logger
 
 class DiagnosticsServiceTests(unittest.TestCase):
     def setUp(self) -> None:
+        # Other persistence tests intentionally exercise recovery logging.
+        # Diagnostics tests own an isolated logger session regardless of order.
+        Logger.shutdown()
         self.temporary = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary.name)
-        self.original_logger = Logger._logger
-        self.original_session_id = Logger._session_id
-        self.original_session_log_path = Logger._session_log_path
 
     def tearDown(self) -> None:
         Logger.shutdown()
-        Logger._logger = self.original_logger
-        Logger._session_id = self.original_session_id
-        Logger._session_log_path = self.original_session_log_path
         self.temporary.cleanup()
 
     def test_clean_and_abnormal_session_lifecycle(self) -> None:
@@ -97,7 +94,11 @@ class DiagnosticsServiceTests(unittest.TestCase):
                 "twitch": {"connected": True},
                 "automation": {"routines": 4},
                 "storage_schemas": {"commands": 6},
-                "accidental": {"access_token": secret},
+                "accidental": {
+                    "access_token": secret,
+                    "obs_password": "obs-secret",
+                    "X-Streamhouse-Key": "relay-secret",
+                },
             }
         )
 
@@ -118,9 +119,13 @@ class DiagnosticsServiceTests(unittest.TestCase):
         self.assertIn("logs/previous-session.log", names)
         self.assertNotIn(secret, combined)
         self.assertNotIn("hunter2", combined)
+        self.assertNotIn("obs-secret", combined)
+        self.assertNotIn("relay-secret", combined)
         self.assertIn("<REDACTED>", combined)
         self.assertIn("<USER_HOME>", combined)
         self.assertEqual(state["accidental"]["access_token"], "<REDACTED>")
+        self.assertEqual(state["accidental"]["obs_password"], "<REDACTED>")
+        self.assertEqual(state["accidental"]["X-Streamhouse-Key"], "<REDACTED>")
         self.assertNotIn("backups", " ".join(names))
         self.assertEqual(
             current.read_text(encoding="utf-8").splitlines()[0],
@@ -231,7 +236,12 @@ class DiagnosticsServiceTests(unittest.TestCase):
         value = (
             f"Authorization: Bearer abc Authorization: OAuth oauth-secret "
             f"access_token=def refresh_token='ghi' "
-            f"api_key=jkl relay_secret=mno https://x.test?a=1&token=pqr "
+            f"api_key=jkl relay_secret=mno X-Streamhouse-Key=modern-relay "
+            f"STREAMHOUSE_RELAY_KEYS=environment-secret "
+            f"https://user:pass@x.test/a#token=fragment-secret "
+            f"wss://obs-user:obs-pass@obs.test/socket "
+            f"https://auth.test/callback?code=oauth-code&safe=value "
+            f"https://x.test?a=1&token=pqr "
             f'https://x.test?client_secret=query-secret '
             f'\"client_secret\": \"stu\" {Path.home()}\\file'
         )
@@ -243,12 +253,19 @@ class DiagnosticsServiceTests(unittest.TestCase):
             "ghi",
             "jkl",
             "mno",
+            "modern-relay",
+            "environment-secret",
+            "user:pass",
+            "fragment-secret",
+            "obs-user:obs-pass",
+            "oauth-code",
             "pqr",
             "query-secret",
             "stu",
         ):
             self.assertNotIn(secret, safe)
         self.assertIn("<USER_HOME>", safe)
+        self.assertIn("safe=value", safe)
 
 
 if __name__ == "__main__":

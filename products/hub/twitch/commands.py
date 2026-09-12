@@ -14,7 +14,12 @@ from products.hub.automation.variable_outputs import task_output_definitions
 from products.hub.automation.variable_registry import VariableDefinition, VariableRegistry
 from products.hub.automation.models import RoutineDefinition, RoutineGroup, TriggerEvent
 from products.hub.automation.routines import RoutineStore
-from shared.streamhouse_runtime.json_store import atomic_write_json, load_json_with_backup
+from shared.streamhouse_runtime.json_store import (
+    UnsupportedJsonSchemaError,
+    atomic_write_json,
+    json_store_exists,
+    load_validated_json,
+)
 from shared.streamhouse_runtime.paths import user_data_root
 from products.hub.twitch.models import TwitchMessage
 from products.hub.twitch.tasks import SendTwitchChatMessageTask
@@ -151,39 +156,46 @@ class TwitchCommandTriggerStore:
 
     def load(self) -> list[TwitchCommandTrigger]:
         self.routine_store.load()
-        if not self.path.exists():
+        if not json_store_exists(self.path):
             self.triggers = []
             self.reconcile_managed_routines()
             self._ensure_self_contained_defaults()
             return list(self.triggers)
-        payload = load_json_with_backup(self.path)
+        self.triggers = load_validated_json(self.path, self._parse_payload)
+        self.reconcile_managed_routines()
+        self._ensure_self_contained_defaults()
+        return list(self.triggers)
+
+    def _parse_payload(self, payload: object) -> list[TwitchCommandTrigger]:
         if not isinstance(payload, dict):
             raise ValueError("Twitch command triggers must contain a JSON object.")
         version = int(payload.get("version", 0))
         if version != self.VERSION:
-            raise ValueError(
+            raise UnsupportedJsonSchemaError(
                 "Twitch command data uses a discarded pre-alpha schema and must be reset."
             )
         values = payload.get("triggers", [])
         if not isinstance(values, list):
             raise ValueError("Twitch command triggers must contain a trigger list.")
         loaded: list[TwitchCommandTrigger] = []
+        previous = self.triggers
         self.triggers = loaded
-        for value in values:
-            if not isinstance(value, dict):
-                continue
-            try:
-                trigger = TwitchCommandTrigger.from_dict(value)
-                if not trigger.routine_id:
-                    raise ValueError("Twitch command trigger is missing its routine.")
-                self._validate_trigger(trigger)
-                self._validate_routine(trigger)
-            except (TypeError, ValueError):
-                continue
-            loaded.append(trigger)
-        self.reconcile_managed_routines()
-        self._ensure_self_contained_defaults()
-        return list(self.triggers)
+        try:
+            for value in values:
+                if not isinstance(value, dict):
+                    raise ValueError("Every Twitch command trigger must be a JSON object.")
+                try:
+                    trigger = TwitchCommandTrigger.from_dict(value)
+                    if not trigger.routine_id:
+                        raise ValueError("Twitch command trigger is missing its routine.")
+                    self._validate_trigger(trigger)
+                    self._validate_routine(trigger)
+                except (TypeError, ValueError) as error:
+                    raise ValueError("Twitch command data contains an invalid trigger.") from error
+                loaded.append(trigger)
+        finally:
+            self.triggers = previous
+        return loaded
 
     def _ensure_self_contained_defaults(self) -> None:
         """Materialize code-owned commands that need no user configuration."""

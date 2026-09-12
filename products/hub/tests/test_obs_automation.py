@@ -18,6 +18,7 @@ from products.hub.automation.core_tasks import (
     WaitForServiceTask,
 )
 from products.hub.automation.models import TaskDefinition, TriggerEvent
+from shared.streamhouse_runtime.json_store import JsonStoreCorruptionError
 from products.hub.automation.routines import RoutineStore
 from products.hub.automation.tasks import TaskRegistry
 from products.hub.obs_service.models import ObsConnectionState, ObsEvent, ObsRequestResult
@@ -81,6 +82,14 @@ class ObsServiceTests(unittest.TestCase):
             ).default_mute_input,
             "Mic/Aux",
         )
+        self.assertEqual(
+            ObsConnectionConfig.from_dict(
+                {"host": "user:password@obs.example.test"}
+            ).host,
+            "127.0.0.1",
+        )
+        with self.assertRaisesRegex(ValueError, "without credentials"):
+            ObsConnectionConfig(host="user:password@obs.example.test").validate()
 
     def test_identified_message_marks_service_connected(self) -> None:
         service = ObsWebSocketService()
@@ -203,7 +212,8 @@ class ObsTriggerStoreTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            self.assertEqual(store.load(), [])
+            with self.assertRaises(JsonStoreCorruptionError):
+                store.load()
 
     def test_mute_context_is_typed_and_canonicalizable(self) -> None:
         muted = ObsTriggerStore.context_for(

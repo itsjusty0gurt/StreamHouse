@@ -43,6 +43,21 @@ class PackageBoundaryTests(unittest.TestCase):
             for provider in ("openai", "ollama", "transformers", "llama_cpp"):
                 self._assert_no_prefix(root, provider)
 
+    def test_hub_settings_do_not_own_model_provider_credentials(self) -> None:
+        from dataclasses import fields
+
+        from products.hub.core.settings import AppSettings
+
+        names = {field.name.casefold() for field in fields(AppSettings)}
+        for forbidden in (
+            "openai_api_key",
+            "anthropic_api_key",
+            "ollama_api_key",
+            "provider_api_key",
+            "provider_access_token",
+        ):
+            self.assertNotIn(forbidden, names)
+
     def test_shared_reply_policy_cannot_generate_fallback_text(self) -> None:
         from shared.streamhouse_shared.response_policy import ResponsePolicy
 

@@ -11,7 +11,12 @@ from uuid import uuid4
 
 from products.hub.automation.models import TriggerEvent
 from products.hub.automation.routines import RoutineStore
-from shared.streamhouse_runtime.json_store import atomic_write_json, load_json_with_backup
+from shared.streamhouse_runtime.json_store import (
+    UnsupportedJsonSchemaError,
+    atomic_write_json,
+    json_store_exists,
+    load_validated_json,
+)
 from shared.streamhouse_runtime.logger import Logger
 from shared.streamhouse_runtime.paths import user_data_root
 from products.hub.twitch.catalog import EVENTSUB_SUBSCRIPTIONS
@@ -336,16 +341,27 @@ class TwitchEventTriggerStore:
     def load(self) -> list[TwitchEventAutomationTrigger]:
         if not self.routine_store.routines and self.routine_store.path.exists():
             self.routine_store.load()
-        if not self.path.exists():
+        if not json_store_exists(self.path):
             self.triggers = []
             self._load_first_message_state()
             return []
-        payload = load_json_with_backup(self.path)
+        loaded, suppression_enabled, suppression_minutes = load_validated_json(
+            self.path, self._parse_payload
+        )
+        self.triggers = loaded
+        self.first_message_raid_suppression_enabled = suppression_enabled
+        self.first_message_raid_suppression_minutes = suppression_minutes
+        self._load_first_message_state()
+        return list(loaded)
+
+    def _parse_payload(
+        self, payload: object
+    ) -> tuple[list[TwitchEventAutomationTrigger], bool, int]:
         if not isinstance(payload, dict):
             raise ValueError("Twitch event triggers must contain a JSON object.")
         version = payload.get("version")
         if type(version) is not int or version != self.VERSION:
-            raise ValueError(
+            raise UnsupportedJsonSchemaError(
                 f"Unsupported Twitch event trigger version {version}; "
                 f"expected {self.VERSION}."
             )
@@ -364,21 +380,17 @@ class TwitchEventTriggerStore:
         loaded: list[TwitchEventAutomationTrigger] = []
         for value in values:
             if not isinstance(value, dict):
-                continue
+                raise ValueError("Every Twitch event trigger must be a JSON object.")
             try:
                 trigger = TwitchEventAutomationTrigger.from_dict(value)
                 self._validate(trigger)
                 routine = self.routine_store.get(trigger.routine_id)
                 if routine is None or trigger.trigger_id not in routine.trigger_ids:
                     raise ValueError("Twitch event trigger has no linked routine.")
-            except (TypeError, ValueError):
-                continue
+            except (TypeError, ValueError) as error:
+                raise ValueError("Twitch event trigger data contains an invalid trigger.") from error
             loaded.append(trigger)
-        self.triggers = loaded
-        self.first_message_raid_suppression_enabled = suppression_enabled
-        self.first_message_raid_suppression_minutes = suppression_minutes
-        self._load_first_message_state()
-        return list(loaded)
+        return loaded, bool(suppression_enabled), int(suppression_minutes)
 
     def save(self) -> None:
         atomic_write_json(
@@ -921,62 +933,24 @@ class TwitchEventTriggerStore:
         self._stream_key = ""
         self._offline_since = None
         self._clear_raid_suppression()
-        if not self.first_message_state_path.exists():
+        if not json_store_exists(self.first_message_state_path):
             return
         try:
-            payload = load_json_with_backup(self.first_message_state_path)
-            if not isinstance(payload, Mapping):
-                raise ValueError("First Message state must contain an object.")
-            version = payload.get("version")
-            if type(version) is not int or version != self.FIRST_MESSAGE_STATE_VERSION:
-                raise ValueError(
-                    f"Unsupported First Message state version {version}; "
-                    f"expected {self.FIRST_MESSAGE_STATE_VERSION}."
-                )
-            stream_id = payload.get("stream_id", "")
-            offline_since = payload.get("offline_since", "")
-            raid_suppression_until = payload.get("raid_suppression_until", "")
-            seen = payload.get("seen_by_trigger", {})
-            if (
-                not isinstance(stream_id, str)
-                or not isinstance(offline_since, str)
-                or not isinstance(raid_suppression_until, str)
-            ):
-                raise ValueError("First Message stream state is invalid.")
-            if not isinstance(seen, Mapping):
-                raise ValueError("First Message viewer state is invalid.")
-            valid_trigger_ids = {
-                trigger.trigger_id
-                for trigger in self.triggers
-                if trigger.event_type == "channel.chat.first_message"
-            }
-            loaded_seen: dict[str, set[str]] = {}
-            for trigger_id, identities in seen.items():
-                if trigger_id not in valid_trigger_ids or not isinstance(identities, list):
-                    continue
-                values = {
-                    str(identity).strip()
-                    for identity in identities
-                    if str(identity).strip()
-                }
-                if values:
-                    loaded_seen[str(trigger_id)] = values
-            parsed_offline = None
-            if offline_since:
-                parsed_offline = datetime.fromisoformat(
-                    offline_since.replace("Z", "+00:00")
-                )
+            (
+                stream_id,
+                parsed_offline,
+                parsed_suppression,
+                loaded_seen,
+            ) = load_validated_json(
+                self.first_message_state_path,
+                self._parse_first_message_state,
+            )
             self._stream_key = stream_id.strip()
             self._offline_since = (
                 self._aware(parsed_offline) if parsed_offline is not None else None
             )
             self._first_message_seen = loaded_seen if self._stream_key else {}
-            if self._stream_key and raid_suppression_until:
-                parsed_suppression = self._aware(
-                    datetime.fromisoformat(
-                        raid_suppression_until.replace("Z", "+00:00")
-                    )
-                )
+            if self._stream_key and parsed_suppression is not None:
                 remaining = (
                     parsed_suppression - datetime.now(timezone.utc)
                 ).total_seconds()
@@ -992,6 +966,54 @@ class TwitchEventTriggerStore:
                 f"Could not load First Message trigger state; reset it: {error}",
                 source="TWITCH",
             )
+
+    def _parse_first_message_state(
+        self, payload: object
+    ) -> tuple[str, datetime | None, datetime | None, dict[str, set[str]]]:
+        if not isinstance(payload, Mapping):
+            raise ValueError("First Message state must contain an object.")
+        version = payload.get("version")
+        if type(version) is not int or version != self.FIRST_MESSAGE_STATE_VERSION:
+            raise UnsupportedJsonSchemaError(
+                f"Unsupported First Message state version {version}; "
+                f"expected {self.FIRST_MESSAGE_STATE_VERSION}."
+            )
+        stream_id = payload.get("stream_id", "")
+        offline_since = payload.get("offline_since", "")
+        raid_suppression_until = payload.get("raid_suppression_until", "")
+        seen = payload.get("seen_by_trigger", {})
+        if not all(
+            isinstance(value, str)
+            for value in (stream_id, offline_since, raid_suppression_until)
+        ):
+            raise ValueError("First Message stream state is invalid.")
+        if not isinstance(seen, Mapping):
+            raise ValueError("First Message viewer state is invalid.")
+        valid_trigger_ids = {
+            trigger.trigger_id
+            for trigger in self.triggers
+            if trigger.event_type == "channel.chat.first_message"
+        }
+        loaded_seen: dict[str, set[str]] = {}
+        for trigger_id, identities in seen.items():
+            if trigger_id not in valid_trigger_ids:
+                continue
+            if not isinstance(identities, list):
+                raise ValueError("First Message identities must be a list.")
+            values = {str(identity).strip() for identity in identities if str(identity).strip()}
+            if values:
+                loaded_seen[str(trigger_id)] = values
+        parsed_offline = (
+            self._aware(datetime.fromisoformat(offline_since.replace("Z", "+00:00")))
+            if offline_since
+            else None
+        )
+        parsed_suppression = (
+            self._aware(datetime.fromisoformat(raid_suppression_until.replace("Z", "+00:00")))
+            if raid_suppression_until
+            else None
+        )
+        return stream_id, parsed_offline, parsed_suppression, loaded_seen
 
     def _save_first_message_state(self) -> None:
         atomic_write_json(
