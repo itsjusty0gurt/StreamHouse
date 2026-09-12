@@ -30,6 +30,7 @@ class SettingsStoreTests(unittest.TestCase):
             twitch_chat_font_family="Consolas",
             twitch_chat_font_size=13,
             twitch_last_ad_duration=90,
+            automatic_backups_enabled=False,
             local_ai_enabled=True,
             streamhouse_ai_endpoint="http://localhost:8765",
             local_ai_endpoint="http://localhost:11434",
@@ -75,6 +76,7 @@ class SettingsStoreTests(unittest.TestCase):
                     "twitch_chat_font_family": "",
                     "twitch_chat_font_size": 100,
                     "twitch_last_ad_duration": 45,
+                    "automatic_backups_enabled": "yes",
                     "local_ai_enabled": "yes",
                     "streamhouse_ai_endpoint": "not-a-url",
                     "local_ai_endpoint": "not-a-url",
@@ -115,6 +117,7 @@ class SettingsStoreTests(unittest.TestCase):
         self.assertEqual(settings.twitch_chat_font_family, "Segoe UI")
         self.assertEqual(settings.twitch_chat_font_size, 24)
         self.assertEqual(settings.twitch_last_ad_duration, 180)
+        self.assertTrue(settings.automatic_backups_enabled)
         self.assertTrue(settings.local_ai_enabled)
         self.assertEqual(settings.streamhouse_ai_endpoint, "http://127.0.0.1:8765")
         self.assertEqual(settings.local_ai_endpoint, "http://127.0.0.1:11434")

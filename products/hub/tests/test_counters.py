@@ -18,7 +18,7 @@ from products.hub.counters.models import CounterDefinition, counter_id_from_name
 from products.hub.counters.service import CounterService
 from products.hub.counters.store import CounterStore
 from products.hub.counters.tasks import register_counter_tasks
-from products.hub.core.backup import BackupManager
+from products.hub.core.backup import BackupComponent, BackupManager, BackupPreset
 from products.hub.twitch.commands import TwitchCommandTriggerStore
 
 
@@ -137,9 +137,13 @@ class CounterStoreTests(unittest.TestCase):
     def test_backup_round_trip_includes_index_and_named_value_file(self) -> None:
         self.service.create_counter(definition(reset_value="7"))
         manager = BackupManager(Path(self.temp.name), Path(self.temp.name) / "archives")
-        archive = manager.create("counter-test")
+        archive = manager.create(
+            "manual",
+            preset=BackupPreset.CUSTOM,
+            components=(BackupComponent.COUNTER_VALUES,),
+        )
         restore_root = Path(self.temp.name) / "restored"
-        BackupManager(restore_root).restore(archive)
+        BackupManager(restore_root).restore(archive, create_safety=False)
         restored = CounterService(CounterStore(restore_root / "counters"))
         self.assertEqual(restored.get_values("farts").channel_total, 7)
 

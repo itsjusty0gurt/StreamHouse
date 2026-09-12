@@ -1402,7 +1402,7 @@ identifiers or filename formats are accepted.
 
 | Relative path | Owner | Notes |
 | --- | --- | --- |
-| `config/settings.json` | Hub | schema v3 `AppSettings`, validated/defaulted; no obsolete auto-send toggle field |
+| `config/settings.json` | Hub | schema v4 `AppSettings`, validated/defaulted; includes the portable automatic-backup preference and no obsolete auto-send toggle field |
 | `ai/settings.json` | Streamhouse AI | schema v2 model, endpoint, personality/language |
 | `automation/routines.json` | Hub | schema v5 groups, routines, ordered tasks including recursive If branches, trigger links, and queue IDs |
 | `automation/core_triggers.json` | Hub | schema v2 application lifecycle and fixed/random Timer bindings; runtime deadlines are not persisted |
@@ -1427,7 +1427,9 @@ identifiers or filename formats are accepted.
 | `logs/` | each process | `latest.log` plus rotating per-session logs; Hub retains ten session logs |
 | `crashes/` | Hub diagnostics | latest five sanitized Python crash reports and best-effort faulthandler streams |
 | `support/` | Hub diagnostics | user-created sanitized Support Bundles; not automatically rotated or backed up |
-| `backups/` | Hub | allowlisted local data archives |
+| `backups/manual/` | Hub backup/restore | user-created `.streamhousebackup` archives; never rotated automatically |
+| `backups/automatic/` | Hub backup/restore | changed-data daily archives; latest five retained |
+| `backups/safety/` | Hub backup/restore | private pre-restore rollback artifacts; separate from Support Bundles |
 
 Window geometry/state uses Qt `QSettings`, not the JSON stores.
 
@@ -1444,19 +1446,51 @@ Secrets use Windows DPAPI through `core.secret_store`/token stores. Never place
 them in JSON, backups, diagnostics, logs, test fixtures containing real values,
 Extension assets, or Git.
 
-### Backup caveat
+### Selective Backup and Restore
 
-`BackupManager.FILES` is an explicit allowlist. A new persistent file is not
-automatically backed up. Decide deliberately whether it belongs in backups,
-schema compatibility, restore, diagnostics, and viewer-deletion scrubbing.
+`BackupManager` owns data protection independently of `DiagnosticsService`.
+Its versioned `.streamhousebackup` archive contains a manifest with the Hub
+version/build, timestamp, backup classification, product-level components,
+current authoritative component schemas, dependencies, and SHA-256 integrity
+checks. Support Bundles never contain backups, and backups never contain logs,
+crash reports, Support Bundles, diagnostic state, or Streamhouse AI data.
 
-At this snapshot, the backup allowlist covers Hub settings, Twitch
-chatter/activity/session history, commands, Channel Information, Twitch/Core
-triggers, routines, OBS config/triggers, and the complete `counters/` JSON
-directory. It does not include queues, custom Variables, soundboard/relay
-configuration, Streamhouse AI settings, training, or test-report files. Treat
-those gaps as explicit product decisions or follow-up work when changing data
-safety.
+The eligible components are Routines & Dependencies, Commands, Counter
+Definitions, Counter Values, durable `custom.*` Variables, Channel Information,
+optional Users/Chatter management metadata, portable Hub Settings, and safe OBS
+connection configuration. Twitch/OBS/relay credentials, window geometry, and
+other machine-specific or hidden-product state are ineligible. User backup
+records are projected from chatter schema v7 through a management-field
+allowlist; message text, memories/evidence, private notes, and timeline content
+are never archived. Counter Values remain exact decimal strings and keyed by
+stable Twitch user IDs. Stream-scoped values restore only when the stored and
+current Twitch stream identities match; a mismatched current stream is retained.
+
+Routines are structural units: nested tasks remain embedded, and backup follows
+stable Run Routine, trigger, queue, Counter, and referenced `custom.*` Variable
+dependencies. Commands similarly carry the managed routine/trigger dependency
+closure when Routines are not otherwise selected. A broken dependency stops
+backup creation rather than producing an orphaned archive. Tasks are not an
+independent backup component.
+
+Alpha restore uses component replacement semantics, while dependency objects
+required by restored routines are installed without discarding unrelated queue,
+Variable, or Counter definitions. The archive is fully parsed, checksummed,
+schema-checked, converted into a current-schema restore plan, and validated in a
+staging directory before any live file changes. This import-plan boundary is the
+future migration seam: future backup schemas must be transformed there before
+current stores receive them, rather than adding legacy loaders to feature
+stores. A safety backup is mandatory before commit. Commit uses per-file atomic
+replacement plus original-byte rollback across the planned write/delete set;
+this is transaction-like but not a filesystem-wide atomic primitive.
+
+Manual backups are never rotated. Automatic Recommended backups are enabled by
+default, created at most daily only when eligible content changed, and retain
+five archives. Safety backups are separately classified and are not Support
+Bundles. Backup archive I/O runs in a Qt worker; MainWindow owns only dialogs,
+progress/action state, and post-restore store refresh/restart guidance. Any new
+durable store must make an explicit component, privacy, dependency, schema,
+restore, and viewer-deletion decision rather than being picked up by filename.
 
 ## Security and privacy invariants
 
@@ -1682,7 +1716,6 @@ Keep public config free of local paths and routine internals.
 - Streamhouse AI HTTP has no authentication because it is loopback-only.
 - The hosted relay uses SQLite and in-memory rate-limit state; horizontal
   scaling would need shared storage and stronger operational controls.
-- Backup coverage is allowlist-based and currently lags some newer data stores.
 - UI layout is partly Designer-generated and partly dynamic, making structural
   changes span multiple files.
 - Version remains `0.1.0`; persisted store versions and Streamhouse AI protocol

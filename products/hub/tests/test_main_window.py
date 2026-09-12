@@ -2301,9 +2301,14 @@ class MainWindowTests(unittest.TestCase):
                 self.window.settings_tabs.tabText(index)
                 for index in range(self.window.settings_tabs.count())
             ],
-            ["Application", "Chat", "Developer"],
+            ["Application", "Backup & Restore", "Chat", "Developer"],
         )
         self.assertIsNotNone(self.window.ui.generalSettingsGroup.parentWidget())
+        self.assertTrue(self.window.automatic_backups_check.isChecked())
+        self.assertEqual(self.window.restore_backup_button.text(), "Restore Backup")
+        self.assertEqual(
+            self.window.open_backup_folder_button.text(), "Open Backup Folder"
+        )
         self.assertTrue(self.window.local_ai_settings_group.isHidden())
 
     def test_memory_buttons_follow_viewer_and_memory_selection(self) -> None:

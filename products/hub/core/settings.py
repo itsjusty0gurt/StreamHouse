@@ -35,6 +35,7 @@ class AppSettings:
     twitch_chat_font_family: str = "Segoe UI"
     twitch_chat_font_size: int = 10
     twitch_last_ad_duration: int = 180
+    automatic_backups_enabled: bool = True
     local_ai_enabled: bool = True
     streamhouse_ai_endpoint: str = "http://127.0.0.1:8765"
     local_ai_endpoint: str = "http://127.0.0.1:11434"
@@ -128,6 +129,13 @@ class AppSettings:
             or ad_duration not in {30, 60, 90, 120, 150, 180}
         ):
             ad_duration = defaults.twitch_last_ad_duration
+
+        automatic_backups_enabled = values.get(
+            "automatic_backups_enabled",
+            defaults.automatic_backups_enabled,
+        )
+        if not isinstance(automatic_backups_enabled, bool):
+            automatic_backups_enabled = defaults.automatic_backups_enabled
 
         local_ai_enabled = values.get("local_ai_enabled", defaults.local_ai_enabled)
         if not isinstance(local_ai_enabled, bool):
@@ -311,6 +319,7 @@ class AppSettings:
             twitch_chat_font_family=font_family,
             twitch_chat_font_size=font_size,
             twitch_last_ad_duration=ad_duration,
+            automatic_backups_enabled=automatic_backups_enabled,
             local_ai_enabled=local_ai_enabled,
             streamhouse_ai_endpoint=ai_endpoint,
             local_ai_endpoint=local_ai_endpoint,
@@ -342,7 +351,7 @@ class AppSettings:
 class SettingsStore:
     """Load and save Streamhouse Hub preferences as a small JSON document."""
 
-    VERSION = 3
+    VERSION = 4
 
     def __init__(self, path: Path | None = None) -> None:
         self.path = path or user_data_root() / "config" / "settings.json"

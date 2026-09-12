@@ -175,6 +175,11 @@ from products.hub.twitch.simulator import create_eventsub_notification
 from products.hub.ui.generated.ui_mainwindow import Ui_MainWindow
 from products.hub.ui.dashboard_page import DashboardPage
 from products.hub.ui.page_header import PageHeader
+from products.hub.ui.backup_dialogs import (
+    BackupJob,
+    BackupSelectionDialog,
+    RestoreSelectionDialog,
+)
 from products.hub.ui.users_page import UsersPage
 from products.hub.ui.counters_page import CountersPage
 from products.hub.ui.log_handler import QtLogHandler
@@ -718,6 +723,9 @@ class MainWindow(QMainWindow):
         self.auto_upgrade_permissions = auto_upgrade_permissions
         self.permission_upgrade_started = False
         self.channel_snapshot_thread_pool = QThreadPool(self)
+        self.backup_thread_pool = QThreadPool(self)
+        self.backup_thread_pool.setMaxThreadCount(1)
+        self._backup_workers: set[BackupJob] = set()
         self.channel_snapshot_thread_pool.setMaxThreadCount(1)
         self.command_thread_pool = QThreadPool(self)
         self.command_thread_pool.setMaxThreadCount(1)
@@ -1076,31 +1084,39 @@ class MainWindow(QMainWindow):
         Logger.info("UI log viewer connected.", source="UI")
 
     def _build_release_tools(self) -> None:
-        group = QGroupBox("Data Safety")
+        group = QGroupBox("Selective Backup & Restore")
         self.release_tools_group = group
         layout = QVBoxLayout(group)
         explanation = QLabel(
-            "Create or restore local data backups. Support Bundles are separate "
-            "and available from Logs and Help & About."
+            "Back up selected Hub configuration and state. Credentials, chat "
+            "history, Support Bundles, and Streamhouse AI data are never included."
         )
         explanation.setWordWrap(True)
         actions = QHBoxLayout()
         self.create_backup_button = QPushButton("Create Backup")
-        self.restore_backup_button = QPushButton("Restore Latest")
+        self.restore_backup_button = QPushButton("Restore Backup")
+        self.open_backup_folder_button = QPushButton("Open Backup Folder")
         actions.addWidget(self.create_backup_button)
         actions.addWidget(self.restore_backup_button)
+        actions.addWidget(self.open_backup_folder_button)
         actions.addStretch()
+        self.automatic_backups_check = QCheckBox(
+            "Create a daily backup when eligible data changes"
+        )
+        self.automatic_backups_check.setChecked(True)
         self.release_tools_status = QLabel("")
         self.release_tools_status.setWordWrap(True)
         layout.addWidget(explanation)
         layout.addLayout(actions)
+        layout.addWidget(self.automatic_backups_check)
         layout.addWidget(self.release_tools_status)
         self.ui.settingsLayout.insertWidget(
             max(self.ui.settingsLayout.count() - 1, 0),
             group,
         )
         self.create_backup_button.clicked.connect(self._create_manual_backup)
-        self.restore_backup_button.clicked.connect(self._restore_latest_backup)
+        self.restore_backup_button.clicked.connect(self._choose_restore_backup)
+        self.open_backup_folder_button.clicked.connect(self._open_backup_folder)
 
     def _build_responsive_settings(self) -> None:
         self.responsive_settings_group = QGroupBox("Window Layout")
@@ -1137,9 +1153,9 @@ class MainWindow(QMainWindow):
                     self.ui.generalSettingsGroup,
                     self.ui.loggingSettingsGroup,
                     self.responsive_settings_group,
-                    self.release_tools_group,
                 ),
             ),
+            ("Backup & Restore", (self.release_tools_group,)),
             ("Chat", (self.ui.twitchChatSettingsGroup,)),
             ("Developer", (self.ui.developerSettingsGroup,)),
         )
@@ -5874,6 +5890,9 @@ class MainWindow(QMainWindow):
         self.ui.twitchChatFontSizeSpin.setValue(
             settings.twitch_chat_font_size
         )
+        self.automatic_backups_check.setChecked(
+            settings.automatic_backups_enabled
+        )
         self.local_ai_enabled_check.setChecked(settings.local_ai_enabled)
         self.streamhouse_ai_endpoint_edit.setText(settings.streamhouse_ai_endpoint)
         self.local_ai_endpoint_edit.setText(settings.local_ai_endpoint)
@@ -5946,6 +5965,9 @@ class MainWindow(QMainWindow):
             ),
             twitch_chat_font_size=self.ui.twitchChatFontSizeSpin.value(),
             twitch_last_ad_duration=self.settings.twitch_last_ad_duration,
+            automatic_backups_enabled=(
+                self.automatic_backups_check.isChecked()
+            ),
             local_ai_enabled=self.local_ai_enabled_check.isChecked(),
             streamhouse_ai_endpoint=self.streamhouse_ai_endpoint_edit.text(),
             local_ai_endpoint=self.local_ai_endpoint_edit.text(),
@@ -7895,48 +7917,176 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def _create_automatic_backup(self) -> None:
-        try:
-            archive = self.release_controller.automatic_backup()
-            if archive is not None:
-                Logger.info(
-                    f"Created automatic data backup: {archive.name}",
-                    source="DATA",
-                )
-        except OSError as error:
-            Logger.warning(
-                f"Could not create automatic data backup: {error}",
-                source="DATA",
-            )
+        self._start_backup_job(
+            lambda: self.release_controller.automatic_backup(
+                enabled=self.settings.automatic_backups_enabled
+            ),
+            self._automatic_backup_finished,
+            quiet=True,
+        )
 
     @Slot()
     def _create_manual_backup(self) -> None:
-        try:
-            archive = self.release_controller.create_backup()
-            self.release_tools_status.setText(
-                f"Backup created: {archive}"
-            )
-        except OSError as error:
-            self.release_tools_status.setText(f"Backup failed: {error}")
+        dialog = BackupSelectionDialog(self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        preset = dialog.preset()
+        components = dialog.selected_components()
+        self.release_tools_status.setText("Preparing backup summary…")
+        self._start_backup_job(
+            lambda: self.release_controller.summarize_backup(preset, components),
+            lambda summary: self._confirm_manual_backup(
+                preset, components, summary
+            ),
+        )
 
-    @Slot()
-    def _restore_latest_backup(self) -> None:
+    def _confirm_manual_backup(self, preset, components, summary: object) -> None:
+        counts = "\n".join(
+            f"{name.replace('_', ' ').title()}: {value}"
+            for name, value in summary.counts.items()
+        )
+        included = ", ".join(
+            item.value.replace("_", " ") for item in summary.components
+        )
         if QMessageBox.question(
             self,
-            "Restore Latest Backup",
-            "Current local data will be backed up, then replaced. "
-            "Streamhouse Hub must be restarted afterward. Continue?",
+            "Create Streamhouse Backup?",
+            f"Included components:\n{included}\n\n"
+            f"Safe item counts:\n{counts or 'No counted records'}\n\n"
+            "Credentials and chat/message history are never included.",
         ) is not QMessageBox.StandardButton.Yes:
+            self.release_tools_status.setText("Backup cancelled.")
             return
-        try:
-            report = self.release_controller.restore_latest()
-            if report is None:
-                self.release_tools_status.setText("No backup is available.")
-                return
-            self.release_tools_status.setText(
-                f"Restored {len(report.restored_files)} file(s). Restart Streamhouse Hub."
+        self.release_tools_status.setText("Creating backup…")
+        self._start_backup_job(
+            lambda: self.release_controller.create_backup(preset, components),
+            self._manual_backup_finished,
+        )
+
+    @Slot()
+    def _choose_restore_backup(self) -> None:
+        archive, _selected_filter = QFileDialog.getOpenFileName(
+            self,
+            "Choose Streamhouse Backup",
+            str(self.release_controller.backup_directory),
+            "Streamhouse Backup (*.streamhousebackup)",
+        )
+        if not archive:
+            return
+        path = Path(archive)
+        self.release_tools_status.setText("Validating backup…")
+        self._start_backup_job(
+            lambda: self.release_controller.inspect_backup(path),
+            self._restore_inspected,
+        )
+
+    def _restore_inspected(self, inspection: object) -> None:
+        dialog = RestoreSelectionDialog(inspection, self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            self.release_tools_status.setText("Restore cancelled.")
+            return
+        components = dialog.selected_components()
+        names = ", ".join(
+            component.value.replace("_", " ") for component in components
+        )
+        if QMessageBox.question(
+            self,
+            "Replace Selected Hub Data?",
+            "The following current data will be replaced:\n\n"
+            f"{names}\n\n"
+            "A safety backup must succeed before restore begins. Continue?",
+        ) is not QMessageBox.StandardButton.Yes:
+            self.release_tools_status.setText("Restore cancelled.")
+            return
+        self.release_tools_status.setText("Creating safety backup and restoring…")
+        self._start_backup_job(
+            lambda: self.release_controller.restore_backup(
+                inspection.archive, components
+            ),
+            self._restore_finished,
+        )
+
+    def _start_backup_job(self, operation, completed, *, quiet: bool = False) -> None:
+        worker = BackupJob(operation)
+        self._backup_workers.add(worker)
+        for button in (
+            self.create_backup_button,
+            self.restore_backup_button,
+            self.open_backup_folder_button,
+        ):
+            button.setEnabled(False)
+
+        def finish(result: object) -> None:
+            self._backup_workers.discard(worker)
+            self._set_backup_actions_enabled(True)
+            completed(result)
+
+        def fail(message: str) -> None:
+            self._backup_workers.discard(worker)
+            self._set_backup_actions_enabled(True)
+            if quiet:
+                Logger.warning(
+                    f"Automatic backup failed: {message}", source="DATA"
+                )
+            else:
+                self.release_tools_status.setText(
+                    f"Backup operation failed: {message}"
+                )
+
+        worker.signals.completed.connect(finish)
+        worker.signals.failed.connect(fail)
+        self.backup_thread_pool.start(worker)
+
+    def _set_backup_actions_enabled(self, enabled: bool) -> None:
+        self.create_backup_button.setEnabled(enabled)
+        self.restore_backup_button.setEnabled(enabled)
+        self.open_backup_folder_button.setEnabled(enabled)
+
+    def _automatic_backup_finished(self, archive: object) -> None:
+        if archive is not None:
+            Logger.info(
+                f"Created automatic backup: {Path(archive).name}",
+                source="DATA",
             )
-        except (OSError, ValueError) as error:
-            self.release_tools_status.setText(f"Restore failed: {error}")
+
+    def _manual_backup_finished(self, archive: object) -> None:
+        self.release_tools_status.setText(f"Backup created: {archive}")
+
+    def _restore_finished(self, report: object) -> None:
+        self._reload_restored_state()
+        self.release_tools_status.setText(
+            f"Restored {len(report.restored_components)} component(s). "
+            "Restart Hub to apply connection and startup settings completely."
+        )
+
+    def _reload_restored_state(self) -> None:
+        self.automation_queue_manager.cancel_all_current(
+            "Hub data was restored."
+        )
+        self.twitch_command_trigger_store.routine_store.load()
+        self.twitch_command_trigger_store.load()
+        self.twitch_event_trigger_store.load()
+        self.core_trigger_store.load()
+        self.obs_trigger_store.load()
+        self.automation_queue_store.load()
+        self.custom_variable_store.load()
+        self.channel_information_store.load()
+        self.chatter_history.load()
+        self.settings = self._load_settings()
+        self._settings_to_controls(self.settings)
+        self._apply_settings(self.settings)
+        self.automation_timer_scheduler.synchronize()
+        self.automation_page.refresh()
+        self.counters_page.refresh()
+        self.channel_information_page.load_values()
+        self.users_page.refresh(force=True)
+        self._refresh_twitch_commands()
+
+    @Slot()
+    def _open_backup_folder(self) -> None:
+        directory = self.release_controller.backup_directory
+        directory.mkdir(parents=True, exist_ok=True)
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(directory)))
 
     @Slot()
     @Slot()
@@ -8068,6 +8218,9 @@ class MainWindow(QMainWindow):
         self.channel_snapshot_request_id += 1
         self.channel_snapshot_thread_pool.clear()
         self.channel_snapshot_thread_pool.waitForDone(2_000)
+        self.backup_thread_pool.clear()
+        self.backup_thread_pool.waitForDone(5_000)
+        self._backup_workers.clear()
         self.command_thread_pool.clear()
         self.command_thread_pool.waitForDone(2_000)
         self._command_workers.clear()
