@@ -56,8 +56,14 @@ class ReleaseController:
         self,
         archive: Path,
         components: tuple[BackupComponent, ...],
+        *,
+        active_stream_id: str = "",
     ) -> RestoreReport:
-        return self.backups.restore(archive, components)
+        return self.backups.restore(
+            archive,
+            components,
+            active_stream_id=active_stream_id,
+        )
 
     def scrub_viewer_data(self, user_id: str) -> int:
         return self.backups.scrub_viewer(user_id)

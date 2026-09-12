@@ -4,6 +4,7 @@ import json
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 from pathlib import Path
 from unittest.mock import patch
 from zipfile import ZIP_DEFLATED, ZipFile
@@ -20,7 +21,12 @@ from products.hub.core.backup import (
     BackupPreset,
 )
 from products.hub.core.settings import SettingsStore
-from products.hub.counters.store import COUNTER_VERSION, INDEX_VERSION
+from products.hub.counters.service import CounterService
+from products.hub.counters.store import (
+    COUNTER_VERSION,
+    INDEX_VERSION,
+    CounterStore,
+)
 from products.hub.obs_service.triggers import ObsTriggerStore
 from products.hub.twitch.automation_triggers import TwitchEventTriggerStore
 from products.hub.twitch.channel_information import ChannelInformationStore
@@ -476,18 +482,196 @@ class BackupManagerTests(unittest.TestCase):
         }
         write_json(self.root / "counters/farts.json", current)
 
-        self.manager.restore(archive, create_safety=False)
+        self.manager.restore(
+            archive,
+            create_safety=False,
+            active_stream_id="stream-2",
+        )
 
         restored = json.loads(
             (self.root / "counters/farts.json").read_text(encoding="utf-8")
         )
         self.assertEqual(restored["channel_total"], "12.50")
+        self.assertEqual(restored["viewers"]["viewer-1"]["total"], "3.75")
         self.assertEqual(restored["current_stream"]["stream_id"], "stream-2")
         self.assertEqual(restored["current_stream"]["value"], "8.00")
         self.assertEqual(
             restored["viewers"]["viewer-1"]["current_stream"]["value"],
             "4.00",
         )
+        values = CounterService(
+            CounterStore(self.root / "counters")
+        ).get_values("farts", user_id="viewer-1", stream_id="stream-2")
+        self.assertEqual(values.channel_total, Decimal("12.50"))
+        self.assertEqual(values.stream_total, Decimal("8.00"))
+        self.assertEqual(values.viewer_total, Decimal("3.75"))
+        self.assertEqual(values.viewer_stream_total, Decimal("4.00"))
+
+    def test_stream_values_restore_when_active_stream_id_matches_backup(self) -> None:
+        archive = self.manager.create(
+            "manual",
+            preset=BackupPreset.CUSTOM,
+            components=(BackupComponent.COUNTER_VALUES,),
+        )
+        current = json.loads(
+            (self.root / "counters/farts.json").read_text(encoding="utf-8")
+        )
+        current["channel_total"] = "99.00"
+        current["current_stream"] = {
+            "stream_id": "stream-1",
+            "value": "88.00",
+        }
+        current["viewers"]["viewer-1"]["total"] = "77.00"
+        current["viewers"]["viewer-1"]["current_stream"] = {
+            "stream_id": "stream-1",
+            "value": "66.00",
+        }
+        write_json(self.root / "counters/farts.json", current)
+
+        self.manager.restore(
+            archive,
+            create_safety=False,
+            active_stream_id="stream-1",
+        )
+
+        restored = json.loads(
+            (self.root / "counters/farts.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(restored["channel_total"], "12.50")
+        self.assertEqual(restored["current_stream"], {
+            "stream_id": "stream-1",
+            "value": "2.25",
+        })
+        self.assertEqual(restored["viewers"]["viewer-1"]["total"], "3.75")
+        self.assertEqual(
+            restored["viewers"]["viewer-1"]["current_stream"],
+            {"stream_id": "stream-1", "value": "1.25"},
+        )
+        values = CounterService(
+            CounterStore(self.root / "counters")
+        ).get_values("farts", user_id="viewer-1", stream_id="stream-1")
+        self.assertEqual(values.stream_total, Decimal("2.25"))
+        self.assertEqual(values.viewer_stream_total, Decimal("1.25"))
+
+    def test_offline_restore_clears_stream_ownership_without_fabricating_id(self) -> None:
+        definitions = json.loads(
+            (self.root / "counters/index.json").read_text(encoding="utf-8")
+        )
+        definitions["counters"][0]["reset_value"] = "1.50"
+        write_json(self.root / "counters/index.json", definitions)
+        archive = self.manager.create(
+            "manual",
+            preset=BackupPreset.CUSTOM,
+            components=(BackupComponent.COUNTER_VALUES,),
+        )
+
+        self.manager.restore(
+            archive,
+            create_safety=False,
+            active_stream_id="",
+        )
+
+        restored = json.loads(
+            (self.root / "counters/farts.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(restored["channel_total"], "12.50")
+        self.assertEqual(restored["viewers"]["viewer-1"]["total"], "3.75")
+        self.assertEqual(
+            restored["current_stream"],
+            {"stream_id": "", "value": "1.50"},
+        )
+        self.assertEqual(
+            restored["viewers"]["viewer-1"]["current_stream"],
+            {"stream_id": "", "value": "1.50"},
+        )
+        values = CounterService(
+            CounterStore(self.root / "counters")
+        ).get_values("farts", user_id="viewer-1", stream_id="stream-1")
+        self.assertEqual(values.stream_total, Decimal("1.50"))
+        self.assertEqual(values.viewer_stream_total, Decimal("1.50"))
+
+    def test_different_stream_keeps_viewers_isolated_by_stable_twitch_id(self) -> None:
+        payload = json.loads(
+            (self.root / "counters/farts.json").read_text(encoding="utf-8")
+        )
+        payload["viewers"]["viewer-2"] = {
+            "total": "9.50",
+            "display_name": "Second",
+            "login": "second",
+            "current_stream": {"stream_id": "stream-1", "value": "6.50"},
+        }
+        write_json(self.root / "counters/farts.json", payload)
+        archive = self.manager.create(
+            "manual",
+            preset=BackupPreset.CUSTOM,
+            components=(BackupComponent.COUNTER_VALUES,),
+        )
+        payload["current_stream"] = {"stream_id": "stream-2", "value": "8.25"}
+        payload["viewers"]["viewer-1"]["current_stream"] = {
+            "stream_id": "stream-2",
+            "value": "4.25",
+        }
+        payload["viewers"]["viewer-2"]["current_stream"] = {
+            "stream_id": "stream-2",
+            "value": "7.75",
+        }
+        write_json(self.root / "counters/farts.json", payload)
+
+        self.manager.restore(
+            archive,
+            create_safety=False,
+            active_stream_id="stream-2",
+        )
+
+        restored = json.loads(
+            (self.root / "counters/farts.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(
+            restored["viewers"]["viewer-1"]["current_stream"]["value"],
+            "4.25",
+        )
+        self.assertEqual(
+            restored["viewers"]["viewer-2"]["current_stream"]["value"],
+            "7.75",
+        )
+        self.assertEqual(restored["viewers"]["viewer-2"]["total"], "9.50")
+
+    def test_counter_restore_rolls_back_after_mid_commit_failure(self) -> None:
+        archive = self.manager.create(
+            "manual",
+            preset=BackupPreset.CUSTOM,
+            components=(BackupComponent.COUNTER_VALUES,),
+        )
+        index_path = self.root / "counters/index.json"
+        value_path = self.root / "counters/farts.json"
+        index_before = index_path.read_bytes()
+        payload = json.loads(value_path.read_text(encoding="utf-8"))
+        payload["channel_total"] = "91.25"
+        write_json(value_path, payload)
+        value_before = value_path.read_bytes()
+        real_replace = __import__("os").replace
+        committed = 0
+
+        def fail_second_restore(source, destination):
+            nonlocal committed
+            if str(source).endswith(".restore"):
+                committed += 1
+                if committed == 2:
+                    raise OSError("simulated Counter restore failure")
+            return real_replace(source, destination)
+
+        with patch(
+            "products.hub.core.backup.os.replace",
+            side_effect=fail_second_restore,
+        ):
+            with self.assertRaises(OSError):
+                self.manager.restore(
+                    archive,
+                    create_safety=False,
+                    active_stream_id="stream-1",
+                )
+        self.assertEqual(index_path.read_bytes(), index_before)
+        self.assertEqual(value_path.read_bytes(), value_before)
 
     def test_transaction_rolls_back_every_target_after_mid_commit_failure(self) -> None:
         first = self.root / "transaction/first.json"

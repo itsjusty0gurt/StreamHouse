@@ -1463,8 +1463,16 @@ other machine-specific or hidden-product state are ineligible. User backup
 records are projected from chatter schema v7 through a management-field
 allowlist; message text, memories/evidence, private notes, and timeline content
 are never archived. Counter Values remain exact decimal strings and keyed by
-stable Twitch user IDs. Stream-scoped values restore only when the stored and
-current Twitch stream identities match; a mismatched current stream is retained.
+stable Twitch user IDs. Restore receives the same confirmed active Twitch stream
+ID used by `CounterService` callers. When it matches the backup stream ID, the
+backup channel/viewer stream totals are applicable and restore. When it differs,
+the existing channel slot and restored viewers' slots that are already keyed to
+the active stream are retained while backup lifetime totals still replace
+lifetime state. With no confirmed
+active stream, restored stream slots are cleared to the Counter reset value and
+no Twitch stream ID is fabricated. Counter schema v2 has only one stream slot per
+channel/viewer and does not retain historical per-stream rows, so an inapplicable
+backup stream value is discarded rather than reclassified as current.
 
 Routines are structural units: nested tasks remain embedded, and backup follows
 stable Run Routine, trigger, queue, Counter, and referenced `custom.*` Variable

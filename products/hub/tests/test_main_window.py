@@ -31,6 +31,7 @@ from shared.streamhouse_shared.models import (
     ResponseMessage,
 )
 from products.hub.core.settings import AppSettings
+from products.hub.core.backup import BackupComponent
 from products.hub.twitch.auth import TwitchAuthState
 from products.hub.config.twitch import TWITCH_BOT_SCOPES, TWITCH_SCOPES
 from products.hub.twitch.chatter_history import ChatterHistoryStore, ChatterRecord
@@ -2310,6 +2311,39 @@ class MainWindowTests(unittest.TestCase):
             self.window.open_backup_folder_button.text(), "Open Backup Folder"
         )
         self.assertTrue(self.window.local_ai_settings_group.isHidden())
+
+    def test_restore_passes_confirmed_active_twitch_stream_to_planner(self) -> None:
+        inspection = Mock()
+        inspection.archive = Path("selected.streamhousebackup")
+        dialog = Mock()
+        dialog.exec.return_value = QDialog.DialogCode.Accepted
+        dialog.selected_components.return_value = (
+            BackupComponent.COUNTER_VALUES,
+        )
+        self.window.stream_is_live = True
+        self.window.current_memory_stream_id = "stream-456"
+
+        with (
+            patch(
+                "products.hub.ui.main_window.RestoreSelectionDialog",
+                return_value=dialog,
+            ),
+            patch.object(
+                QMessageBox,
+                "question",
+                return_value=QMessageBox.StandardButton.Yes,
+            ),
+            patch.object(self.window, "_start_backup_job") as start_job,
+        ):
+            self.window._restore_inspected(inspection)
+
+        operation = start_job.call_args.args[0]
+        operation()
+        self.release_controller.restore_backup.assert_called_once_with(
+            inspection.archive,
+            (BackupComponent.COUNTER_VALUES,),
+            active_stream_id="stream-456",
+        )
 
     def test_memory_buttons_follow_viewer_and_memory_selection(self) -> None:
         buttons = (

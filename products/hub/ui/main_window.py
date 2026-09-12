@@ -7999,9 +7999,14 @@ class MainWindow(QMainWindow):
             self.release_tools_status.setText("Restore cancelled.")
             return
         self.release_tools_status.setText("Creating safety backup and restoring…")
+        active_stream_id = (
+            self.current_memory_stream_id if self.stream_is_live else ""
+        )
         self._start_backup_job(
             lambda: self.release_controller.restore_backup(
-                inspection.archive, components
+                inspection.archive,
+                components,
+                active_stream_id=active_stream_id,
             ),
             self._restore_finished,
         )

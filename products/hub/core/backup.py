@@ -420,6 +420,7 @@ class BackupManager:
         components: Iterable[BackupComponent | str] | None = None,
         *,
         create_safety: bool = True,
+        active_stream_id: str = "",
     ) -> RestoreReport:
         archive = Path(archive)
         manifest, payloads = self._read_archive(archive)
@@ -432,7 +433,11 @@ class BackupManager:
         if not selected or not selected.issubset(available):
             raise BackupError("Choose components that exist in this backup.")
         selected = self._expand_restore_dependencies(selected, manifest)
-        writes, deletes = self._restore_plan(selected, payloads)
+        writes, deletes = self._restore_plan(
+            selected,
+            payloads,
+            active_stream_id=str(active_stream_id).strip(),
+        )
         self._validate_staged(writes)
         if create_safety:
             try:
@@ -875,6 +880,8 @@ class BackupManager:
         self,
         selected: set[BackupComponent],
         payloads: Mapping[BackupComponent, Any],
+        *,
+        active_stream_id: str = "",
     ) -> tuple[dict[Path, bytes], set[Path]]:
         writes: dict[Path, bytes] = {}
         deletes: set[Path] = set()
@@ -898,6 +905,14 @@ class BackupManager:
             values = counter_payload.get("values", {})
             if not isinstance(values, dict):
                 raise BackupError("Counter Values are invalid.")
+            definitions = payloads.get(BackupComponent.COUNTER_DEFINITIONS, {})
+            reset_values = {
+                str(item.get("counter_id", "")): str(
+                    item.get("reset_value", "0")
+                )
+                for item in definitions.get("counters", [])
+                if isinstance(item, dict)
+            }
             counter_directory = self.project_root / "counters"
             existing_ids = {
                 path.stem
@@ -907,7 +922,12 @@ class BackupManager:
             for counter_id, value in values.items():
                 target = counter_directory / f"{counter_id}.json"
                 writes[target] = self._encode(
-                    self._safe_stream_restore(target, value)
+                    self._safe_stream_restore(
+                        target,
+                        value,
+                        active_stream_id=active_stream_id,
+                        reset_value=reset_values.get(str(counter_id), "0"),
+                    )
                 )
             deletes.update(
                 counter_directory / f"{counter_id}.json"
@@ -1102,29 +1122,50 @@ class BackupManager:
 
     @staticmethod
     def _safe_stream_restore(
-        target: Path, incoming: Mapping[str, Any]
+        target: Path,
+        incoming: Mapping[str, Any],
+        *,
+        active_stream_id: str,
+        reset_value: str,
     ) -> Mapping[str, Any]:
-        if not target.exists():
-            return incoming
-        try:
-            current = json.loads(target.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            return incoming
-        current_stream = current.get("current_stream", {})
-        incoming_stream = incoming.get("current_stream", {})
-        current_id = str(current_stream.get("stream_id", ""))
-        incoming_id = str(incoming_stream.get("stream_id", ""))
-        if not current_id or not incoming_id or current_id == incoming_id:
-            return incoming
         safe = json.loads(json.dumps(incoming))
-        safe["current_stream"] = current_stream
+        incoming_stream = safe.get("current_stream", {})
+        incoming_id = str(incoming_stream.get("stream_id", ""))
+        if active_stream_id and incoming_id == active_stream_id:
+            return incoming
+        current: Mapping[str, Any] = {}
+        try:
+            if target.exists():
+                current = json.loads(target.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            current = {}
+        empty_stream = {"stream_id": "", "value": str(reset_value)}
+        current_stream = current.get("current_stream", {})
+        safe["current_stream"] = (
+            current_stream
+            if active_stream_id
+            and isinstance(current_stream, dict)
+            and str(current_stream.get("stream_id", "")) == active_stream_id
+            else empty_stream
+        )
         current_viewers = current.get("viewers", {})
         for user_id, viewer in safe.get("viewers", {}).items():
-            current_viewer = current_viewers.get(user_id, {})
+            current_viewer = (
+                current_viewers.get(user_id, {})
+                if isinstance(current_viewers, dict)
+                else {}
+            )
             if isinstance(viewer, dict) and isinstance(current_viewer, dict):
-                viewer["current_stream"] = current_viewer.get(
-                    "current_stream",
-                    {"stream_id": current_id, "value": "0"},
+                current_viewer_stream = current_viewer.get(
+                    "current_stream", {}
+                )
+                viewer["current_stream"] = (
+                    current_viewer_stream
+                    if active_stream_id
+                    and isinstance(current_viewer_stream, dict)
+                    and str(current_viewer_stream.get("stream_id", ""))
+                    == active_stream_id
+                    else dict(empty_stream)
                 )
         return safe
 
