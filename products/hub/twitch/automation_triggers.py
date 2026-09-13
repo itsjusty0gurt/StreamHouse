@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from collections import deque
+from copy import deepcopy
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timedelta, timezone
+import json
 from pathlib import Path
 import re
 from time import monotonic
@@ -412,6 +414,58 @@ class TwitchEventTriggerStore:
                 "triggers": [asdict(trigger) for trigger in self.triggers],
             },
         )
+
+    def reset_obsolete_schema(self) -> int:
+        """Discard a pre-Alpha trigger file and its routine references.
+
+        The obsolete trigger definitions are not loaded or migrated. Their stable
+        IDs are read only so the reset does not leave broken routine references.
+        """
+
+        payload = json.loads(self.path.read_text(encoding="utf-8"))
+        raw_triggers = (
+            payload.get("triggers", []) if isinstance(payload, dict) else []
+        )
+        discarded_ids = {
+            str(value.get("trigger_id", "")).strip()
+            for value in raw_triggers
+            if isinstance(value, dict) and str(value.get("trigger_id", "")).strip()
+        }
+        tracked_paths = {
+            path: path.read_bytes() if path.exists() else None
+            for target in (self.path, self.routine_store.path)
+            for path in (target, target.with_suffix(target.suffix + ".bak"))
+        }
+        previous_groups = deepcopy(self.routine_store.groups)
+        previous_routines = deepcopy(self.routine_store.routines)
+        try:
+            self.triggers = []
+            self.first_message_raid_suppression_enabled = True
+            self.first_message_raid_suppression_minutes = (
+                self.DEFAULT_RAID_SUPPRESSION_MINUTES
+            )
+            self.save()
+            removed = self.routine_store.remove_trigger_references(discarded_ids)
+            # Replace the obsolete recovery copy as well, so a later recovery
+            # cannot reintroduce a discarded development schema.
+            self.save()
+        except (OSError, ValueError):
+            self.routine_store.groups = previous_groups
+            self.routine_store.routines = previous_routines
+            for path, content in tracked_paths.items():
+                if content is None:
+                    path.unlink(missing_ok=True)
+                    continue
+                temporary = path.with_suffix(path.suffix + ".restore")
+                try:
+                    temporary.write_bytes(content)
+                    temporary.replace(path)
+                finally:
+                    temporary.unlink(missing_ok=True)
+            raise
+        self._first_message_seen = {}
+        self._clear_raid_suppression()
+        return removed
 
     def add(
         self,

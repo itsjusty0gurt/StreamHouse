@@ -5,6 +5,7 @@ import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest.mock import patch
 
 from products.hub.automation.routines import RoutineStore
 from products.hub.twitch.automation_triggers import (
@@ -1235,6 +1236,89 @@ class TwitchEventTriggerStoreTests(unittest.TestCase):
                 self.store.path.write_text(json.dumps(payload), encoding="utf-8")
                 with self.assertRaisesRegex(ValueError, "Unsupported Twitch event"):
                     self.store.load()
+
+    def test_obsolete_schema_reset_writes_current_schema_and_removes_only_its_links(
+        self,
+    ) -> None:
+        routine = self.routines.add("Follow")
+        self.routines.link_trigger(routine.routine_id, "other-current-trigger")
+        obsolete_trigger_id = "obsolete-twitch-trigger"
+        self.routines.link_trigger(routine.routine_id, obsolete_trigger_id)
+        self.store.path.write_text(
+            json.dumps(
+                {
+                    "version": 3,
+                    "triggers": [
+                        {
+                            "trigger_id": obsolete_trigger_id,
+                            "routine_id": routine.routine_id,
+                            "event_type": "channel.follow",
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with self.assertRaisesRegex(ValueError, "Unsupported Twitch event"):
+            self.store.load()
+        removed = self.store.reset_obsolete_schema()
+
+        payload = json.loads(self.store.path.read_text(encoding="utf-8"))
+        recovery = json.loads(
+            self.store.path.with_suffix(".json.bak").read_text(encoding="utf-8")
+        )
+        self.assertEqual(removed, 1)
+        self.assertEqual(payload["version"], self.store.VERSION)
+        self.assertEqual(recovery["version"], self.store.VERSION)
+        self.assertEqual(payload["triggers"], [])
+        self.assertEqual(
+            payload["first_message"],
+            {
+                "raid_suppression_enabled": True,
+                "raid_suppression_minutes": 3,
+            },
+        )
+        self.assertEqual(
+            self.routines.get(routine.routine_id).trigger_ids,
+            ("other-current-trigger",),
+        )
+        reloaded = TwitchEventTriggerStore(self.store.path, self.routines)
+        self.assertEqual(reloaded.load(), [])
+
+    def test_obsolete_schema_reset_rolls_back_if_routine_cleanup_fails(self) -> None:
+        routine = self.routines.add("Follow")
+        obsolete_trigger_id = "obsolete-twitch-trigger"
+        self.routines.link_trigger(routine.routine_id, obsolete_trigger_id)
+        self.store.path.write_text(
+            json.dumps(
+                {
+                    "version": 3,
+                    "triggers": [
+                        {
+                            "trigger_id": obsolete_trigger_id,
+                            "routine_id": routine.routine_id,
+                            "event_type": "channel.follow",
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        trigger_before = self.store.path.read_bytes()
+        routines_before = self.routines.path.read_bytes()
+
+        with patch.object(
+            self.routines,
+            "remove_trigger_references",
+            side_effect=OSError("disk unavailable"),
+        ):
+            with self.assertRaisesRegex(OSError, "disk unavailable"):
+                self.store.reset_obsolete_schema()
+
+        self.assertEqual(self.store.path.read_bytes(), trigger_before)
+        self.assertEqual(self.routines.path.read_bytes(), routines_before)
+        self.assertFalse(self.store.path.with_suffix(".json.bak").exists())
 
     def test_current_schema_does_not_invent_missing_trigger_ids(self) -> None:
         routine = self.routines.add("Follow")

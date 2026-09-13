@@ -900,6 +900,13 @@ global. `twitch/first_message_state.json` is bounded trigger bookkeeping for the
 current stream, not historical viewer analytics, and suppressed messages do not
 create Run History executions.
 
+`TwitchEventTriggerStore` schema v4 owns both trigger definitions and the shared
+First Message raid-suppression settings. An obsolete pre-Alpha trigger file is
+discarded during startup, its stable IDs are removed from routine links, and a
+clean v4 live/recovery pair is written before automatic Backup runs; the runtime
+loader and Backup do not accept the obsolete schema. Routine Backup projections
+retain the shared First Message settings alongside selected Twitch triggers.
+
 Keyword/Phrase is a separate chat concept from Chat Command. Its trigger
 context is fresh for one routine execution, keeps normal `user.*`/`chat.*`
 data, and never manufactures `command.*`. Ads warnings are deduplicated per

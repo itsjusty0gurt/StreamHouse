@@ -56,6 +56,7 @@ from PySide6.QtWidgets import (
 from products.hub.core.events import Events
 from products.hub.core.diagnostics import DiagnosticsService
 from products.hub.config.product import ISSUE_TRACKER_URL
+from shared.streamhouse_runtime.json_store import UnsupportedJsonSchemaError
 from shared.streamhouse_runtime.logger import Logger
 from shared.streamhouse_ui import install_window_chrome
 from products.hub.core.settings import AppSettings, SettingsStore
@@ -671,6 +672,22 @@ class MainWindow(QMainWindow):
             )
         try:
             self.twitch_event_trigger_store.load()
+        except UnsupportedJsonSchemaError as error:
+            try:
+                removed = self.twitch_event_trigger_store.reset_obsolete_schema()
+            except (OSError, ValueError, json.JSONDecodeError) as reset_error:
+                self.twitch_event_trigger_store.triggers = []
+                Logger.warning(
+                    "Could not reset obsolete Twitch automation triggers: "
+                    f"{reset_error}",
+                    source="TWITCH",
+                )
+            else:
+                Logger.warning(
+                    "Reset obsolete pre-Alpha Twitch automation triggers "
+                    f"and removed {removed} routine link(s): {error}",
+                    source="TWITCH",
+                )
         except (OSError, ValueError, json.JSONDecodeError) as error:
             self.twitch_event_trigger_store.triggers = []
             Logger.warning(

@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 import tempfile
@@ -163,6 +164,31 @@ class MainWindowTests(unittest.TestCase):
             command_root / "event_triggers.json",
             self.twitch_command_trigger_store.routine_store,
         )
+        if self._testMethodName == "test_startup_resets_obsolete_twitch_triggers":
+            routine = self.twitch_command_trigger_store.routine_store.add(
+                "Obsolete Twitch trigger"
+            )
+            self.obsolete_twitch_trigger_id = "obsolete-twitch-trigger"
+            self.twitch_command_trigger_store.routine_store.link_trigger(
+                routine.routine_id,
+                self.obsolete_twitch_trigger_id,
+            )
+            self.obsolete_twitch_routine_id = routine.routine_id
+            self.twitch_event_trigger_store.path.write_text(
+                json.dumps(
+                    {
+                        "version": 3,
+                        "triggers": [
+                            {
+                                "trigger_id": self.obsolete_twitch_trigger_id,
+                                "routine_id": routine.routine_id,
+                                "event_type": "channel.follow",
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
         self.window = MainWindow(
             window_state_store=self.window_state_store,
             chatter_history_store=self.chatter_history_store,
@@ -214,7 +240,26 @@ class MainWindowTests(unittest.TestCase):
                 sum(candidate.isChecked() for candidate in buttons),
                 1,
             )
-            self.assertEqual(self.window.statusBar().currentMessage(), "")
+        self.assertEqual(self.window.statusBar().currentMessage(), "")
+
+    def test_startup_resets_obsolete_twitch_triggers(self) -> None:
+        payload = json.loads(
+            self.twitch_event_trigger_store.path.read_text(encoding="utf-8")
+        )
+        routine = self.twitch_command_trigger_store.routine_store.get(
+            self.obsolete_twitch_routine_id
+        )
+
+        self.assertEqual(payload["version"], TwitchEventTriggerStore.VERSION)
+        self.assertEqual(payload["triggers"], [])
+        self.assertEqual(
+            payload["first_message"],
+            {
+                "raid_suppression_enabled": True,
+                "raid_suppression_minutes": 3,
+            },
+        )
+        self.assertNotIn(self.obsolete_twitch_trigger_id, routine.trigger_ids)
 
     def test_dashboard_connection_action_opens_connections_page(self) -> None:
         self.window.show_dashboard()

@@ -365,6 +365,81 @@ class BackupManagerTests(unittest.TestCase):
         ):
             self.assertNotIn(forbidden, combined)
 
+    def test_current_twitch_trigger_schema_backs_up_and_restores_with_stable_links(
+        self,
+    ) -> None:
+        archive = self.manager.create("manual", preset=BackupPreset.RECOMMENDED)
+        with ZipFile(archive) as source:
+            manifest = json.loads(source.read("manifest.json"))
+            routines = json.loads(source.read("components/routines.json"))
+        twitch = routines["triggers"]["twitch"]
+        self.assertEqual(
+            manifest["components"]["routines"]["source_schemas"][
+                "twitch_triggers"
+            ],
+            TwitchEventTriggerStore.VERSION,
+        )
+        self.assertEqual(twitch["version"], TwitchEventTriggerStore.VERSION)
+        self.assertEqual(
+            twitch["first_message"],
+            {
+                "raid_suppression_enabled": True,
+                "raid_suppression_minutes": 3,
+            },
+        )
+
+        self.manager.restore(archive, create_safety=False)
+        routine_store = RoutineStore(self.root / "automation/routines.json")
+        routine_store.load()
+        trigger_store = TwitchEventTriggerStore(
+            self.root / "twitch/event_triggers.json", routine_store
+        )
+        triggers = trigger_store.load()
+        self.assertEqual(
+            [trigger.trigger_id for trigger in triggers],
+            ["raid-trigger"],
+        )
+        self.assertIn("raid-trigger", routine_store.get("parent").trigger_ids)
+
+    def test_backup_rejects_obsolete_twitch_trigger_schema(self) -> None:
+        write_json(
+            self.root / "twitch/event_triggers.json",
+            {"version": 3, "triggers": []},
+        )
+
+        with self.assertRaisesRegex(
+            BackupError, "twitch triggers does not use the current schema"
+        ):
+            self.manager.create("manual", preset=BackupPreset.RECOMMENDED)
+
+    def test_automatic_backup_accepts_current_twitch_trigger_schema(self) -> None:
+        archive = self.manager.create_daily_if_needed()
+
+        self.assertIsNotNone(archive)
+        self.assertTrue(archive.exists())
+
+    def test_obsolete_twitch_trigger_reset_unblocks_automatic_backup(self) -> None:
+        trigger_path = self.root / "twitch/event_triggers.json"
+        obsolete = json.loads(trigger_path.read_text(encoding="utf-8"))
+        obsolete["version"] = 3
+        obsolete.pop("first_message")
+        write_json(trigger_path, obsolete)
+        routines = RoutineStore(self.root / "automation/routines.json")
+        routines.load()
+        trigger_store = TwitchEventTriggerStore(trigger_path, routines)
+
+        with self.assertRaisesRegex(ValueError, "Unsupported Twitch event"):
+            trigger_store.load()
+        self.assertEqual(trigger_store.reset_obsolete_schema(), 1)
+        archive = self.manager.create_daily_if_needed()
+
+        self.assertIsNotNone(archive)
+        self.assertTrue(archive.exists())
+        self.assertEqual(
+            json.loads(trigger_path.read_text(encoding="utf-8"))["version"],
+            TwitchEventTriggerStore.VERSION,
+        )
+
     def test_counter_values_preserve_exact_decimal_and_viewer_identity(self) -> None:
         archive = self.manager.create(
             "manual",

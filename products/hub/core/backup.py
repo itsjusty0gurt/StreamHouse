@@ -632,7 +632,15 @@ class BackupManager:
             found_trigger_ids.update(
                 str(item.get("trigger_id", "")) for item in selected
             )
-            triggers[label] = {"version": version, "triggers": selected}
+            projected = {"version": version, "triggers": selected}
+            if label == "twitch":
+                first_message = store.get("first_message")
+                if not isinstance(first_message, dict):
+                    raise BackupError(
+                        "twitch triggers does not use the current schema."
+                    )
+                projected["first_message"] = first_message
+            triggers[label] = projected
         missing = trigger_ids - found_trigger_ids
         if missing:
             raise BackupError(

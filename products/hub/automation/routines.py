@@ -205,6 +205,28 @@ class RoutineStore:
         self._commit(deepcopy(self.groups), routines)
         return self.get(routine_id)  # type: ignore[return-value]
 
+    def remove_trigger_references(self, trigger_ids: Iterable[str]) -> int:
+        """Remove discarded trigger identities without disturbing other links."""
+
+        discarded = {
+            str(value).strip()
+            for value in trigger_ids
+            if str(value).strip()
+        }
+        if not discarded:
+            return 0
+        routines = deepcopy(self.routines)
+        removed = 0
+        for routine in routines:
+            current = list(routine.trigger_ids)
+            retained = [value for value in current if value not in discarded]
+            removed += len(current) - len(retained)
+            routine.trigger_id = retained[0] if retained else ""
+            routine.additional_trigger_ids = retained[1:]
+        if removed:
+            self._commit(deepcopy(self.groups), routines)
+        return removed
+
     # Groups -----------------------------------------------------------------
 
     def add_group(self, name: str, *, collapsed: bool = False) -> RoutineGroup:
