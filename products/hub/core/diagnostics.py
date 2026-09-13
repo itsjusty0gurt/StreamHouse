@@ -106,10 +106,12 @@ class DiagnosticsService:
         self._original_unraisable_hook = None
         self._original_qt_handler = None
         self._qt_handler_installed = False
+        self._fault_write_lock = threading.RLock()
         self._fault_file = None
         self._fault_path: Path | None = None
+        self.previous_fault_path: Path | None = None
         self._load_previous_marker()
-        self._write_active_marker()
+        self._finalize_previous_abnormal_artifact()
         self._rotate(
             self.crashes_directory,
             "StreamhouseHub-Crash-*.log",
@@ -120,6 +122,12 @@ class DiagnosticsService:
             "StreamhouseHub-Fault-*.log",
             self.CRASH_RETENTION,
         )
+        # Fault capture is deliberately established before the active marker and
+        # normal logger. A hard process termination cannot run a handler, so the
+        # already-flushed artifact is the minimum durable evidence for the next
+        # launch.
+        self._start_fault_capture()
+        self._write_active_marker()
 
     @staticmethod
     def _process_is_running(pid: int) -> bool:
@@ -155,7 +163,125 @@ class DiagnosticsService:
                 "session_id": self.session_id,
                 "pid": os.getpid(),
                 "started_at": self.started_at.isoformat(),
+                "fault_artifact": (
+                    self._fault_path.name if self._fault_path is not None else None
+                ),
             },
+        )
+
+    def _start_fault_capture(self) -> None:
+        fault_path = self.crashes_directory / (
+            f"StreamhouseHub-Fault-{self._stamp()}-{self.session_id[:8]}.log"
+        )
+        self._fault_path = fault_path
+        try:
+            self._fault_file = fault_path.open("a", encoding="utf-8")
+            self._write_fault_text(
+                "Streamhouse Hub Session Fault Record\n"
+                f"Session: {self.session_id}\n"
+                f"Started: {self.started_at.isoformat()}\n"
+                f"Process ID: {os.getpid()}\n"
+                f"Hub Version: {VERSION}\n"
+                "Initial Capture Status: No in-process exception captured yet.\n"
+                f"Checkpoint: diagnostics initialized at {self._now().isoformat()}\n",
+                durable=True,
+            )
+            faulthandler.enable(file=self._fault_file, all_threads=True)
+        except (OSError, RuntimeError) as error:
+            # Logger may not exist yet; startup continues so the normal session
+            # logger can report the reduced diagnostics coverage once available.
+            self._close_fault_file(disable=True)
+            self._fault_path = None
+            self._fault_start_error = type(error).__name__
+        else:
+            self._fault_start_error = None
+
+    def checkpoint(self, label: str) -> None:
+        """Persist a low-volume, content-free lifecycle checkpoint."""
+        safe_label = re.sub(r"[^A-Za-z0-9 ._:/()-]", "?", str(label))[:160]
+        self._write_fault_text(
+            f"Checkpoint: {safe_label} at {self._now().isoformat()}\n",
+            durable=True,
+        )
+
+    def _write_fault_text(self, text: str, *, durable: bool = False) -> None:
+        if self._fault_file is None:
+            return
+        with self._fault_write_lock:
+            try:
+                self._fault_file.write(sanitize_support_text(text))
+                self._fault_file.flush()
+                if durable:
+                    os.fsync(self._fault_file.fileno())
+            except (OSError, ValueError):
+                pass
+
+    def _finalize_previous_abnormal_artifact(self) -> None:
+        if not self.previous_shutdown_abnormal or self.previous_session is None:
+            return
+        previous_id = str(self.previous_session.get("session_id", "unknown"))
+        artifact_name = self.previous_session.get("fault_artifact")
+        artifact = None
+        if (
+            isinstance(artifact_name, str)
+            and artifact_name
+            and Path(artifact_name).name == artifact_name
+        ):
+            candidate = self.crashes_directory / artifact_name
+            if candidate.is_file():
+                artifact = candidate
+        if artifact is None:
+            artifact = self.crashes_directory / (
+                f"StreamhouseHub-Fault-{self._stamp()}-{previous_id[:8]}.log"
+            )
+            try:
+                artifact.write_text(
+                    sanitize_support_text(
+                        "Streamhouse Hub Session Fault Record\n"
+                        f"Session: {previous_id}\n"
+                        f"Started: "
+                        f"{self.previous_session.get('started_at', 'Unknown')}\n"
+                        f"Process ID: {self.previous_session.get('pid', 'Unknown')}\n"
+                        "Capture Status: Fault capture artifact was unavailable "
+                        "from the prior runtime.\n"
+                    ),
+                    encoding="utf-8",
+                )
+            except OSError:
+                return
+        try:
+            existing = artifact.read_text(encoding="utf-8", errors="replace")
+            if "Abnormal termination detected by session:" not in existing:
+                captured = self._artifact_has_captured_fault(existing)
+                classification = (
+                    "Abnormal termination detected; in-process exception or fault "
+                    "output was captured."
+                    if captured
+                    else "Abnormal termination detected; no in-process exception "
+                    "was captured."
+                )
+                with artifact.open("a", encoding="utf-8") as stream:
+                    stream.write(
+                        "\nPrevious-session classification\n"
+                        f"Detected: {self._now().isoformat()}\n"
+                        f"Abnormal termination detected by session: {self.session_id}\n"
+                        f"Status: {classification}\n"
+                    )
+                    stream.flush()
+                    os.fsync(stream.fileno())
+        except OSError:
+            return
+        self.previous_fault_path = artifact
+
+    @staticmethod
+    def _artifact_has_captured_fault(text: str) -> bool:
+        return any(
+            marker in text
+            for marker in (
+                "Captured in-process exception:",
+                "Fatal Python error:",
+                "Windows fatal exception:",
+            )
         )
 
     @property
@@ -174,21 +300,13 @@ class DiagnosticsService:
         sys.excepthook = self._handle_sys_exception
         threading.excepthook = self._handle_thread_exception
         sys.unraisablehook = self._handle_unraisable
-        fault_path = self.crashes_directory / (
-            f"StreamhouseHub-Fault-{self._stamp()}-{self.session_id[:8]}.log"
-        )
-        self._fault_path = fault_path
-        try:
-            self._fault_file = fault_path.open("a", encoding="utf-8")
-            faulthandler.enable(file=self._fault_file, all_threads=True)
-        except (OSError, RuntimeError) as error:
+        if self._fault_start_error is not None:
             Logger.warning(
-                f"Python faulthandler could not be enabled: {type(error).__name__}",
+                "Python faulthandler could not be enabled: "
+                f"{self._fault_start_error}",
                 source="SYSTEM",
             )
-            if self._fault_file is not None:
-                self._fault_file.close()
-                self._fault_file = None
+        self.checkpoint("Python exception hooks installed")
 
     def install_qt_message_handler(self) -> None:
         try:
@@ -236,7 +354,7 @@ class DiagnosticsService:
     def _handle_unraisable(self, args) -> None:
         self.record_exception(
             "Unraisable Python exception",
-            type(args.exc_value),
+            args.exc_type,
             args.exc_value,
             args.exc_traceback,
         )
@@ -256,14 +374,18 @@ class DiagnosticsService:
         )
         safe_traceback = sanitize_support_text(rendered)
         Logger.critical(f"{label}:\n{safe_traceback}", source="SYSTEM")
+        self._write_fault_text(
+            f"Captured in-process exception: {label} at {self._now().isoformat()}\n",
+            durable=True,
+        )
         report = self.crashes_directory / (
             f"StreamhouseHub-Crash-{self._stamp()}-{self.session_id[:8]}.log"
         )
         try:
-            report.write_text(
-                self._crash_header(label) + "\n" + safe_traceback,
-                encoding="utf-8",
-            )
+            with report.open("w", encoding="utf-8") as stream:
+                stream.write(self._crash_header(label) + "\n" + safe_traceback)
+                stream.flush()
+                os.fsync(stream.fileno())
         except OSError as error:
             Logger.error(
                 f"Could not write the dedicated crash report: {type(error).__name__}",
@@ -301,6 +423,11 @@ class DiagnosticsService:
                 "session_id": self.session_id,
                 "session_started": self.started_at.isoformat(),
                 "previous_shutdown": self.previous_shutdown,
+                "previous_session_id": (
+                    str(self.previous_session.get("session_id", "Unknown"))
+                    if self.previous_session is not None
+                    else "Unavailable"
+                ),
             },
             "system": {
                 "platform": platform.platform(),
@@ -327,6 +454,7 @@ class DiagnosticsService:
             f"Session: {app['session_id']}",
             f"Session Started: {app['session_started']}",
             f"Previous Shutdown: {app['previous_shutdown']}",
+            f"Previous Session: {app['previous_session_id']}",
             "",
             "System:",
             f"Windows: {system['platform']}",
@@ -373,27 +501,48 @@ class DiagnosticsService:
                     f"logs/{label}",
                     self._support_log_text(path),
                 )
-            crash = self._latest(
-                self.crashes_directory, "StreamhouseHub-Crash-*.log"
-            )
-            if crash is not None:
+            for artifact in self._selected_crash_artifacts():
                 archive.writestr(
-                    f"crashes/{crash.name}",
+                    f"crashes/{artifact.name}",
                     sanitize_support_text(
-                        crash.read_text(encoding="utf-8", errors="replace")
-                    ),
-                )
-            fault = self._latest(
-                self.crashes_directory, "StreamhouseHub-Fault-*.log"
-            )
-            if fault is not None and fault.stat().st_size:
-                archive.writestr(
-                    f"crashes/{fault.name}",
-                    sanitize_support_text(
-                        fault.read_text(encoding="utf-8", errors="replace")
+                        artifact.read_text(encoding="utf-8", errors="replace")
                     ),
                 )
         return destination
+
+    def _selected_crash_artifacts(self) -> list[Path]:
+        selected: list[Path] = []
+
+        def add(path: Path | None) -> None:
+            if path is not None and path.exists() and path not in selected:
+                selected.append(path)
+
+        add(self.previous_fault_path)
+        if self.previous_session is not None:
+            prior_prefix = str(self.previous_session.get("session_id", ""))[:8]
+            if prior_prefix:
+                add(
+                    self._latest(
+                        self.crashes_directory,
+                        f"StreamhouseHub-Crash-*-{prior_prefix}.log",
+                    )
+                )
+        add(self._latest(self.crashes_directory, "StreamhouseHub-Crash-*.log"))
+        if self._fault_path is not None and self._fault_path.exists():
+            try:
+                current_text = self._fault_path.read_text(
+                    encoding="utf-8", errors="replace"
+                )
+            except OSError:
+                current_text = ""
+            if self._artifact_has_captured_fault(current_text):
+                add(self._fault_path)
+        latest_fault = self._latest(
+            self.crashes_directory, "StreamhouseHub-Fault-*.log"
+        )
+        if latest_fault != self._fault_path:
+            add(latest_fault)
+        return selected[:4]
 
     def _selected_session_logs(self, current: Path | None) -> list[Path]:
         logs = sorted(
@@ -421,16 +570,19 @@ class DiagnosticsService:
         return sanitize_support_text("\n".join(diagnostic_lines[-1000:]))
 
     def clean_shutdown(self) -> None:
+        self.checkpoint("clean shutdown completed")
+        marker_cleared = not self.marker_path.exists()
         try:
             if self.marker_path.exists():
                 marker = json.loads(self.marker_path.read_text(encoding="utf-8"))
                 if marker.get("session_id") == self.session_id:
                     self.marker_path.unlink()
+                    marker_cleared = True
         except (OSError, ValueError, json.JSONDecodeError):
             pass
-        self.uninstall_hooks()
+        self.uninstall_hooks(remove_fault_artifact=marker_cleared)
 
-    def uninstall_hooks(self) -> None:
+    def uninstall_hooks(self, *, remove_fault_artifact: bool = False) -> None:
         if self._qt_handler_installed:
             try:
                 from PySide6.QtCore import qInstallMessageHandler
@@ -444,16 +596,10 @@ class DiagnosticsService:
             threading.excepthook = self._original_thread_hook
             sys.unraisablehook = self._original_unraisable_hook
             self._original_sys_hook = None
-        if self._fault_file is not None:
-            try:
-                faulthandler.disable()
-                self._fault_file.flush()
-                self._fault_file.close()
-            finally:
-                self._fault_file = None
+        self._close_fault_file(disable=True)
         if self._fault_path is not None:
             try:
-                if self._fault_path.exists() and self._fault_path.stat().st_size == 0:
+                if remove_fault_artifact and self._fault_path.exists():
                     self._fault_path.unlink()
             except OSError:
                 pass
@@ -463,6 +609,28 @@ class DiagnosticsService:
                 "StreamhouseHub-Fault-*.log",
                 self.CRASH_RETENTION,
             )
+
+    def _close_fault_file(self, *, disable: bool) -> None:
+        if self._fault_file is None:
+            return
+        with self._fault_write_lock:
+            fault_file = self._fault_file
+            try:
+                if disable:
+                    try:
+                        faulthandler.disable()
+                    except RuntimeError:
+                        pass
+                try:
+                    fault_file.flush()
+                except (OSError, ValueError):
+                    pass
+                try:
+                    fault_file.close()
+                except (OSError, ValueError):
+                    pass
+            finally:
+                self._fault_file = None
 
     @staticmethod
     def _qt_version() -> str:

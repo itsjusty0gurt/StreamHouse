@@ -1781,6 +1781,21 @@ class MainWindowTests(unittest.TestCase):
         )
         self.assertEqual(len(self.window.automation_page.history), 2)
 
+    def test_shutdown_retains_worker_wrappers_when_pool_does_not_drain(self) -> None:
+        worker = object()
+        self.window._backup_workers.add(worker)
+
+        with patch.object(
+            self.window.backup_thread_pool,
+            "waitForDone",
+            return_value=False,
+        ):
+            self.window.close()
+
+        self.assertTrue(self.window._shutting_down)
+        self.assertTrue(self.window.chat_user_page._closing)
+        self.assertIn(worker, self.window._backup_workers)
+
     def test_timer_trigger_uses_normal_execution_and_run_history(self) -> None:
         routine = self.twitch_command_trigger_store.routine_store.add("Timer run")
         trigger = self.window.core_trigger_store.add_timer(

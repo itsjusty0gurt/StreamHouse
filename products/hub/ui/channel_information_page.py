@@ -123,14 +123,6 @@ class ChannelInformationPage(QWidget):
             include.toggled.connect(lambda _value, key=service_id: self._social_changed(key))
             edit.textChanged.connect(lambda _value, key=service_id: self._social_changed(key))
             update.clicked.connect(lambda _checked=False, key=service_id: self.update_social(key))
-        previous_update: QPushButton | None = None
-        for service_id, _label in SOCIAL_SERVICES:
-            include, edit, update, _error = self.social_rows[service_id]
-            if previous_update is not None:
-                QWidget.setTabOrder(previous_update, edit)
-            QWidget.setTabOrder(edit, include)
-            QWidget.setTabOrder(include, update)
-            previous_update = update
         social_layout.addLayout(self.social_grid)
         preview_title = QLabel("!socials preview")
         preview_title.setStyleSheet("font-weight: 600;")
@@ -182,6 +174,7 @@ class ChannelInformationPage(QWidget):
         layout.addStretch()
         self.save_button.clicked.connect(self.save_values)
         self._apply_responsive_layout(compact=False)
+        self._apply_social_tab_order()
 
     @staticmethod
     def _multiline_editor(object_name: str, placeholder: str) -> QTextEdit:
@@ -201,6 +194,17 @@ class ChannelInformationPage(QWidget):
     def _clear_grid(layout: QGridLayout) -> None:
         while layout.count():
             layout.takeAt(0)
+
+    def _apply_social_tab_order(self) -> None:
+        """Set traversal only after every control shares the page window."""
+        previous_update: QPushButton | None = None
+        for service_id, _label in SOCIAL_SERVICES:
+            include, edit, update, _error = self.social_rows[service_id]
+            if previous_update is not None:
+                QWidget.setTabOrder(previous_update, edit)
+            QWidget.setTabOrder(edit, include)
+            QWidget.setTabOrder(include, update)
+            previous_update = update
 
     def _apply_responsive_layout(self, *, compact: bool) -> None:
         if compact == self._compact_layout and self.social_grid.count():

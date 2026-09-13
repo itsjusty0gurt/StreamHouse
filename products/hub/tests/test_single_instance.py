@@ -28,6 +28,9 @@ class _FakeDiagnostics:
     def install_exception_hooks(self) -> None:
         self.events.append("hooks")
 
+    def checkpoint(self, label: str) -> None:
+        self.events.append(f"checkpoint:{label}")
+
 
 class _FakeLock:
     def __init__(
@@ -87,7 +90,17 @@ class HubStartupOwnershipTests(unittest.TestCase):
         )
 
         self.assertEqual(result, 0)
-        self.assertEqual(events, ["lock", "diagnostics", "hooks", "run", "release"])
+        self.assertEqual(
+            events,
+            [
+                "lock",
+                "diagnostics",
+                "hooks",
+                "checkpoint:session logging initialized",
+                "run",
+                "release",
+            ],
+        )
 
     @patch("products.hub.hub_main.Logger.info")
     @patch("products.hub.hub_main.Logger.setup")

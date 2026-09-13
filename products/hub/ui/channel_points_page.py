@@ -60,6 +60,7 @@ class ChannelPointsPage(QWidget):
         self.rewards: list[TwitchCustomReward] = []
         self.loaded = False
         self.busy = False
+        self._shutting_down = False
         self.thread_pool = QThreadPool(self)
         self.thread_pool.setMaxThreadCount(1)
         self._workers: set[_RewardWorker] = set()
@@ -305,6 +306,8 @@ class ChannelPointsPage(QWidget):
         operation: Callable[[], object],
         completed: Callable[[object], None],
     ) -> None:
+        if self._shutting_down:
+            return
         self.busy = True
         self.status_label.setText(message)
         self._update_actions()
@@ -313,6 +316,8 @@ class ChannelPointsPage(QWidget):
 
         def finish(result: object, error: object) -> None:
             self._workers.discard(worker)
+            if self._shutting_down:
+                return
             self.busy = False
             if isinstance(error, BaseException):
                 self.status_label.setText(self._error_message(error))
@@ -357,5 +362,6 @@ class ChannelPointsPage(QWidget):
         )
 
     def shutdown(self) -> None:
+        self._shutting_down = True
         self.thread_pool.clear()
         self.thread_pool.waitForDone(2_000)

@@ -2298,7 +2298,7 @@ class TaskEditorDialog(QDialog):
         if self._obs_refresh_scheduled:
             return
         self._obs_refresh_scheduled = True
-        QTimer.singleShot(0, self._run_scheduled_obs_refresh)
+        QTimer.singleShot(0, self, self._run_scheduled_obs_refresh)
 
     def _run_scheduled_obs_refresh(self) -> None:
         self._obs_refresh_scheduled = False
@@ -2467,6 +2467,7 @@ class RoutineTreeWidget(QTreeWidget):
         """Persist the move after Qt has finished processing the active drop."""
         QTimer.singleShot(
             0,
+            self,
             lambda: self.routine_dropped.emit(
                 routine_id,
                 group_id,
@@ -2993,7 +2994,9 @@ class AutomationPage(QWidget):
         self.remove_queue_item_button.clicked.connect(self._remove_queue_item)
         self.queue_list.itemSelectionChanged.connect(self._queue_selected)
         self.pending_queue_list.model().rowsMoved.connect(
-            lambda *_args: QTimer.singleShot(0, self._persist_queue_order)
+            lambda *_args: QTimer.singleShot(
+                0, self, self._persist_queue_order
+            )
         )
         self._queue_state_snapshot: tuple = ()
 
@@ -3349,7 +3352,9 @@ class AutomationPage(QWidget):
         self.task_list.itemSelectionChanged.connect(self._task_selection_changed)
         self.task_list.customContextMenuRequested.connect(self._task_context_menu)
         self.task_list.model().rowsMoved.connect(
-            lambda *_args: QTimer.singleShot(0, self._persist_task_order)
+            lambda *_args: QTimer.singleShot(
+                0, self, self._persist_task_order
+            )
         )
         self._install_task_shortcuts()
 

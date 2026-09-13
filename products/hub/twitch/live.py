@@ -842,7 +842,7 @@ class TwitchEventSubSocket(QObject):
                 self._reconnect_transfer = True
                 self._intentional_close = True
                 self.socket.close()
-                QTimer.singleShot(0, lambda: self.open(reconnect_url))
+                QTimer.singleShot(0, self, lambda: self.open(reconnect_url))
             return
 
         if message_type == "revocation":
@@ -923,7 +923,7 @@ class TwitchEventSubSocket(QObject):
 
     def _disconnected(self) -> None:
         if not self._intentional_close:
-            QTimer.singleShot(2000, self._reopen_if_needed)
+            QTimer.singleShot(2000, self, self._reopen_if_needed)
 
     def _reopen_if_needed(self) -> None:
         if not self._intentional_close:

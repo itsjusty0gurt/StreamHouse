@@ -105,6 +105,7 @@ class AutomationTimerScheduler(QObject):
             if self.auto_arm:
                 QTimer.singleShot(
                     0,
+                    self,
                     lambda trigger_id=trigger_id, value=event, label=description, expected=fingerprint: (
                         self._deliver(trigger_id, value, label, expected)
                     ),

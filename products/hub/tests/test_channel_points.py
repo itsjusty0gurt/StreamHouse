@@ -1,12 +1,18 @@
 import os
+from time import sleep
 import unittest
+from unittest.mock import Mock
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+import shiboken6
+from PySide6.QtCore import QCoreApplication, QEvent, QThread
+from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
 from products.hub.twitch.models import TwitchCustomReward
 from products.hub.ui.channel_point_reward_dialog import ChannelPointRewardDialog
+from products.hub.ui.channel_points_page import ChannelPointsPage
 
 
 class ChannelPointRewardTests(unittest.TestCase):
@@ -71,6 +77,44 @@ class ChannelPointRewardTests(unittest.TestCase):
         self.assertEqual(values["global_cooldown_seconds"], 60)
         self.assertTrue(values["should_redemptions_skip_request_queue"])
         dialog.close()
+
+    def test_shutdown_blocks_late_worker_ui_after_cpp_page_destruction(self) -> None:
+        for iteration in range(25):
+            with self.subTest(iteration=iteration):
+                page = ChannelPointsPage(Mock(), Mock(token=None))
+                completed: list[object] = []
+                page._start_operation(
+                    "Working…",
+                    lambda: (sleep(0.01), object())[1],
+                    completed.append,
+                )
+
+                page.shutdown()
+                page.deleteLater()
+                QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+                QApplication.processEvents()
+
+                self.assertFalse(shiboken6.isValid(page))
+                self.assertEqual(completed, [])
+                self.assertEqual(page._workers, set())
+
+    def test_worker_completion_is_delivered_on_the_qt_thread(self) -> None:
+        page = ChannelPointsPage(Mock(), Mock(token=None))
+        delivered_on: list[QThread] = []
+        page._start_operation(
+            "Working…",
+            object,
+            lambda _result: delivered_on.append(QThread.currentThread()),
+        )
+
+        for _attempt in range(100):
+            if delivered_on:
+                break
+            QTest.qWait(10)
+
+        self.assertEqual(delivered_on, [self.application.thread()])
+        page.shutdown()
+        page.deleteLater()
 
 
 if __name__ == "__main__":

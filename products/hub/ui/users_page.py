@@ -95,7 +95,10 @@ class UsersPage(QWidget):
         self._counter_rows = []
         self._closing = False
         self._jobs: dict[str, tuple[_Job, Callable[[object, object], None]]] = {}
-        self._job_signals = _JobSignals(self)
+        # A retained runnable may finish after QWidget teardown has deleted the
+        # page's C++ children. Keep the signal source independent so emitting
+        # cannot call through a dead Shiboken wrapper.
+        self._job_signals = _JobSignals()
         self._job_signals.done.connect(
             self._job_finished,
             Qt.ConnectionType.QueuedConnection,
@@ -548,7 +551,7 @@ class UsersPage(QWidget):
                 )
                 break
         elif same_selection and not same_stream:
-            QTimer.singleShot(0, self._load_counters)
+            QTimer.singleShot(0, self, self._load_counters)
         self._counter_selection()
 
     def resizeEvent(self, event):
@@ -567,12 +570,16 @@ class UsersPage(QWidget):
         self.refresh(force=True)
 
     def closeEvent(self, event):
+        self.shutdown()
+        super().closeEvent(event)
+
+    def shutdown(self) -> None:
+        """Stop UI delivery while retained Counter jobs finish safely."""
         self._closing = True
         self.timer.stop()
         self._counter_pending = False
         self._counter_write_pending = False
         self._counter_write_token = None
-        super().closeEvent(event)
 
     def _update_columns(self) -> None:
         # Identity and first-seen remain in details when compact columns hide.

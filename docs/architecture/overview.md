@@ -154,8 +154,8 @@ Dependency direction is enforced by ownership and package audits:
 `products/hub/hub_main.py` resolves the writable data root and acquires its
 exclusive `HubInstanceLock` before creating diagnostics, logging, stores, or any
 other writable Hub service. It then creates the Hub-owned `DiagnosticsService`,
-establishes the process session marker, configures the matching per-session log,
-installs Python exception/faulthandler capture, and calls
+which pre-creates fault capture before establishing the process session marker,
+configures the matching per-session log, installs Python exception hooks, and calls
 `products.hub.streamhouse_hub.app.run()`. A duplicate launch creates only the
 minimal Qt notice needed to report that Hub is already running, then exits without
 normal writable composition.
@@ -208,14 +208,32 @@ is read or written, so a rejected duplicate cannot overwrite the primary marker,
 mark the primary session clean, or create a false abnormal-shutdown incident.
 
 `Logger` writes `latest.log` plus a uniquely named per-session Hub log and keeps
-the latest ten Hub session logs. Python main-thread, worker-thread, and
-unraisable exceptions create a concise sanitized crash report; Qt warnings and
-errors enter the same log, while `faulthandler` writes a persistent best-effort
-fatal-fault stream. The latest five crash reports and fault streams are kept.
-This is not a Windows minidump facility and cannot capture every native failure.
+the latest ten Hub session logs. Diagnostics pre-creates and durably flushes a
+session-correlated fault record immediately after exclusive-instance ownership,
+before the active marker, normal logging, or writable composition. Its file
+descriptor remains open for Python `faulthandler` through the process lifetime;
+low-volume checkpoints record diagnostics initialization, MainWindow creation,
+startup completion, and shutdown start without user content. Clean shutdown
+removes this active record. A later launch retains and annotates the exact stale
+session record with the honest abnormal-termination classification.
+
+Python main-thread, worker-thread, and unraisable exceptions create concise
+sanitized crash reports and mark the fault record as having captured an
+in-process exception. Qt warnings and errors enter the normal log. On Python
+3.13, `faulthandler` covers its supported fatal signals and installs a Windows
+exception handler, so supported access violations or native aborts may append
+Python stacks to the held fault descriptor. Qt/C-extension failures outside that
+coverage may still leave only the pre-flushed record and last checkpoint.
+`os._exit`, Windows `TerminateProcess`/Task Manager termination, and power loss
+cannot run an in-process exception hook or cleanup; the next launch therefore
+reports that the session ended abnormally and that no in-process exception was
+captured rather than claiming a software crash. The latest five crash reports
+and completed abnormal fault records are retained. This is not a Windows
+minidump facility and cannot capture every native failure.
 
 Support Bundles contain diagnostic-severity excerpts from the current/previous
-session logs, latest relevant crash information, a human-readable summary, and
+session logs, the exact previous abnormal session's fault record when present,
+latest relevant crash information, a human-readable summary, and
 structured safe application/system/state diagnostics. General informational log
 lines are excluded so the archive cannot become an activity or chat transcript.
 All copied text passes through defensive credential and local-home-path
@@ -352,6 +370,15 @@ background/domain event
 `ui.twitch_bridge.TwitchEventBridge` is the Twitch-specific implementation of
 that boundary. It is not a universal bridge for OBS, soundboard, AI, or future
 services; each subsystem must use its own Qt-safe result path.
+
+Qt worker lifetime is explicit: a page retains each active `QRunnable` and its
+signal source until completion, signal sources that may outlive a page are not
+QObject children of that page, and late results are ignored once shutdown
+starts. Retained worker references are released only after completion or after
+the owning pool confirms it has fully drained. Deferred callbacks use a live
+QObject as their `QTimer.singleShot` context so Qt cancels them when that owner
+is destroyed. These rules prevent Python wrappers from calling Qt objects after
+their C++ lifetime has ended.
 
 Important event families:
 
@@ -1498,7 +1525,7 @@ identifiers or filename formats are accepted.
 | `diagnostics/active-session.json` | Hub diagnostics | v1 volatile process/session marker; removed only after clean shutdown and never treated as user configuration |
 | OS mutex / `runtime/hub-instance.lock` | Hub startup | runtime-only data-root ownership; Windows uses the mutex and non-Windows development uses the lock-file fallback; excluded from Backup/Support data contracts |
 | `logs/` | each process | `latest.log` plus rotating per-session logs; Hub retains ten session logs |
-| `crashes/` | Hub diagnostics | latest five sanitized Python crash reports and best-effort faulthandler streams |
+| `crashes/` | Hub diagnostics | latest five sanitized Python crash reports and completed abnormal per-session fault records, plus the active pre-created fault record |
 | `support/` | Hub diagnostics | user-created sanitized Support Bundles; not automatically rotated or backed up |
 | `backups/manual/` | Hub backup/restore | user-created `.streamhousebackup` archives; never rotated automatically |
 | `backups/automatic/` | Hub backup/restore | changed-data daily archives; latest five retained |

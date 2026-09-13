@@ -53,6 +53,7 @@ def main(
             retained_sessions=diagnostics.NORMAL_LOG_RETENTION,
         )
         diagnostics.install_exception_hooks()
+        diagnostics.checkpoint("session logging initialized")
 
         Logger.info("Starting Streamhouse Hub...", source="APP")
 

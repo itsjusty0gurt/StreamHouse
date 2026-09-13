@@ -790,6 +790,7 @@ class MainWindow(QMainWindow):
         self.daily_memory_expiry_pending = True
         self._core_started_fired = False
         self._core_closing_fired = False
+        self._shutting_down = False
         self.persistence_shutdown_ok = True
         self.followers_backfilled = False
         self.stream_is_live = False
@@ -1093,7 +1094,7 @@ class MainWindow(QMainWindow):
         self.activity_age_timer = QTimer(self)
         self.activity_age_timer.timeout.connect(self._rebuild_activity_feed)
         self._schedule_activity_age_refresh()
-        QTimer.singleShot(2_000, self._create_automatic_backup)
+        QTimer.singleShot(2_000, self, self._create_automatic_backup)
         if self.diagnostics_service is not None:
             self.diagnostics_service.set_state_provider(self._diagnostic_state)
             self.dashboard_page.show_abnormal_shutdown_notice(
@@ -3544,7 +3545,7 @@ class MainWindow(QMainWindow):
             and not self.permission_upgrade_started
         ):
             self.permission_upgrade_started = True
-            QTimer.singleShot(100, self.twitch_auth.sign_in)
+            QTimer.singleShot(100, self, self.twitch_auth.sign_in)
         self.ui.twitchSignOutButton.setEnabled(signed_in or waiting)
         if state is TwitchAuthState.ERROR:
             self.handle_twitch_error(f"Twitch sign-in failed: {detail}")
@@ -3714,6 +3715,8 @@ class MainWindow(QMainWindow):
         detail: str,
     ) -> None:
         self._slash_action_workers.discard(worker)
+        if self._shutting_down:
+            return
         if success:
             self.statusBar().showMessage(
                 f"Twitch {request.action} completed for @{user_reference}.",
@@ -3977,6 +3980,8 @@ class MainWindow(QMainWindow):
         outcome: CommandExecutionWorkerResult,
     ) -> None:
         self._command_workers.discard(worker)
+        if self._shutting_down:
+            return
         self._complete_twitch_command_execution(
             outcome.command,
             outcome.message,
@@ -3991,6 +3996,8 @@ class MainWindow(QMainWindow):
         _error: str,
     ) -> None:
         self._command_workers.discard(worker)
+        if self._shutting_down:
+            return
         Logger.warning(
             f"Twitch command !{result.invocation} failed.",
             source="TWITCH",
@@ -5512,7 +5519,7 @@ class MainWindow(QMainWindow):
                     source="AUTOMATION",
                 )
         if event.event_type == "ads.ended":
-            QTimer.singleShot(1_000, self.refresh_channel_snapshot)
+            QTimer.singleShot(1_000, self, self.refresh_channel_snapshot)
 
     def _schedule_activity_age_refresh(self) -> None:
         timer = getattr(self, "activity_age_timer", None)
@@ -7850,13 +7857,15 @@ class MainWindow(QMainWindow):
         result: object,
     ) -> None:
         self._ads_workers.discard(worker)
+        if self._shutting_down:
+            return
         self.ads_action_in_flight = False
         payload = result if isinstance(result, dict) else {}
         if action == "commercial":
             self.statusBar().showMessage(
                 str(payload.get("message") or "Commercial requested."), 8000
             )
-            QTimer.singleShot(1_000, self.refresh_channel_snapshot)
+            QTimer.singleShot(1_000, self, self.refresh_channel_snapshot)
         else:
             self.statusBar().showMessage("Next ad snoozed.", 8000)
         self._update_stream_overview_clock()
@@ -7868,6 +7877,8 @@ class MainWindow(QMainWindow):
         error: str,
     ) -> None:
         self._ads_workers.discard(worker)
+        if self._shutting_down:
+            return
         self.ads_action_in_flight = False
         label = "start commercial" if action == "commercial" else "snooze ad"
         message = f"Could not {label}: {error}"
@@ -8054,11 +8065,15 @@ class MainWindow(QMainWindow):
 
         def finish(result: object) -> None:
             self._backup_workers.discard(worker)
+            if self._shutting_down:
+                return
             self._set_backup_actions_enabled(True)
             completed(result)
 
         def fail(message: str) -> None:
             self._backup_workers.discard(worker)
+            if self._shutting_down:
+                return
             self._set_backup_actions_enabled(True)
             if quiet:
                 Logger.warning(
@@ -8115,7 +8130,7 @@ class MainWindow(QMainWindow):
         self.automation_page.refresh()
         self.counters_page.refresh()
         self.channel_information_page.load_values()
-        self.users_page.refresh(force=True)
+        self.chat_user_page.refresh(force=True)
         self._refresh_twitch_commands()
 
     @Slot()
@@ -8229,6 +8244,8 @@ class MainWindow(QMainWindow):
         }
 
     def closeEvent(self, event: QCloseEvent) -> None:
+        self._shutting_down = True
+        self.chat_user_page.shutdown()
         self.automation_timer_scheduler.shutdown()
         self.automation_queue_manager.cancel_all_current(
             "Hub is shutting down."
@@ -8256,17 +8273,17 @@ class MainWindow(QMainWindow):
         self.channel_snapshot_thread_pool.clear()
         self.channel_snapshot_thread_pool.waitForDone(2_000)
         self.backup_thread_pool.clear()
-        self.backup_thread_pool.waitForDone(5_000)
-        self._backup_workers.clear()
+        if self.backup_thread_pool.waitForDone(5_000):
+            self._backup_workers.clear()
         self.command_thread_pool.clear()
-        self.command_thread_pool.waitForDone(2_000)
-        self._command_workers.clear()
+        if self.command_thread_pool.waitForDone(2_000):
+            self._command_workers.clear()
         self.slash_action_thread_pool.clear()
-        self.slash_action_thread_pool.waitForDone(2_000)
-        self._slash_action_workers.clear()
+        if self.slash_action_thread_pool.waitForDone(2_000):
+            self._slash_action_workers.clear()
         self.ads_thread_pool.clear()
-        self.ads_thread_pool.waitForDone(2_000)
-        self._ads_workers.clear()
+        if self.ads_thread_pool.waitForDone(2_000):
+            self._ads_workers.clear()
         self.ai_health_pool.clear()
         self.ai_health_pool.waitForDone(2_000)
         self.channel_points_page.shutdown()

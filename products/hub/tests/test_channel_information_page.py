@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from PySide6.QtCore import qInstallMessageHandler
 from PySide6.QtWidgets import QApplication, QCheckBox
 from shared.streamhouse_runtime.json_store import atomic_write_json
 from products.hub.ui.variable_picker import VariablePickerDialog
@@ -73,6 +74,27 @@ class ChannelInformationPageTests(unittest.TestCase):
         picker.search_edit.setText("socials.discord")
         self.assertEqual(picker.selected_placeholder(), "{socials.discord}")
         picker.close()
+
+    def test_social_tab_order_is_configured_without_cross_window_warnings(self) -> None:
+        messages: list[str] = []
+
+        def handler(_message_type, _context, message) -> None:
+            messages.append(str(message))
+
+        previous = qInstallMessageHandler(handler)
+        page = None
+        try:
+            page = ChannelInformationPage(self.information, self.commands)
+        finally:
+            qInstallMessageHandler(previous)
+            if page is not None:
+                page.deleteLater()
+                self.application.processEvents()
+
+        self.assertFalse(
+            any("setTabOrder" in message for message in messages),
+            messages,
+        )
 
     def test_drafts_and_include_only_change_on_update(self) -> None:
         include, edit, update, _error = self.page.social_rows["discord"]

@@ -127,16 +127,18 @@ def run(diagnostics: DiagnosticsService | None = None) -> None:
         window_state_store=WindowStateStore(window_settings),
         diagnostics_service=diagnostics,
     )
+    if diagnostics is not None:
+        diagnostics.checkpoint("MainWindow created")
     window.show()
     twitch_auth.restore()
     twitch_bot_auth.restore()
-    QTimer.singleShot(0, window.fire_application_started_trigger)
-    QTimer.singleShot(250, window.auto_connect_obs)
-    QTimer.singleShot(350, window.auto_connect_soundboard_relay)
+    QTimer.singleShot(0, window, window.fire_application_started_trigger)
+    QTimer.singleShot(250, window, window.auto_connect_obs)
+    QTimer.singleShot(350, window, window.auto_connect_soundboard_relay)
 
     if smoke_test_enabled():
-        QTimer.singleShot(750, window.close)
-        QTimer.singleShot(900, application.quit)
+        QTimer.singleShot(750, window, window.close)
+        QTimer.singleShot(900, application, application.quit)
 
     Logger.info(
         "Main window displayed.",
@@ -152,6 +154,8 @@ def run(diagnostics: DiagnosticsService | None = None) -> None:
         "Qt event loop started.",
         source="UI",
     )
+    if diagnostics is not None:
+        diagnostics.checkpoint("startup complete")
 
     exit_code = application.exec()
 
@@ -160,6 +164,8 @@ def run(diagnostics: DiagnosticsService | None = None) -> None:
         source="UI",
     )
 
+    if diagnostics is not None:
+        diagnostics.checkpoint("shutdown started")
     shutdown_application()
     Logger.info("Streamhouse Hub shut down.", source="APP")
 

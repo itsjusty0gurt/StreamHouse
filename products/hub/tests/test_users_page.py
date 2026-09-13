@@ -5,11 +5,13 @@ import os
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Event
+from time import sleep
 import unittest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QThread, Qt
+import shiboken6
+from PySide6.QtCore import QCoreApplication, QEvent, QThread, Qt
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QWidget
 
@@ -239,6 +241,30 @@ class UsersPageTests(unittest.TestCase):
         self.assertEqual(self.page.status.text(), original_status)
         values = self.counters.get_values("points", user_id="1", stream_id=self.stream_id)
         self.assertEqual(values.viewer_total, Decimal("6"))
+
+    def test_worker_signal_source_survives_cpp_page_destruction(self) -> None:
+        for iteration in range(25):
+            with self.subTest(iteration=iteration):
+                page = UsersPage(
+                    self.store,
+                    self.counters,
+                    lambda: self.stream_id,
+                    QWidget(),
+                    lambda *_args: None,
+                    lambda *_args: None,
+                    lambda *_args: None,
+                )
+                page.timer.stop()
+                signal_source = page._job_signals
+                page._start_job(lambda: sleep(0.01), lambda *_args: None)
+
+                page.deleteLater()
+                QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+
+                self.assertFalse(shiboken6.isValid(page))
+                self.assertTrue(shiboken6.isValid(signal_source))
+                signal_source.deleteLater()
+                QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
 
     def test_empty_state_and_responsive_splitter(self) -> None:
         self.page.refresh(force=True)
