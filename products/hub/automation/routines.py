@@ -70,6 +70,7 @@ class RoutineStore:
             raise ValueError("Every routine group must be a JSON object.")
         if any(not isinstance(value, dict) for value in values):
             raise ValueError("Every routine must be a JSON object.")
+        self._validate_persisted_structure(raw_groups, values)
         groups = [RoutineGroup.from_dict(value) for value in raw_groups]
         routines = [RoutineDefinition.from_dict(value) for value in values]
         normalized_queues = any(
@@ -79,6 +80,43 @@ class RoutineStore:
         )
         self._validate_state(groups, routines)
         return groups, routines, normalized_queues
+
+    @classmethod
+    def _validate_persisted_structure(
+        cls,
+        raw_groups: list[dict[str, Any]],
+        raw_routines: list[dict[str, Any]],
+    ) -> None:
+        """Reject current-schema data that would lose or invent identity.
+
+        ``from_dict`` is also used by transfer/clipboard import, where fresh IDs
+        are intentional. Durable routine data has a stricter contract: every
+        persisted entity already owns its stable ID and every task container
+        must be structurally intact before deserialization.
+        """
+        if any(not str(group.get("group_id", "")).strip() for group in raw_groups):
+            raise ValueError("Every persisted routine group requires a stable ID.")
+        for routine in raw_routines:
+            if not str(routine.get("routine_id", "")).strip():
+                raise ValueError("Every persisted routine requires a stable ID.")
+            additional = routine.get("additional_trigger_ids", [])
+            if not isinstance(additional, list):
+                raise ValueError("Additional routine trigger IDs must be a list.")
+            cls._validate_persisted_tasks(routine.get("tasks", []))
+
+    @classmethod
+    def _validate_persisted_tasks(cls, values: Any) -> None:
+        if not isinstance(values, list):
+            raise ValueError("Persisted routine tasks must be a list.")
+        for task in values:
+            if not isinstance(task, dict):
+                raise ValueError("Every persisted task must be a JSON object.")
+            if not str(task.get("task_id", "")).strip():
+                raise ValueError("Every persisted task requires a stable ID.")
+            if not isinstance(task.get("config", {}), dict):
+                raise ValueError("Persisted task configuration must be an object.")
+            cls._validate_persisted_tasks(task.get("then_tasks", []))
+            cls._validate_persisted_tasks(task.get("else_tasks", []))
 
     def save(self) -> None:
         self._validate_state(self.groups, self.routines)

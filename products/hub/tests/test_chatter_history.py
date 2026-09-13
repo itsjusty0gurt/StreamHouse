@@ -4,7 +4,10 @@ import unittest
 from datetime import datetime, time, timedelta, timezone
 from pathlib import Path
 
-from products.hub.twitch.chatter_history import ChatterHistoryStore
+from products.hub.twitch.chatter_history import (
+    PERSISTED_CHATTER_FIELDS,
+    ChatterHistoryStore,
+)
 from shared.streamhouse_runtime.json_store import JsonStoreCorruptionError
 
 
@@ -67,7 +70,7 @@ class ChatterHistoryStoreTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "chatters.json"
             path.write_text(
-                json.dumps({"version": 5, "chatters": {}}),
+                json.dumps({"version": 7, "chatters": {}}),
                 encoding="utf-8",
             )
 
@@ -380,7 +383,7 @@ class ChatterHistoryStoreTests(unittest.TestCase):
             3,
         )
 
-    def test_unconsented_viewer_persists_only_management_identity(self) -> None:
+    def test_viewer_persists_only_management_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "chatters.json"
             store = ChatterHistoryStore(path)
@@ -398,8 +401,64 @@ class ChatterHistoryStoreTests(unittest.TestCase):
             self.assertEqual(record.twitch_status["Moderator"], True)
             self.assertEqual(record.twitch_status["VIP"], False)
             self.assertEqual(record.first_seen, record.last_seen)
-            self.assertEqual(record.message_count, 0)
-            self.assertEqual(record.session_messages, {})
+            self.assertEqual(record.message_count, 1)
+            self.assertEqual(record.session_messages, {"stream-1": 1})
+
+    def test_message_memory_and_profile_content_never_persist(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "chatters.json"
+            store = ChatterHistoryStore(path)
+            store.observe_message(
+                "viewer-1",
+                "Viewer",
+                session_id="stream-1",
+                user_login="viewer",
+            )
+            self.qualify(store, "viewer-1")
+            store.record_daily_memory(
+                "viewer-1",
+                speaker="viewer",
+                viewer="Viewer",
+                message="private viewer transcript text",
+                stream_id="stream-1",
+            )
+            store.propose_memory(
+                "viewer-1",
+                "private conversation summary",
+                evidence=({"text": "private evidence text"},),
+            )
+            store.update_profile(
+                "viewer-1",
+                ("private-tag",),
+                "private notes",
+            )
+            store.record_event(
+                "viewer-1",
+                "Viewer",
+                "channel.cheer",
+                "Viewer cheered 100 bits",
+                datetime.now(timezone.utc),
+            )
+            store.save()
+
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            record = payload["chatters"]["viewer-1"]
+            self.assertEqual(set(record), PERSISTED_CHATTER_FIELDS)
+            encoded = json.dumps(payload)
+            for private_text in (
+                "private viewer transcript text",
+                "private conversation summary",
+                "private evidence text",
+                "private notes",
+                "private-tag",
+            ):
+                self.assertNotIn(private_text, encoded)
+
+            restored = ChatterHistoryStore(path)
+            restored.load()
+            self.assertEqual(restored.records["viewer-1"].daily_memory, [])
+            self.assertEqual(restored.records["viewer-1"].memories, [])
+            self.assertEqual(restored.records["viewer-1"].private_notes, "")
 
     def test_observed_identity_updates_by_stable_user_id(self) -> None:
         store = ChatterHistoryStore(Path("unused.json"))

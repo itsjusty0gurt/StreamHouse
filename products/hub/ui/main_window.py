@@ -3971,11 +3971,11 @@ class MainWindow(QMainWindow):
         worker: CommandExecutionWorker,
         result,
         _message: TwitchMessage,
-        error: str,
+        _error: str,
     ) -> None:
         self._command_workers.discard(worker)
         Logger.warning(
-            f"Twitch command !{result.invocation} failed: {error}",
+            f"Twitch command !{result.invocation} failed.",
             source="TWITCH",
         )
         Events.emit(
@@ -4478,7 +4478,7 @@ class MainWindow(QMainWindow):
             "Local memory reasoning could not run; it will retry after more chat."
         )
         Logger.warning(
-            f"Local memory extraction failed: {error}",
+            f"Local memory extraction failed ({type(error).__name__}).",
             source="AI",
         )
 
@@ -4885,7 +4885,7 @@ class MainWindow(QMainWindow):
             "Streamhouse AI reply evaluation failed; continuing with newer chat."
         )
         Logger.warning(
-            f"Streamhouse AI reply decision failed: {error}",
+            f"Streamhouse AI reply decision failed ({type(error).__name__}).",
             source="AI",
         )
         self._start_next_response_batch()
@@ -6677,7 +6677,10 @@ class MainWindow(QMainWindow):
         if not filename:
             return
         Path(filename).write_text(
-            json.dumps(asdict(record), indent=2),
+            json.dumps(
+                self.chatter_history.management_record(record),
+                indent=2,
+            ),
             encoding="utf-8",
         )
 

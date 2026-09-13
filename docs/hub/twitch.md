@@ -96,7 +96,8 @@ For example, `!title Tonight we're playing Vintage Story` provides
 `command.data = Tonight we're playing Vintage Story`.
 Both values are contextual for that one routine execution, remain available to
 every task in the routine, and are discarded afterward. Non-command triggers
-do not receive stale command context.
+do not receive stale command context. Message-bearing values such as
+`command.data` are intentionally omitted from completed Run History snapshots.
 
 Keyword / Phrase is a separate Twitch Chat trigger for matching ordinary chat.
 One trigger handles both single words and multi-word phrases with Contains,
@@ -110,7 +111,8 @@ controls. A match supplies the normal `user.*` and `chat.*` context plus:
 
 These values are routine-scoped and never create `command.*` context. For
 `I think coffee is better than tea`, matching `coffee` yields `I think` and
-`is better than tea` as the before/after values.
+`is better than tea` as the before/after values. The full message, match, and
+before/after slices are not retained in completed Run History entries.
 
 The Automation **Variables** reference keeps Command, Keyword / Phrase, Ads
 Started requester, and other contextual definitions discoverable even outside
@@ -224,8 +226,9 @@ thread.
   service, and task providers remain under `products/hub/counters/`.
 - **Connections** contains independent broadcaster and optional bot OAuth
   controls plus transport details.
-- **Logs > Twitch Events** contains searchable raw EventSub diagnostics and
-  sanitized payload details.
+- **Logs > Twitch Events** contains an in-memory, restart-cleared view of
+  searchable raw EventSub diagnostics and sanitized payload details. Raw
+  payloads are not written to application logs or a durable EventSub store.
 - **Developer Tools** contains message and event simulators.
 - The channel splitter, activity filter, window geometry, and dock state are
   restored with `products/hub/core/window_state.py`.
@@ -247,9 +250,13 @@ backup. Command triggers persist in the exact current v6 schema at
 load when absent; unconfigured setup-dependent templates are not persisted in
 either file. The private-development v5 seeded-default format is rejected, not
 migrated. Both stores are included in current Streamhouse Hub backups.
-Chatter records require the current version-six schema;
-malformed identities and unsupported local group values are discarded or
-normalized at the store boundary. Activity history requires schema v2 and uses
+Chatter records require the current management-only schema v8. It persists
+stable identity, local group/bot classification, known Twitch status,
+first/last seen, and aggregate participation counts. It rejects message text,
+message samples, memories/evidence, private notes, and timeline content; schema
+v7 is discarded before Alpha rather than migrated. Malformed identities and
+unsupported local group values are discarded or normalized at the store
+boundary. Activity history requires schema v2 and uses
 stable Twitch user IDs for viewer deletion; stream-session history requires
 schema v1 while preserving a current incomplete session across a restart.
 Older private-development schemas are rejected/reset. These history files

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 import json
 import tempfile
 import unittest
@@ -214,7 +215,7 @@ class AutomationServiceTests(unittest.TestCase):
         self.assertEqual(handler.calls[0][1].context["user"], "Tester")
         self.assertGreaterEqual(result.routine_results[0].task_results[0].duration_ms, 0)
 
-    def test_run_result_captures_timing_queue_and_safe_historical_context(self) -> None:
+    def test_run_result_excludes_message_content_from_historical_context(self) -> None:
         handler = ExampleTask()
         self.registry.register(handler)
         routine = self.store.add("History snapshot")
@@ -226,6 +227,13 @@ class AutomationServiceTests(unittest.TestCase):
         supplied = {
             "user.id": "viewer-1",
             "command.data": "coffee 0.5",
+            "chat.message": "complete viewer message",
+            "keyword.message": "message containing coffee",
+            "keyword.match": "coffee",
+            "keyword.before": "message containing",
+            "keyword.after": "",
+            "event.input": "private redemption input",
+            "subscription.message": "private resub message",
             "subscription.is_prime": "true",
             "raid.direction": "outgoing",
             "automation.result": "done",
@@ -245,7 +253,14 @@ class AutomationServiceTests(unittest.TestCase):
         self.assertTrue(result.finished_at)
         self.assertGreaterEqual(result.duration_ms, 0)
         self.assertEqual(snapshot["user.id"], "viewer-1")
-        self.assertEqual(snapshot["command.data"], "coffee 0.5")
+        self.assertNotIn("command.data", snapshot)
+        self.assertNotIn("chat.message", snapshot)
+        self.assertNotIn("keyword.message", snapshot)
+        self.assertNotIn("keyword.match", snapshot)
+        self.assertNotIn("keyword.before", snapshot)
+        self.assertNotIn("keyword.after", snapshot)
+        self.assertNotIn("event.input", snapshot)
+        self.assertNotIn("subscription.message", snapshot)
         self.assertEqual(snapshot["subscription.is_prime"], "true")
         self.assertEqual(snapshot["raid.direction"], "outgoing")
         self.assertEqual(snapshot["automation.result"], "done")
@@ -271,7 +286,7 @@ class AutomationServiceTests(unittest.TestCase):
 
         self.assertFalse(result.succeeded)
         self.assertEqual(result.trigger_type, "task_test")
-        self.assertEqual(dict(result.context_values)["keyword.message"], "Coffee please")
+        self.assertNotIn("keyword.message", dict(result.context_values))
 
     def test_single_task_run_does_not_execute_other_routine_tasks(self) -> None:
         handler = ExampleTask()
@@ -554,6 +569,54 @@ class AutomationServiceTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "discarded pre-alpha schema"):
             self.store.load()
+
+    def test_current_schema_never_invents_missing_persisted_identity(self) -> None:
+        group = self.store.add_group("Alerts")
+        routine = self.store.add("Nested", group_id=group.group_id)
+        self.store.add_task(
+            routine.routine_id,
+            task_type="core.if",
+            name="If",
+            config={"left": "1", "operator": "equals", "right": "1"},
+            then_tasks=[TaskDefinition("child-id", "test.example", "Child")],
+        )
+        original = json.loads(self.store.path.read_text(encoding="utf-8"))
+
+        mutations = {
+            "group": lambda payload: payload["groups"][0].pop("group_id"),
+            "routine": lambda payload: payload["routines"][0].pop("routine_id"),
+            "task": lambda payload: payload["routines"][0]["tasks"][0].pop("task_id"),
+            "nested task": lambda payload: payload["routines"][0]["tasks"][0]["then_tasks"][0].pop("task_id"),
+        }
+        for label, mutate in mutations.items():
+            with self.subTest(label=label):
+                payload = deepcopy(original)
+                mutate(payload)
+                with self.assertRaisesRegex(ValueError, "stable ID"):
+                    RoutineStore(self.store.path)._parse_payload(payload)
+
+    def test_current_schema_rejects_malformed_task_structure_without_dropping_it(self) -> None:
+        routine = self.store.add("Structured")
+        self.store.add_task(
+            routine.routine_id,
+            task_type="test.example",
+            name="Task",
+            config={"value": 1},
+        )
+        original = json.loads(self.store.path.read_text(encoding="utf-8"))
+
+        mutations = {
+            "task collection": lambda payload: payload["routines"][0].__setitem__("tasks", {}),
+            "task entry": lambda payload: payload["routines"][0].__setitem__("tasks", ["bad"]),
+            "task config": lambda payload: payload["routines"][0]["tasks"][0].__setitem__("config", []),
+            "nested collection": lambda payload: payload["routines"][0]["tasks"][0].__setitem__("then_tasks", {}),
+        }
+        for label, mutate in mutations.items():
+            with self.subTest(label=label):
+                payload = deepcopy(original)
+                mutate(payload)
+                with self.assertRaises(ValueError):
+                    RoutineStore(self.store.path)._parse_payload(payload)
 
     def test_duplicate_if_regenerates_every_nested_task_id(self) -> None:
         routine = self.store.add("Duplicate nested")

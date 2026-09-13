@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Callable
+from uuid import uuid4
 
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, QTimer, Qt, Signal, Slot
 from PySide6.QtWidgets import (
@@ -21,26 +23,42 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from products.hub.counters.models import parse_counter_number
 from products.hub.ui.page_header import PageHeader
 
 
 class _JobSignals(QObject):
-    done = Signal(object, object)
+    done = Signal(str, object, object)
 
 
 class _Job(QRunnable):
-    def __init__(self, action):
+    def __init__(self, action, signals: _JobSignals):
         super().__init__()
+        # The page releases the worker after its queued completion is handled.
+        # Qt must not delete the QRunnable before that signal reaches the UI.
+        self.setAutoDelete(False)
+        self.token = uuid4().hex
         self.action = action
-        self.signals = _JobSignals()
+        self.signals = signals
 
     def run(self):
         try:
             result = self.action()
         except Exception as error:
-            self.signals.done.emit(None, str(error))
+            self.signals.done.emit(self.token, None, str(error))
         else:
-            self.signals.done.emit(result, None)
+            self.signals.done.emit(self.token, result, None)
+
+
+@dataclass(frozen=True, slots=True)
+class _CounterWriteRequest:
+    counter_id: str
+    scope: str
+    value: object
+    user_id: str
+    user_login: str
+    user_name: str
+    stream_id: str
 
 
 def local_timestamp(value: str) -> str:
@@ -73,7 +91,15 @@ class UsersPage(QWidget):
         self._signature = None
         self._counter_pending = False
         self._counter_write_pending = False
+        self._counter_write_token = None
         self._counter_rows = []
+        self._closing = False
+        self._jobs: dict[str, tuple[_Job, Callable[[object, object], None]]] = {}
+        self._job_signals = _JobSignals(self)
+        self._job_signals.done.connect(
+            self._job_finished,
+            Qt.ConnectionType.QueuedConnection,
+        )
         self.pool = QThreadPool(self)
         self.pool.setMaxThreadCount(1)
         layout = QVBoxLayout(self)
@@ -281,7 +307,7 @@ class UsersPage(QWidget):
             self.context_menu(user_id, record.user_name, "")
 
     def _load_counters(self):
-        if self._counter_pending:
+        if self._closing or self._counter_pending:
             return
         user_id, stream_id = self.selected_id, self.stream_id()
         self._counter_pending = True
@@ -305,9 +331,24 @@ class UsersPage(QWidget):
                     ),
                 ))
             return user_id, stream_id, rows
-        job = _Job(read)
-        job.signals.done.connect(self._counters_loaded)
+        self._start_job(read, self._counters_loaded)
+
+    def _start_job(self, action, completion) -> str:
+        """Retain a worker until its queued UI-thread completion is delivered."""
+        job = _Job(action, self._job_signals)
+        self._jobs[job.token] = (job, completion)
         self.pool.start(job)
+        return job.token
+
+    @Slot(str, object, object)
+    def _job_finished(self, token, result, error) -> None:
+        entry = self._jobs.pop(token, None)
+        if entry is None:
+            return
+        _job, completion = entry
+        if self._closing:
+            return
+        completion(result, error)
 
     @Slot(object, object)
     def _counters_loaded(self, result, error):
@@ -386,40 +427,129 @@ class UsersPage(QWidget):
 
     def set_counter_value(self, counter_id: str, scope: str, value: str) -> None:
         """Persist one selected viewer scope through CounterService."""
+        if self._closing:
+            return
         record = self.store.records.get(self.selected_id)
         if record is None or scope not in {"viewer_total", "viewer_stream_total"}:
+            return
+        if self._counter_write_pending:
+            self.status.setText("A Counter save is already in progress.")
+            return
+        definition = next(
+            (
+                row[0]
+                for row in self._counter_rows
+                if row[0].counter_id == str(counter_id).strip().casefold()
+            ),
+            None,
+        )
+        if definition is None:
+            self.status.setText("The selected Counter is no longer available.")
+            return
+        if not definition.enabled:
+            self.status.setText("The selected Counter is disabled.")
+            return
+        if not definition.tracks(scope):
+            self.status.setText("The selected scope is not tracked by this Counter.")
             return
         stream_id = self.stream_id()
         if scope == "viewer_stream_total" and not stream_id:
             self.status.setText("A current Twitch stream is required for this value.")
             return
+        try:
+            exact_value = parse_counter_number(value, definition.numeric_type)
+        except (TypeError, ValueError) as error:
+            self.status.setText(str(error))
+            return
+        if exact_value < definition.minimum:
+            self.status.setText(f"Value cannot be below {definition.minimum}.")
+            return
+        request = _CounterWriteRequest(
+            counter_id=definition.counter_id,
+            scope=scope,
+            value=exact_value,
+            user_id=record.user_id,
+            user_login=record.user_login,
+            user_name=record.user_name,
+            stream_id=stream_id,
+        )
+        # Give this explicit operation a full refresh interval so the periodic
+        # reader cannot race the write-completion UI update.
+        self.timer.start()
         self._counter_write_pending = True
         self.edit_counter.setEnabled(False)
-        job = _Job(
-            lambda: self.counters.set_value(
-                counter_id,
-                scope,
-                value,
-                user_id=record.user_id,
-                login=record.user_login,
-                display_name=record.user_name,
-                stream_id=stream_id,
-            )
-        )
-        job.signals.done.connect(self._counter_saved)
-        self.pool.start(job)
 
-    @Slot(object, object)
-    def _counter_saved(self, result, error):
+        def save():
+            operation = self.counters.set_value(
+                request.counter_id,
+                request.scope,
+                request.value,
+                user_id=request.user_id,
+                login=request.user_login,
+                display_name=request.user_name,
+                stream_id=request.stream_id,
+            )
+            formatted = None
+            if operation.status == "success":
+                formatted = (
+                    self.counters.format_value(
+                        request.counter_id, operation.values.viewer_total
+                    ),
+                    self.counters.format_value(
+                        request.counter_id, operation.values.viewer_stream_total
+                    ),
+                )
+            return operation, formatted
+
+        self._counter_write_token = self._start_job(
+            save,
+            lambda result, error: self._counter_saved(request, result, error),
+        )
+
+    def _counter_saved(self, request, result, error):
         self._counter_write_pending = False
-        if error:
-            message = str(error)
-        elif result.status == "success":
-            message = "Counter saved."
-        else:
-            message = result.detail
-        self.status.setText(message)
-        self._load_counters()
+        self._counter_write_token = None
+        same_selection = request.user_id == self.selected_id
+        same_stream = request.stream_id == self.stream_id()
+        operation = None if result is None else result[0]
+        formatted = None if result is None else result[1]
+        if same_selection:
+            if error:
+                message = str(error)
+            elif operation.status == "success":
+                message = "Counter saved."
+            else:
+                message = operation.detail
+            self.status.setText(message)
+        if (
+            same_selection
+            and same_stream
+            and operation is not None
+            and operation.status == "success"
+            and formatted is not None
+        ):
+            for row, (definition, _values, _lifetime, _stream) in enumerate(
+                self._counter_rows
+            ):
+                if definition.counter_id != request.counter_id:
+                    continue
+                lifetime_text, stream_text = formatted
+                self._counter_rows[row] = (
+                    definition,
+                    operation.values,
+                    lifetime_text,
+                    stream_text,
+                )
+                self.counter_table.item(row, 1).setText(lifetime_text)
+                self.counter_table.item(row, 2).setText(
+                    stream_text
+                    if definition.track_viewer_stream_total and request.stream_id
+                    else "Unavailable"
+                )
+                break
+        elif same_selection and not same_stream:
+            QTimer.singleShot(0, self._load_counters)
+        self._counter_selection()
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -432,7 +562,17 @@ class UsersPage(QWidget):
 
     def showEvent(self, event):
         super().showEvent(event)
+        self._closing = False
+        self.timer.start()
         self.refresh(force=True)
+
+    def closeEvent(self, event):
+        self._closing = True
+        self.timer.stop()
+        self._counter_pending = False
+        self._counter_write_pending = False
+        self._counter_write_token = None
+        super().closeEvent(event)
 
     def _update_columns(self) -> None:
         # Identity and first-seen remain in details when compact columns hide.

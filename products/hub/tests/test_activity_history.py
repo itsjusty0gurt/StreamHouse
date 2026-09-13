@@ -6,6 +6,8 @@ from pathlib import Path
 from unittest.mock import Mock
 
 from products.hub.twitch.activity_history import ActivityHistoryStore, PersistedActivity
+from products.hub.twitch.activity import format_twitch_activity
+from products.hub.twitch.models import TwitchEvent, TwitchEventTransport
 from shared.streamhouse_runtime.json_store import JsonStoreCorruptionError
 
 
@@ -133,6 +135,26 @@ class ActivityHistoryStoreTests(unittest.TestCase):
         self.assertEqual(store.delete_user("1"), 1)
         self.assertEqual([entry.user_id for entry in store.entries], ["", "2"])
         store.save.assert_called_once()
+
+    def test_ordinary_chat_message_is_not_persistable_activity(self) -> None:
+        event = TwitchEvent(
+            subscription_type="channel.chat.message",
+            version="1",
+            received_at=datetime.now(timezone.utc),
+            message_id="event-1",
+            broadcaster_user_id="channel-1",
+            broadcaster_user_login="channel",
+            broadcaster_user_name="Channel",
+            transport=TwitchEventTransport.WEBSOCKET,
+            payload={
+                "event": {
+                    "chatter_user_id": "viewer-1",
+                    "message": {"text": "private viewer message"},
+                }
+            },
+        )
+
+        self.assertIsNone(format_twitch_activity(event))
 
 
 if __name__ == "__main__":

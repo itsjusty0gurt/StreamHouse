@@ -1326,6 +1326,7 @@ class MainWindowTests(unittest.TestCase):
                         trigger_type="manual",
                         context_values=(
                             ("command.data", "historical value"),
+                            ("user.id", "viewer-1"),
                             ("event.oauth_token", "must not appear"),
                         ),
                     ),
@@ -1343,10 +1344,10 @@ class MainWindowTests(unittest.TestCase):
         self.assertEqual(dialog.summary_labels["Final status"].text(), "Completed")
         self.assertEqual(dialog.task_tree.topLevelItem(0).text(0), "Short wait")
         self.assertEqual(dialog.task_tree.topLevelItem(0).text(1), "Completed")
-        self.assertEqual(dialog.context_table.item(0, 0).text(), "command.data")
+        self.assertEqual(dialog.context_table.item(0, 0).text(), "user.id")
         self.assertEqual(
             dialog.context_table.item(0, 1).text(),
-            "historical value",
+            "viewer-1",
         )
         self.assertEqual(dialog.context_table.rowCount(), 1)
         with patch(

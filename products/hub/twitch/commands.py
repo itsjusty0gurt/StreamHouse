@@ -185,6 +185,8 @@ class TwitchCommandTriggerStore:
                 if not isinstance(value, dict):
                     raise ValueError("Every Twitch command trigger must be a JSON object.")
                 try:
+                    if not isinstance(value.get("aliases", []), list):
+                        raise ValueError("Twitch command aliases must be a list.")
                     trigger = TwitchCommandTrigger.from_dict(value)
                     if not trigger.routine_id:
                         raise ValueError("Twitch command trigger is missing its routine.")

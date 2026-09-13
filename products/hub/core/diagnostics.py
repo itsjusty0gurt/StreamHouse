@@ -15,7 +15,7 @@ from uuid import uuid4
 from zipfile import ZIP_DEFLATED, ZipFile
 
 from shared.streamhouse_runtime.json_store import atomic_write_json
-from shared.streamhouse_runtime.logger import Logger
+from shared.streamhouse_runtime.logger import Logger, format_traceback_locations
 from shared.streamhouse_runtime.paths import user_data_root
 from shared.streamhouse_runtime.redaction import (
     is_secret_key,
@@ -39,6 +39,19 @@ def sanitize_support_data(value: Any) -> Any:
             str(key): (
                 "<REDACTED>"
                 if is_secret_key(key)
+                else "<PRIVATE CONTENT OMITTED>"
+                if str(key).strip().casefold().replace("-", "_")
+                in {
+                    "chat_message",
+                    "context",
+                    "context_values",
+                    "message",
+                    "message_content",
+                    "message_text",
+                    "payload",
+                    "raw_event",
+                    "raw_payload",
+                }
                 else sanitize_support_data(item)
             )
             for key, item in value.items()
@@ -237,8 +250,9 @@ class DiagnosticsService:
         exception_value,
         exception_traceback,
     ) -> Path:
-        rendered = "".join(
-            traceback.format_exception(exception_type, exception_value, exception_traceback)
+        rendered = (
+            format_traceback_locations(exception_traceback)
+            + f"{exception_type.__name__}: <exception message omitted for privacy>\n"
         )
         safe_traceback = sanitize_support_text(rendered)
         Logger.critical(f"{label}:\n{safe_traceback}", source="SYSTEM")
@@ -296,7 +310,7 @@ class DiagnosticsService:
             },
         }
         try:
-            data["state"] = dict(self._state_provider())
+            data["state"] = sanitize_support_data(dict(self._state_provider()))
         except Exception as error:
             data["state"] = {"status": f"Unavailable: {type(error).__name__}"}
         return data

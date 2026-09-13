@@ -385,7 +385,7 @@ class AutomationService:
     def safe_execution_context(
         context,
     ) -> tuple[tuple[str, str], ...]:
-        """Capture useful routine context without retaining credentials.
+        """Capture useful routine metadata without retaining private content.
 
         Run History is intentionally an allowlist, not a dump of registry or
         task configuration state. Values are copied at execution time so the
@@ -415,10 +415,23 @@ class AutomationService:
             "secret",
             "token",
         }
+        message_content_names = {
+            "chat.message",
+            "command.data",
+            "command.target",
+            "event.input",
+            "keyword.after",
+            "keyword.before",
+            "keyword.match",
+            "keyword.message",
+            "subscription.message",
+        }
         captured: list[tuple[str, str]] = []
         for raw_name, raw_value in context.items():
             name = str(raw_name).strip().casefold()
             if not name.startswith(allowed_prefixes):
+                continue
+            if name in message_content_names:
                 continue
             parts = set(name.replace("-", "_").split("."))
             if parts & sensitive_parts or any(
@@ -460,7 +473,7 @@ class AutomationService:
                 task_id=task.task_id,
                 task_type=task.task_type,
                 succeeded=False,
-                detail=str(error),
+                detail=f"Task failed unexpectedly ({type(error).__name__}).",
             )
         task_result = replace(
             task_result,

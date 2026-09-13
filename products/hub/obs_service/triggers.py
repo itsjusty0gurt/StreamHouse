@@ -114,6 +114,8 @@ class ObsTriggerStore:
             if not isinstance(value, dict):
                 raise ValueError("Every OBS trigger must be a JSON object.")
             try:
+                if not isinstance(value.get("filters", {}), dict):
+                    raise ValueError("OBS trigger filters must be a JSON object.")
                 trigger = ObsAutomationTrigger.from_dict(value)
                 self._validate(trigger)
                 routine = self.routine_store.get(trigger.routine_id)

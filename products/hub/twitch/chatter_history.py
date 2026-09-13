@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from datetime import datetime, time, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
@@ -17,38 +17,31 @@ from shared.streamhouse_runtime.paths import user_data_root
 
 LOCAL_CHATTER_GROUPS = frozenset({"", "Regulars", "Bots", "Viewers"})
 
+PERSISTED_CHATTER_FIELDS = frozenset(
+    {
+        "user_id",
+        "user_name",
+        "user_login",
+        "first_seen",
+        "last_seen",
+        "active_days",
+        "message_count",
+        "snapshot_days",
+        "last_snapshot_day",
+        "is_bot",
+        "roles",
+        "followed_at",
+        "session_messages",
+        "manual_group",
+        "twitch_status",
+    }
+)
+BACKUP_CHATTER_FIELDS = PERSISTED_CHATTER_FIELDS - {"session_messages"}
+
 
 def _normalize_manual_group(value: Any) -> str:
     group = str(value).strip()
     return group if group in LOCAL_CHATTER_GROUPS else ""
-
-
-CURRENT_MEMORY_FIELDS = frozenset(
-    {
-        "id",
-        "text",
-        "category",
-        "source",
-        "created_at",
-        "updated_at",
-        "status",
-        "confidence",
-        "evidence",
-        "key",
-        "last_confirmed_at",
-        "conflicts_with",
-        "rejection_reason",
-        "pinned",
-        "archived",
-    }
-)
-
-
-def _load_current_memory(values: dict[str, Any]) -> dict[str, Any] | None:
-    """Return a current-schema memory entry or discard the malformed entry."""
-    if not CURRENT_MEMORY_FIELDS.issubset(values):
-        return None
-    return dict(values)
 
 
 @dataclass(slots=True)
@@ -107,14 +100,6 @@ class ChatterRecord:
             is_bot=bool(values.get("is_bot", False)),
             roles=[str(role) for role in values.get("roles", [])],
             followed_at=str(values.get("followed_at", "")),
-            memories=[
-                loaded
-                for memory in values.get("memories", [])
-                if isinstance(memory, dict)
-                and (loaded := _load_current_memory(memory)) is not None
-            ],
-            tags=[str(tag) for tag in values.get("tags", [])][:50],
-            private_notes=str(values.get("private_notes", ""))[:5000],
             session_messages={
                 str(session_id): max(int(count), 0)
                 for session_id, count in values.get(
@@ -123,43 +108,7 @@ class ChatterRecord:
             }
             if isinstance(values.get("session_messages", {}), dict)
             else {},
-            timeline=[
-                dict(item)
-                for item in values.get("timeline", [])[-200:]
-                if isinstance(item, dict)
-            ],
-            role_history=[
-                dict(item)
-                for item in values.get("role_history", [])[-100:]
-                if isinstance(item, dict)
-            ],
-            memory_enabled=(
-                bool(values.get("memory_enabled", False))
-                and values.get("memory_consent") == "opted_in"
-            ),
             manual_group=_normalize_manual_group(values.get("manual_group", "")),
-            memory_consent=str(values.get("memory_consent", "unknown")),
-            memory_consented_at=str(values.get("memory_consented_at", "")),
-            memory_consent_version=str(values.get("memory_consent_version", "")),
-            memory_stream_ids=list(
-                dict.fromkeys(
-                    str(value)
-                    for value in values.get("memory_stream_ids", [])
-                    if str(value)
-                )
-            )[-100:],
-            daily_memory=[
-                {
-                    "speaker": str(item.get("speaker", "viewer"))[:20],
-                    "viewer": str(item.get("viewer", ""))[:100],
-                    "message": str(item.get("message", ""))[:500],
-                    "timestamp": str(item.get("timestamp", ""))[:50],
-                }
-                for item in values.get("daily_memory", [])[-100:]
-                if isinstance(item, dict) and str(item.get("message", "")).strip()
-            ],
-            daily_memory_updated_at=str(values.get("daily_memory_updated_at", "")),
-            daily_memory_stream_id=str(values.get("daily_memory_stream_id", "")),
         )
 
 
@@ -171,7 +120,7 @@ class ChatterHistoryStore:
     REGULAR_SNAPSHOT_DAYS = 10
     MEMORY_REGULAR_STREAMS = 5
     MEMORY_CONSENT_VERSION = "1"
-    VERSION = 7
+    VERSION = 8
 
     def __init__(self, path: Path | None = None) -> None:
         self.path = path or user_data_root() / "memory" / "twitch_chatters.json"
@@ -203,12 +152,12 @@ class ChatterHistoryStore:
             user_id = str(raw_user_id).strip()
             if not isinstance(raw_record, dict) or not user_id:
                 raise ValueError("Every chatter must have a stable ID and JSON object record.")
+            unexpected = set(raw_record) - PERSISTED_CHATTER_FIELDS
+            if unexpected:
+                raise ValueError(
+                    "Chatter history must contain management metadata only."
+                )
             record = ChatterRecord.from_dict(raw_record)
-            raw_memories = raw_record.get("memories", [])
-            if not isinstance(raw_memories, list):
-                raise ValueError("Chatter memories must be a list.")
-            elif len(record.memories) != len(raw_memories):
-                raise ValueError("Chatter memory data is invalid.")
             if record.user_id != user_id:
                 normalized = True
             record.user_id = user_id
@@ -859,7 +808,7 @@ class ChatterHistoryStore:
         payload = {
             "version": self.VERSION,
             "chatters": {
-                user_id: self._persisted_record(record)
+                user_id: self.management_record(record)
                 for user_id, record in self.records.items()
             },
         }
@@ -867,27 +816,27 @@ class ChatterHistoryStore:
         self.dirty = False
 
     @staticmethod
-    def _persisted_record(record: ChatterRecord) -> dict[str, Any]:
-        values = asdict(record)
-        if (
-            record.memory_consent == "unknown"
-            and not record.manual_group
-            and not record.is_bot
-        ):
-            # Management identity is durable without retaining conversation content.
-            keep = {
-                "user_id",
-                "user_name",
-                "user_login",
-                "first_seen",
-                "last_seen",
-                "manual_group",
-                "is_bot",
-                "roles",
-                "twitch_status",
-            }
-            values = {key: value for key, value in values.items() if key in keep}
-        return values
+    def management_record(record: ChatterRecord) -> dict[str, Any]:
+        # Chatter persistence is deliberately an explicit management-only
+        # projection. AI memories, message samples, evidence, notes, and
+        # timelines may never turn this store into a chat transcript.
+        return {
+            "user_id": record.user_id,
+            "user_name": record.user_name,
+            "user_login": record.user_login,
+            "first_seen": record.first_seen,
+            "last_seen": record.last_seen,
+            "active_days": list(record.active_days),
+            "message_count": record.message_count,
+            "snapshot_days": record.snapshot_days,
+            "last_snapshot_day": record.last_snapshot_day,
+            "is_bot": record.is_bot,
+            "roles": list(record.roles),
+            "followed_at": record.followed_at,
+            "session_messages": dict(record.session_messages),
+            "manual_group": record.manual_group,
+            "twitch_status": dict(record.twitch_status),
+        }
 
     def _observe(
         self,

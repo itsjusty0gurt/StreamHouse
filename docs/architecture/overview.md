@@ -570,8 +570,10 @@ ordered task results, selected structured branches and their child task results,
 intentional early-completion control actions, and nested routine results for the
 details window. It
 also captures a small allowlisted snapshot of meaningful dotted trigger
-context and `automation.*` outputs at execution time. Credential-like names
-and unrelated global registry state are excluded. The details window reads
+metadata and `automation.*` outputs at execution time. Twitch message content
+is excluded, including `chat.message`, `command.data`, Keyword/Phrase message
+slices, Channel Point viewer input, and resubscription message text.
+Credential-like names and unrelated global registry state are excluded. The details window reads
 only that snapshot—it must never substitute current live Variable values for
 historical ones. Run History is not persisted across Hub restarts.
 
@@ -824,7 +826,10 @@ user ID is authoritative; a changed login or display name does not create a new
 record. Twitch role values remain Unknown until chat badges or a complete
 channel snapshot confirms them. The workspace reuses the chat moderation menu
 and edits only `viewer_total` and `viewer_stream_total` through `CounterService`;
-it does not own a parallel user, moderation, or counter store.
+it does not own a parallel user, moderation, or counter store. Selected-viewer
+writes capture immutable counter, user, scope, exact-value, and confirmed-stream
+identity before worker dispatch. Completion returns through a queued Qt signal;
+only a still-matching selection is repainted, and completed workers are released.
 
 A future Set-task option to ask for a value when a manual/button/hotkey routine
 runs is intentionally deferred. Alpha does not introduce a generic runtime
@@ -1462,7 +1467,7 @@ identifiers or filename formats are accepted.
 | `twitch/soundboard-relay.json` | Hub | v1 non-secret relay URL/channel/autoconnect |
 | `obs/connection.json` | Hub | v1 non-secret OBS host/port/autoconnect |
 | `obs/triggers.json` | Hub | schema v1 OBS trigger definitions |
-| `memory/twitch_chatters.json` | Hub | schema v7, stable-Twitch-ID profiles, observed Twitch status, first/last seen, and Hub-owned local groups |
+| `memory/twitch_chatters.json` | Hub | schema v8 management-only stable-Twitch-ID profiles, observed Twitch status, first/last seen, aggregate participation counts, and Hub-owned local groups; no message or memory content |
 | `memory/twitch_activity.json` | Hub | schema v2 bounded activity feed history with stable Twitch user references where applicable |
 | `memory/stream_sessions.json` | Hub | schema v1 active/completed session analytics, including current incomplete-session recovery |
 | `training/examples.json` | Streamhouse AI | v1 consent-based classifier examples |
@@ -1476,6 +1481,58 @@ identifiers or filename formats are accepted.
 | `backups/safety/` | Hub backup/restore | private pre-restore rollback artifacts; separate from Support Bundles |
 
 Window geometry/state uses Qt `QSettings`, not the JSON stores.
+
+### Alpha 0.1 data-contract baseline
+
+Alpha 0.1 becomes the first external compatibility baseline when it is released.
+Backward compatibility protects user data by upgrading an old persisted component
+into the current architecture; it does not preserve the old runtime architecture.
+Each feature service loads one exact current schema. Future old-schema and old-backup
+support belongs at an isolated import/migration boundary that validates the source,
+creates a safety backup, transforms stable identities and references, validates the
+current result, and saves only the current schema. Feature services must not gain
+dual reads, dual writes, historical branches, or obsolete Variable aliases.
+
+Durable references use authoritative identities rather than labels or positions:
+
+| Relationship | Durable identity and missing-target behavior |
+| --- | --- |
+| Routine, group, and nested task structure | Stable routine/group/task IDs; task and group order are explicit arrays. Group placement is organization only. |
+| Routine → Trigger | Stable trigger IDs. Core, Twitch, OBS, and command stores validate the reciprocal routine link; broken links are unavailable/corrupt state, never rebound by label. |
+| Routine → Queue | Stable queue ID. The permanent `streamhouse.default.queue` is the intentional fallback for a missing custom queue. |
+| Task → nested Routine | Stable routine ID. A missing target produces a controlled task failure; it is never resolved by routine name. |
+| Command → managed Routine | Stable trigger and routine IDs. Command names and aliases are normalized for matching, while group and queue placement remain user-owned. |
+| Soundboard button → Routine | Stable button/page/routine IDs. Missing routines remain unavailable and are never rebound by button label. |
+| Counter values → viewer/stream | Stable Twitch user ID and authoritative Twitch stream ID. Display/login metadata is presentation only. |
+
+Counter definitions and values use exact decimal strings and the four current scopes:
+`channel_total`, `stream_total`, `viewer_total`, and `viewer_stream_total`.
+Variable exposure is canonical dotted naming only: durable `custom.*`, contextual
+`command.*`, `keyword.*`, and `user.*`, root-execution `automation.*`, and the four
+scoped `counter.<id>.*` definitions. Runtime aliases are not registered, and
+session/routine/task-output context is not persisted.
+
+Data portability is explicit. Routines and dependencies, commands, Counter
+definitions/values, durable custom Variables, Channel Information, Users management
+metadata, the portable settings allowlist, and non-secret OBS connection settings
+are eligible for selective Backup. Qt window/monitor state and local filesystem
+placement are machine-specific. Twitch/OBS/relay credentials are secrets in
+current-user DPAPI stores. Connection health, pending queues, Timer deadlines, live
+chat, and routine context are runtime/derived state. OBS scene/source names are
+external OBS references, not Streamhouse object identities; a missing name remains a
+controlled external dependency rather than being rebound heuristically.
+
+The versioned Backup manifest is the migration seam for portable archives: it records
+the format, component schemas, dependency closure, and integrity hashes before the
+restore planner produces current-schema staged writes. A future backup importer must
+transform an older component before this current-schema planning/validation path.
+No current feature store is permitted to load an old Backup schema directly.
+
+The schemas and migration boundaries are suitable for the first external baseline,
+but release freeze is still blocked by the lack of a single-instance guard noted
+above. Atomic replacement protects file integrity, not against two Hub processes
+writing different valid snapshots; Alpha must prevent that lost-update path before
+the baseline is declared released.
 
 ### Secret files
 
@@ -1506,7 +1563,7 @@ Definitions, Counter Values, durable `custom.*` Variables, Channel Information,
 optional Users/Chatter management metadata, portable Hub Settings, and safe OBS
 connection configuration. Twitch/OBS/relay credentials, window geometry, and
 other machine-specific or hidden-product state are ineligible. User backup
-records are projected from chatter schema v7 through a management-field
+records use the same chatter schema v8 management-field
 allowlist; message text, memories/evidence, private notes, and timeline content
 are never archived. Counter Values remain exact decimal strings and keyed by
 stable Twitch user IDs. Restore receives the same confirmed active Twitch stream
@@ -1568,9 +1625,24 @@ relay/server credentials, provider credentials, logs, and diagnostics.
   environment configuration. Hub reads only the relay base override and stores
   its per-channel relay key with DPAPI. Relay base URLs cannot embed user-info,
   query parameters, or fragments.
-- Chat content is intentionally absent from ordinary application logs.
-- General raw chat history is not persisted.
-- AI memory is opt-in and master-disabled by default.
+- Twitch chat content is transient: it may be used by the live view, command
+  and Keyword/Phrase parsing, moderation, First Message, and the active root
+  routine context, including nested routines. It is discarded after that
+  runtime ownership ends and is omitted from completed Run History snapshots.
+- Hub never durably stores Twitch chat/message history. Chatter schema v8 is an
+  exact management-only projection; Activity persists normalized non-chat
+  events only; no raw EventSub chat payload store exists. Live chat and raw
+  EventSub diagnostics are bounded in-memory views that start empty after a
+  restart.
+- Ordinary logs never receive chat bodies. Crash reports do not dump live chat,
+  EventSub payloads, or routine context. Support diagnostics defensively omit
+  message/payload/context fields and include diagnostic-severity log excerpts
+  only. Backup presets—including Everything Eligible—exclude logs, crashes,
+  Support Bundles, Run History, and any message-bearing chatter fields.
+- The optional AI integration is master-disabled. Any Hub-side message or AI
+  working buffers are volatile; durable memory, training examples, and test
+  reports are owned by the separate Streamhouse AI product and are never Hub
+  chatter-store or Support/Backup content.
 - Training capture is separately opt-in and disabled by default.
 - Model output cannot directly approve memories or bypass Hub send policy.
 - Broadcaster and bot identities remain separate.

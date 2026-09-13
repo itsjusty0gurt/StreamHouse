@@ -15,6 +15,14 @@ from shared.streamhouse_runtime.paths import user_data_root
 from shared.streamhouse_runtime.redaction import redact_secret_text
 
 
+def format_traceback_locations(exception_traceback) -> str:
+    """Render traceback locations without source lines or runtime values."""
+    return "".join(
+        f'  File "{frame.filename}", line {frame.lineno}, in {frame.name}\n'
+        for frame in traceback.extract_tb(exception_traceback)
+    )
+
+
 class DefaultLogFieldsFilter(logging.Filter):
     """Ensure every log record contains Streamhouse diagnostic fields."""
 
@@ -402,14 +410,22 @@ class Logger:
         source: str = "GENERAL",
     ) -> None:
         """
-        Log the current exception and its full traceback.
+        Log traceback locations without persisting an arbitrary exception value.
 
         Call this from inside an except block.
         """
 
+        exception_type, _exception_value, exception_traceback = sys.exc_info()
+        type_name = (
+            exception_type.__name__
+            if exception_type is not None
+            else "UnknownError"
+        )
+        frames = format_traceback_locations(exception_traceback)
+
         cls._log(
             logging.ERROR,
-            f"{message}\n{redact_secret_text(traceback.format_exc())}",
+            f"{message}\n{frames}{type_name}: <exception message omitted for privacy>",
             source,
         )
 

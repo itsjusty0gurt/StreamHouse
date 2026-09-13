@@ -215,6 +215,26 @@ class ObsTriggerStoreTests(unittest.TestCase):
             with self.assertRaises(JsonStoreCorruptionError):
                 store.load()
 
+    def test_current_schema_rejects_malformed_filters_instead_of_broadening_trigger(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            routines = RoutineStore(root / "routines.json")
+            routine = routines.add("OBS Connected")
+            store = ObsTriggerStore(root / "triggers.json", routines)
+            payload = {
+                "version": store.VERSION,
+                "triggers": [
+                    {
+                        "trigger_id": "obs-trigger",
+                        "routine_id": routine.routine_id,
+                        "event_type": "ConnectionOpened",
+                        "filters": [],
+                    }
+                ],
+            }
+            with self.assertRaisesRegex(ValueError, "invalid trigger"):
+                store._parse_payload(payload)
+
     def test_mute_context_is_typed_and_canonicalizable(self) -> None:
         muted = ObsTriggerStore.context_for(
             ObsEvent("InputMuteStateChanged", {"inputMuted": True})

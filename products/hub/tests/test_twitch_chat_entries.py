@@ -34,6 +34,16 @@ def test_history_is_bounded_without_flattening_message_metadata() -> None:
     assert history.entries[-1].message.broadcaster_user_id == "channel-1"
 
 
+def test_new_session_starts_without_previous_live_chat() -> None:
+    previous_session = TwitchChatHistory()
+    previous_session.add(TwitchChatEntry.from_message(message(1)))
+
+    restarted_session = TwitchChatHistory()
+
+    assert previous_session.entries
+    assert restarted_session.entries == ()
+
+
 def test_recent_user_messages_and_deletion_are_entry_scoped() -> None:
     history = TwitchChatHistory()
     history.add(TwitchChatEntry.from_message(message(1)))

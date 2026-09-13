@@ -1,3 +1,4 @@
+import io
 import logging
 import unittest
 from unittest.mock import Mock, patch
@@ -5,7 +6,8 @@ from unittest.mock import Mock, patch
 from products.hub.core.events import Events
 from shared.streamhouse_runtime.logger import Logger
 from products.hub.twitch.auth import TwitchToken
-from products.hub.twitch.models import TwitchEventTransport
+from products.hub.twitch.models import TwitchEventTransport, TwitchMessage
+from datetime import datetime, timezone
 from products.hub.twitch.service import TwitchConnectionState, TwitchService
 from products.hub.twitch.simulator import create_eventsub_notification
 
@@ -466,6 +468,24 @@ class TwitchServiceTests(unittest.TestCase):
         self.assertIsNotNone(messages[0].received_at.tzinfo)
         self.assertTrue(messages[0].message_id)
         self.assertEqual(messages[0].fragments[0].text, "Hi!")
+
+    def test_received_chat_content_is_not_written_to_logs(self) -> None:
+        output = io.StringIO()
+        handler = logging.StreamHandler(output)
+        Logger._logger.addHandler(handler)
+        try:
+            self.service._receive_chat_message(
+                TwitchMessage(
+                    username="Viewer",
+                    text="private viewer log sentinel",
+                    received_at=datetime.now(timezone.utc),
+                    message_id="message-1",
+                    user_id="viewer-1",
+                )
+            )
+        finally:
+            Logger._logger.removeHandler(handler)
+        self.assertNotIn("private viewer log sentinel", output.getvalue())
 
     def test_invalid_operations_emit_errors(self) -> None:
         errors: list[str] = []

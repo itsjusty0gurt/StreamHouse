@@ -72,7 +72,7 @@ class LoggerTests(unittest.TestCase):
             self.assertNotIn(secret, rendered)
         self.assertIn("<REDACTED>", rendered)
 
-    def test_exception_traceback_is_redacted_before_logging(self) -> None:
+    def test_exception_traceback_omits_arbitrary_exception_message(self) -> None:
         handler = logging.Handler()
         handler.emit = unittest.mock.Mock()
         self.test_logger.addHandler(handler)
@@ -84,7 +84,8 @@ class LoggerTests(unittest.TestCase):
 
         record = handler.emit.call_args.args[0]
         self.assertNotIn("private-refresh", record.getMessage())
-        self.assertIn("<REDACTED>", record.getMessage())
+        self.assertIn("RuntimeError", record.getMessage())
+        self.assertIn("exception message omitted for privacy", record.getMessage())
 
     def test_timer_reports_missing_start(self) -> None:
         with patch.object(Logger, "warning") as warning:

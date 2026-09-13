@@ -382,6 +382,10 @@ class TwitchEventTriggerStore:
             if not isinstance(value, dict):
                 raise ValueError("Every Twitch event trigger must be a JSON object.")
             try:
+                if not isinstance(value.get("filters", {}), dict):
+                    raise ValueError(
+                        "Twitch event trigger filters must be a JSON object."
+                    )
                 trigger = TwitchEventAutomationTrigger.from_dict(value)
                 self._validate(trigger)
                 routine = self.routine_store.get(trigger.routine_id)

@@ -648,6 +648,18 @@ class TwitchCommandTriggerStoreTests(unittest.TestCase):
         with self.assertRaises(JsonStoreCorruptionError):
             loaded.load()
 
+    def test_current_schema_rejects_non_list_aliases(self) -> None:
+        command = self.store.add("coffee", "Coffee time")
+        payload = json.loads(self.path.read_text(encoding="utf-8"))
+        stored = next(
+            item
+            for item in payload["triggers"]
+            if item["trigger_id"] == command.trigger_id
+        )
+        stored["aliases"] = "java"
+        with self.assertRaisesRegex(ValueError, "invalid trigger"):
+            self.store._parse_payload(payload)
+
     def test_deleted_self_contained_default_is_restored_on_next_load(self) -> None:
         command = self.store.configure_default("game")
         self.assertTrue(self.store.delete(command.trigger_id))

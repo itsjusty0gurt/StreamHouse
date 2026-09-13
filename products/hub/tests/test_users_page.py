@@ -4,11 +4,12 @@ from decimal import Decimal
 import os
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from threading import Event
 import unittest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QThread, Qt
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QWidget
 
@@ -58,12 +59,29 @@ class UsersPageTests(unittest.TestCase):
         self.temp.cleanup()
 
     def wait_for_counters(self) -> None:
-        for _ in range(100):
+        for _ in range(300):
             QApplication.processEvents()
             if not self.page._counter_pending and not self.page._counter_write_pending:
                 return
             QTest.qWait(10)
         self.fail("Counter operation did not finish.")
+
+    def wait_for_counter_write(self) -> None:
+        for _ in range(300):
+            QApplication.processEvents()
+            if not self.page._counter_write_pending:
+                return
+            QTest.qWait(10)
+        self.fail("Counter write did not finish.")
+
+    @staticmethod
+    def wait_for_event(event: Event) -> None:
+        for _ in range(300):
+            QApplication.processEvents()
+            if event.is_set():
+                return
+            QTest.qWait(10)
+        raise AssertionError("Worker did not start.")
 
     def add_user(self, user_id: str, name: str, login: str, **kwargs) -> None:
         self.store.observe_message(user_id, name, user_login=login, **kwargs)
@@ -139,13 +157,18 @@ class UsersPageTests(unittest.TestCase):
         )
         self.page.select_user("1")
         self.wait_for_counters()
+        self.page.timer.stop()
 
         self.assertEqual(self.page.counter_table.item(0, 1).text(), "4 farts")
         self.assertEqual(self.page.counter_table.item(0, 2).text(), "2 farts")
         self.page.set_counter_value("farts", "viewer_total", "9")
-        self.wait_for_counters()
+        write_token = self.page._counter_write_token
+        self.wait_for_counter_write()
+        self.assertNotIn(write_token, self.page._jobs)
         self.page.set_counter_value("farts", "viewer_stream_total", "7")
-        self.wait_for_counters()
+        write_token = self.page._counter_write_token
+        self.wait_for_counter_write()
+        self.assertNotIn(write_token, self.page._jobs)
 
         values = self.counters.get_values("farts", user_id="1", stream_id=self.stream_id)
         self.assertEqual(values.viewer_total, Decimal("9"))
@@ -154,7 +177,7 @@ class UsersPageTests(unittest.TestCase):
         self.assertEqual(values.stream_total, Decimal("25"))
 
         self.page.set_counter_value("farts", "viewer_total", "1.5")
-        self.wait_for_counters()
+        self.wait_for_counter_write()
         values = self.counters.get_values("farts", user_id="1", stream_id=self.stream_id)
         self.assertEqual(values.viewer_total, Decimal("9"))
 
@@ -170,20 +193,52 @@ class UsersPageTests(unittest.TestCase):
         self.assertEqual(self.page.counter_table.item(0, 2).text(), "Unavailable")
 
         self.page.set_counter_value("hydration", "viewer_total", "12.125")
-        self.wait_for_counters()
+        self.wait_for_counter_write()
         values = self.counters.get_values("hydration", user_id="1", stream_id=self.stream_id)
         self.assertEqual(values.viewer_total, Decimal("12.125"))
 
         self.page.set_counter_value("hydration", "viewer_stream_total", "7")
-        self.wait_for_counters()
+        self.wait_for_counter_write()
         values = self.counters.get_values("hydration", user_id="1", stream_id=self.stream_id)
         self.assertEqual(values.viewer_stream_total, Decimal("0"))
 
         self.page.set_counter_value("hydration", "viewer_total", "-1")
-        self.wait_for_counters()
+        self.wait_for_counter_write()
         values = self.counters.get_values("hydration", user_id="1", stream_id=self.stream_id)
         self.assertEqual(values.viewer_total, Decimal("12.125"))
         self.assertIn("below", self.page.status.text())
+
+    def test_closing_page_during_write_suppresses_ui_callback_and_releases_job(self) -> None:
+        self.add_user("1", "Joe", "joe")
+        self.counters.create_counter(CounterDefinition(
+            counter_id="points", display_name="Points", singular="point", plural="points"
+        ))
+        self.page.select_user("1")
+        self.wait_for_counters()
+        self.page.timer.stop()
+        started, release = Event(), Event()
+        original = self.counters.set_value
+
+        def delayed(*args, **kwargs):
+            started.set()
+            release.wait(3)
+            return original(*args, **kwargs)
+
+        self.counters.set_value = delayed
+        original_status = self.page.status.text()
+        self.page.set_counter_value("points", "viewer_total", "6")
+        write_token = self.page._counter_write_token
+        self.wait_for_event(started)
+        self.page.close()
+        release.set()
+        self.assertTrue(self.page.pool.waitForDone(3_000))
+        QApplication.processEvents()
+
+        self.assertNotIn(write_token, self.page._jobs)
+        self.assertFalse(self.page._counter_write_pending)
+        self.assertEqual(self.page.status.text(), original_status)
+        values = self.counters.get_values("points", user_id="1", stream_id=self.stream_id)
+        self.assertEqual(values.viewer_total, Decimal("6"))
 
     def test_empty_state_and_responsive_splitter(self) -> None:
         self.page.refresh(force=True)
@@ -196,6 +251,131 @@ class UsersPageTests(unittest.TestCase):
         self.page.resize(1000, 700)
         QApplication.processEvents()
         self.assertEqual(self.page.splitter.orientation(), Qt.Orientation.Horizontal)
+
+    def test_counter_write_keeps_captured_viewer_when_selection_changes(self) -> None:
+        self.add_user("a", "Viewer A", "viewer_a")
+        self.add_user("b", "Viewer B", "viewer_b")
+        self.counters.create_counter(CounterDefinition(
+            counter_id="points", display_name="Points", singular="point", plural="points"
+        ))
+        self.page.select_user("a")
+        self.wait_for_counters()
+        started, release = Event(), Event()
+        original = self.counters.set_value
+
+        def delayed(*args, **kwargs):
+            started.set()
+            release.wait(3)
+            return original(*args, **kwargs)
+
+        self.counters.set_value = delayed
+        self.page.set_counter_value("points", "viewer_total", "8")
+        self.wait_for_event(started)
+        self.page.select_user("b")
+        release.set()
+        self.wait_for_counter_write()
+        self.wait_for_counters()
+
+        viewer_a = self.counters.get_values("points", user_id="a", stream_id=self.stream_id)
+        viewer_b = self.counters.get_values("points", user_id="b", stream_id=self.stream_id)
+        self.assertEqual(viewer_a.viewer_total, Decimal("8"))
+        self.assertEqual(viewer_b.viewer_total, Decimal("0"))
+        self.assertEqual(self.page.selected_id, "b")
+        self.assertEqual(self.page.counter_table.item(0, 1).text(), "0 points")
+
+    def test_counter_write_failure_preserves_value_and_reports_on_ui_thread(self) -> None:
+        self.add_user("1", "Joe", "joe")
+        self.counters.create_counter(CounterDefinition(
+            counter_id="points", display_name="Points", singular="point", plural="points"
+        ))
+        self.counters.set_value("points", "viewer_total", "4", user_id="1")
+        self.page.select_user("1")
+        self.wait_for_counters()
+        completion_threads = []
+        storage_threads = []
+        original_saved = self.page._counter_saved
+
+        def observed_saved(*args):
+            completion_threads.append(QThread.currentThread())
+            original_saved(*args)
+
+        self.page._counter_saved = observed_saved
+        original_mutate = self.counters.store.mutate_data
+
+        def failing_mutate(*_args, **_kwargs):
+            storage_threads.append(QThread.currentThread())
+            raise OSError("write failed")
+
+        self.counters.store.mutate_data = failing_mutate
+        try:
+            self.page.set_counter_value("points", "viewer_total", "9")
+            self.wait_for_counter_write()
+        finally:
+            self.counters.store.mutate_data = original_mutate
+
+        values = self.counters.get_values("points", user_id="1", stream_id=self.stream_id)
+        self.assertEqual(values.viewer_total, Decimal("4"))
+        self.assertEqual(self.page.counter_table.item(0, 1).text(), "4 points")
+        self.assertIn("not saved", self.page.status.text())
+        self.assertEqual(completion_threads, [QApplication.instance().thread()])
+        self.assertEqual(len(storage_threads), 1)
+        self.assertNotEqual(storage_threads[0], QApplication.instance().thread())
+
+    def test_offline_stream_write_is_rejected_without_dispatch(self) -> None:
+        self.add_user("1", "Joe", "joe")
+        self.counters.create_counter(CounterDefinition(
+            counter_id="points", display_name="Points", singular="point", plural="points",
+            track_viewer_stream_total=True,
+        ))
+        self.page.select_user("1")
+        self.wait_for_counters()
+        self.stream_id = ""
+        active_jobs = len(self.page._jobs)
+
+        self.page.set_counter_value("points", "viewer_stream_total", "9")
+
+        self.assertFalse(self.page._counter_write_pending)
+        self.assertEqual(len(self.page._jobs), active_jobs)
+        self.assertIn("current Twitch stream", self.page.status.text())
+        values = self.counters.get_values("points", user_id="1", stream_id="")
+        self.assertEqual(values.viewer_stream_total, Decimal("0"))
+
+    def test_stream_change_during_write_does_not_retarget_request(self) -> None:
+        self.add_user("1", "Joe", "joe")
+        self.counters.create_counter(CounterDefinition(
+            counter_id="points", display_name="Points", singular="point", plural="points",
+            track_viewer_stream_total=True,
+        ))
+        self.counters.set_value(
+            "points", "viewer_stream_total", "2", user_id="1", stream_id="stream-1"
+        )
+        self.page.select_user("1")
+        self.wait_for_counters()
+        started, release = Event(), Event()
+        original = self.counters.set_value
+
+        def delayed(*args, **kwargs):
+            started.set()
+            release.wait(3)
+            return original(*args, **kwargs)
+
+        self.counters.set_value = delayed
+        self.page.set_counter_value("points", "viewer_stream_total", "7")
+        self.wait_for_event(started)
+        self.stream_id = "stream-2"
+        release.set()
+        self.wait_for_counter_write()
+        self.wait_for_counters()
+
+        old_stream = self.counters.get_values(
+            "points", user_id="1", stream_id="stream-1"
+        )
+        new_stream = self.counters.get_values(
+            "points", user_id="1", stream_id="stream-2"
+        )
+        self.assertEqual(old_stream.viewer_stream_total, Decimal("7"))
+        self.assertEqual(new_stream.viewer_stream_total, Decimal("0"))
+        self.assertEqual(self.page.counter_table.item(0, 2).text(), "0 points")
 
 
 if __name__ == "__main__":

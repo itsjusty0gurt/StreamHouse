@@ -1260,6 +1260,26 @@ class TwitchEventTriggerStoreTests(unittest.TestCase):
         with self.assertRaises(JsonStoreCorruptionError):
             self.store.load()
 
+    def test_current_schema_rejects_malformed_filters_instead_of_broadening_trigger(self) -> None:
+        routine = self.routines.add("Follow")
+        payload = {
+            "version": self.store.VERSION,
+            "first_message": {
+                "raid_suppression_enabled": True,
+                "raid_suppression_minutes": 3,
+            },
+            "triggers": [
+                {
+                    "trigger_id": "follow-trigger",
+                    "routine_id": routine.routine_id,
+                    "event_type": "channel.follow",
+                    "filters": [],
+                }
+            ],
+        }
+        with self.assertRaisesRegex(ValueError, "invalid trigger"):
+            self.store._parse_payload(payload)
+
 
 if __name__ == "__main__":
     unittest.main()

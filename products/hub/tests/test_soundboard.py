@@ -128,6 +128,18 @@ class SoundboardStoreTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "stable IDs"):
                     self.store.load()
 
+    def test_current_schema_does_not_silently_drop_malformed_buttons(self) -> None:
+        for buttons in ({}, ["not-an-object"]):
+            with self.subTest(buttons=buttons):
+                payload = {
+                    "version": self.store.VERSION,
+                    "pages": [
+                        {"page_id": "page-1", "name": "Sounds", "buttons": buttons}
+                    ],
+                }
+                with self.assertRaisesRegex(ValueError, "button list"):
+                    self.store._parse_payload(payload)
+
     def test_page_is_limited_to_nine_buttons(self) -> None:
         page = self.store.pages[0]
         for index in range(9):

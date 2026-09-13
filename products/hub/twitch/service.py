@@ -710,7 +710,7 @@ class TwitchService:
 
     def _receive_chat_message(self, chat_message: TwitchMessage) -> None:
         # Chat content is intentionally not written to application logs. The
-        # live UI and opted-in daily memory are the only content consumers.
+        # message remains transient for live UI and runtime trigger consumers.
         Logger.debug("Twitch chat message received.", source="TWITCH")
         Events.emit(
             "twitch_message_received",

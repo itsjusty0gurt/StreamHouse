@@ -25,7 +25,10 @@ from products.hub.obs_service.config import ObsConnectionConfig
 from products.hub.obs_service.triggers import ObsTriggerStore
 from products.hub.twitch.automation_triggers import TwitchEventTriggerStore
 from products.hub.twitch.channel_information import ChannelInformationStore
-from products.hub.twitch.chatter_history import ChatterHistoryStore
+from products.hub.twitch.chatter_history import (
+    BACKUP_CHATTER_FIELDS,
+    ChatterHistoryStore,
+)
 from products.hub.twitch.commands import TwitchCommandTriggerStore
 from shared.streamhouse_runtime.paths import user_data_root
 from shared.streamhouse_runtime.redaction import is_secret_key, redact_secret_text
@@ -110,24 +113,6 @@ _PORTABLE_SETTINGS = frozenset(
         "twitch_chat_font_size",
         "twitch_last_ad_duration",
         "automatic_backups_enabled",
-    }
-)
-_USER_MANAGEMENT_FIELDS = frozenset(
-    {
-        "user_id",
-        "user_name",
-        "user_login",
-        "first_seen",
-        "last_seen",
-        "active_days",
-        "message_count",
-        "snapshot_days",
-        "last_snapshot_day",
-        "is_bot",
-        "roles",
-        "followed_at",
-        "manual_group",
-        "twitch_status",
     }
 )
 _CUSTOM_PLACEHOLDER = re.compile(
@@ -820,7 +805,7 @@ class BackupManager:
             str(user_id): {
                 key: value
                 for key, value in record.items()
-                if key in _USER_MANAGEMENT_FIELDS
+                if key in BACKUP_CHATTER_FIELDS
             }
             for user_id, record in records.items()
             if str(user_id).strip() and isinstance(record, dict)

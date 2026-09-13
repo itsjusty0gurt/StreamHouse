@@ -49,6 +49,14 @@ class SoundboardStore:
             raise ValueError("Soundboard data must contain a page list.")
         if any(not isinstance(value, dict) for value in values):
             raise ValueError("Every soundboard page must be a JSON object.")
+        for value in values:
+            buttons = value.get("buttons", [])
+            if not isinstance(buttons, list) or any(
+                not isinstance(button, dict) for button in buttons
+            ):
+                raise ValueError(
+                    "Every soundboard page must contain a button list of JSON objects."
+                )
         pages = [SoundboardPage.from_dict(value) for value in values]
         self._validate(pages)
         return pages

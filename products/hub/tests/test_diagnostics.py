@@ -99,6 +99,10 @@ class DiagnosticsServiceTests(unittest.TestCase):
                     "obs_password": "obs-secret",
                     "X-Streamhouse-Key": "relay-secret",
                 },
+                "message_text": "private viewer diagnostic sentinel",
+                "raw_payload": {
+                    "event": {"message": "private raw event sentinel"}
+                },
             }
         )
 
@@ -121,6 +125,9 @@ class DiagnosticsServiceTests(unittest.TestCase):
         self.assertNotIn("hunter2", combined)
         self.assertNotIn("obs-secret", combined)
         self.assertNotIn("relay-secret", combined)
+        self.assertNotIn("private viewer diagnostic sentinel", combined)
+        self.assertNotIn("private raw event sentinel", combined)
+        self.assertIn("<PRIVATE CONTENT OMITTED>", combined)
         self.assertIn("<REDACTED>", combined)
         self.assertIn("<USER_HOME>", combined)
         self.assertEqual(state["accidental"]["access_token"], "<REDACTED>")
@@ -147,7 +154,8 @@ class DiagnosticsServiceTests(unittest.TestCase):
 
         text = report.read_text(encoding="utf-8")
         self.assertIn(diagnostics.session_id, text)
-        self.assertIn("<REDACTED>", text)
+        self.assertIn("RuntimeError", text)
+        self.assertIn("exception message omitted for privacy", text)
         self.assertNotIn("do-not-share", text)
         for index in range(7):
             path = diagnostics.crashes_directory / f"StreamhouseHub-Crash-old-{index}.log"
