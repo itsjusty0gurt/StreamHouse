@@ -151,10 +151,14 @@ Dependency direction is enforced by ownership and package audits:
 
 ### Streamhouse Hub
 
-`products/hub/hub_main.py` creates the Hub-owned `DiagnosticsService`, establishes
-the process session marker, configures the matching per-session log, installs
-Python exception/faulthandler capture, and calls
-`products.hub.streamhouse_hub.app.run()`.
+`products/hub/hub_main.py` resolves the writable data root and acquires its
+exclusive `HubInstanceLock` before creating diagnostics, logging, stores, or any
+other writable Hub service. It then creates the Hub-owned `DiagnosticsService`,
+establishes the process session marker, configures the matching per-session log,
+installs Python exception/faulthandler capture, and calls
+`products.hub.streamhouse_hub.app.run()`. A duplicate launch creates only the
+minimal Qt notice needed to report that Hub is already running, then exits without
+normal writable composition.
 
 `products/hub/streamhouse_hub/app.py`:
 
@@ -199,9 +203,9 @@ providers, Diagnostic Summary rendering, and Support Bundle creation. A stale
 marker whose process is no longer running means only that the prior session did
 not shut down normally; the UI does not claim that every such incident was a
 software crash. A marker belonging to a live process is not reported as an
-abnormal shutdown. The current single marker cannot fully identify every edge
-case involving concurrent Hub processes; single-instance hardening remains a
-separate concern.
+abnormal shutdown. Exclusive instance ownership is established before this marker
+is read or written, so a rejected duplicate cannot overwrite the primary marker,
+mark the primary session clean, or create a false abnormal-shutdown incident.
 
 `Logger` writes `latest.log` plus a uniquely named per-session Hub log and keeps
 the latest ten Hub session logs. Python main-thread, worker-thread, and
@@ -1436,10 +1440,22 @@ but a process or power failure between separate file replacements can still
 leave references for startup reconciliation to repair. This is an unavoidable
 remaining file-store boundary, not a claim of database-level transactions.
 
-Hub currently has no single-instance guard or inter-process file locks. Two Hub
-processes can load the same snapshots and atomically replace each other's later
-writes; atomic files prevent truncation but cannot prevent lost updates.
-**SINGLE-INSTANCE PROTECTION REQUIRED BEFORE ALPHA.**
+Hub permits only one writable process to own a resolved Hub data root. On Windows,
+`HubInstanceLock` uses an OS-backed named mutex whose identity is a SHA-256
+fingerprint of the canonical data-root path; the path and user content are not
+stored in the mutex name. Windows releases ownership when the process terminates,
+including forced termination, and an abandoned mutex is safely reclaimable by the
+next launch. Non-Windows development uses `QLockFile` with process-death stale-lock
+recovery and no age-based stealing. Distinct explicitly configured data roots have
+distinct ownership identities.
+
+Ownership begins before diagnostics/session markers and writable composition. It
+remains held while the window is hidden in the tray and throughout service/store
+teardown, diagnostics clean shutdown, and log flushing; it is released only as the
+application process exits that path. Atomic persistence protects the integrity of
+each file replacement, while exclusive instance ownership prevents concurrent
+valid snapshots from causing lost updates. Neither protection substitutes for the
+other.
 
 Routine exports use `streamhouse.automation.routine` schema v2 and the
 `.streamhouse-routine.json` extension. Task clipboard payloads use
@@ -1473,6 +1489,7 @@ identifiers or filename formats are accepted.
 | `training/examples.json` | Streamhouse AI | v1 consent-based classifier examples |
 | `diagnostics/ai_test_report.json` | Streamhouse AI | v1 AI outcomes/latency metadata |
 | `diagnostics/active-session.json` | Hub diagnostics | v1 volatile process/session marker; removed only after clean shutdown and never treated as user configuration |
+| OS mutex / `runtime/hub-instance.lock` | Hub startup | runtime-only data-root ownership; Windows uses the mutex and non-Windows development uses the lock-file fallback; excluded from Backup/Support data contracts |
 | `logs/` | each process | `latest.log` plus rotating per-session logs; Hub retains ten session logs |
 | `crashes/` | Hub diagnostics | latest five sanitized Python crash reports and best-effort faulthandler streams |
 | `support/` | Hub diagnostics | user-created sanitized Support Bundles; not automatically rotated or backed up |
@@ -1528,11 +1545,11 @@ restore planner produces current-schema staged writes. A future backup importer 
 transform an older component before this current-schema planning/validation path.
 No current feature store is permitted to load an old Backup schema directly.
 
-The schemas and migration boundaries are suitable for the first external baseline,
-but release freeze is still blocked by the lack of a single-instance guard noted
-above. Atomic replacement protects file integrity, not against two Hub processes
-writing different valid snapshots; Alpha must prevent that lost-update path before
-the baseline is declared released.
+The schemas, migration boundaries, and single-writer startup protection are
+suitable for the first external baseline. Atomic replacement protects file
+integrity and the data-root instance lock prevents two Hub processes from writing
+different valid snapshots concurrently. Alpha 0.1 may therefore be declared the
+first external data-contract compatibility baseline when it is released.
 
 ### Secret files
 
