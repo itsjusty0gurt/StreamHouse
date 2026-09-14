@@ -9,6 +9,7 @@ from urllib.parse import urlparse
 
 from shared.streamhouse_runtime.json_store import (
     UnsupportedJsonSchemaError,
+    atomic_write_bytes,
     atomic_write_json,
     json_store_exists,
     load_validated_json,
@@ -125,6 +126,38 @@ class ChannelInformationStore:
                 return self.snapshot()
             self.information = load_validated_json(self.path, self._parse_payload)
             return self.snapshot()
+
+    def load_for_startup(self) -> ChannelInformation:
+        """Load schema v3 or durably reset discarded pre-Alpha content."""
+        if not json_store_exists(self.path):
+            return self.save(ChannelInformation())
+        try:
+            information = self.load()
+        except UnsupportedJsonSchemaError:
+            backup_path = self.path.with_suffix(self.path.suffix + ".bak")
+            if backup_path.exists():
+                try:
+                    load_validated_json(backup_path, self._parse_payload)
+                except (OSError, TypeError, ValueError):
+                    pass
+                else:
+                    atomic_write_bytes(self.path, backup_path.read_bytes())
+                    return self.load()
+            self.information = ChannelInformation()
+            self.save()
+            self.save()
+            return self.snapshot()
+        self._repair_recovery_copy()
+        return information
+
+    def _repair_recovery_copy(self) -> None:
+        backup_path = self.path.with_suffix(self.path.suffix + ".bak")
+        if not backup_path.exists():
+            return
+        try:
+            load_validated_json(backup_path, self._parse_payload)
+        except (OSError, TypeError, ValueError):
+            atomic_write_bytes(backup_path, self.path.read_bytes())
 
     def _parse_payload(self, payload: object) -> ChannelInformation:
         if not isinstance(payload, dict):

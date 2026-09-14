@@ -618,8 +618,14 @@ class BackupManager:
             ("obs", "obs/triggers.json", ObsTriggerStore.VERSION),
         )
         for label, relative, version in trigger_sources:
+            default = {"version": version, "triggers": []}
+            if label == "twitch":
+                default["first_message"] = {
+                    "raid_suppression_enabled": True,
+                    "raid_suppression_minutes": 3,
+                }
             store = self._json_or_default(
-                relative, {"version": version, "triggers": []}
+                relative, default
             )
             self._expect_schema(store, version, f"{label} triggers", "version")
             selected = [

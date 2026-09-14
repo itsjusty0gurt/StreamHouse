@@ -2,8 +2,10 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from products.hub.core.settings import AppSettings, SettingsStore
+from shared.streamhouse_runtime.json_store import JsonStoreCorruptionError
 
 
 class SettingsStoreTests(unittest.TestCase):
@@ -184,6 +186,131 @@ class SettingsStoreTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "discarded pre-alpha schema"):
             self.store.load()
+
+    def test_startup_replaces_obsolete_schema_with_current_defaults(self) -> None:
+        self.settings_path.write_text(
+            json.dumps({"_version": 3, "startup_page": "Logs"}),
+            encoding="utf-8",
+        )
+
+        self.assertEqual(self.store.load_for_startup(), AppSettings())
+        self.assertEqual(self.store.load(), AppSettings())
+        for path in (
+            self.settings_path,
+            self.settings_path.with_suffix(".json.bak"),
+        ):
+            self.assertEqual(
+                json.loads(path.read_text(encoding="utf-8"))["_version"],
+                SettingsStore.VERSION,
+            )
+
+    def test_startup_recovers_current_backup_instead_of_obsolete_live(self) -> None:
+        expected = AppSettings(startup_page="Logs", log_level="WARNING")
+        self.store.save(expected)
+        current = self.settings_path.read_bytes()
+        backup = self.settings_path.with_suffix(".json.bak")
+        backup.write_bytes(current)
+        self.settings_path.write_text(
+            json.dumps({"_version": 3, "startup_page": "Dashboard"}),
+            encoding="utf-8",
+        )
+
+        self.assertEqual(self.store.load_for_startup(), expected)
+        self.assertEqual(self.settings_path.read_bytes(), current)
+        self.assertEqual(backup.read_bytes(), current)
+
+    def test_startup_does_not_resurrect_obsolete_backup(self) -> None:
+        obsolete = json.dumps({"_version": 3, "startup_page": "Logs"})
+        self.settings_path.write_text(obsolete, encoding="utf-8")
+        backup = self.settings_path.with_suffix(".json.bak")
+        backup.write_text(obsolete, encoding="utf-8")
+
+        self.assertEqual(self.store.load_for_startup(), AppSettings())
+
+        self.assertEqual(self.store.load(), AppSettings())
+        self.assertEqual(
+            json.loads(backup.read_text(encoding="utf-8"))["_version"],
+            SettingsStore.VERSION,
+        )
+
+    def test_startup_preserves_current_corruption_recovery(self) -> None:
+        expected = AppSettings(startup_page="Logs")
+        self.store.save(expected)
+        self.store.save(expected)
+        self.settings_path.write_text("{not json", encoding="utf-8")
+
+        self.assertEqual(self.store.load_for_startup(), expected)
+        self.assertEqual(self.store.load(), expected)
+        self.assertTrue((self.settings_path.parent / "corrupt").is_dir())
+
+    def test_corrupt_live_with_obsolete_backup_fails_explicitly(self) -> None:
+        self.settings_path.write_text("{not json", encoding="utf-8")
+        self.settings_path.with_suffix(".json.bak").write_text(
+            json.dumps({"_version": 3}), encoding="utf-8"
+        )
+
+        with self.assertRaises(JsonStoreCorruptionError):
+            self.store.load_for_startup()
+
+        self.assertFalse(self.settings_path.exists())
+        self.assertTrue((self.settings_path.parent / "corrupt").is_dir())
+
+    def test_missing_live_recovers_current_backup(self) -> None:
+        expected = AppSettings(log_level="WARNING")
+        self.store.save(expected)
+        backup = self.settings_path.with_suffix(".json.bak")
+        backup.write_bytes(self.settings_path.read_bytes())
+        self.settings_path.unlink()
+
+        self.assertEqual(self.store.load_for_startup(), expected)
+        self.assertEqual(self.store.load(), expected)
+
+    def test_obsolete_reset_publication_failure_is_not_silenced(self) -> None:
+        obsolete = json.dumps({"_version": 3, "startup_page": "Logs"})
+        self.settings_path.write_text(obsolete, encoding="utf-8")
+
+        with patch(
+            "products.hub.core.settings.atomic_write_json",
+            side_effect=OSError("disk full"),
+        ):
+            with self.assertRaisesRegex(OSError, "disk full"):
+                self.store.load_for_startup()
+
+        self.assertEqual(self.settings_path.read_text(encoding="utf-8"), obsolete)
+
+    def test_startup_repairs_obsolete_recovery_after_interrupted_reset(self) -> None:
+        obsolete = json.dumps({"_version": 3, "startup_page": "Logs"})
+        self.settings_path.write_text(obsolete, encoding="utf-8")
+
+        with patch(
+            "products.hub.core.settings.atomic_write_bytes",
+            side_effect=OSError("power lost before recovery refresh"),
+        ):
+            with self.assertRaisesRegex(OSError, "power lost"):
+                self.store.load_for_startup()
+
+        self.assertEqual(
+            json.loads(self.settings_path.read_text(encoding="utf-8"))["_version"],
+            SettingsStore.VERSION,
+        )
+        self.assertEqual(
+            json.loads(
+                self.settings_path.with_suffix(".json.bak").read_text(
+                    encoding="utf-8"
+                )
+            )["_version"],
+            3,
+        )
+
+        self.assertEqual(self.store.load_for_startup(), AppSettings())
+        self.assertEqual(
+            json.loads(
+                self.settings_path.with_suffix(".json.bak").read_text(
+                    encoding="utf-8"
+                )
+            )["_version"],
+            SettingsStore.VERSION,
+        )
 
     def test_current_settings_do_not_serialize_removed_auto_send_field(self) -> None:
         self.store.save(AppSettings())

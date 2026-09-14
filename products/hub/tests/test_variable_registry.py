@@ -44,6 +44,7 @@ from products.hub.twitch.channel_information import (
 from products.hub.ui.variable_picker import VariablePickerDialog
 from products.hub.ui.variables_page import VariablesPage
 from products.hub.ui.automation_page import TaskEditorDialog
+from shared.streamhouse_runtime.json_store import JsonStoreCorruptionError
 
 
 def definition(name: str = "Deaths") -> CounterDefinition:
@@ -222,6 +223,104 @@ def test_custom_metadata_type_persistence_deletion_and_reserved_names() -> None:
             loaded.validate_custom_name("stream.title")
         with pytest.raises(ValueError):
             loaded.validate_custom_name("bad-name")
+
+
+def test_custom_variable_startup_publishes_current_schema_when_missing() -> None:
+    with TemporaryDirectory() as temporary:
+        path = Path(temporary) / "variables.json"
+
+        values = CustomVariableStore(path).load_for_startup()
+
+        assert values == {}
+        assert json.loads(path.read_text(encoding="utf-8"))["version"] == 3
+        assert CustomVariableStore(path).load() == {}
+
+
+def test_custom_variable_ordinary_load_rejects_obsolete_schema() -> None:
+    with TemporaryDirectory() as temporary:
+        path = Path(temporary) / "variables.json"
+        path.write_text(json.dumps({"version": 1, "global": {}}), encoding="utf-8")
+
+        with pytest.raises(ValueError, match="discarded pre-alpha schema"):
+            CustomVariableStore(path).load()
+
+
+def test_custom_variable_startup_replaces_obsolete_live_and_recovery() -> None:
+    with TemporaryDirectory() as temporary:
+        path = Path(temporary) / "variables.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        obsolete = json.dumps({"version": 1, "global": {"legacy": "value"}})
+        path.write_text(obsolete, encoding="utf-8")
+        path.with_suffix(".json.bak").write_text(obsolete, encoding="utf-8")
+
+        values = CustomVariableStore(path).load_for_startup()
+
+        assert values == {}
+        assert json.loads(path.read_text(encoding="utf-8"))["version"] == 3
+        assert json.loads(path.with_suffix(".json.bak").read_text(encoding="utf-8"))["version"] == 3
+
+
+def test_custom_variable_startup_recovers_valid_current_backup() -> None:
+    with TemporaryDirectory() as temporary:
+        path = Path(temporary) / "variables.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"version": 1}), encoding="utf-8")
+        path.with_suffix(".json.bak").write_text(
+            json.dumps(
+                {
+                    "version": 3,
+                    "global": {"mode": "recovered"},
+                    "metadata": {"mode": {"type": "text", "description": ""}},
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        store = CustomVariableStore(path)
+        assert store.load_for_startup() == {"mode": "recovered"}
+        assert CustomVariableStore(path).load() == {"mode": "recovered"}
+
+
+def test_custom_variable_startup_repairs_obsolete_backup_without_changing_live() -> None:
+    with TemporaryDirectory() as temporary:
+        path = Path(temporary) / "variables.json"
+        store = CustomVariableStore(path)
+        store.load_for_startup()
+        store.set("global", "custom.mode", "current")
+        live_before = path.read_bytes()
+        path.with_suffix(".json.bak").write_text(
+            json.dumps({"version": 1}), encoding="utf-8"
+        )
+
+        assert CustomVariableStore(path).load_for_startup() == {"mode": "current"}
+        assert path.read_bytes() == live_before
+        assert json.loads(path.with_suffix(".json.bak").read_text(encoding="utf-8"))["version"] == 3
+
+
+def test_custom_variable_startup_recovers_corrupt_current_live_from_backup() -> None:
+    with TemporaryDirectory() as temporary:
+        path = Path(temporary) / "variables.json"
+        store = CustomVariableStore(path)
+        store.load_for_startup()
+        store.set("global", "custom.mode", "recovered")
+        store.set("global", "custom.mode", "current")
+        path.write_text('{"version": 3, "global":', encoding="utf-8")
+
+        loaded = CustomVariableStore(path)
+        assert loaded.load_for_startup() == {"mode": "recovered"}
+        assert CustomVariableStore(path).load() == {"mode": "recovered"}
+
+
+def test_custom_variable_startup_rejects_corrupt_live_with_obsolete_backup() -> None:
+    with TemporaryDirectory() as temporary:
+        path = Path(temporary) / "variables.json"
+        path.write_text('{"version": 3, "global":', encoding="utf-8")
+        path.with_suffix(".json.bak").write_text(
+            json.dumps({"version": 1}), encoding="utf-8"
+        )
+
+        with pytest.raises(JsonStoreCorruptionError):
+            CustomVariableStore(path).load_for_startup()
 
 
 def test_counter_variables_map_all_scopes_and_use_stable_user_id() -> None:

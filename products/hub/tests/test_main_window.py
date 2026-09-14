@@ -31,12 +31,13 @@ from shared.streamhouse_shared.models import (
     ResponseDecision,
     ResponseMessage,
 )
-from products.hub.core.settings import AppSettings
+from products.hub.core.settings import AppSettings, SettingsStore
 from products.hub.core.backup import BackupComponent
 from products.hub.twitch.auth import TwitchAuthState
 from products.hub.config.twitch import TWITCH_BOT_SCOPES, TWITCH_SCOPES
 from products.hub.twitch.chatter_history import ChatterHistoryStore, ChatterRecord
 from products.hub.automation.routines import RoutineStore
+from products.hub.automation.custom_variables import CustomVariableStore
 from products.hub.automation.models import (
     DEFAULT_AUTOMATION_QUEUE_ID,
     END_ROUTINE_ACTION,
@@ -90,6 +91,8 @@ from products.hub.streamhouse_hub.ai_client import StreamhouseAIStatus
 from products.hub.streamhouse_hub.ai_lifecycle import AIConnectionState
 from products.hub.ui.twitch_command_dialog import TwitchCommandDialog, TwitchCommandManagerDialog
 
+_REAL_SETTINGS_LOAD_FOR_STARTUP = SettingsStore.load_for_startup
+
 
 class MainWindowTests(unittest.TestCase):
     @classmethod
@@ -101,7 +104,7 @@ class MainWindowTests(unittest.TestCase):
         Logger._logger = logging.Logger("StreamhouseUITest", logging.DEBUG)
 
         self.settings_patch = patch(
-            "products.hub.ui.main_window.SettingsStore.load",
+            "products.hub.ui.main_window.SettingsStore.load_for_startup",
             return_value=AppSettings(),
         )
         self.settings_patch.start()
@@ -189,6 +192,13 @@ class MainWindowTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
+        if self._testMethodName == "test_startup_normalizes_commands_variables_and_channel_information":
+            for path, payload in (
+                (self.twitch_command_trigger_store.path, {"version": 1, "commands": []}),
+                (command_root / "variables.json", {"version": 1, "global": {}}),
+                (command_root / "channel-information.json", {"version": 1}),
+            ):
+                path.write_text(json.dumps(payload), encoding="utf-8")
         self.window = MainWindow(
             window_state_store=self.window_state_store,
             chatter_history_store=self.chatter_history_store,
@@ -260,6 +270,49 @@ class MainWindowTests(unittest.TestCase):
             },
         )
         self.assertNotIn(self.obsolete_twitch_trigger_id, routine.trigger_ids)
+
+    def test_startup_settings_boundary_publishes_current_schema(self) -> None:
+        settings_path = Path(self.twitch_command_directory.name) / "settings.json"
+        settings_path.write_text(
+            json.dumps({"_version": 3, "startup_page": "Logs"}),
+            encoding="utf-8",
+        )
+        self.window.settings_store = SettingsStore(settings_path)
+
+        with patch.object(
+            self.window.settings_store,
+            "load_for_startup",
+            side_effect=lambda: _REAL_SETTINGS_LOAD_FOR_STARTUP(
+                self.window.settings_store
+            ),
+        ):
+            settings = self.window._load_settings()
+
+        self.assertEqual(settings, AppSettings())
+        self.assertEqual(
+            json.loads(settings_path.read_text(encoding="utf-8"))["_version"],
+            SettingsStore.VERSION,
+        )
+
+    def test_startup_normalizes_commands_variables_and_channel_information(self) -> None:
+        root = Path(self.twitch_command_directory.name)
+
+        self.assertEqual(
+            json.loads(self.twitch_command_trigger_store.path.read_text(encoding="utf-8"))[
+                "version"
+            ],
+            TwitchCommandTriggerStore.VERSION,
+        )
+        self.assertEqual(
+            json.loads((root / "variables.json").read_text(encoding="utf-8"))["version"],
+            CustomVariableStore.VERSION,
+        )
+        self.assertEqual(
+            json.loads(
+                (root / "channel-information.json").read_text(encoding="utf-8")
+            )["version"],
+            ChannelInformationStore.VERSION,
+        )
 
     def test_dashboard_connection_action_opens_connections_page(self) -> None:
         self.window.show_dashboard()

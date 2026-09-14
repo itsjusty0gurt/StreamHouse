@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 from copy import deepcopy
 from dataclasses import asdict, dataclass, field
@@ -16,6 +17,7 @@ from products.hub.automation.models import RoutineDefinition, RoutineGroup, Trig
 from products.hub.automation.routines import RoutineStore
 from shared.streamhouse_runtime.json_store import (
     UnsupportedJsonSchemaError,
+    atomic_write_bytes,
     atomic_write_json,
     json_store_exists,
     load_validated_json,
@@ -164,6 +166,61 @@ class TwitchCommandTriggerStore:
         self.triggers = load_validated_json(self.path, self._parse_payload)
         self.reconcile_managed_routines()
         self._ensure_self_contained_defaults()
+        return list(self.triggers)
+
+    def load_for_startup(self) -> list[TwitchCommandTrigger]:
+        """Load schema v6 or durably reset discarded pre-Alpha commands."""
+        try:
+            triggers = self.load()
+        except UnsupportedJsonSchemaError:
+            backup_path = self.path.with_suffix(self.path.suffix + ".bak")
+            if backup_path.exists():
+                try:
+                    load_validated_json(backup_path, self._parse_payload)
+                except (OSError, TypeError, ValueError, json.JSONDecodeError):
+                    pass
+                else:
+                    atomic_write_bytes(self.path, backup_path.read_bytes())
+                    return self.load()
+            return self.reset_obsolete_schema()
+        self._repair_recovery_copy()
+        return triggers
+
+    def _repair_recovery_copy(self) -> None:
+        backup_path = self.path.with_suffix(self.path.suffix + ".bak")
+        if not backup_path.exists():
+            return
+        try:
+            load_validated_json(backup_path, self._parse_payload)
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            atomic_write_bytes(backup_path, self.path.read_bytes())
+
+    def reset_obsolete_schema(self) -> list[TwitchCommandTrigger]:
+        """Discard obsolete commands and rebuild current managed defaults."""
+        tracked_paths = {
+            path: path.read_bytes() if path.exists() else None
+            for target in (self.path, self.routine_store.path)
+            for path in (target, target.with_suffix(target.suffix + ".bak"))
+        }
+        previous_triggers = deepcopy(self.triggers)
+        previous_groups = deepcopy(self.routine_store.groups)
+        previous_routines = deepcopy(self.routine_store.routines)
+        try:
+            self.triggers = []
+            self.reconcile_managed_routines()
+            self.save()
+            self.save()
+            self._ensure_self_contained_defaults()
+        except (OSError, TypeError, ValueError):
+            self.triggers = previous_triggers
+            self.routine_store.groups = previous_groups
+            self.routine_store.routines = previous_routines
+            for path, content in tracked_paths.items():
+                if content is None:
+                    path.unlink(missing_ok=True)
+                else:
+                    atomic_write_bytes(path, content)
+            raise
         return list(self.triggers)
 
     def _parse_payload(self, payload: object) -> list[TwitchCommandTrigger]:

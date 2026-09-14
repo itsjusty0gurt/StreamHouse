@@ -117,8 +117,11 @@ def load_json_with_backup(
     except (TypeError, ValueError, json.JSONDecodeError) as primary_error:
         try:
             recovered = _read_and_validate(backup_path, validator)
-        except UnsupportedJsonSchemaError:
-            raise
+        except UnsupportedJsonSchemaError as backup_error:
+            quarantine = _quarantine(path)
+            raise JsonStoreCorruptionError(
+                path, quarantine, primary_error
+            ) from backup_error
         except OSError as backup_error:
             quarantine = _quarantine(path)
             raise JsonStoreCorruptionError(path, quarantine, primary_error) from backup_error

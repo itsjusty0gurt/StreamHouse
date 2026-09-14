@@ -20,7 +20,7 @@ from products.hub.core.backup import (
     BackupManager,
     BackupPreset,
 )
-from products.hub.core.settings import SettingsStore
+from products.hub.core.settings import AppSettings, SettingsStore
 from products.hub.counters.service import CounterService
 from products.hub.counters.store import (
     COUNTER_VERSION,
@@ -418,6 +418,20 @@ class BackupManagerTests(unittest.TestCase):
         self.assertIsNotNone(archive)
         self.assertTrue(archive.exists())
 
+    def test_automatic_backup_uses_current_default_for_missing_twitch_triggers(
+        self,
+    ) -> None:
+        (self.root / "twitch/event_triggers.json").unlink()
+        write_json(
+            self.root / "automation/routines.json",
+            {"version": RoutineStore.VERSION, "groups": [], "routines": []},
+        )
+
+        archive = self.manager.create_daily_if_needed()
+
+        self.assertIsNotNone(archive)
+        self.assertTrue(archive.exists())
+
     def test_obsolete_twitch_trigger_reset_unblocks_automatic_backup(self) -> None:
         trigger_path = self.root / "twitch/event_triggers.json"
         obsolete = json.loads(trigger_path.read_text(encoding="utf-8"))
@@ -439,6 +453,80 @@ class BackupManagerTests(unittest.TestCase):
             json.loads(trigger_path.read_text(encoding="utf-8"))["version"],
             TwitchEventTriggerStore.VERSION,
         )
+
+    def test_obsolete_settings_reset_unblocks_automatic_backup(self) -> None:
+        settings_path = self.root / "config/settings.json"
+        write_json(
+            settings_path,
+            {"_version": 3, "startup_page": "Logs"},
+        )
+
+        with self.assertRaisesRegex(
+            BackupError, "Hub settings does not use the current schema"
+        ):
+            self.manager.create_daily_if_needed()
+
+        settings = SettingsStore(settings_path).load_for_startup()
+        archive = self.manager.create_daily_if_needed()
+
+        self.assertEqual(settings, AppSettings())
+        self.assertIsNotNone(archive)
+        self.assertEqual(
+            json.loads(settings_path.read_text(encoding="utf-8"))["_version"],
+            SettingsStore.VERSION,
+        )
+
+    def test_startup_normalization_unblocks_backup_for_commands_variables_and_channel_information(
+        self,
+    ) -> None:
+        command_path = self.root / "twitch/commands.json"
+        variable_path = self.root / "automation/variables.json"
+        channel_path = self.root / "twitch/channel-information.json"
+        routine_path = self.root / "automation/routines.json"
+        routines = json.loads(routine_path.read_text(encoding="utf-8"))
+        routines["routines"][1]["tasks"][0]["config"]["message"] = "Count"
+        write_json(routine_path, routines)
+        write_json(command_path, {"version": 1, "commands": []})
+        write_json(variable_path, {"version": 1, "global": {"old": "value"}})
+        write_json(channel_path, {"version": 1, "schedule": "Old"})
+
+        with self.assertRaisesRegex(BackupError, "does not use the current schema"):
+            self.manager.create_daily_if_needed()
+
+        routine_store = RoutineStore(self.root / "automation/routines.json")
+        TwitchCommandTriggerStore(command_path, routine_store).load_for_startup()
+        CustomVariableStore(variable_path).load_for_startup()
+        ChannelInformationStore(channel_path).load_for_startup()
+        archive = self.manager.create_daily_if_needed()
+
+        self.assertIsNotNone(archive)
+        with ZipFile(archive) as source:
+            manifest = json.loads(source.read("manifest.json"))
+            commands = json.loads(source.read("components/commands.json"))
+            variables = json.loads(source.read("components/custom_variables.json"))
+            channel = json.loads(source.read("components/channel_information.json"))
+        self.assertEqual(commands["version"], TwitchCommandTriggerStore.VERSION)
+        self.assertEqual(variables["version"], CustomVariableStore.VERSION)
+        self.assertEqual(channel["version"], ChannelInformationStore.VERSION)
+        self.assertEqual(
+            manifest["components"]["commands"]["schema"],
+            TwitchCommandTriggerStore.VERSION,
+        )
+        self.assertEqual(
+            manifest["components"]["custom_variables"]["schema"],
+            CustomVariableStore.VERSION,
+        )
+        self.assertEqual(
+            manifest["components"]["channel_information"]["schema"],
+            ChannelInformationStore.VERSION,
+        )
+
+        self.manager.restore(archive, create_safety=False)
+        TwitchCommandTriggerStore(
+            command_path, RoutineStore(self.root / "automation/routines.json")
+        ).load()
+        self.assertEqual(CustomVariableStore(variable_path).load(), {})
+        self.assertEqual(ChannelInformationStore(channel_path).load().schedule, "")
 
     def test_counter_values_preserve_exact_decimal_and_viewer_identity(self) -> None:
         archive = self.manager.create(

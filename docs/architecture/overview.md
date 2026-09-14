@@ -1466,6 +1466,30 @@ activity, chatter, and stream sessions. Their loaders retain current-schema
 validation and same-schema backup recovery, but do not silently migrate
 unversioned or obsolete private-development formats.
 
+Hub Settings startup has a deliberate pre-Alpha initialization boundary around
+the strict v4 loader. A current live file loads without rewriting. An obsolete
+live file first recovers a validated current `.bak` when one exists; otherwise
+the obsolete portable preferences are discarded and authoritative v4 defaults
+are atomically published to both live and recovery files. Missing live data is
+created as v4. Current-schema corruption still follows quarantine and validated
+same-schema recovery, and an unrecoverable or failed reset aborts startup rather
+than leaving current in-memory defaults beside obsolete durable data. Window
+geometry, protected credentials, and other independently owned stores are not
+part of this reset.
+
+Commands, durable Custom Variables, and Channel Information use the same strict
+runtime/startup separation for their current schemas (v6, v3, and v3). Ordinary
+loads accept only the current schema. Startup restores a validated current
+recovery copy when available; otherwise an obsolete pre-Alpha live/recovery pair
+is discarded and a current durable store is atomically published before normal
+Hub composition continues. Missing stores are also initialized durably. Current
+schema corruption retains the shared quarantine and same-schema recovery rules,
+and publication failure aborts startup instead of substituting memory-only
+defaults. Resetting obsolete Commands rebuilds only current self-contained
+built-ins, resetting Custom Variables discards durable `custom.*` values, and
+resetting Channel Information discards its committed social/schedule/rules/server
+content. No tolerant legacy loader or Backup exception is provided.
+
 Ordinary store writes are atomic per file, not transactional across the entire
 data root. Channel Information plus managed-command updates and selective
 Backup/Restore have explicit staged rollback. Trigger/routine and other

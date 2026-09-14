@@ -1,15 +1,18 @@
 from __future__ import annotations
 
+import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, ClassVar
 
 from shared.streamhouse_runtime.json_store import (
     UnsupportedJsonSchemaError,
+    atomic_write_bytes,
     atomic_write_json,
     json_store_exists,
     load_validated_json,
 )
+from shared.streamhouse_runtime.logger import Logger
 from shared.streamhouse_runtime.paths import user_data_root
 
 
@@ -366,6 +369,74 @@ class SettingsStore:
             return AppSettings()
 
         return load_validated_json(self.path, self._parse_payload)
+
+    def load_for_startup(self) -> AppSettings:
+        """Load v4 settings or durably establish the pre-Alpha v4 baseline."""
+        if not self.path.exists():
+            backup_path = self.path.with_suffix(self.path.suffix + ".bak")
+            if not backup_path.exists():
+                defaults = AppSettings()
+                self.save(defaults)
+                return defaults
+            try:
+                self._read_current(backup_path)
+            except UnsupportedJsonSchemaError:
+                return self._reset_obsolete_schema()
+            return self.load()
+
+        try:
+            self._read_current(self.path)
+        except UnsupportedJsonSchemaError:
+            return self._reset_obsolete_schema()
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            # Current-schema corruption remains owned by the shared validated
+            # recovery path. It may recover a current .bak or fail explicitly.
+            return self._load_current_and_repair_recovery()
+        return self._load_current_and_repair_recovery()
+
+    def _load_current_and_repair_recovery(self) -> AppSettings:
+        settings = self.load()
+        backup_path = self.path.with_suffix(self.path.suffix + ".bak")
+        if backup_path.exists():
+            try:
+                self._read_current(backup_path)
+            except (OSError, TypeError, ValueError, json.JSONDecodeError):
+                # A validated current live file is authoritative. Repair an
+                # unusable recovery copy without rewriting the live settings.
+                atomic_write_bytes(backup_path, self.path.read_bytes())
+        return settings
+
+    def _read_current(self, path: Path) -> AppSettings:
+        with path.open(encoding="utf-8") as source:
+            return self._parse_payload(json.load(source))
+
+    def _reset_obsolete_schema(self) -> AppSettings:
+        """Replace discarded development settings, preferring a current backup."""
+        backup_path = self.path.with_suffix(self.path.suffix + ".bak")
+        if backup_path.exists():
+            try:
+                recovered = self._read_current(backup_path)
+            except (OSError, TypeError, ValueError, json.JSONDecodeError):
+                pass
+            else:
+                atomic_write_bytes(self.path, backup_path.read_bytes())
+                Logger.warning(
+                    "Recovered current Hub settings from backup after "
+                    "discarding an obsolete pre-Alpha live schema.",
+                    source="SETTINGS",
+                )
+                return self._load_current_and_repair_recovery()
+
+        defaults = AppSettings()
+        self.save(defaults)
+        # The first replacement correctly retains the obsolete live file as the
+        # prior copy. Replace that recovery copy so obsolete data cannot return.
+        atomic_write_bytes(backup_path, self.path.read_bytes())
+        Logger.warning(
+            "Reset obsolete pre-Alpha Hub settings to current defaults.",
+            source="SETTINGS",
+        )
+        return defaults
 
     def _parse_payload(self, values: object) -> AppSettings:
         if not isinstance(values, dict):

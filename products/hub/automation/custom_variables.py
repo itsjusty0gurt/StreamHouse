@@ -8,6 +8,7 @@ from typing import Mapping
 from products.hub.automation.variable_registry import validate_variable_name
 from shared.streamhouse_runtime.json_store import (
     UnsupportedJsonSchemaError,
+    atomic_write_bytes,
     atomic_write_json,
     json_store_exists,
     load_validated_json,
@@ -44,6 +45,46 @@ class CustomVariableStore:
         self.global_values = loaded
         self.global_metadata = metadata
         return self.values()
+
+    def load_for_startup(self) -> Mapping[str, str]:
+        """Load schema v3 or durably reset discarded pre-Alpha variables."""
+        if not json_store_exists(self.path):
+            self.global_values = {}
+            self.global_metadata = {}
+            self.session_values = {}
+            self.session_metadata = {}
+            self.save()
+            return self.values()
+        try:
+            values = self.load()
+        except UnsupportedJsonSchemaError:
+            backup_path = self.path.with_suffix(self.path.suffix + ".bak")
+            if backup_path.exists():
+                try:
+                    load_validated_json(backup_path, self._parse_payload)
+                except (OSError, TypeError, ValueError):
+                    pass
+                else:
+                    atomic_write_bytes(self.path, backup_path.read_bytes())
+                    return self.load()
+            self.global_values = {}
+            self.global_metadata = {}
+            self.session_values = {}
+            self.session_metadata = {}
+            self.save()
+            self.save()
+            return self.values()
+        self._repair_recovery_copy()
+        return values
+
+    def _repair_recovery_copy(self) -> None:
+        backup_path = self.path.with_suffix(self.path.suffix + ".bak")
+        if not backup_path.exists():
+            return
+        try:
+            load_validated_json(backup_path, self._parse_payload)
+        except (OSError, TypeError, ValueError):
+            atomic_write_bytes(backup_path, self.path.read_bytes())
 
     def _parse_payload(
         self, payload: object

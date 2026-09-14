@@ -178,6 +178,83 @@ class TwitchCommandTriggerStoreTests(unittest.TestCase):
             self.store.load()
         self.assertEqual(self.store.triggers, [])
 
+    def test_startup_resets_obsolete_commands_and_publishes_current_schema(self) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        obsolete = json.dumps({"version": 1, "commands": [{"name": "legacy"}]})
+        self.path.write_text(obsolete, encoding="utf-8")
+        self.path.with_suffix(".json.bak").write_text(obsolete, encoding="utf-8")
+
+        loaded = self.store.load_for_startup()
+
+        self.assertEqual(
+            {trigger.default_id for trigger in loaded},
+            {"uptime", "followage", "accountage", "title", "game", "commands"},
+        )
+        self.assertEqual(json.loads(self.path.read_text(encoding="utf-8"))["version"], 6)
+        self.assertEqual(
+            json.loads(self.path.with_suffix(".json.bak").read_text(encoding="utf-8"))["version"],
+            6,
+        )
+        reloaded = TwitchCommandTriggerStore(
+            self.path, RoutineStore(self.routine_store.path)
+        ).load_for_startup()
+        self.assertEqual(len(reloaded), 6)
+        self.assertEqual(len({trigger.trigger_id for trigger in reloaded}), 6)
+
+    def test_startup_recovers_valid_current_commands_backup(self) -> None:
+        original = self.store.load_for_startup()
+        original_ids = {trigger.trigger_id for trigger in original}
+        self.store.save()
+        self.path.write_text(json.dumps({"version": 1}), encoding="utf-8")
+
+        recovered = TwitchCommandTriggerStore(
+            self.path, RoutineStore(self.routine_store.path)
+        ).load_for_startup()
+
+        self.assertEqual({trigger.trigger_id for trigger in recovered}, original_ids)
+        self.assertEqual(json.loads(self.path.read_text(encoding="utf-8"))["version"], 6)
+
+    def test_startup_repairs_obsolete_commands_backup_without_changing_live(self) -> None:
+        original = self.store.load_for_startup()
+        original_ids = {trigger.trigger_id for trigger in original}
+        live_before = self.path.read_bytes()
+        self.path.with_suffix(".json.bak").write_text(
+            json.dumps({"version": 1}), encoding="utf-8"
+        )
+
+        loaded = TwitchCommandTriggerStore(
+            self.path, RoutineStore(self.routine_store.path)
+        ).load_for_startup()
+
+        self.assertEqual({trigger.trigger_id for trigger in loaded}, original_ids)
+        self.assertEqual(self.path.read_bytes(), live_before)
+        self.assertEqual(
+            json.loads(self.path.with_suffix(".json.bak").read_text(encoding="utf-8"))["version"],
+            6,
+        )
+
+    def test_startup_recovers_corrupt_current_commands_from_current_backup(self) -> None:
+        original = self.store.load_for_startup()
+        original_ids = {trigger.trigger_id for trigger in original}
+        self.store.save()
+        self.path.write_text('{"version": 6, "triggers":', encoding="utf-8")
+
+        loaded = TwitchCommandTriggerStore(
+            self.path, RoutineStore(self.routine_store.path)
+        ).load_for_startup()
+
+        self.assertEqual({trigger.trigger_id for trigger in loaded}, original_ids)
+        self.assertEqual(json.loads(self.path.read_text(encoding="utf-8"))["version"], 6)
+
+    def test_startup_rejects_corrupt_current_commands_with_obsolete_backup(self) -> None:
+        self.path.write_text('{"version": 6, "triggers":', encoding="utf-8")
+        self.path.with_suffix(".json.bak").write_text(
+            json.dumps({"version": 1}), encoding="utf-8"
+        )
+
+        with self.assertRaises(JsonStoreCorruptionError):
+            self.store.load_for_startup()
+
     def test_validation_rejects_collisions_reserved_names_and_bad_variables(self) -> None:
         self.store.add("discord", "Community link")
         with self.assertRaisesRegex(ValueError, "already used"):

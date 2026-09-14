@@ -142,10 +142,7 @@ from products.hub.twitch.default_commands import (
     DefaultCommandDefinition,
     default_command_definitions,
 )
-from products.hub.twitch.channel_information import (
-    ChannelInformation,
-    ChannelInformationStore,
-)
+from products.hub.twitch.channel_information import ChannelInformationStore
 from products.hub.twitch.tasks import (
     SendTwitchChatMessageTask,
     TWITCH_INFORMATION_TASK_TYPES,
@@ -444,14 +441,7 @@ class MainWindow(QMainWindow):
             channel_information_store
             or ChannelInformationStore(data_root / "twitch" / "channel-information.json")
         )
-        try:
-            self.channel_information_store.load()
-        except (OSError, ValueError, json.JSONDecodeError) as error:
-            self.channel_information_store.information = ChannelInformation()
-            Logger.warning(
-                f"Could not load Channel Information: {error}",
-                source="TWITCH",
-            )
+        self.channel_information_store.load_for_startup()
         self.twitch_command_trigger_dispatcher = TwitchCommandTriggerDispatcher(
             self.twitch_command_trigger_store,
             channel_information=self.channel_information_store,
@@ -487,14 +477,7 @@ class MainWindow(QMainWindow):
         self.custom_variable_store = CustomVariableStore(
             routine_store.path.with_name("variables.json")
         )
-        try:
-            self.custom_variable_store.load()
-        except (OSError, ValueError, json.JSONDecodeError) as error:
-            self.custom_variable_store.global_values = {}
-            Logger.warning(
-                f"Could not load automation variables: {error}",
-                source="AUTOMATION",
-            )
+        self.custom_variable_store.load_for_startup()
         self.automation_queue_store = AutomationQueueStore(
             routine_store.path.with_name("queues.json")
         )
@@ -653,14 +636,7 @@ class MainWindow(QMainWindow):
                 f"Could not load anonymous AI test diagnostics: {error}",
                 source="AI",
             )
-        try:
-            self.twitch_command_trigger_store.load()
-        except (OSError, ValueError, json.JSONDecodeError) as error:
-            self.twitch_command_trigger_store.triggers = []
-            Logger.warning(
-                f"Could not load custom Twitch commands: {error}",
-                source="TWITCH",
-            )
+        self.twitch_command_trigger_store.load_for_startup()
         try:
             routine_store.normalize_queue_assignments(
                 queue.queue_id for queue in self.automation_queue_store.queues
@@ -5690,14 +5666,7 @@ class MainWindow(QMainWindow):
             )
 
     def _load_settings(self) -> AppSettings:
-        try:
-            return self.settings_store.load()
-        except (OSError, ValueError) as error:
-            Logger.warning(
-                f"Could not load settings; using defaults: {error}",
-                source="SETTINGS",
-            )
-            return AppSettings()
+        return self.settings_store.load_for_startup()
 
     def _populate_settings_controls(self) -> None:
         self.ui.startupPageCombo.addItems(AppSettings.STARTUP_PAGES)

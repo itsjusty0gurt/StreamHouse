@@ -11,6 +11,7 @@ from products.hub.twitch.channel_information import (
     SocialLink,
     normalize_social_url,
 )
+from shared.streamhouse_runtime.json_store import JsonStoreCorruptionError
 
 
 class ChannelInformationStoreTests(unittest.TestCase):
@@ -72,6 +73,84 @@ class ChannelInformationStoreTests(unittest.TestCase):
         self.path.write_text(json.dumps({"version": 1}), encoding="utf-8")
         with self.assertRaisesRegex(ValueError, "expected 3"):
             self.store.load()
+
+    def test_startup_missing_store_publishes_current_schema(self) -> None:
+        information = self.store.load_for_startup()
+
+        self.assertEqual(information.schedule, "")
+        self.assertEqual(json.loads(self.path.read_text(encoding="utf-8"))["version"], 3)
+        self.assertEqual(ChannelInformationStore(self.path).load().schedule, "")
+
+    def test_startup_replaces_obsolete_live_and_recovery_with_current_defaults(self) -> None:
+        self.path.parent.mkdir(parents=True)
+        obsolete = json.dumps({"version": 1, "schedule": "Old schedule"})
+        self.path.write_text(obsolete, encoding="utf-8")
+        self.path.with_suffix(".json.bak").write_text(obsolete, encoding="utf-8")
+
+        information = self.store.load_for_startup()
+
+        self.assertEqual(information.schedule, "")
+        self.assertEqual(json.loads(self.path.read_text(encoding="utf-8"))["version"], 3)
+        self.assertEqual(
+            json.loads(self.path.with_suffix(".json.bak").read_text(encoding="utf-8"))["version"],
+            3,
+        )
+
+    def test_startup_prefers_valid_current_recovery_over_obsolete_live(self) -> None:
+        self.path.parent.mkdir(parents=True)
+        self.path.write_text(json.dumps({"version": 1}), encoding="utf-8")
+        recovery = {
+            "version": 3,
+            "social_links": {},
+            "schedule": "Recovered schedule",
+            "rules": "Recovered rules",
+            "server_info": "Recovered server",
+        }
+        self.path.with_suffix(".json.bak").write_text(
+            json.dumps(recovery), encoding="utf-8"
+        )
+
+        information = self.store.load_for_startup()
+
+        self.assertEqual(information.schedule, "Recovered schedule")
+        self.assertEqual(ChannelInformationStore(self.path).load().rules, "Recovered rules")
+
+    def test_startup_repairs_obsolete_recovery_without_rewriting_current_live(self) -> None:
+        current = ChannelInformation(schedule="Current schedule")
+        self.store.save(current)
+        live_before = self.path.read_bytes()
+        self.path.with_suffix(".json.bak").write_text(
+            json.dumps({"version": 1}), encoding="utf-8"
+        )
+
+        loaded = ChannelInformationStore(self.path).load_for_startup()
+
+        self.assertEqual(loaded.schedule, "Current schedule")
+        self.assertEqual(self.path.read_bytes(), live_before)
+        self.assertEqual(
+            json.loads(self.path.with_suffix(".json.bak").read_text(encoding="utf-8"))["version"],
+            3,
+        )
+
+    def test_startup_recovers_corrupt_current_live_from_valid_current_backup(self) -> None:
+        self.store.save(ChannelInformation(schedule="Recovered"))
+        self.store.save(ChannelInformation(schedule="Current"))
+        self.path.write_text('{"version": 3, "social_links":', encoding="utf-8")
+
+        information = ChannelInformationStore(self.path).load_for_startup()
+
+        self.assertEqual(information.schedule, "Recovered")
+        self.assertEqual(ChannelInformationStore(self.path).load().schedule, "Recovered")
+
+    def test_startup_rejects_corrupt_current_live_with_obsolete_backup(self) -> None:
+        self.path.parent.mkdir(parents=True)
+        self.path.write_text('{"version": 3, "social_links":', encoding="utf-8")
+        self.path.with_suffix(".json.bak").write_text(
+            json.dumps({"version": 1}), encoding="utf-8"
+        )
+
+        with self.assertRaises(JsonStoreCorruptionError):
+            self.store.load_for_startup()
 
     def test_link_validation_is_permissive_but_blocks_spaces_and_line_breaks(self) -> None:
         self.assertEqual(normalize_social_url("discord.gg/example"), "https://discord.gg/example")
