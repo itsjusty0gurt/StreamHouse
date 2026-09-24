@@ -206,6 +206,7 @@ from products.hub.ui.memory_worker import MemoryExtractionResult, MemoryExtracti
 from products.hub.ui.response_worker import ResponseBatchResult, ResponseDecisionWorker
 from products.hub.ui.streamhouse_ai_worker import StreamhouseAIHealthResult, StreamhouseAIHealthWorker
 from products.hub.ui.automation_page import AutomationPage
+from products.hub.ui.wiki_page import WikiPage
 from products.hub.ui.channel_points_page import ChannelPointsPage
 from products.hub.ui.channel_information_page import ChannelInformationPage
 from products.hub.ui.twitch_chat_workspace import TwitchChatWorkspaceLayout
@@ -829,6 +830,7 @@ class MainWindow(QMainWindow):
         self._build_ai_connection_runtime()
         self._build_ai_page()
         self._build_automation_page()
+        self._build_wiki_page()
         self._build_counters_page()
         self._build_release_tools()
         self._build_ai_settings()
@@ -845,6 +847,7 @@ class MainWindow(QMainWindow):
             self.ui.dashboardButton,
             self.ui.twitchButton,
             self.automation_button,
+            self.wiki_button,
             self.connections_button,
             self.ui.logsButton,
             self.ui.settingsButton,
@@ -927,6 +930,7 @@ class MainWindow(QMainWindow):
         self.ui.dashboardButton.clicked.connect(self.show_dashboard)
         self.ui.twitchButton.clicked.connect(self.show_twitch)
         self.automation_button.clicked.connect(self.show_automation)
+        self.wiki_button.clicked.connect(self.show_wiki)
         self.connections_button.clicked.connect(self.show_connections)
         self.ui.logsButton.clicked.connect(self.show_logs)
         self.ui.settingsButton.clicked.connect(self.show_settings)
@@ -1300,6 +1304,7 @@ class MainWindow(QMainWindow):
             self.ui.dashboardButton,
             self.ui.twitchButton,
             self.automation_button,
+            self.wiki_button,
             self.connections_button,
             self.ui.logsButton,
             self.ui.settingsButton,
@@ -2715,6 +2720,17 @@ class MainWindow(QMainWindow):
         )
         self.ui.mainStack.addWidget(self.automation_page)
         self.automation_timer_scheduler.start()
+
+    def _build_wiki_page(self) -> None:
+        self.wiki_button = QPushButton("Wiki")
+        self.wiki_button.setCheckable(True)
+        self.ui.verticalLayout.insertWidget(4, self.wiki_button)
+        self.wiki_page = WikiPage(
+            self.task_registry,
+            self.variable_registry,
+            self,
+        )
+        self.ui.mainStack.addWidget(self.wiki_page)
 
     def _build_counters_page(self) -> None:
         self.counters_page = CountersPage(
@@ -6098,6 +6114,11 @@ class MainWindow(QMainWindow):
         self.automation_page.refresh()
         self.ui.mainStack.setCurrentWidget(self.automation_page)
         self.automation_button.setChecked(True)
+
+    @Slot()
+    def show_wiki(self) -> None:
+        self.ui.mainStack.setCurrentWidget(self.wiki_page)
+        self.wiki_button.setChecked(True)
 
     @Slot()
     def show_counters(self) -> None:

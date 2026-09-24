@@ -479,8 +479,8 @@ A routine with no enabled/executed tasks is not considered successful.
 `TaskRegistry` owns typed `TaskMetadata` for every visible built-in task as well
 as its executable handler. Metadata supplies the user-facing label, concise and
 detailed help, input guidance, Variable-capable fields, requirements, notes,
-examples, and category. The Automation **Task Library** renders and searches
-that metadata as a compact built-in reference. Input formats, choices, and
+examples, and category. The top-level **Wiki** renders and searches that
+metadata under Tasks as a compact built-in reference. Input formats, choices, and
 bounds come from the existing task-editor schema. Output-capable tasks derive
 their exact placeholders from the typed output-definition architecture rather
 than a second output catalog. Internal or test-only handlers may omit visible
@@ -488,7 +488,7 @@ metadata, while registry coverage tests prevent user-facing built-ins from
 shipping without descriptions and help text. Registration rejects visible task
 metadata unless both `short_description` and `help_text` are non-empty; hidden
 internal/test task metadata is the only exception. Adding a user-facing task
-therefore includes its Task Library documentation as part of defining the task,
+therefore includes its Wiki documentation as part of defining the task,
 not as an optional follow-up.
 
 Visible task metadata also owns the concise `card_summary_formatter` used by the
@@ -1238,6 +1238,7 @@ Primary left navigation:
 - Dashboard
 - Your Channel
 - Automation
+- Wiki
 - Connections
 - Logs
 - Settings
@@ -1284,8 +1285,21 @@ Streamhouse AI owns its own user interface and left navigation:
 - Personality
 - Settings
 
-Automation has Routines, Queues, Task Library, and Run History. The selected
+Automation has Routines, Queues, Variables, and Run History. The selected
 routine editor contains Triggers, Tasks, Settings, and History.
+
+The built-in Wiki is a read-only local reference browser owned by
+`products/hub/core/wiki_reference.py` and presented by
+`products/hub/ui/wiki_page.py`. Tasks derive from `TaskRegistry` metadata and
+the existing task-editor input schemas; Triggers derive from the registered
+Core/Twitch/OBS trigger catalogs; Variables list only canonical
+`VariableRegistry` definitions, including contextual definitions even when no
+routine is running; Counter scopes and built-in Commands derive from their
+current domain constants/definitions. Small Getting Started, control-flow,
+service, and recipe articles provide explanatory prose that has no equivalent
+runtime registry. The Wiki never mutates operational state or owns persistence.
+The Variables page remains the live value inspector and Automation remains the
+routine authoring workspace.
 
 ### Designer versus dynamic UI
 
@@ -1295,6 +1309,7 @@ routine editor contains Triggers, Tasks, Settings, and History.
   `setupUi()`.
 - large feature widgets live in focused modules such as
   `products/hub/ui/dashboard_page.py`, `products/hub/ui/automation_page.py`,
+  `products/hub/ui/wiki_page.py`,
   `products/hub/ui/soundboard_page.py`, and
   `products/hub/ui/channel_points_page.py`.
 

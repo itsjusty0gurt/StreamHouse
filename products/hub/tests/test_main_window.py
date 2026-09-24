@@ -2114,6 +2114,7 @@ class MainWindowTests(unittest.TestCase):
                 "Dashboard",
                 "Your Channel",
                 "Automation",
+                "Wiki",
                 "Connections",
                 "Logs",
                 "Settings",
@@ -2136,7 +2137,7 @@ class MainWindowTests(unittest.TestCase):
                 self.window.automation_page.tabs.tabText(index)
                 for index in range(self.window.automation_page.tabs.count())
             ],
-            ["Routines", "Queues", "Task Library", "Variables", "Run History"],
+            ["Routines", "Queues", "Variables", "Run History"],
         )
         self.assertFalse(self.window.channel_points_page.create_button.isEnabled())
         self.assertEqual(
@@ -2180,117 +2181,88 @@ class MainWindowTests(unittest.TestCase):
         opened = open_url.call_args.args[0].toString()
         self.assertIn("github.com/itsjusty0gurt/StreamHouse/issues/new", opened)
 
-    def test_task_library_shows_and_searches_registry_descriptions(self) -> None:
-        page = self.window.automation_page
+    def test_wiki_replaces_task_library_and_searches_reference_content(self) -> None:
+        page = self.window.wiki_page
         self.assertEqual(
             {
                 metadata.task_type
                 for metadata in self.window.task_registry.visible_metadata()
             },
-            set(self.window.task_registry.registered_types()),
+            {
+                entry.entry_id.removeprefix("task:")
+                for entry in page.entries
+                if entry.category == "Tasks"
+            },
         )
 
-        def task_item(task_type: str):
-            pending = [
-                page.task_library_tree.topLevelItem(index)
-                for index in range(page.task_library_tree.topLevelItemCount())
-            ]
-            while pending:
-                item = pending.pop()
-                pending.extend(
-                    item.child(index) for index in range(item.childCount())
-                )
-                if item.data(0, Qt.ItemDataRole.UserRole) == task_type:
-                    return item
-            return None
+        self.assertNotIn(
+            "Task Library",
+            [
+                self.window.automation_page.tabs.tabText(index)
+                for index in range(self.window.automation_page.tabs.count())
+            ],
+        )
+        self.window.show_wiki()
+        self.assertIs(self.window.ui.mainStack.currentWidget(), page)
+        self.assertTrue(self.window.wiki_button.isChecked())
 
-        for task_type, expected_text in (
-            ("twitch.send_chat_message", "Twitch chat"),
-            ("counter.increase", "selected Counter"),
-            ("obs.set_program_scene", "OBS program scene"),
-            ("core.file_read", "automation.* output"),
+        page.search_edit.setText("configured chat account")
+        self.application.processEvents()
+        result_ids = {
+            page.entry_list.item(index).data(Qt.ItemDataRole.UserRole)
+            for index in range(page.entry_list.count())
+        }
+        self.assertIn("task:twitch.send_chat_message", result_ids)
+        self.assertNotIn("task:counter.increase", result_ids)
+
+        page.search_edit.setText("DeTeRmInIsTiC")
+        self.application.processEvents()
+        result_ids = {
+            page.entry_list.item(index).data(Qt.ItemDataRole.UserRole)
+            for index in range(page.entry_list.count())
+        }
+        self.assertIn("task:obs.set_scene_item_enabled", result_ids)
+
+    def test_wiki_renders_task_metadata_outputs_and_contextual_variables(self) -> None:
+        page = self.window.wiki_page
+        page.search_edit.clear()
+        self.assertTrue(page.select_entry("task:core.wait"))
+        self.application.processEvents()
+        wait_help = page.browser.toPlainText()
+        for heading in (
+            "What it does",
+            "Inputs",
+            "Variable placeholders",
+            "Notes / Limitations",
+            "Examples",
         ):
-            item = task_item(task_type)
-            self.assertIsNotNone(item)
-            page.task_library_tree.setCurrentItem(item)
-            self.application.processEvents()
-            self.assertIn(
-                expected_text,
-                page.task_library_description_label.text(),
-            )
-            self.assertTrue(item.text(1))
-        self.assertTrue(page.task_library_description_label.wordWrap())
-        self.assertIn(
-            "routine-scoped automation.*",
-            page.task_library_facts_label.text(),
-        )
-
-        category = page.task_library_tree.topLevelItem(0)
-        page.task_library_tree.setCurrentItem(category)
-        self.assertEqual(page.task_library_title_label.text(), "Select a task")
-
-        page.task_library_search_edit.setText("configured chat account")
-        self.application.processEvents()
-        self.assertIsNotNone(task_item("twitch.send_chat_message"))
-        self.assertIsNone(task_item("counter.increase"))
-
-        page.task_library_search_edit.setText("deterministic")
-        self.application.processEvents()
-        self.assertIsNotNone(task_item("obs.set_scene_item_enabled"))
-
-    def test_task_library_renders_structured_metadata_and_real_outputs(self) -> None:
-        page = self.window.automation_page
-
-        def task_item(task_type: str):
-            pending = [
-                page.task_library_tree.topLevelItem(index)
-                for index in range(page.task_library_tree.topLevelItemCount())
-            ]
-            while pending:
-                item = pending.pop()
-                pending.extend(
-                    item.child(index) for index in range(item.childCount())
-                )
-                if item.data(0, Qt.ItemDataRole.UserRole) == task_type:
-                    return item
-            return None
-
-        page.task_library_search_edit.clear()
-        page.task_library_tree.setCurrentItem(task_item("core.wait"))
-        self.application.processEvents()
-        wait_help = page.task_library_help_browser.toPlainText()
-        for heading in ("What it does", "Inputs", "Variables", "Notes / Limitations", "Example"):
             self.assertIn(heading, wait_help)
         self.assertIn("Duration", wait_help)
-        self.assertIn("Accepts canonical Variables", wait_help)
+        self.assertIn("Supports canonical Variable placeholders", wait_help)
         self.assertNotIn("Outputs", wait_help)
         self.assertNotIn("None", wait_help)
 
-        page.task_library_tree.setCurrentItem(
-            task_item("twitch.get_stream_information")
-        )
+        self.assertTrue(page.select_entry("task:twitch.get_stream_information"))
         self.application.processEvents()
-        output_help = page.task_library_help_browser.toPlainText()
+        output_help = page.browser.toPlainText()
         self.assertIn("Outputs", output_help)
         self.assertIn("{automation.stream_title}", output_help)
         self.assertNotIn("{automation.random_line}", output_help)
         self.assertIn("Requires Twitch broadcaster authorization", output_help)
 
-        page.task_library_tree.setCurrentItem(task_item("obs.raw_request"))
+        self.assertTrue(page.select_entry("task:obs.raw_request"))
         self.application.processEvents()
-        raw_help = page.task_library_help_browser.toPlainText()
+        raw_help = page.browser.toPlainText()
         self.assertIn("Request type", raw_help)
         self.assertIn("JSON object", raw_help)
         self.assertIn("active OBS connection", raw_help)
 
-        for metadata in self.window.task_registry.visible_metadata():
-            item = task_item(metadata.task_type)
-            self.assertIsNotNone(item, metadata.task_type)
-            page.task_library_tree.setCurrentItem(item)
-            self.application.processEvents()
-            rendered = page.task_library_help_browser.toPlainText()
-            self.assertIn("What it does", rendered, metadata.task_type)
-            self.assertNotIn("None", rendered, metadata.task_type)
+        self.assertTrue(page.select_entry("variable:command.data"))
+        self.application.processEvents()
+        self.assertIn("Chat Command routine", page.browser.toPlainText())
+        self.assertFalse(page.copy_button.isHidden())
+        page.copy_button.click()
+        self.assertEqual(QApplication.clipboard().text(), "{command.data}")
 
     def test_custom_twitch_command_sends_as_bot_and_skips_ai_reasoning(self) -> None:
         command = self.twitch_command_trigger_store.add(

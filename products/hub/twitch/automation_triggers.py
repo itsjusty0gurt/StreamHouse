@@ -53,6 +53,27 @@ ADS_TRIGGER_TYPES = {
     "ads.started": "Ads Started",
     "ads.ended": "Ads Ended",
 }
+TWITCH_TRIGGER_DISPLAY_NAMES = {
+    "channel.follow": "Follow",
+    "channel.subscribe": "Subscribe",
+    "channel.subscription.message": "Resubscribe",
+    "channel.subscription.gift": "Gift Subscription",
+    "channel.cheer": "Cheer",
+    "channel.raid": "Incoming Raid",
+    "channel.raid.outgoing": "Outgoing Raid",
+    "channel.channel_points_custom_reward_redemption.add": "Channel Point Redemption",
+    "stream.online": "Stream Online",
+    "stream.offline": "Stream Offline",
+    "channel.chat.first_message": "First Message Of Stream",
+    KEYWORD_PHRASE_EVENT_TYPE: "Keyword / Phrase",
+    **ADS_TRIGGER_TYPES,
+}
+TWITCH_TRIGGER_MENU_NAMES = {
+    "channel.subscription.gift": "Subscription › Gift",
+    "channel.subscription.message": "Subscription › Message",
+    "stream.online": "Stream › Online",
+    "stream.offline": "Stream › Offline",
+}
 TWITCH_AUTOMATION_EVENT_TYPES = (
     *TWITCH_EVENT_AUTOMATION_TYPES,
     KEYWORD_PHRASE_EVENT_TYPE,
@@ -64,6 +85,20 @@ KEYWORD_MATCH_TYPES = {
     "starts_with": "Starts With",
     "ends_with": "Ends With",
 }
+
+
+def twitch_trigger_display_name(event_type: str, *, menu: bool = False) -> str:
+    """Return the canonical user-facing name for a supported Twitch trigger."""
+    clean = str(event_type).strip()
+    if menu and clean in TWITCH_TRIGGER_MENU_NAMES:
+        return TWITCH_TRIGGER_MENU_NAMES[clean]
+    return TWITCH_TRIGGER_DISPLAY_NAMES.get(
+        clean,
+        clean.replace("channel.", "")
+        .replace("_", " ")
+        .replace(".", " › ")
+        .title(),
+    )
 
 SUBSCRIPTION_AUTOMATION_TYPES = {
     "channel.subscribe",
