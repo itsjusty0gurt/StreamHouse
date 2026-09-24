@@ -2513,7 +2513,6 @@ class RoutineTreeWidget(QTreeWidget):
             destination_index -= 1
         destination_index = max(0, min(destination_index, destination.childCount()))
         destination.insertChild(destination_index, source)
-        destination.setExpanded(True)
         self.setCurrentItem(source)
         self._schedule_routine_drop(
             str(source.data(0, Qt.ItemDataRole.UserRole) or ""),
@@ -2754,6 +2753,7 @@ class AutomationPage(QWidget):
         self.soundboard_store = soundboard_store
         self.history: list[dict[str, object]] = []
         self._selected_routine_id = ""
+        self._group_expansion_state: dict[str, bool] = {}
         self.setObjectName("automationPage")
         self._build_ui()
         self.refresh()
@@ -3528,6 +3528,7 @@ class AutomationPage(QWidget):
         if hasattr(self, "variables_page"):
             self.variables_page.refresh()
         selected_routine_id = selected_routine_id or self._selected_routine_id
+        self._capture_group_expansion_state()
         query = self.search_edit.text().strip().casefold()
         alphabetical = self.sort_routines_button.isChecked()
         reorder_enabled = not query and not alphabetical
@@ -3543,6 +3544,14 @@ class AutomationPage(QWidget):
         if alphabetical:
             custom_groups.sort(key=lambda group: group.name.casefold())
         groups = [None, *custom_groups]
+        current_group_ids = {
+            group.group_id if group is not None else "" for group in groups
+        }
+        self._group_expansion_state = {
+            group_id: expanded
+            for group_id, expanded in self._group_expansion_state.items()
+            if group_id in current_group_ids
+        }
         visible_count = 0
         for group in groups:
             group_id = group.group_id if group else ""
@@ -3565,8 +3574,13 @@ class AutomationPage(QWidget):
                 (group_item.flags() | Qt.ItemFlag.ItemIsDropEnabled)
                 & ~Qt.ItemFlag.ItemIsDragEnabled
             )
-            group_item.setExpanded(not group.collapsed if group else True)
             self.routine_tree.addTopLevelItem(group_item)
+            expanded = self._group_expansion_state.get(
+                group_id,
+                not group.collapsed if group else True,
+            )
+            group_item.setExpanded(expanded)
+            self._group_expansion_state[group_id] = expanded
             for routine in routines:
                 trigger_count = self._routine_trigger_count(routine.routine_id)
                 issues = self._routine_issues(routine, trigger_count)
@@ -3604,6 +3618,14 @@ class AutomationPage(QWidget):
             self._show_routine(None)
         self._refresh_task_library()
         self._refresh_queues(self._selected_queue_id())
+
+    def _capture_group_expansion_state(self) -> None:
+        for index in range(self.routine_tree.topLevelItemCount()):
+            item = self.routine_tree.topLevelItem(index)
+            if item.data(0, self.KIND_ROLE) != "group":
+                continue
+            group_id = str(item.data(0, Qt.ItemDataRole.UserRole) or "")
+            self._group_expansion_state[group_id] = item.isExpanded()
 
     def select_routine(self, routine_id: str) -> None:
         self.tabs.setCurrentIndex(0)
@@ -4218,16 +4240,18 @@ class AutomationPage(QWidget):
         if not accepted:
             return
         try:
-            self.routine_store.add_group(name)
+            group = self.routine_store.add_group(name)
         except (OSError, ValueError) as error:
             self._error("Could Not Create Group", error)
             return
+        self._group_expansion_state[group.group_id] = True
         self.refresh()
 
     def _set_group_collapsed(self, item: QTreeWidgetItem, collapsed: bool) -> None:
         if item.data(0, self.KIND_ROLE) != "group":
             return
         group_id = str(item.data(0, Qt.ItemDataRole.UserRole) or "")
+        self._group_expansion_state[group_id] = not collapsed
         if not group_id:
             return
         try:
@@ -4405,6 +4429,7 @@ class AutomationPage(QWidget):
         except OSError as error:
             self._error("Could Not Delete Group", error)
             return
+        self._group_expansion_state.pop(group_id, None)
         self.refresh()
 
     def _move_group(self, group_id: str, offset: int) -> None:

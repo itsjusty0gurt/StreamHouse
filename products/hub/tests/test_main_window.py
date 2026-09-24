@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
     QBoxLayout,
     QDialog,
     QHeaderView,
+    QInputDialog,
     QLabel,
     QMenu,
     QMessageBox,
@@ -228,6 +229,14 @@ class MainWindowTests(unittest.TestCase):
         self.twitch_command_directory.cleanup()
         self.settings_patch.stop()
         Logger._logger = self.original_logger
+
+    def _routine_group_item(self, group_id: str):
+        tree = self.window.automation_page.routine_tree
+        for index in range(tree.topLevelItemCount()):
+            item = tree.topLevelItem(index)
+            if str(item.data(0, Qt.ItemDataRole.UserRole) or "") == group_id:
+                return item
+        self.fail(f"Routine group {group_id!r} is not visible.")
 
     def test_navigation_selects_one_button_and_correct_page(self) -> None:
         self.assertEqual(self.window.windowTitle(), "Streamhouse Hub")
@@ -532,6 +541,87 @@ class MainWindowTests(unittest.TestCase):
         saved = store.get(routine.routine_id)
         self.assertEqual(saved.name, "Welcome Everyone")
         self.assertEqual(saved.description, "Updated description")
+
+    def test_routine_group_expansion_survives_edit_add_delete_and_refresh(self) -> None:
+        store = self.twitch_command_trigger_store.routine_store
+        expanded_group = store.add_group("Expanded")
+        collapsed_group = store.add_group("Collapsed")
+        selected = store.add("Selected", group_id=expanded_group.group_id)
+        temporary = store.add("Temporary", group_id=collapsed_group.group_id)
+        page = self.window.automation_page
+        page.refresh()
+        self._routine_group_item(expanded_group.group_id).setExpanded(True)
+        self._routine_group_item(collapsed_group.group_id).setExpanded(False)
+
+        page.select_routine(selected.routine_id)
+        page.settings_description_edit.setText("Edited")
+        page.save_settings_button.click()
+        self.assertTrue(self._routine_group_item(expanded_group.group_id).isExpanded())
+        self.assertFalse(self._routine_group_item(collapsed_group.group_id).isExpanded())
+        self.assertEqual(page._selected_routine_id, selected.routine_id)
+
+        store.add("Added", group_id=expanded_group.group_id)
+        page.refresh()
+        self.assertTrue(self._routine_group_item(expanded_group.group_id).isExpanded())
+        self.assertFalse(self._routine_group_item(collapsed_group.group_id).isExpanded())
+
+        store.delete(temporary.routine_id)
+        page.refresh()
+        self.assertTrue(self._routine_group_item(expanded_group.group_id).isExpanded())
+        self.assertFalse(self._routine_group_item(collapsed_group.group_id).isExpanded())
+
+    def test_routine_group_expansion_uses_stable_id_across_move_and_rename(self) -> None:
+        store = self.twitch_command_trigger_store.routine_store
+        source = store.add_group("Source")
+        destination = store.add_group("Destination")
+        routine = store.add("Move me", group_id=source.group_id)
+        page = self.window.automation_page
+        page.refresh()
+        self._routine_group_item(source.group_id).setExpanded(True)
+        self._routine_group_item(destination.group_id).setExpanded(False)
+
+        page._move_routine_to_group(routine.routine_id, destination.group_id)
+
+        self.assertTrue(self._routine_group_item(source.group_id).isExpanded())
+        self.assertFalse(self._routine_group_item(destination.group_id).isExpanded())
+        store.update_group(source.group_id, name="Renamed Source")
+        page.refresh()
+        renamed = self._routine_group_item(source.group_id)
+        self.assertTrue(renamed.isExpanded())
+        self.assertTrue(renamed.text(0).startswith("Renamed Source"))
+
+    def test_new_and_deleted_group_only_change_their_own_expansion_state(self) -> None:
+        store = self.twitch_command_trigger_store.routine_store
+        existing = store.add_group("Existing")
+        page = self.window.automation_page
+        page.refresh()
+        self._routine_group_item(existing.group_id).setExpanded(False)
+
+        with patch.object(QInputDialog, "getText", return_value=("New Group", True)):
+            page._new_group()
+        created = next(group for group in store.groups if group.name == "New Group")
+        self.assertFalse(self._routine_group_item(existing.group_id).isExpanded())
+        self.assertTrue(self._routine_group_item(created.group_id).isExpanded())
+
+        with patch.object(
+            QMessageBox,
+            "question",
+            return_value=QMessageBox.StandardButton.Yes,
+        ):
+            page._delete_group(created.group_id)
+        self.assertNotIn(created.group_id, page._group_expansion_state)
+        self.assertFalse(self._routine_group_item(existing.group_id).isExpanded())
+
+    def test_ungrouped_expansion_survives_full_refresh(self) -> None:
+        store = self.twitch_command_trigger_store.routine_store
+        store.add("Ungrouped routine")
+        page = self.window.automation_page
+        page.refresh()
+        self._routine_group_item("").setExpanded(False)
+
+        page.refresh()
+
+        self.assertFalse(self._routine_group_item("").isExpanded())
 
     def test_automation_page_can_delete_orphaned_command_routine(self) -> None:
         store = self.twitch_command_trigger_store.routine_store
@@ -1211,6 +1301,32 @@ class MainWindowTests(unittest.TestCase):
             [second.routine_id, first.routine_id],
         )
         self.assertEqual(page._selected_routine_id, second.routine_id)
+
+    def test_routine_drag_does_not_expand_collapsed_destination_group(self) -> None:
+        store = self.twitch_command_trigger_store.routine_store
+        source_group = store.add_group("Source")
+        destination_group = store.add_group("Destination")
+        store.add("Move me", group_id=source_group.group_id)
+        page = self.window.automation_page
+        page.refresh()
+        source_item = self._routine_group_item(source_group.group_id).child(0)
+        destination_item = self._routine_group_item(destination_group.group_id)
+        destination_item.setExpanded(False)
+        page.routine_tree.setCurrentItem(source_item)
+        event = Mock()
+        position = Mock()
+        position.toPoint.return_value = QPoint(0, 0)
+        event.position.return_value = position
+
+        with patch.object(
+            page.routine_tree,
+            "itemAt",
+            return_value=destination_item,
+        ):
+            page.routine_tree.dropEvent(event)
+
+        self.assertFalse(destination_item.isExpanded())
+        event.acceptProposedAction.assert_called_once_with()
 
     def test_routine_drop_waits_until_drag_event_has_finished(self) -> None:
         store = self.twitch_command_trigger_store.routine_store
