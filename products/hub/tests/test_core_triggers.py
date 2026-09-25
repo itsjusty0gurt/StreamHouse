@@ -1,6 +1,7 @@
 import json
 import tempfile
 import unittest
+from decimal import Decimal
 from pathlib import Path
 
 from products.hub.automation.core_triggers import CoreTriggerStore
@@ -91,6 +92,79 @@ class CoreTriggerStoreTests(unittest.TestCase):
         self.assertEqual(saved.timer_mode, "random")
         self.assertEqual(saved.timer_minimum, "1.5")
         self.assertEqual(saved.timer_maximum_unit, "hours")
+
+    def test_timer_units_normalize_exactly_to_milliseconds(self) -> None:
+        routine = self.routines.add("Exact durations")
+        cases = (
+            ("500", "milliseconds", 500),
+            ("10", "seconds", 10_000),
+            ("5", "minutes", 300_000),
+            ("2", "hours", 7_200_000),
+            ("1.5", "seconds", 1_500),
+            ("0.5", "minutes", 30_000),
+        )
+        for value, unit, expected in cases:
+            with self.subTest(value=value, unit=unit):
+                trigger = self.store.add_timer(
+                    routine.routine_id,
+                    timer_mode="fixed",
+                    timer_minimum=value,
+                    timer_minimum_unit=unit,
+                )
+                self.assertEqual(
+                    self.store.timer_bounds_milliseconds(trigger),
+                    (expected, expected),
+                )
+                seconds, _ = self.store.timer_bounds_seconds(trigger)
+                self.assertIsInstance(seconds, Decimal)
+                self.store.delete(trigger.trigger_id)
+
+    def test_timer_summary_uses_friendly_exact_and_mixed_range_text(self) -> None:
+        routine = self.routines.add("Descriptions")
+        exact = self.store.add_timer(
+            routine.routine_id,
+            timer_mode="fixed",
+            timer_minimum="1",
+            timer_minimum_unit="hours",
+        )
+        mixed = self.store.add_timer(
+            routine.routine_id,
+            timer_mode="random",
+            timer_minimum="30",
+            timer_minimum_unit="seconds",
+            timer_maximum="2",
+            timer_maximum_unit="minutes",
+        )
+
+        self.assertEqual(self.store.timer_description(exact), "Every 1 hour")
+        self.assertEqual(
+            self.store.timer_description(mixed),
+            "Random: 30 seconds–2 minutes",
+        )
+
+    def test_random_timer_ranges_support_independent_units(self) -> None:
+        routine = self.routines.add("Random ranges")
+        cases = (
+            ("500", "milliseconds", "2", "seconds", (500, 2_000)),
+            ("5", "minutes", "10", "minutes", (300_000, 600_000)),
+            ("1", "hours", "2", "hours", (3_600_000, 7_200_000)),
+            ("30", "seconds", "2", "minutes", (30_000, 120_000)),
+        )
+        for minimum, minimum_unit, maximum, maximum_unit, expected in cases:
+            with self.subTest(minimum_unit=minimum_unit, maximum_unit=maximum_unit):
+                trigger = self.store.add_timer(
+                    routine.routine_id,
+                    timer_mode="random",
+                    timer_minimum=minimum,
+                    timer_minimum_unit=minimum_unit,
+                    timer_maximum=maximum,
+                    timer_maximum_unit=maximum_unit,
+                )
+                self.assertEqual(
+                    self.store.timer_bounds_milliseconds(trigger),
+                    expected,
+                )
+                self.store.delete(trigger.trigger_id)
 
     def test_unknown_core_event_is_rejected(self) -> None:
         routine = self.routines.add("Unknown")

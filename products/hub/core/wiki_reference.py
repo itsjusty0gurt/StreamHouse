@@ -3,7 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Mapping, Sequence
 
-from products.hub.automation.core_triggers import CORE_TRIGGER_TYPES
+from products.hub.automation.core_triggers import (
+    CORE_TRIGGER_TYPES,
+    MINIMUM_TIMER_MILLISECONDS,
+    TIMER_MODES,
+    TIMER_UNIT_LABELS,
+)
 from products.hub.automation.tasks import TaskMetadata, TaskRegistry
 from products.hub.automation.variable_outputs import (
     generated_output_definitions,
@@ -228,7 +233,7 @@ def _trigger_entries(variable_registry: VariableRegistry) -> tuple[WikiEntry, ..
     ]
     for event_type, label in CORE_TRIGGER_TYPES.items():
         summary = (
-            "Fires on a fixed interval or a random interval range."
+            "Fires on an exact interval or a random interval range."
             if event_type == "timer"
             else f"Fires when Hub reports {label.lower()}."
         )
@@ -283,6 +288,7 @@ def _trigger_entry(
 ) -> WikiEntry:
     sections = [WikiSection("When it fires", (summary,))]
     configuration: tuple[str, ...] = ()
+    additional_sections: tuple[WikiSection, ...] = ()
     if trigger_id == "command":
         configuration = (
             "Command name and aliases.",
@@ -296,8 +302,35 @@ def _trigger_entry(
         )
     elif trigger_id == "timer":
         configuration = (
-            "Fixed interval or random minimum/maximum range.",
-            "Seconds, minutes, or hours.",
+            f"{TIMER_MODES['fixed']} — enter one numeric Interval and choose its unit.",
+            f"{TIMER_MODES['random']} — enter numeric Minimum and Maximum values and choose each value's unit independently.",
+            "Supported units — " + ", ".join(TIMER_UNIT_LABELS.values()) + ".",
+        )
+        additional_sections = (
+            WikiSection(
+                "Validation",
+                (
+                    "Values must be positive finite numbers that resolve exactly to whole milliseconds.",
+                    f"The minimum safe interval is {MINIMUM_TIMER_MILLISECONDS} milliseconds.",
+                    "For Random mode, Minimum must not exceed Maximum.",
+                ),
+            ),
+            WikiSection(
+                "Scheduling",
+                (
+                    "Random mode chooses a new delay after every firing.",
+                    "Disabling a Timer cancels its scheduled firing; enabling it starts a fresh delay.",
+                    "Editing an enabled Timer replaces the old schedule with a fresh delay from the new configuration.",
+                    "Timer routines use their normal queue, and Hub startup begins a fresh delay without catching up missed runs.",
+                ),
+            ),
+            WikiSection(
+                "Examples",
+                (
+                    f"{TIMER_MODES['fixed']}: 10 Minutes — runs every 10 minutes.",
+                    f"{TIMER_MODES['random']}: 5 Minutes to 10 Minutes — chooses a new 5–10 minute delay after each firing.",
+                ),
+            ),
         )
     elif trigger_id == "channel.chat.first_message":
         configuration = ("Reset window and normal enabled state.",)
@@ -311,6 +344,7 @@ def _trigger_entry(
         configuration = ("Optional event filters supported by this trigger editor.",)
     if configuration:
         sections.append(WikiSection("Configuration", configuration))
+    sections.extend(additional_sections)
     if variables:
         sections.append(
             WikiSection(

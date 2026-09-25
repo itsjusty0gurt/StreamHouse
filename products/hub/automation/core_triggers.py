@@ -23,8 +23,20 @@ CORE_TRIGGER_TYPES = {
     "application.closing": "Application Closing",
     "timer": "Timer",
 }
-TIMER_MODES = {"fixed": "Fixed Interval", "random": "Random Range"}
-TIMER_UNITS = {"seconds": Decimal("1"), "minutes": Decimal("60"), "hours": Decimal("3600")}
+TIMER_MODES = {"fixed": "Exact", "random": "Random"}
+TIMER_UNITS = {
+    "milliseconds": Decimal("0.001"),
+    "seconds": Decimal("1"),
+    "minutes": Decimal("60"),
+    "hours": Decimal("3600"),
+}
+TIMER_UNIT_LABELS = {
+    "milliseconds": "Milliseconds",
+    "seconds": "Seconds",
+    "minutes": "Minutes",
+    "hours": "Hours",
+}
+MINIMUM_TIMER_MILLISECONDS = 100
 
 
 @dataclass(slots=True)
@@ -308,17 +320,28 @@ class CoreTriggerStore:
         )
 
     @classmethod
-    def timer_bounds_seconds(cls, trigger: CoreAutomationTrigger) -> tuple[float, float]:
+    def timer_bounds_seconds(
+        cls,
+        trigger: CoreAutomationTrigger,
+    ) -> tuple[Decimal, Decimal]:
         minimum = cls._seconds(trigger.timer_minimum, trigger.timer_minimum_unit)
         maximum = (
             minimum
             if trigger.timer_mode == "fixed"
             else cls._seconds(trigger.timer_maximum, trigger.timer_maximum_unit)
         )
-        values = (float(minimum), float(maximum))
-        if not all(isfinite(value) for value in values):
-            raise ValueError("Timer duration is too large.")
-        return values
+        return minimum, maximum
+
+    @classmethod
+    def timer_bounds_milliseconds(
+        cls,
+        trigger: CoreAutomationTrigger,
+    ) -> tuple[int, int]:
+        minimum, maximum = cls.timer_bounds_seconds(trigger)
+        return (
+            cls._milliseconds(minimum),
+            cls._milliseconds(maximum),
+        )
 
     @staticmethod
     def timer_description(trigger: CoreAutomationTrigger) -> str:
@@ -333,14 +356,14 @@ class CoreTriggerStore:
             )
             if trigger.timer_minimum_unit == trigger.timer_maximum_unit:
                 return (
-                    f"Random {trigger.timer_minimum}–{trigger.timer_maximum} "
+                    f"Random: {trigger.timer_minimum}–{trigger.timer_maximum} "
                     f"{maximum_unit}"
                 )
             return (
-                f"Random {trigger.timer_minimum} {minimum_unit}–"
+                f"Random: {trigger.timer_minimum} {minimum_unit}–"
                 f"{trigger.timer_maximum} {maximum_unit}"
             )
-        return f"Fixed {trigger.timer_minimum} {minimum_unit}"
+        return f"Every {trigger.timer_minimum} {minimum_unit}"
 
     @staticmethod
     def _display_unit(value: str, unit: str) -> str:
@@ -353,7 +376,9 @@ class CoreTriggerStore:
     @staticmethod
     def _seconds(value: str, unit: str) -> Decimal:
         if unit not in TIMER_UNITS:
-            raise ValueError("Timer unit must be Seconds, Minutes, or Hours.")
+            raise ValueError(
+                "Timer unit must be Milliseconds, Seconds, Minutes, or Hours."
+            )
         try:
             number = Decimal(value)
         except (InvalidOperation, ValueError):
@@ -363,16 +388,36 @@ class CoreTriggerStore:
         return number * TIMER_UNITS[unit]
 
     @staticmethod
+    def _milliseconds(seconds: Decimal) -> int:
+        milliseconds = seconds * 1000
+        integral = milliseconds.to_integral_value()
+        if milliseconds != integral:
+            raise ValueError("Timer values must resolve to a whole millisecond.")
+        if not isfinite(float(milliseconds)):
+            raise ValueError("Timer duration is too large.")
+        value = int(integral)
+        if value < MINIMUM_TIMER_MILLISECONDS:
+            raise ValueError(
+                "Timer intervals must be at least "
+                f"{MINIMUM_TIMER_MILLISECONDS} milliseconds."
+            )
+        return value
+
+    @classmethod
+    def validate_timer(cls, trigger: CoreAutomationTrigger) -> None:
+        if trigger.timer_mode not in TIMER_MODES:
+            raise ValueError("Choose Exact or Random.")
+        minimum, maximum = cls.timer_bounds_milliseconds(trigger)
+        if minimum > maximum:
+            raise ValueError("Random timer minimum must not exceed its maximum.")
+
+    @staticmethod
     def _validate(trigger: CoreAutomationTrigger) -> None:
         if not trigger.trigger_id or not trigger.routine_id:
             raise ValueError("Core triggers require IDs.")
         if trigger.event_type not in CORE_TRIGGER_TYPES:
             raise ValueError("That Core program trigger is not supported.")
         if trigger.event_type == "timer":
-            if trigger.timer_mode not in TIMER_MODES:
-                raise ValueError("Choose Fixed Interval or Random Range.")
-            minimum, maximum = CoreTriggerStore.timer_bounds_seconds(trigger)
-            if minimum > maximum:
-                raise ValueError("Random timer minimum must not exceed its maximum.")
+            CoreTriggerStore.validate_timer(trigger)
         elif any((trigger.timer_mode, trigger.timer_minimum, trigger.timer_maximum)):
             raise ValueError("Only Timer triggers may contain timer settings.")

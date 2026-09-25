@@ -401,6 +401,75 @@ class BackupManagerTests(unittest.TestCase):
         )
         self.assertIn("raid-trigger", routine_store.get("parent").trigger_ids)
 
+    def test_exact_and_random_timers_backup_restore_with_stable_identity(self) -> None:
+        routine_path = self.root / "automation/routines.json"
+        routines = json.loads(routine_path.read_text(encoding="utf-8"))
+        parent = next(
+            item for item in routines["routines"] if item["routine_id"] == "parent"
+        )
+        parent["additional_trigger_ids"] = ["timer-exact", "timer-random"]
+        write_json(routine_path, routines)
+        write_json(
+            self.root / "automation/core_triggers.json",
+            {
+                "version": CoreTriggerStore.VERSION,
+                "triggers": [
+                    {
+                        "trigger_id": "timer-exact",
+                        "routine_id": "parent",
+                        "event_type": "timer",
+                        "enabled": True,
+                        "timer_mode": "fixed",
+                        "timer_minimum": "500",
+                        "timer_minimum_unit": "milliseconds",
+                        "timer_maximum": "",
+                        "timer_maximum_unit": "seconds",
+                    },
+                    {
+                        "trigger_id": "timer-random",
+                        "routine_id": "parent",
+                        "event_type": "timer",
+                        "enabled": True,
+                        "timer_mode": "random",
+                        "timer_minimum": "30",
+                        "timer_minimum_unit": "seconds",
+                        "timer_maximum": "2",
+                        "timer_maximum_unit": "minutes",
+                    },
+                ],
+            },
+        )
+
+        archive = self.manager.create_daily_if_needed()
+        self.assertIsNotNone(archive)
+        write_json(
+            self.root / "automation/core_triggers.json",
+            {"version": CoreTriggerStore.VERSION, "triggers": []},
+        )
+        self.manager.restore(archive, create_safety=False)
+
+        routine_store = RoutineStore(routine_path)
+        routine_store.load()
+        core_store = CoreTriggerStore(
+            self.root / "automation/core_triggers.json",
+            routine_store,
+        )
+        restored = {item.trigger_id: item for item in core_store.load()}
+        self.assertEqual(set(restored), {"timer-exact", "timer-random"})
+        self.assertEqual(
+            restored["timer-exact"].timer_minimum_unit,
+            "milliseconds",
+        )
+        self.assertEqual(restored["timer-random"].timer_maximum, "2")
+        self.assertEqual(
+            restored["timer-random"].timer_maximum_unit,
+            "minutes",
+        )
+        self.assertEqual(
+            set(routine_store.get("parent").trigger_ids),
+            {"raid-trigger", "timer-exact", "timer-random"},
+        )
+
     def test_backup_rejects_obsolete_twitch_trigger_schema(self) -> None:
         write_json(
             self.root / "twitch/event_triggers.json",

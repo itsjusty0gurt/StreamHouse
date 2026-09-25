@@ -1907,7 +1907,7 @@ class MainWindowTests(unittest.TestCase):
         self.assertIn(("Twitch — Incoming Raid", "Any raid"), contents)
         self.assertIn(("OBS — Scene Changed", "Scene BRB"), contents)
         self.assertIn(("Timer", "Every 10 minutes"), contents)
-        random_card = contents[("Timer", "Random 5–10 minutes")]
+        random_card = contents[("Timer", "Random: 5–10 minutes")]
         self.assertFalse(random_card.content.enabled)
         self.assertFalse(random_card.state_label.isHidden())
         self.assertNotIn("reward-internal-id", " ".join(card.accessibleName() for card in cards))
@@ -1976,13 +1976,13 @@ class MainWindowTests(unittest.TestCase):
 
         self.window._handle_timer_automation_event(
             self.window.core_trigger_store.event_for(trigger.trigger_id),
-            "Fixed 10 minutes",
+            "Every 10 minutes",
         )
 
         self.assertEqual(len(self.window.automation_page.history), 1)
         self.assertEqual(
             self.window.automation_page.history[0]["trigger"],
-            "Timer — Fixed 10 minutes",
+            "Timer — Every 10 minutes",
         )
 
     def test_twitch_command_can_open_its_connected_automation_routine(self) -> None:

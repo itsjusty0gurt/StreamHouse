@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from copy import deepcopy
 from datetime import datetime
+from decimal import Decimal, InvalidOperation
 import json
 from pathlib import Path
 import re
@@ -13,6 +14,7 @@ from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
+    QButtonGroup,
     QCheckBox,
     QComboBox,
     QDialog,
@@ -30,6 +32,7 @@ from PySide6.QtWidgets import (
     QMenu,
     QMessageBox,
     QPushButton,
+    QRadioButton,
     QSpinBox,
     QSplitter,
     QTabWidget,
@@ -53,7 +56,7 @@ from products.hub.core.diagnostics import redact_sensitive_text
 from products.hub.automation.core_triggers import (
     CORE_TRIGGER_TYPES,
     TIMER_MODES,
-    TIMER_UNITS,
+    TIMER_UNIT_LABELS,
     CoreAutomationTrigger,
     CoreTriggerStore,
 )
@@ -666,30 +669,36 @@ class TimerTriggerDialog(QDialog):
         self.setMinimumWidth(480)
         layout = QVBoxLayout(self)
         form = QFormLayout()
-        self.mode_combo = QComboBox()
-        for mode, label in TIMER_MODES.items():
-            self.mode_combo.addItem(label, mode)
-        self.minimum_spin = self._duration_spin()
+        self.exact_radio = QRadioButton(TIMER_MODES["fixed"])
+        self.random_radio = QRadioButton(TIMER_MODES["random"])
+        self.mode_group = QButtonGroup(self)
+        self.mode_group.addButton(self.exact_radio)
+        self.mode_group.addButton(self.random_radio)
+        mode_row = QWidget()
+        mode_layout = QHBoxLayout(mode_row)
+        mode_layout.setContentsMargins(0, 0, 0, 0)
+        mode_layout.addWidget(self.exact_radio)
+        mode_layout.addWidget(self.random_radio)
+        mode_layout.addStretch(1)
+        self.minimum_edit = self._duration_edit()
         self.minimum_unit = self._unit_combo()
-        self.maximum_spin = self._duration_spin()
+        self.maximum_edit = self._duration_edit()
         self.maximum_unit = self._unit_combo()
-        minimum_row = QWidget()
-        minimum_layout = QHBoxLayout(minimum_row)
-        minimum_layout.setContentsMargins(0, 0, 0, 0)
-        minimum_layout.addWidget(self.minimum_spin)
-        minimum_layout.addWidget(self.minimum_unit)
-        maximum_row = QWidget()
-        maximum_layout = QHBoxLayout(maximum_row)
-        maximum_layout.setContentsMargins(0, 0, 0, 0)
-        maximum_layout.addWidget(self.maximum_spin)
-        maximum_layout.addWidget(self.maximum_unit)
-        self.minimum_label = QLabel("Every")
-        self.maximum_label = QLabel("And")
+        self.interval_row = QWidget()
+        interval_layout = QHBoxLayout(self.interval_row)
+        interval_layout.setContentsMargins(0, 0, 0, 0)
+        interval_layout.addWidget(self.minimum_edit)
+        interval_layout.addWidget(self.minimum_unit)
+        self.range_separator = QLabel("to")
+        interval_layout.addWidget(self.range_separator)
+        interval_layout.addWidget(self.maximum_edit)
+        interval_layout.addWidget(self.maximum_unit)
+        interval_layout.addStretch(1)
+        self.interval_label = QLabel("Interval")
         self.enabled_check = QCheckBox("Enabled")
         self.enabled_check.setChecked(trigger.enabled if trigger else True)
-        form.addRow("Mode", self.mode_combo)
-        form.addRow(self.minimum_label, minimum_row)
-        form.addRow(self.maximum_label, maximum_row)
+        form.addRow("Mode", mode_row)
+        form.addRow(self.interval_label, self.interval_row)
         form.addRow("", self.enabled_check)
         layout.addLayout(form)
         help_label = QLabel(
@@ -700,24 +709,24 @@ class TimerTriggerDialog(QDialog):
         help_label.setWordWrap(True)
         layout.addWidget(help_label)
         if trigger is not None:
-            self.mode_combo.setCurrentIndex(
-                max(self.mode_combo.findData(trigger.timer_mode), 0)
-            )
-            self.minimum_spin.setValue(float(trigger.timer_minimum))
+            self.random_radio.setChecked(trigger.timer_mode == "random")
+            self.exact_radio.setChecked(trigger.timer_mode != "random")
+            self.minimum_edit.setText(trigger.timer_minimum)
             self.minimum_unit.setCurrentIndex(
                 max(self.minimum_unit.findData(trigger.timer_minimum_unit), 0)
             )
             if trigger.timer_maximum:
-                self.maximum_spin.setValue(float(trigger.timer_maximum))
+                self.maximum_edit.setText(trigger.timer_maximum)
             self.maximum_unit.setCurrentIndex(
                 max(self.maximum_unit.findData(trigger.timer_maximum_unit), 0)
             )
         else:
-            self.minimum_spin.setValue(10)
+            self.exact_radio.setChecked(True)
+            self.minimum_edit.setText("10")
             self.minimum_unit.setCurrentIndex(self.minimum_unit.findData("minutes"))
-            self.maximum_spin.setValue(60)
+            self.maximum_edit.setText("10")
             self.maximum_unit.setCurrentIndex(self.maximum_unit.findData("minutes"))
-        self.mode_combo.currentIndexChanged.connect(self._update_mode)
+        self.exact_radio.toggled.connect(self._update_mode)
         self._update_mode()
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Save
@@ -728,13 +737,13 @@ class TimerTriggerDialog(QDialog):
         layout.addWidget(buttons)
 
     def values(self) -> dict[str, object]:
-        random_mode = self.mode_combo.currentData() == "random"
+        random_mode = self.random_radio.isChecked()
         return {
-            "timer_mode": str(self.mode_combo.currentData()),
-            "timer_minimum": self._number_text(self.minimum_spin.value()),
+            "timer_mode": "random" if random_mode else "fixed",
+            "timer_minimum": self._number_text(self.minimum_edit.text()),
             "timer_minimum_unit": str(self.minimum_unit.currentData()),
             "timer_maximum": (
-                self._number_text(self.maximum_spin.value()) if random_mode else ""
+                self._number_text(self.maximum_edit.text()) if random_mode else ""
             ),
             "timer_maximum_unit": str(self.maximum_unit.currentData()),
             "enabled": self.enabled_check.isChecked(),
@@ -754,40 +763,46 @@ class TimerTriggerDialog(QDialog):
             timer_maximum_unit=str(values["timer_maximum_unit"]),
         )
         try:
-            minimum, maximum = CoreTriggerStore.timer_bounds_seconds(candidate)
-            if minimum > maximum:
-                raise ValueError(
-                    "Random timer minimum must not exceed its maximum."
-                )
+            CoreTriggerStore.validate_timer(candidate)
         except ValueError as error:
             QMessageBox.warning(self, "Invalid Timer", str(error))
             return
         super().accept()
 
     def _update_mode(self) -> None:
-        random_mode = self.mode_combo.currentData() == "random"
-        self.minimum_label.setText("Between" if random_mode else "Every")
-        self.maximum_label.setVisible(random_mode)
-        self.maximum_spin.parentWidget().setVisible(random_mode)
+        random_mode = self.random_radio.isChecked()
+        self.interval_label.setText("Range" if random_mode else "Interval")
+        self.range_separator.setVisible(random_mode)
+        self.maximum_edit.setVisible(random_mode)
+        self.maximum_unit.setVisible(random_mode)
 
     @staticmethod
-    def _duration_spin() -> QDoubleSpinBox:
-        spin = QDoubleSpinBox()
-        spin.setRange(0.001, 999999)
-        spin.setDecimals(3)
-        spin.setSingleStep(0.5)
-        return spin
+    def _duration_edit() -> QLineEdit:
+        edit = QLineEdit()
+        edit.setPlaceholderText("Positive number")
+        edit.setMaximumWidth(130)
+        return edit
 
     @staticmethod
     def _unit_combo() -> QComboBox:
         combo = QComboBox()
-        for unit in TIMER_UNITS:
-            combo.addItem(unit.title(), unit)
+        for unit, label in TIMER_UNIT_LABELS.items():
+            combo.addItem(label, unit)
         return combo
 
     @staticmethod
-    def _number_text(value: float) -> str:
-        return f"{value:.3f}".rstrip("0").rstrip(".")
+    def _number_text(value: str) -> str:
+        clean = value.strip()
+        try:
+            number = Decimal(clean)
+        except (InvalidOperation, ValueError):
+            return clean
+        if not number.is_finite():
+            return clean
+        normalized = format(number, "f")
+        if "." in normalized:
+            normalized = normalized.rstrip("0").rstrip(".")
+        return normalized
 
 
 class ObsTriggerDialog(QDialog):
@@ -3951,14 +3966,9 @@ class AutomationPage(QWidget):
     ) -> TriggerCardContent:
         if trigger.event_type == "timer":
             description = self.core_trigger_store.timer_description(trigger)
-            summary = (
-                f"Every {description.removeprefix('Fixed ')}"
-                if trigger.timer_mode == "fixed"
-                else description
-            )
             return TriggerCardContent(
                 title="Timer",
-                summary=summary,
+                summary=description,
                 family="Timer",
                 enabled=trigger.enabled,
             )

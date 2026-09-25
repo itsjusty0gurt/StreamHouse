@@ -5,6 +5,11 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication
 
+from products.hub.automation.core_triggers import (
+    MINIMUM_TIMER_MILLISECONDS,
+    TIMER_MODES,
+    TIMER_UNIT_LABELS,
+)
 from products.hub.automation.task_catalog import BUILTIN_TASK_METADATA
 from products.hub.automation.tasks import TaskRegistry
 from products.hub.automation.variable_providers import context_provider
@@ -50,6 +55,35 @@ def test_contextual_variables_are_documented_without_active_context() -> None:
     assert command_data.copy_text == "{command.data}"
     assert "chat command routine" in command_data.search_text()
     assert "routine" in command_data.search_text()
+
+
+def test_timer_reference_documents_exact_random_units_and_resampling() -> None:
+    tasks, variables = _reference_sources()
+    timer = next(
+        entry
+        for entry in build_wiki_entries(tasks, variables)
+        if entry.entry_id == "trigger:timer"
+    )
+    text = timer.search_text()
+    sections = {section.title: section.lines for section in timer.sections}
+
+    assert TIMER_MODES["fixed"].casefold() in text
+    assert TIMER_MODES["random"].casefold() in text
+    for label in TIMER_UNIT_LABELS.values():
+        assert label.casefold() in text
+    assert str(MINIMUM_TIMER_MILLISECONDS) in text
+    assert "numeric interval" in text
+    assert "numeric minimum and maximum" in text
+    assert "minimum must not exceed maximum" in text
+    assert "after every firing" in text
+    assert "normal queue" in text
+    assert "cancels its scheduled firing" in text
+    assert "editing an enabled timer replaces the old schedule" in text
+    assert set(("Configuration", "Validation", "Scheduling", "Examples")) <= set(
+        sections
+    )
+    assert any("10 Minutes" in line for line in sections["Examples"])
+    assert any("5 Minutes to 10 Minutes" in line for line in sections["Examples"])
 
 
 def test_wiki_search_is_local_case_insensitive_and_does_not_mutate_sources() -> None:

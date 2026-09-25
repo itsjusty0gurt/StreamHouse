@@ -63,7 +63,7 @@ def test_fixed_timer_fires_repeats_and_starts_fresh() -> None:
         harness.scheduler.process_due()
         assert len(harness.events) == 1
         assert harness.events[0][0].trigger_type == "timer"
-        assert harness.events[0][1] == "Fixed 10 seconds"
+        assert harness.events[0][1] == "Every 10 seconds"
         assert harness.scheduler.next_delay_seconds(trigger.trigger_id) == 10
 
         harness.now = 20
@@ -74,7 +74,7 @@ def test_fixed_timer_fires_repeats_and_starts_fresh() -> None:
 
 
 def test_random_timer_resamples_after_every_firing() -> None:
-    harness = TimerHarness([30, 60, 45])
+    harness = TimerHarness([30_000, 60_000, 45_000])
     try:
         routine = harness.routines.add("Random sound")
         trigger = harness.store.add_timer(
@@ -93,6 +93,27 @@ def test_random_timer_resamples_after_every_firing() -> None:
         harness.scheduler.process_due()
         assert harness.scheduler.next_delay_seconds(trigger.trigger_id) == 45
         assert len(harness.events) == 2
+    finally:
+        harness.close()
+
+
+def test_millisecond_timer_fires_repeatedly_without_duplicate_callbacks() -> None:
+    harness = TimerHarness()
+    try:
+        routine = harness.routines.add("Fast but safe")
+        trigger = harness.store.add_timer(
+            routine.routine_id,
+            timer_mode="fixed",
+            timer_minimum="500",
+            timer_minimum_unit="milliseconds",
+        )
+        assert harness.scheduler.next_delay_seconds(trigger.trigger_id) == 0.5
+
+        for firing in range(1, 7):
+            harness.now = firing * 0.5
+            harness.scheduler.process_due()
+            assert len(harness.events) == firing
+            assert harness.scheduler.next_delay_seconds(trigger.trigger_id) == 0.5
     finally:
         harness.close()
 
@@ -179,6 +200,27 @@ def test_edit_disable_reenable_delete_and_shutdown_cancel_schedules() -> None:
         harness.close()
 
 
+def test_shutdown_prevents_a_scheduled_timer_from_firing() -> None:
+    harness = TimerHarness()
+    try:
+        routine = harness.routines.add("Shutdown")
+        harness.store.add_timer(
+            routine.routine_id,
+            timer_mode="fixed",
+            timer_minimum="500",
+            timer_minimum_unit="milliseconds",
+        )
+        harness.scheduler.shutdown()
+        harness.now = 1
+        harness.scheduler.process_due()
+
+        assert harness.events == []
+        assert harness.scheduler.schedules == {}
+        assert not harness.scheduler.timer.isActive()
+    finally:
+        harness.close()
+
+
 @pytest.mark.parametrize(
     ("mode", "minimum", "minimum_unit", "maximum", "maximum_unit"),
     (
@@ -189,6 +231,8 @@ def test_edit_disable_reenable_delete_and_shutdown_cancel_schedules() -> None:
         ("fixed", "NaN", "seconds", "", "seconds"),
         ("fixed", "Infinity", "seconds", "", "seconds"),
         ("fixed", "1e999", "seconds", "", "seconds"),
+        ("fixed", "99", "milliseconds", "", "seconds"),
+        ("fixed", "0.0001", "seconds", "", "seconds"),
         ("random", "60", "seconds", "30", "seconds"),
     ),
 )

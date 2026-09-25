@@ -583,10 +583,12 @@ the queue proceeds normally and retains its waiting entries.
 Qt-based tasks remain thread-safe.
 
 Core **Timer** is an ordinary Automation trigger. One Qt-owned scheduler tracks
-all enabled timer definitions without sleeps or a thread per timer. Fixed mode
+all enabled timer definitions without sleeps or a thread per timer. Exact mode
 starts a fresh configured interval after each firing. Random mode samples a new
-delay within the configured range after every firing. Seconds, minutes, hours,
-and positive decimal values are supported. Each firing publishes through
+delay within the configured range after every firing. Independent minimum and
+maximum units support milliseconds, seconds, minutes, and hours. Positive
+decimal values normalize exactly to whole milliseconds; the 100 ms safety floor
+prevents runaway queue production. Each firing publishes through
 `AutomationService`, so the routine's configured queue—including Default Queue
 fallback—owns ordering, duplicates, accumulation, cancellation, and history.
 Editing, disabling, re-enabling, or deleting a trigger replaces or cancels its
@@ -909,7 +911,7 @@ Adding a task requires more than a handler. See **Adding an automation task**.
 | Twitch Keyword / Phrase | same as above | same | Contains/Exact/Starts With/Ends With chat matching with case and whole-word controls |
 | Twitch Ads | same as above | same | 5/3/2/1-minute warnings, EventSub-backed Ads Started, Hub-calculated Ads Ended |
 | Core | `CoreTriggerStore` | `automation/core_triggers.json` | application started/closing |
-| Core Timer | `CoreTriggerStore` + `AutomationTimerScheduler` | `automation/core_triggers.json` | fixed intervals or a newly sampled random interval range |
+| Core Timer | `CoreTriggerStore` + `AutomationTimerScheduler` | `automation/core_triggers.json` | exact intervals or a newly sampled random interval range |
 | OBS | `ObsTriggerStore` | `obs/triggers.json` | connection, scene, source, audio, media, output changes |
 | Soundboard | button record in `SoundboardStore` | `twitch/soundboard.json` | local preview or Extension button |
 
@@ -1758,6 +1760,11 @@ python -m venv .venv
 
 Runtime dependency is currently pinned to PySide6. PyInstaller is a separate
 build dependency.
+
+Hub's packaged UI uses Qt Widgets and Qt WebEngine. It does not import the
+Python Qt Quick or Qt QML APIs, so the Hub build excludes `PySide6.QtQuick` and
+`PySide6.QtQml`. This also keeps PyInstaller from collecting unused QML content;
+the Chromium-backed Twitch chat remains owned by Qt WebEngine.
 
 ### Tests
 

@@ -77,6 +77,15 @@ class PackageBoundaryTests(unittest.TestCase):
         ):
             self.assertTrue((self.root / relative).is_file(), relative)
 
+    def test_hub_build_excludes_unused_qt_quick_qml_python_modules(self) -> None:
+        self._assert_no_prefix(self.root / "products" / "hub", "PySide6.QtQuick")
+        self._assert_no_prefix(self.root / "products" / "hub", "PySide6.QtQml")
+        build = (self.root / "tools" / "build" / "build_hub.ps1").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('--exclude-module "PySide6.QtQuick"', build)
+        self.assertIn('--exclude-module "PySide6.QtQml"', build)
+
 
 if __name__ == "__main__":
     unittest.main()

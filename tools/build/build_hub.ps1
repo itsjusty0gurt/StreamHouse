@@ -14,6 +14,9 @@ if ($LASTEXITCODE -ne 0) {
 
 Push-Location $projectRoot
 try {
+    # Hub uses Qt Widgets and Qt WebEngine, not the Python Qt Quick/QML APIs.
+    # Excluding them prevents PyInstaller from scanning incomplete, unused
+    # QML plugin metadata shipped in the PySide6 wheel.
     & $python -m PyInstaller `
         --noconfirm `
         --clean `
@@ -23,6 +26,8 @@ try {
         --version-file "tools\packaging\windows-hub-version-info.txt" `
         --exclude-module "products.ai.engine" `
         --exclude-module "products.ai.streamhouse_ai" `
+        --exclude-module "PySide6.QtQuick" `
+        --exclude-module "PySide6.QtQml" `
         --add-binary ".venv\Lib\site-packages\PySide6\plugins\platforms\qoffscreen.dll;PySide6\plugins\platforms" `
         --add-data "shared\assets\streamhouse-icons\streamhouse-hub.png;assets\streamhouse-icons" `
         --add-data "extensions\twitch\app;extensions\twitch\app" `

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from math import ceil
-from random import uniform
+from random import randint
 from time import monotonic
 from typing import Callable
 
@@ -32,7 +32,7 @@ class AutomationTimerScheduler(QObject):
         fired: Callable[[TriggerEvent, str], None],
         *,
         clock: Callable[[], float] = monotonic,
-        choose_delay: Callable[[float, float], float] = uniform,
+        choose_delay: Callable[[int, int], int] = randint,
         auto_arm: bool = True,
         parent: QObject | None = None,
     ) -> None:
@@ -138,11 +138,11 @@ class AutomationTimerScheduler(QObject):
         return max(schedule.deadline - self.clock(), 0.0)
 
     def _schedule(self, trigger: CoreAutomationTrigger, now: float) -> None:
-        minimum, maximum = self.store.timer_bounds_seconds(trigger)
+        minimum, maximum = self.store.timer_bounds_milliseconds(trigger)
         delay = minimum if minimum == maximum else self.choose_delay(minimum, maximum)
-        delay = min(max(float(delay), minimum), maximum)
+        delay = min(max(int(delay), minimum), maximum)
         self.schedules[trigger.trigger_id] = ScheduledTimer(
-            deadline=now + delay,
+            deadline=now + (delay / 1000),
             fingerprint=self._fingerprint(trigger),
         )
 
