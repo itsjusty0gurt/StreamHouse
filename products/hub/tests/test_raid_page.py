@@ -11,6 +11,7 @@ from PySide6.QtWidgets import QApplication, QMessageBox
 
 from products.hub.twitch.auth import TwitchToken
 from products.hub.ui.raid_page import (
+    RAID_SECONDARY_TEXT_COLOR,
     RaidActionWorker,
     RaidCandidate,
     RaidCandidatesWorker,
@@ -104,6 +105,10 @@ class RaidPageTests(unittest.TestCase):
         self.assertIn("42 viewers", card.stats_label.text())
         self.assertIn("Live", card.stats_label.text())
         self.assertEqual(card.raid_button.text(), "Raid")
+        self.assertIn(RAID_SECONDARY_TEXT_COLOR, card.stats_label.styleSheet())
+        self.assertIn(RAID_SECONDARY_TEXT_COLOR, card.title_label.styleSheet())
+        self.assertIn("palette(highlight)", card.category_label.styleSheet())
+        self.assertNotIn(RAID_SECONDARY_TEXT_COLOR, card.name_label.styleSheet())
 
     def test_search_matches_all_supported_fields_case_insensitively(self) -> None:
         self._apply(

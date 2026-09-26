@@ -29,6 +29,7 @@ from shared.streamhouse_runtime.logger import Logger
 
 FOLLOWED_STREAMS_SCOPE = "user:read:follows"
 RAID_SCOPE = "channel:manage:raids"
+RAID_SECONDARY_TEXT_COLOR = "#adadb8"
 
 
 def format_raid_uptime(
@@ -229,10 +230,10 @@ class RaidChannelCard(QFrame):
             self,
         )
         self.stats_label.setObjectName("raidChannelStats")
-        self.stats_label.setStyleSheet("color:palette(midlight);")
+        self.stats_label.setStyleSheet(f"color:{RAID_SECONDARY_TEXT_COLOR};")
         self.title_label = ElidingLabel(candidate.title, self)
         self.title_label.setObjectName("raidChannelTitle")
-        self.title_label.setStyleSheet("color:palette(midlight);")
+        self.title_label.setStyleSheet(f"color:{RAID_SECONDARY_TEXT_COLOR};")
         self.raid_button = QPushButton("Raid", self)
         self.raid_button.setObjectName("raidChannelButton")
         self.raid_button.setMaximumWidth(90)
