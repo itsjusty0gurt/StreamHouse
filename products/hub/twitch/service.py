@@ -538,6 +538,19 @@ class TwitchService:
         broadcaster_id, token = self._broadcaster_credentials()
         return self.helix.get_stream_information(broadcaster_id, token)
 
+    def get_followed_live_channels(self) -> list[dict]:
+        token = self.auth.token if self.auth is not None else None
+        if token is None or not token.user_id:
+            raise PermissionError(
+                "Connect Twitch to find channels to raid."
+            )
+        if "user:read:follows" not in set(token.scopes):
+            raise PermissionError(
+                "Additional Twitch permission is required to view followed "
+                "live channels. Reauthorize the Main / Broadcaster Account."
+            )
+        return self.helix.get_followed_streams(token.user_id, token)
+
     def get_channel_information(self) -> dict | None:
         broadcaster_id, token = self._broadcaster_credentials()
         return self.helix.get_channel_information(broadcaster_id, token)

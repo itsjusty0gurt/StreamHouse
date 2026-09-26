@@ -397,6 +397,30 @@ class TwitchServiceTests(unittest.TestCase):
             "channel-1", "stable-viewer-id", "vip", True, token
         )
 
+    def test_followed_live_channels_use_signed_in_user_and_required_scope(self) -> None:
+        token = TwitchToken(
+            "access",
+            "refresh",
+            999,
+            ["user:read:follows"],
+            user_id="channel-1",
+        )
+        helix = Mock()
+        helix.get_followed_streams.return_value = [
+            {"user_id": "viewer-1", "type": "live"}
+        ]
+        service = TwitchService(auth=Mock(token=token), helix=helix)
+
+        self.assertEqual(
+            service.get_followed_live_channels(),
+            [{"user_id": "viewer-1", "type": "live"}],
+        )
+        helix.get_followed_streams.assert_called_once_with("channel-1", token)
+
+        token.scopes.clear()
+        with self.assertRaisesRegex(PermissionError, "Additional Twitch permission"):
+            service.get_followed_live_channels()
+
     def test_all_chat_mode_slash_actions_use_chat_settings_service(self) -> None:
         token = TwitchToken(
             "access",

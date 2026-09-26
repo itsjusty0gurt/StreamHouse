@@ -34,6 +34,7 @@ class TwitchHelixClient:
     GLOBAL_BADGES_URL = "https://api.twitch.tv/helix/chat/badges/global"
     CHANNEL_BADGES_URL = "https://api.twitch.tv/helix/chat/badges"
     STREAMS_URL = "https://api.twitch.tv/helix/streams"
+    FOLLOWED_STREAMS_URL = "https://api.twitch.tv/helix/streams/followed"
     CHANNELS_URL = "https://api.twitch.tv/helix/channels"
     SEARCH_CATEGORIES_URL = "https://api.twitch.tv/helix/search/categories"
     FOLLOWERS_URL = "https://api.twitch.tv/helix/channels/followers"
@@ -162,6 +163,26 @@ class TwitchHelixClient:
         if not isinstance(values, list) or not values:
             return None
         return values[0] if isinstance(values[0], dict) else None
+
+    def get_followed_streams(
+        self,
+        user_id: str,
+        token: TwitchToken,
+    ) -> list[dict[str, Any]]:
+        """Return only followed broadcasters that Twitch currently reports live."""
+
+        url = (
+            f"{self.FOLLOWED_STREAMS_URL}?"
+            f"{urlencode({'user_id': user_id, 'first': 100})}"
+        )
+        records = self._get_paginated(url, token)
+        unique: dict[str, dict[str, Any]] = {}
+        for record in records:
+            user_id_value = str(record.get("user_id", "")).strip()
+            is_live = str(record.get("type", "")).casefold() == "live"
+            if user_id_value and is_live:
+                unique[user_id_value] = record
+        return list(unique.values())
 
     def get_channel_information(
         self, broadcaster_id: str, token: TwitchToken

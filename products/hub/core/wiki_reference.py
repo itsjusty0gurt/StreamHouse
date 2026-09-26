@@ -653,6 +653,42 @@ def _twitch_entries() -> tuple[WikiEntry, ...]:
                 for keyword in (command.name, command.syntax, command.required_scope)
             ),
         ),
+        WikiEntry(
+            "twitch:raid-page",
+            "Twitch",
+            "Your Channel → Raid",
+            "Find channels you already follow that are currently live, then start a Twitch raid without opening a browser.",
+            (
+                WikiSection(
+                    "Live channel cards",
+                    (
+                        "Each card shows the channel, category, stream title, viewer count, uptime, and Twitch thumbnail when available.",
+                        "Search matches channel name, login, category, and stream title. Results can be sorted by viewers or channel name.",
+                    ),
+                ),
+                WikiSection(
+                    "Refresh and raid",
+                    (
+                        "Refresh asks Twitch for the followed channels that are live now; Hub does not save the results.",
+                        "Raid asks for confirmation, then uses Twitch's normal raid action and permissions.",
+                    ),
+                ),
+                WikiSection(
+                    "Requirements",
+                    (
+                        "Connect the Main / Broadcaster Account and grant followed-channel read and raid-management permissions.",
+                    ),
+                ),
+            ),
+            (
+                "raid",
+                "followed live channels",
+                "user:read:follows",
+                "channel:manage:raids",
+                "viewer count",
+                "uptime",
+            ),
+        ),
     )
 
 

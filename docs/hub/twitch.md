@@ -61,13 +61,20 @@ clears the live pane. This presentation cleanup does not erase Activity,
 chatter/user, or other historical records. EventSub-originated UI changes cross
 the queued Twitch Qt bridge before the widget is touched.
 
-The Chat input offers local autocomplete for the currently API-backed `/ban`,
-`/timeout`, and `/unban` actions, including suggestions from Hub's known-user
-records. Completion only prepares the command; explicit submission and the
-normal confirmation remain required. Sent-message Up/Down history is bounded
-and session-only. The live timeline follows while near the bottom, pauses when
-the streamer reads older messages, and shows a counted Jump to latest control
-until the streamer jumps or manually returns to the bottom.
+The Chat input derives local autocomplete from the API-backed slash-command
+registry, including moderation, chat modes, Mod/VIP management, raids, and
+announcements. Known-user suggestions come from Hub's local user records.
+Completion only prepares the command; explicit submission and the normal
+confirmation remain required. Sent-message Up/Down history is bounded and
+session-only. The live timeline follows while near the bottom, pauses when the
+streamer reads older messages, and shows a counted Jump to latest control until
+the streamer jumps or manually returns to the bottom.
+
+**Your Channel > Raid** uses Get Followed Streams with the broadcaster's
+`user:read:follows` permission. Twitch returns only followed broadcasters that
+are currently live, including the stream metadata and thumbnail template used
+by the runtime-only cards. Starting a raid reuses the same
+`channel:manage:raids` service path as `/raid`; results are not persisted.
 
 Custom commands are Twitch triggers evaluated by
 `TwitchCommandTriggerDispatcher`. Ready matches publish a normalized
@@ -203,8 +210,8 @@ thread.
 ## UI responsibilities
 
 - **Your Channel** is the current Hub channel workspace. Its current top-level tabs
-  are Chat, Analytics, Commands, Channel Information, Channel Points,
-  Soundboard, Counters, and User. Session data is
+  are Chat, Analytics, Raid, Commands, Channel Information, Channel Points,
+  Counters, and Users. Session data is
   currently presented within Analytics. Chat includes the overview, grouped
   chatters, Activity Feed, and eligible ad controls. In narrow and portrait
   layouts, Chat remains the primary pane while Chatters and Activity stay
@@ -406,7 +413,7 @@ The planned **Your Channel** structure is:
 - Engagement
   - Polls
   - Predictions
-- Raids
+- Raid (implemented as the live-followed-channel finder)
 - Moderation
 - Soundboard
 - Commands
@@ -455,8 +462,9 @@ Raid controls and normalized events distinguish:
 - **Incoming Raid**: another broadcaster raids the channel.
 
 Incoming and outgoing `channel.raid` observation are implemented. Outgoing
-raid controls and a locally confirmed Raid Initiated action remain planned;
-there is no separate public Twitch raid-completed event.
+raid controls are implemented through the shared service used by `/raid` and
+**Your Channel > Raid**. A separate Raid Initiated Automation event remains
+planned; there is no separate public Twitch raid-completed event.
 
 ### Stream Health and Moderation
 

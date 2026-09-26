@@ -15,6 +15,7 @@ TWITCH_SCOPES = (
     "channel:manage:moderators",
     "channel:manage:vips",
     "channel:manage:raids",
+    "user:read:follows",
     "channel:read:vips",
     "channel:read:subscriptions",
     "channel:read:ads",

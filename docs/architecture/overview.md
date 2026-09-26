@@ -1260,6 +1260,7 @@ Your Channel top tabs:
 
 - Chat
 - Analytics
+- Raid
 - Commands
 - Channel Information
 - Channel Points
@@ -1267,8 +1268,15 @@ Your Channel top tabs:
 - User
 
 These are the tabs currently implemented. The planned Hub workspace—including
-Stream Info, Engagement, Raids, and Moderation—is documented in
+Stream Info, Engagement, and Moderation—is documented in
 [`product-family.md`](product-family.md) and must not be read as current UI.
+
+The runtime-only **Raid** tab is owned by `products/hub/ui/raid_page.py`. It
+loads the signed-in broadcaster's live followed channels through Twitch's
+paginated Get Followed Streams API on a Qt worker, then locally searches and
+sorts responsive cards. Thumbnail requests are asynchronous and optional. Raid
+buttons reuse `TwitchService.execute_slash_action()` and the existing stable-ID
+raid service path after confirmation. The candidate list is never persisted.
 
 Hub Alpha 0.1 does not expose the Soundboard page while Twitch Extension
 approval is pending. Its store, local server, relay client, Automation

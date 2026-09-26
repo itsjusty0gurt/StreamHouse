@@ -29,6 +29,46 @@ class _JsonResponse:
 
 
 class TwitchHelixClientTests(unittest.TestCase):
+    @patch("products.hub.twitch.live.urlopen")
+    def test_followed_streams_paginate_deduplicate_and_keep_only_live(
+        self, open_url
+    ) -> None:
+        open_url.side_effect = (
+            _JsonResponse(
+                {
+                    "data": [
+                        {"user_id": "one", "type": "live", "viewer_count": 10},
+                        {"user_id": "offline", "type": "", "viewer_count": 0},
+                    ],
+                    "pagination": {"cursor": "next-page"},
+                }
+            ),
+            _JsonResponse(
+                {
+                    "data": [
+                        {"user_id": "one", "type": "live", "viewer_count": 11},
+                        {"user_id": "two", "type": "live", "viewer_count": 5},
+                    ],
+                    "pagination": {},
+                }
+            ),
+        )
+        token = TwitchToken(
+            "access", "refresh", 999, ["user:read:follows"], user_id="channel-1"
+        )
+
+        results = TwitchHelixClient().get_followed_streams("channel-1", token)
+
+        self.assertEqual(
+            [(item["user_id"], item["viewer_count"]) for item in results],
+            [("one", 11), ("two", 5)],
+        )
+        urls = [call.args[0].full_url for call in open_url.call_args_list]
+        self.assertIn("streams/followed", urls[0])
+        self.assertIn("user_id=channel-1", urls[0])
+        self.assertIn("first=100", urls[0])
+        self.assertIn("after=next-page", urls[1])
+
     def test_chat_subscriptions_include_moderation_sync_events(self) -> None:
         client = TwitchHelixClient()
         client._create_subscription = Mock()

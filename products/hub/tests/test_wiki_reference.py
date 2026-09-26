@@ -111,6 +111,27 @@ def test_twitch_slash_reference_is_derived_from_command_registry() -> None:
     assert "chatters/users context menu" in entry.search_text()
 
 
+def test_raid_page_reference_documents_runtime_finder_and_permissions() -> None:
+    tasks, variables = _reference_sources()
+    entry = next(
+        item
+        for item in build_wiki_entries(tasks, variables)
+        if item.entry_id == "twitch:raid-page"
+    )
+    text = entry.search_text()
+
+    assert "your channel → raid" in text
+    assert "currently live" in text
+    assert "viewer count" in text
+    assert "uptime" in text
+    assert "search" in text
+    assert "refresh" in text
+    assert "confirmation" in text
+    assert "user:read:follows" in text
+    assert "channel:manage:raids" in text
+    assert "does not save" in text
+
+
 def test_wiki_search_is_local_case_insensitive_and_does_not_mutate_sources() -> None:
     application = QApplication.instance() or QApplication([])
     tasks, variables = _reference_sources()

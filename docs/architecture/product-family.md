@@ -93,7 +93,7 @@ The intended future structure of Hub's **Your Channel** workspace is:
 - Engagement
   - Polls
   - Predictions
-- Raids
+- Raid (implemented as the live-followed-channel finder)
 - Moderation
 - Soundboard
 - Commands
@@ -148,9 +148,10 @@ Raid controls and events distinguish:
 - **Incoming Raid**: another broadcaster raids the channel.
 
 Incoming Raid and Outgoing Raid Sent observation are implemented through the
-two official `channel.raid` conditions. Outgoing raid controls and a locally
-confirmed Raid Initiated action remain planned; Twitch exposes no separate
-raid-completed EventSub event.
+two official `channel.raid` conditions. Outgoing raid controls are implemented
+through the shared Twitch raid service used by Chat slash commands and **Your
+Channel > Raid**. A separate Raid Initiated Automation event remains planned;
+Twitch exposes no separate raid-completed EventSub event.
 
 Stream Health may summarize:
 

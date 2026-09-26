@@ -2052,6 +2052,7 @@ class MainWindowTests(unittest.TestCase):
             [
                 "Chat",
                 "Analytics",
+                "Raid",
                 "Channel Information",
                 "Commands",
                 "Channel Points",
@@ -2120,7 +2121,7 @@ class MainWindowTests(unittest.TestCase):
                 "Settings",
             ],
         )
-        self.assertEqual(self.window.channel_tabs.count(), 7)
+        self.assertEqual(self.window.channel_tabs.count(), 8)
         self.assertNotIn(
             "Soundboard",
             [
@@ -2139,6 +2140,7 @@ class MainWindowTests(unittest.TestCase):
             ],
             ["Routines", "Queues", "Variables", "Run History"],
         )
+
         self.assertFalse(self.window.channel_points_page.create_button.isEnabled())
         self.assertEqual(
             [
@@ -2161,6 +2163,27 @@ class MainWindowTests(unittest.TestCase):
         self.assertIn("obs", diagnostic_state)
         self.assertIn("automation", diagnostic_state)
         self.assertIn("storage_schemas", diagnostic_state)
+
+    def test_raid_tab_activates_runtime_loader_when_selected(self) -> None:
+        self.window.twitch_auth.token = TwitchToken(
+            "access",
+            "refresh",
+            9999999999,
+            ["user:read:follows", "channel:manage:raids"],
+            user_id="channel-1",
+        )
+        self.window.twitch_service.broadcaster_user_id = "channel-1"
+        self.window.raid_page.load_pool.start = Mock()
+
+        self.window.channel_tabs.setCurrentWidget(self.window.raid_page)
+
+        self.window.raid_page.load_pool.start.assert_called_once()
+        self.assertEqual(
+            self.window.channel_tabs.tabText(
+                self.window.channel_tabs.indexOf(self.window.raid_page)
+            ),
+            "Raid",
+        )
 
     def test_support_actions_share_diagnostics_service_and_existing_tracker(self) -> None:
         with patch.object(

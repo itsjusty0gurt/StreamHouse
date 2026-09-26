@@ -180,6 +180,7 @@ from products.hub.ui.backup_dialogs import (
 )
 from products.hub.ui.users_page import UsersPage
 from products.hub.ui.counters_page import CountersPage
+from products.hub.ui.raid_page import RaidPage
 from products.hub.ui.log_handler import QtLogHandler
 from products.hub.ui.twitch_bridge import TwitchEventBridge
 from products.hub.twitch.chat_entries import TwitchChatEntry
@@ -2072,6 +2073,7 @@ class MainWindow(QMainWindow):
         retention_layout.addStretch()
         analytics_layout.addLayout(retention_layout)
         self.channel_tabs.addTab(analytics_page, "Analytics")
+        self._build_raid_tab()
         self._build_channel_information_tab()
         self._build_twitch_commands_tab()
         self._build_channel_points_tab()
@@ -2403,6 +2405,14 @@ class MainWindow(QMainWindow):
             self._channel_workspace_tab_changed
         )
 
+    def _build_raid_tab(self) -> None:
+        self.raid_page = RaidPage(
+            self.twitch_service,
+            self.twitch_auth,
+            self.channel_tabs,
+        )
+        self.channel_tabs.addTab(self.raid_page, "Raid")
+
     def _build_soundboard_tab(self) -> None:
         # Kept as an isolated composition hook so the UI can be re-enabled
         # after Twitch approval without rebuilding the Soundboard subsystem.
@@ -2423,8 +2433,11 @@ class MainWindow(QMainWindow):
 
     @Slot(int)
     def _channel_workspace_tab_changed(self, index: int) -> None:
-        if self.channel_tabs.widget(index) is self.channel_points_page:
+        page = self.channel_tabs.widget(index)
+        if page is self.channel_points_page:
             self.channel_points_page.activate()
+        elif page is self.raid_page:
+            self.raid_page.activate()
 
     @Slot(str, str, dict)
     def _handle_soundboard_trigger(
@@ -8293,6 +8306,7 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event: QCloseEvent) -> None:
         self._shutting_down = True
         self.chat_user_page.shutdown()
+        self.raid_page.shutdown()
         self.automation_timer_scheduler.shutdown()
         self.automation_queue_manager.cancel_all_current(
             "Hub is shutting down."
