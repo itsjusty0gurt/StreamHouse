@@ -507,11 +507,34 @@ class TwitchHelixClient:
         broadcaster_id: str,
         target_broadcaster_id: str,
         token: TwitchToken,
-    ) -> None:
-        url = f"{self.RAIDS_URL}?{urlencode({'from_broadcaster_id': broadcaster_id, 'to_broadcaster_id': target_broadcaster_id})}"
-        self._read_json(
+    ) -> datetime:
+        query = urlencode(
+            {
+                "from_broadcaster_id": broadcaster_id,
+                "to_broadcaster_id": target_broadcaster_id,
+            }
+        )
+        url = f"{self.RAIDS_URL}?{query}"
+        payload = self._read_json(
             Request(url, data=b"", headers=self._headers(token), method="POST")
         )
+        records = payload.get("data", [])
+        if (
+            not isinstance(records, list)
+            or not records
+            or not isinstance(records[0], dict)
+        ):
+            raise ValueError("Twitch returned an invalid raid response.")
+        raw_created_at = str(records[0].get("created_at", "")).strip()
+        try:
+            created_at = datetime.fromisoformat(
+                raw_created_at.replace("Z", "+00:00")
+            )
+        except ValueError as error:
+            raise ValueError("Twitch returned an invalid raid start time.") from error
+        if created_at.tzinfo is None:
+            created_at = created_at.replace(tzinfo=timezone.utc)
+        return created_at.astimezone(timezone.utc)
 
     def cancel_raid(self, broadcaster_id: str, token: TwitchToken) -> None:
         url = f"{self.RAIDS_URL}?{urlencode({'broadcaster_id': broadcaster_id})}"

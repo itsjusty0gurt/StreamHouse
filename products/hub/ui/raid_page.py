@@ -1,12 +1,24 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from math import ceil
+from typing import Callable
 
-from PySide6.QtCore import QObject, QThreadPool, QRunnable, Qt, QUrl, Signal, Slot
+from PySide6.QtCore import (
+    QObject,
+    QThreadPool,
+    QRunnable,
+    Qt,
+    QTimer,
+    QUrl,
+    Signal,
+    Slot,
+)
 from PySide6.QtGui import QPixmap, QResizeEvent
 from PySide6.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkRequest
 from PySide6.QtWidgets import (
+    QApplication,
     QComboBox,
     QFrame,
     QGridLayout,
@@ -21,7 +33,12 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from products.hub.twitch.slash_commands import TwitchSlashRequest
+from products.hub.core.events import Events
+from products.hub.twitch.models import TwitchEvent
+from products.hub.twitch.raid_contract import (
+    RAID_COUNTDOWN_SECONDS,
+    RAID_NOW_API_SUPPORTED,
+)
 from products.hub.ui.automation_task_cards import ElidingLabel
 from products.hub.ui.page_header import PageHeader
 from shared.streamhouse_runtime.logger import Logger
@@ -112,6 +129,13 @@ class RaidCandidate:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class ActiveRaid:
+    candidate: RaidCandidate
+    created_at: datetime
+    deadline: datetime
+
+
 class _LoadSignals(QObject):
     completed = Signal(object, int, object)
     failed = Signal(object, int, str, str)
@@ -143,7 +167,7 @@ class RaidCandidatesWorker(QRunnable):
 
 
 class _RaidSignals(QObject):
-    completed = Signal(object, object, bool, str)
+    completed = Signal(object, object, object, str)
 
 
 class RaidActionWorker(QRunnable):
@@ -155,17 +179,16 @@ class RaidActionWorker(QRunnable):
 
     def run(self) -> None:
         try:
-            success, _target = self.service.execute_slash_action(
-                TwitchSlashRequest(
-                    action="raid",
-                    user_reference=self.candidate.display_name,
-                    user_id=self.candidate.user_id,
-                )
+            created_at = self.service.start_raid(self.candidate.user_id)
+            self.signals.completed.emit(
+                self,
+                self.candidate,
+                created_at,
+                "" if created_at is not None else "network",
             )
-            self.signals.completed.emit(self, self.candidate, success, "")
         except PermissionError as error:
             self.signals.completed.emit(
-                self, self.candidate, False, str(error)
+                self, self.candidate, None, str(error)
             )
         except Exception as error:
             Logger.warning(
@@ -173,8 +196,61 @@ class RaidActionWorker(QRunnable):
                 source="TWITCH",
             )
             self.signals.completed.emit(
-                self, self.candidate, False, "network"
+                self, self.candidate, None, "network"
             )
+
+
+class _SimpleActionSignals(QObject):
+    completed = Signal(object, bool, str)
+
+
+class RaidCancelWorker(QRunnable):
+    def __init__(self, service) -> None:
+        super().__init__()
+        self.service = service
+        self.signals = _SimpleActionSignals()
+
+    def run(self) -> None:
+        try:
+            success = bool(self.service.cancel_raid())
+            self.signals.completed.emit(
+                self,
+                success,
+                "" if success else "network",
+            )
+        except PermissionError as error:
+            self.signals.completed.emit(self, False, str(error))
+        except Exception as error:
+            Logger.warning(
+                f"Could not cancel Twitch raid: {error}",
+                source="TWITCH",
+            )
+            self.signals.completed.emit(self, False, "network")
+
+
+class RaidMessageWorker(QRunnable):
+    def __init__(self, service, message: str) -> None:
+        super().__init__()
+        self.service = service
+        self.message = message
+        self.signals = _SimpleActionSignals()
+
+    def run(self) -> None:
+        try:
+            success = bool(
+                self.service.send_message(self.message, as_bot=False)
+            )
+            self.signals.completed.emit(
+                self,
+                success,
+                "" if success else "network",
+            )
+        except Exception as error:
+            Logger.warning(
+                f"Could not send raid message to Twitch chat: {error}",
+                source="TWITCH",
+            )
+            self.signals.completed.emit(self, False, "network")
 
 
 class RaidChannelCard(QFrame):
@@ -197,6 +273,9 @@ class RaidChannelCard(QFrame):
             "QFrame#raidChannelCard {"
             "background:palette(base); border:1px solid palette(mid);"
             "border-radius:6px;"
+            "}"
+            "QFrame#raidChannelCard[activeRaidTarget=\"true\"] {"
+            "border:2px solid palette(highlight);"
             "}"
             "QFrame#raidChannelCard:hover { border-color:palette(highlight); }"
             "QFrame#raidChannelCard QLabel { border:none; background:transparent; }"
@@ -267,18 +346,34 @@ class RaidChannelCard(QFrame):
         self.raid_button.setEnabled(not pending)
         self.raid_button.setText("Starting…" if pending else "Raid")
 
+    def set_active_target(self, active: bool) -> None:
+        self.setProperty("activeRaidTarget", active)
+        self.raid_button.setText("Raiding" if active else "Raid")
+        style = self.style()
+        style.unpolish(self)
+        style.polish(self)
+
 
 class RaidPage(QWidget):
     MIN_CARD_WIDTH = 330
+    raid_event_received = Signal(object)
 
     @classmethod
     def columns_for_width(cls, width: int) -> int:
         return max(1, max(width, cls.MIN_CARD_WIDTH) // cls.MIN_CARD_WIDTH)
 
-    def __init__(self, service, auth, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        service,
+        auth,
+        parent: QWidget | None = None,
+        *,
+        clock: Callable[[], datetime] | None = None,
+    ) -> None:
         super().__init__(parent)
         self.service = service
         self.auth = auth
+        self._clock = clock or (lambda: datetime.now(timezone.utc))
         self._generation = 0
         self._requested_once = False
         self._loading = False
@@ -287,8 +382,11 @@ class RaidPage(QWidget):
         self._candidates: tuple[RaidCandidate, ...] = ()
         self._visible_candidates: tuple[RaidCandidate, ...] = ()
         self._cards: dict[str, RaidChannelCard] = {}
+        self._active_raid: ActiveRaid | None = None
         self._load_workers: set[RaidCandidatesWorker] = set()
         self._raid_workers: set[RaidActionWorker] = set()
+        self._cancel_workers: set[RaidCancelWorker] = set()
+        self._message_workers: set[RaidMessageWorker] = set()
         self._thumbnail_replies: dict[QNetworkReply, RaidChannelCard] = {}
 
         self.load_pool = QThreadPool(self)
@@ -296,6 +394,9 @@ class RaidPage(QWidget):
         self.raid_pool = QThreadPool(self)
         self.raid_pool.setMaxThreadCount(1)
         self.network = QNetworkAccessManager(self)
+        self.countdown_timer = QTimer(self)
+        self.countdown_timer.setInterval(250)
+        self.countdown_timer.timeout.connect(self._update_countdown)
 
         root = QVBoxLayout(self)
         self.refresh_button = QPushButton("Refresh", self)
@@ -306,6 +407,73 @@ class RaidPage(QWidget):
         )
         self.page_header.add_action(self.refresh_button)
         root.addWidget(self.page_header)
+
+        self.raid_message_frame = QFrame(self)
+        self.raid_message_frame.setObjectName("raidMessagePanel")
+        self.raid_message_frame.setStyleSheet(
+            "QFrame#raidMessagePanel {"
+            "background:palette(base); border:1px solid palette(mid);"
+            "border-radius:6px;"
+            "}"
+            "QFrame#raidMessagePanel QLabel { border:none; background:transparent; }"
+        )
+        message_layout = QHBoxLayout(self.raid_message_frame)
+        message_layout.setContentsMargins(8, 6, 8, 6)
+        message_layout.setSpacing(6)
+        message_label = QLabel("Raid Message", self.raid_message_frame)
+        message_label.setStyleSheet("font-weight:600; border:none;")
+        self.raid_message_edit = QLineEdit(self.raid_message_frame)
+        self.raid_message_edit.setObjectName("raidMessageEdit")
+        self.raid_message_edit.setPlaceholderText(
+            "Message to send in your Twitch chat before the raid…"
+        )
+        self.copy_message_button = QPushButton("Copy", self.raid_message_frame)
+        self.send_message_button = QPushButton(
+            "Send to Chat", self.raid_message_frame
+        )
+        message_layout.addWidget(message_label)
+        message_layout.addWidget(self.raid_message_edit, 1)
+        message_layout.addWidget(self.copy_message_button)
+        message_layout.addWidget(self.send_message_button)
+        root.addWidget(self.raid_message_frame)
+
+        self.active_raid_frame = QFrame(self)
+        self.active_raid_frame.setObjectName("activeRaidPanel")
+        self.active_raid_frame.setStyleSheet(
+            "QFrame#activeRaidPanel {"
+            "background:palette(base); border:1px solid palette(highlight);"
+            "border-radius:6px;"
+            "}"
+            "QFrame#activeRaidPanel QLabel {"
+            "border:none; background:transparent;"
+            "}"
+        )
+        active_layout = QHBoxLayout(self.active_raid_frame)
+        active_layout.setContentsMargins(10, 7, 10, 7)
+        active_text = QVBoxLayout()
+        active_text.setSpacing(1)
+        self.active_raid_label = QLabel(self.active_raid_frame)
+        self.active_raid_label.setStyleSheet("font-weight:700;")
+        self.countdown_label = QLabel(self.active_raid_frame)
+        self.countdown_label.setStyleSheet(
+            f"color:{RAID_SECONDARY_TEXT_COLOR};"
+        )
+        active_text.addWidget(self.active_raid_label)
+        active_text.addWidget(self.countdown_label)
+        self.raid_now_button = QPushButton("Raid Now", self.active_raid_frame)
+        self.raid_now_button.setEnabled(RAID_NOW_API_SUPPORTED)
+        self.raid_now_button.setToolTip(
+            "Twitch does not expose Raid Now through its public API. "
+            "The raid sends automatically when the countdown finishes."
+        )
+        self.cancel_raid_button = QPushButton(
+            "Cancel Raid", self.active_raid_frame
+        )
+        active_layout.addLayout(active_text, 1)
+        active_layout.addWidget(self.raid_now_button)
+        active_layout.addWidget(self.cancel_raid_button)
+        self.active_raid_frame.hide()
+        root.addWidget(self.active_raid_frame)
 
         controls = QHBoxLayout()
         self.search_edit = QLineEdit(self)
@@ -352,8 +520,17 @@ class RaidPage(QWidget):
         self.scroll_area.hide()
 
         self.refresh_button.clicked.connect(self.refresh)
+        self.copy_message_button.clicked.connect(self._copy_raid_message)
+        self.send_message_button.clicked.connect(self._send_raid_message)
+        self.cancel_raid_button.clicked.connect(self._cancel_active_raid)
         self.search_edit.textChanged.connect(self._apply_filter)
         self.sort_combo.currentIndexChanged.connect(self._apply_filter)
+        self.raid_event_received.connect(self._handle_raid_event)
+        self._raid_event_callback = self._forward_raid_event
+        Events.subscribe(
+            "twitch_event.channel.raid",
+            self._raid_event_callback,
+        )
         self._show_state("Open Raid to load followed channels that are live.")
 
     def activate(self) -> None:
@@ -452,12 +629,35 @@ class RaidPage(QWidget):
         self.permission_label.setVisible(not can_raid and bool(self._cards))
         if not can_raid:
             self.permission_label.setText(self._raid_unavailable_message())
-        for card in self._cards.values():
-            card.raid_button.setEnabled(can_raid)
-            if not can_raid:
+        self._update_card_raid_state()
+
+    def _update_card_raid_state(self) -> None:
+        can_start = (
+            self._can_raid()
+            and self._active_raid is None
+            and not self._raid_workers
+        )
+        active_target_id = (
+            self._active_raid.candidate.user_id
+            if self._active_raid is not None
+            else ""
+        )
+        for user_id, card in self._cards.items():
+            active = user_id == active_target_id
+            card.set_active_target(active)
+            card.raid_button.setEnabled(can_start)
+            if active:
+                card.raid_button.setToolTip("This raid is currently pending.")
+            elif self._active_raid is not None:
+                card.raid_button.setToolTip(
+                    "Cancel or complete the current raid before starting another."
+                )
+            elif not can_start:
                 card.raid_button.setToolTip(
                     "Reconnect the Main / Broadcaster Account with raid permission."
                 )
+            else:
+                card.raid_button.setToolTip("")
 
     def _can_raid(self) -> bool:
         token = self.auth.token if self.auth is not None else None
@@ -505,6 +705,51 @@ class RaidPage(QWidget):
             reply.abort()
             reply.deleteLater()
         self._thumbnail_replies.clear()
+
+    @Slot()
+    def _copy_raid_message(self) -> None:
+        message = self.raid_message_edit.text().strip()
+        if not message:
+            self._set_status("Enter a raid message first.")
+            return
+        QApplication.clipboard().setText(message)
+        self._set_status("Raid message copied.")
+
+    @Slot()
+    def _send_raid_message(self) -> None:
+        if self._shutting_down or self._message_workers:
+            return
+        message = self.raid_message_edit.text().strip()
+        if not message:
+            self._set_status("Enter a raid message first.")
+            return
+        self.send_message_button.setEnabled(False)
+        self.send_message_button.setText("Sending…")
+        worker = RaidMessageWorker(self.service, message)
+        self._message_workers.add(worker)
+        worker.signals.completed.connect(self._raid_message_completed)
+        self.raid_pool.start(worker)
+
+    @Slot(object, bool, str)
+    def _raid_message_completed(
+        self,
+        worker: RaidMessageWorker,
+        success: bool,
+        detail: str,
+    ) -> None:
+        self._message_workers.discard(worker)
+        if self._shutting_down:
+            return
+        self.send_message_button.setEnabled(True)
+        self.send_message_button.setText("Send to Chat")
+        if success:
+            self._set_status("Raid message sent to chat.")
+        elif detail and detail != "network":
+            self._set_status(detail)
+        else:
+            self._set_status(
+                "Couldn’t send the raid message. Check Twitch chat."
+            )
 
     @Slot()
     def _apply_filter(self) -> None:
@@ -568,7 +813,11 @@ class RaidPage(QWidget):
 
     @Slot(object)
     def _confirm_raid(self, candidate: RaidCandidate) -> None:
-        if self._shutting_down or self._raid_workers:
+        if (
+            self._shutting_down
+            or self._raid_workers
+            or self._active_raid is not None
+        ):
             return
         answer = QMessageBox.question(
             self,
@@ -579,15 +828,13 @@ class RaidPage(QWidget):
         )
         if answer != QMessageBox.StandardButton.Yes:
             return
-        for existing_card in self._cards.values():
-            existing_card.raid_button.setEnabled(False)
         card = self._cards.get(candidate.user_id)
-        if card is not None:
-            card.set_raid_pending(True)
-        self.status_label.setText(f"Starting raid for {candidate.display_name}…")
-        self.status_label.show()
+        self._set_status(f"Starting raid for {candidate.display_name}…")
         worker = RaidActionWorker(self.service, candidate)
         self._raid_workers.add(worker)
+        self._update_card_raid_state()
+        if card is not None:
+            card.set_raid_pending(True)
         worker.signals.completed.connect(self._raid_completed)
         self.raid_pool.start(worker)
 
@@ -596,7 +843,7 @@ class RaidPage(QWidget):
         self,
         worker: RaidActionWorker,
         candidate: RaidCandidate,
-        success: bool,
+        created_at: object,
         detail: str,
     ) -> None:
         self._raid_workers.discard(worker)
@@ -605,15 +852,120 @@ class RaidPage(QWidget):
         card = self._cards.get(candidate.user_id)
         if card is not None:
             card.set_raid_pending(False)
-        can_raid = self._can_raid()
-        for existing_card in self._cards.values():
-            existing_card.raid_button.setEnabled(can_raid)
-        if success:
-            message = f"Raid started for {candidate.display_name}."
+        if isinstance(created_at, datetime):
+            self._set_active_raid(candidate, created_at)
+            message = f"Raid countdown started for {candidate.display_name}."
         elif detail and detail != "network":
             message = detail
         else:
             message = "Couldn’t start the raid. Try again."
+        self._update_card_raid_state()
+        self._set_status(message)
+
+    def _set_active_raid(
+        self,
+        candidate: RaidCandidate,
+        created_at: datetime,
+    ) -> None:
+        if created_at.tzinfo is None:
+            created_at = created_at.replace(tzinfo=timezone.utc)
+        created_at = created_at.astimezone(timezone.utc)
+        self._active_raid = ActiveRaid(
+            candidate=candidate,
+            created_at=created_at,
+            deadline=created_at + timedelta(seconds=RAID_COUNTDOWN_SECONDS),
+        )
+        self.active_raid_label.setText(f"Raiding {candidate.display_name}")
+        self.active_raid_frame.show()
+        self.countdown_timer.start()
+        self._update_countdown()
+        self._update_card_raid_state()
+
+    @Slot()
+    def _update_countdown(self) -> None:
+        active = self._active_raid
+        if active is None:
+            self.countdown_timer.stop()
+            return
+        remaining = max(
+            0,
+            ceil((active.deadline - self._clock()).total_seconds()),
+        )
+        minutes, seconds = divmod(remaining, 60)
+        self.countdown_label.setText(f"Starting in {minutes:02d}:{seconds:02d}")
+        if remaining == 0:
+            target = active.candidate.display_name
+            self._clear_active_raid(f"Raid sent to {target}.")
+
+    @Slot()
+    def _cancel_active_raid(self) -> None:
+        if (
+            self._shutting_down
+            or self._active_raid is None
+            or self._cancel_workers
+        ):
+            return
+        self.cancel_raid_button.setEnabled(False)
+        self.cancel_raid_button.setText("Cancelling…")
+        worker = RaidCancelWorker(self.service)
+        self._cancel_workers.add(worker)
+        worker.signals.completed.connect(self._cancel_completed)
+        self.raid_pool.start(worker)
+
+    @Slot(object, bool, str)
+    def _cancel_completed(
+        self,
+        worker: RaidCancelWorker,
+        success: bool,
+        detail: str,
+    ) -> None:
+        self._cancel_workers.discard(worker)
+        if self._shutting_down:
+            return
+        self.cancel_raid_button.setEnabled(True)
+        self.cancel_raid_button.setText("Cancel Raid")
+        if success:
+            self._clear_active_raid("Raid cancelled.")
+        elif detail and detail != "network":
+            self._set_status(detail)
+        else:
+            self._set_status(
+                "Couldn’t cancel the raid. It may have already started."
+            )
+
+    def _clear_active_raid(self, message: str = "") -> None:
+        self.countdown_timer.stop()
+        self._active_raid = None
+        self.active_raid_frame.hide()
+        self.cancel_raid_button.setEnabled(True)
+        self.cancel_raid_button.setText("Cancel Raid")
+        self._update_card_raid_state()
+        if message:
+            self._set_status(message)
+
+    def _forward_raid_event(self, twitch_event: TwitchEvent) -> None:
+        if not self._shutting_down:
+            self.raid_event_received.emit(twitch_event)
+
+    @Slot(object)
+    def _handle_raid_event(self, twitch_event: object) -> None:
+        active = self._active_raid
+        if active is None or not isinstance(twitch_event, TwitchEvent):
+            return
+        event = twitch_event.payload.get("event", {})
+        if not isinstance(event, dict):
+            return
+        from_id = str(event.get("from_broadcaster_user_id", ""))
+        to_id = str(event.get("to_broadcaster_user_id", ""))
+        if (
+            from_id == self.service.broadcaster_user_id
+            and to_id == active.candidate.user_id
+        ):
+            self._clear_active_raid(
+                f"Raid sent to {active.candidate.display_name}."
+            )
+
+    def _set_status(self, message: str) -> None:
         self.status_label.setText(message)
         self.status_label.show()
 
@@ -628,8 +980,16 @@ class RaidPage(QWidget):
             self._reflow()
 
     def shutdown(self) -> None:
+        if self._shutting_down:
+            return
         self._shutting_down = True
         self._generation += 1
+        Events.unsubscribe(
+            "twitch_event.channel.raid",
+            self._raid_event_callback,
+        )
+        self.countdown_timer.stop()
+        self._active_raid = None
         self._cancel_thumbnails()
         self.load_pool.clear()
         self.raid_pool.clear()
@@ -637,3 +997,5 @@ class RaidPage(QWidget):
             self._load_workers.clear()
         if self.raid_pool.waitForDone(2_000):
             self._raid_workers.clear()
+            self._cancel_workers.clear()
+            self._message_workers.clear()

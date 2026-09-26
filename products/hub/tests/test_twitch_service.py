@@ -337,6 +337,9 @@ class TwitchServiceTests(unittest.TestCase):
         )
         helix = Mock()
         helix.get_user.return_value = {"id": "viewer-1"}
+        helix.start_raid.return_value = datetime(
+            2026, 9, 25, tzinfo=timezone.utc
+        )
         service = TwitchService(auth=Mock(token=token), helix=helix)
         service.broadcaster_user_id = "channel-1"
 

@@ -695,21 +695,30 @@ class TwitchService:
             return False
         return True
 
-    def manage_raid(self, action: str, target_user_id: str = "") -> bool:
+    def start_raid(self, target_user_id: str) -> datetime | None:
         token = self.require_scope("channel:manage:raids", broadcaster_only=True)
         try:
-            if action == "raid":
-                self.helix.start_raid(
-                    self.broadcaster_user_id,
-                    target_user_id,
-                    token,
-                )
-            elif action == "unraid":
-                self.helix.cancel_raid(self.broadcaster_user_id, token)
-            else:
-                raise ValueError("Unsupported Twitch raid action.")
+            return self.helix.start_raid(
+                self.broadcaster_user_id,
+                target_user_id,
+                token,
+            )
         except (HTTPError, URLError, OSError, ValueError) as error:
-            self._report_error(f"Twitch raid action failed: {error}", change_state=False)
+            self._report_error(
+                f"Twitch raid start failed: {error}",
+                change_state=False,
+            )
+            return None
+
+    def cancel_raid(self) -> bool:
+        token = self.require_scope("channel:manage:raids", broadcaster_only=True)
+        try:
+            self.helix.cancel_raid(self.broadcaster_user_id, token)
+        except (HTTPError, URLError, OSError, ValueError) as error:
+            self._report_error(
+                f"Twitch raid cancellation failed: {error}",
+                change_state=False,
+            )
             return False
         return True
 
@@ -787,7 +796,11 @@ class TwitchService:
         elif request.action in {"mod", "unmod", "vip", "unvip"}:
             success = self.manage_user_role(request.action, user_id)
         elif request.action in {"raid", "unraid"}:
-            success = self.manage_raid(request.action, user_id)
+            success = (
+                self.start_raid(user_id) is not None
+                if request.action == "raid"
+                else self.cancel_raid()
+            )
             target = request.user_reference or "pending raid"
         elif request.action == "announce":
             success = self.send_announcement(request.message)

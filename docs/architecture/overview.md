@@ -1275,8 +1275,14 @@ The runtime-only **Raid** tab is owned by `products/hub/ui/raid_page.py`. It
 loads the signed-in broadcaster's live followed channels through Twitch's
 paginated Get Followed Streams API on a Qt worker, then locally searches and
 sorts responsive cards. Thumbnail requests are asynchronous and optional. Raid
-buttons reuse `TwitchService.execute_slash_action()` and the existing stable-ID
-raid service path after confirmation. The candidate list is never persisted.
+buttons reuse the same stable-ID `TwitchService.start_raid()` path as `/raid`
+after confirmation. A compact session-only message composer reuses normal
+broadcaster chat sending. After Twitch accepts a start request, the page uses
+the authoritative `created_at` response to present the pending 90-second
+countdown, disables other targets, and offers Helix cancellation. Matching
+outgoing `channel.raid` events clear the active state immediately. Twitch
+exposes no public Raid Now endpoint, so Hub does not simulate one. The candidate
+list, message, and active raid state are never persisted.
 
 Hub Alpha 0.1 does not expose the Soundboard page while Twitch Extension
 approval is pending. Its store, local server, relay client, Automation

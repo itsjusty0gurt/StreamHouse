@@ -25,6 +25,10 @@ from products.hub.twitch.automation_triggers import (
 )
 from products.hub.twitch.default_commands import default_command_definitions
 from products.hub.twitch.slash_commands import TWITCH_SLASH_COMMANDS
+from products.hub.twitch.raid_contract import (
+    RAID_COUNTDOWN_SECONDS,
+    RAID_NOW_API_SUPPORTED,
+)
 
 
 WIKI_CATEGORIES = (
@@ -601,6 +605,16 @@ def _getting_started_entries() -> tuple[WikiEntry, ...]:
 
 
 def _twitch_entries() -> tuple[WikiEntry, ...]:
+    raid_now_reference = (
+        "Raid Now is available through Twitch's public API."
+        if RAID_NOW_API_SUPPORTED
+        else (
+            "Twitch does not expose Raid Now through its public API, so Hub "
+            "does not simulate it. The raid sends automatically when the "
+            "countdown finishes, or Twitch's own Raid Now control can "
+            "complete it sooner."
+        )
+    )
     return (
         WikiEntry(
             "twitch:capabilities",
@@ -657,8 +671,15 @@ def _twitch_entries() -> tuple[WikiEntry, ...]:
             "twitch:raid-page",
             "Twitch",
             "Your Channel → Raid",
-            "Find channels you already follow that are currently live, then start a Twitch raid without opening a browser.",
+            "Prepare a raid message, find followed channels that are currently live, and manage Twitch's pending raid countdown in Hub.",
             (
+                WikiSection(
+                    "Raid message",
+                    (
+                        "The session-only Raid Message can be edited, copied, or sent through Hub's normal Twitch chat connection before starting a raid.",
+                        "Sending is always explicit; starting a raid never sends the message automatically. Raid Messages are plain text and do not currently resolve Variables.",
+                    ),
+                ),
                 WikiSection(
                     "Live channel cards",
                     (
@@ -667,10 +688,18 @@ def _twitch_entries() -> tuple[WikiEntry, ...]:
                     ),
                 ),
                 WikiSection(
-                    "Refresh and raid",
+                    "Start and countdown",
                     (
                         "Refresh asks Twitch for the followed channels that are live now; Hub does not save the results.",
-                        "Raid asks for confirmation, then uses Twitch's normal raid action and permissions.",
+                        f"Raid asks for confirmation, then starts Twitch's {RAID_COUNTDOWN_SECONDS}-second pending raid countdown. The active target is marked and other Raid actions remain unavailable until it completes or is cancelled.",
+                        "Cancel Raid uses Twitch's real cancellation API and returns the page to normal target selection only after Twitch accepts the cancellation.",
+                    ),
+                ),
+                WikiSection(
+                    "Raid Now",
+                    (
+                        raid_now_reference,
+                        "An outgoing Channel Raid event clears the active state immediately when Twitch confirms completion.",
                     ),
                 ),
                 WikiSection(
@@ -687,6 +716,10 @@ def _twitch_entries() -> tuple[WikiEntry, ...]:
                 "channel:manage:raids",
                 "viewer count",
                 "uptime",
+                "raid message",
+                "countdown",
+                "cancel raid",
+                "raid now",
             ),
         ),
     )

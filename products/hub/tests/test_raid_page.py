@@ -1,6 +1,6 @@
 import os
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest.mock import Mock, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -10,11 +10,15 @@ from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 from products.hub.twitch.auth import TwitchToken
+from products.hub.twitch.models import TwitchEvent, TwitchEventTransport
 from products.hub.ui.raid_page import (
+    RAID_COUNTDOWN_SECONDS,
     RAID_SECONDARY_TEXT_COLOR,
+    RaidCancelWorker,
     RaidActionWorker,
     RaidCandidate,
     RaidCandidatesWorker,
+    RaidMessageWorker,
     RaidPage,
     format_raid_uptime,
 )
@@ -59,7 +63,15 @@ class RaidPageTests(unittest.TestCase):
         )
         self.auth = Mock(token=token)
         self.service = Mock(broadcaster_user_id="channel-1")
-        self.page = RaidPage(self.service, self.auth)
+        self.now = datetime(2026, 9, 25, 19, 0, tzinfo=timezone.utc)
+        self.service.start_raid.return_value = self.now
+        self.service.cancel_raid.return_value = True
+        self.service.send_message.return_value = True
+        self.page = RaidPage(
+            self.service,
+            self.auth,
+            clock=lambda: self.now,
+        )
 
     def tearDown(self) -> None:
         self.page.shutdown()
@@ -226,18 +238,21 @@ class RaidPageTests(unittest.TestCase):
             self.page._confirm_raid(candidate)
             self.page._confirm_raid(candidate)
         self.page.raid_pool.start.assert_called_once()
-        self.service.execute_slash_action.assert_not_called()
 
         worker = self.page.raid_pool.start.call_args.args[0]
         self.assertIsInstance(worker, RaidActionWorker)
-        self.service.execute_slash_action.return_value = (True, "Channel Name")
         worker.run()
         self.application.processEvents()
 
-        request = self.service.execute_slash_action.call_args.args[0]
-        self.assertEqual(request.action, "raid")
-        self.assertEqual(request.user_id, "viewer-1")
-        self.assertEqual(self.page.status_label.text(), "Raid started for Channel Name.")
+        self.service.start_raid.assert_called_once_with("viewer-1")
+        self.service.send_message.assert_not_called()
+        self.assertEqual(
+            self.page.status_label.text(),
+            "Raid countdown started for Channel Name.",
+        )
+        self.assertIsNotNone(self.page._active_raid)
+        self.assertEqual(self.page.countdown_label.text(), "Starting in 01:30")
+        self.assertFalse(self.page.raid_now_button.isEnabled())
         self.assertEqual(QThread.currentThread(), self.page.thread())
 
     def test_raid_failure_restores_button_and_reports_error(self) -> None:
@@ -247,10 +262,159 @@ class RaidPageTests(unittest.TestCase):
         self.page._raid_workers.add(worker)
         self.page._cards[candidate.user_id].set_raid_pending(True)
 
-        self.page._raid_completed(worker, candidate, False, "network")
+        self.page._raid_completed(worker, candidate, None, "network")
 
         self.assertTrue(self.page._cards[candidate.user_id].raid_button.isEnabled())
         self.assertIn("Couldn’t start", self.page.status_label.text())
+
+    def test_raid_message_copy_and_send_reuse_normal_chat_path(self) -> None:
+        self.page.raid_message_edit.setText("Raid time!")
+        self.page._copy_raid_message()
+        self.assertEqual(QApplication.clipboard().text(), "Raid time!")
+        self.assertEqual(self.page.status_label.text(), "Raid message copied.")
+
+        self.page.raid_pool.start = Mock()
+        self.page._send_raid_message()
+        worker = self.page.raid_pool.start.call_args.args[0]
+        self.assertIsInstance(worker, RaidMessageWorker)
+        self.assertEqual(worker.message, "Raid time!")
+        worker.run()
+        self.application.processEvents()
+
+        self.service.send_message.assert_called_once_with(
+            "Raid time!", as_bot=False
+        )
+        self.assertEqual(
+            self.page.status_label.text(),
+            "Raid message sent to chat.",
+        )
+        self.assertEqual(self.page.raid_message_edit.text(), "Raid time!")
+
+    def test_raid_network_actions_run_off_the_ui_thread(self) -> None:
+        worker_threads = []
+
+        def start_raid(_target_id):
+            worker_threads.append(QThread.currentThread())
+            return self.now
+
+        self.service.start_raid.side_effect = start_raid
+        self._apply([_stream()])
+        with patch.object(
+            QMessageBox,
+            "question",
+            return_value=QMessageBox.StandardButton.Yes,
+        ):
+            self.page._confirm_raid(self.page._candidates[0])
+        for _ in range(100):
+            if not self.page._raid_workers:
+                break
+            QTest.qWait(10)
+
+        self.assertEqual(len(worker_threads), 1)
+        self.assertIsNot(worker_threads[0], self.page.thread())
+        self.assertIsNotNone(self.page._active_raid)
+
+    def test_active_target_blocks_duplicate_start_and_marks_card(self) -> None:
+        self._apply(
+            [
+                _stream(),
+                _stream("viewer-2", name="Second Channel"),
+            ]
+        )
+        candidate = self.page._candidates[0]
+        self.page._set_active_raid(candidate, self.now)
+
+        self.assertTrue(
+            self.page._cards["viewer-1"].property("activeRaidTarget")
+        )
+        self.assertFalse(self.page._cards["viewer-1"].raid_button.isEnabled())
+        self.assertFalse(self.page._cards["viewer-2"].raid_button.isEnabled())
+        with patch.object(QMessageBox, "question") as question:
+            self.page._confirm_raid(self.page._candidates[1])
+        question.assert_not_called()
+
+    def test_countdown_uses_twitch_start_time_and_never_goes_negative(self) -> None:
+        self._apply([_stream()])
+        self.page._set_active_raid(self.page._candidates[0], self.now)
+
+        self.now += timedelta(seconds=31)
+        self.page._update_countdown()
+        self.assertEqual(self.page.countdown_label.text(), "Starting in 00:59")
+
+        self.now += timedelta(seconds=RAID_COUNTDOWN_SECONDS)
+        self.page._update_countdown()
+        self.assertIsNone(self.page._active_raid)
+        self.assertFalse(self.page.countdown_timer.isActive())
+        self.assertIn("Raid sent", self.page.status_label.text())
+
+    def test_cancel_success_clears_active_state(self) -> None:
+        self._apply([_stream()])
+        self.page._set_active_raid(self.page._candidates[0], self.now)
+        self.page.raid_pool.start = Mock()
+
+        self.page._cancel_active_raid()
+        worker = self.page.raid_pool.start.call_args.args[0]
+        self.assertIsInstance(worker, RaidCancelWorker)
+        worker.run()
+        self.application.processEvents()
+
+        self.service.cancel_raid.assert_called_once_with()
+        self.assertIsNone(self.page._active_raid)
+        self.assertEqual(self.page.status_label.text(), "Raid cancelled.")
+        self.assertTrue(self.page._cards["viewer-1"].raid_button.isEnabled())
+
+    def test_cancel_failure_preserves_active_state(self) -> None:
+        self._apply([_stream()])
+        self.page._set_active_raid(self.page._candidates[0], self.now)
+        worker = RaidCancelWorker(self.service)
+        self.page._cancel_workers.add(worker)
+
+        self.page._cancel_completed(worker, False, "network")
+
+        self.assertIsNotNone(self.page._active_raid)
+        self.assertTrue(self.page.countdown_timer.isActive())
+        self.assertIn("Couldn’t cancel", self.page.status_label.text())
+
+    def test_outgoing_raid_event_clears_matching_active_target(self) -> None:
+        self._apply([_stream()])
+        self.page._set_active_raid(self.page._candidates[0], self.now)
+        event = TwitchEvent(
+            subscription_type="channel.raid",
+            version="1",
+            received_at=self.now,
+            message_id="raid-1",
+            broadcaster_user_id="channel-1",
+            broadcaster_user_login="streamer",
+            broadcaster_user_name="Streamer",
+            transport=TwitchEventTransport.WEBSOCKET,
+            payload={
+                "event": {
+                    "from_broadcaster_user_id": "channel-1",
+                    "to_broadcaster_user_id": "viewer-1",
+                }
+            },
+        )
+
+        self.page._handle_raid_event(event)
+
+        self.assertIsNone(self.page._active_raid)
+        self.assertEqual(
+            self.page.status_label.text(),
+            "Raid sent to Channel Name.",
+        )
+
+    def test_hide_show_keeps_active_state_and_shutdown_stops_timer(self) -> None:
+        self._apply([_stream()])
+        self.page._set_active_raid(self.page._candidates[0], self.now)
+        self.page.hide()
+        self.page.show()
+
+        self.assertIsNotNone(self.page._active_raid)
+        self.assertTrue(self.page.countdown_timer.isActive())
+
+        self.page.shutdown()
+        self.assertIsNone(self.page._active_raid)
+        self.assertFalse(self.page.countdown_timer.isActive())
 
     def test_responsive_grid_uses_fewer_columns_when_narrow(self) -> None:
         self.assertEqual(RaidPage.columns_for_width(300), 1)

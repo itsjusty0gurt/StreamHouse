@@ -1,6 +1,7 @@
 import json
 import os
 import unittest
+from datetime import datetime, timezone
 from unittest.mock import Mock, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -302,8 +303,13 @@ class TwitchHelixClientTests(unittest.TestCase):
             "channel-1", "viewer-1", "moderator", True, token
         )
         client.update_channel_role("channel-1", "viewer-1", "vip", False, token)
-        client.start_raid("channel-1", "target-1", token)
+        created_at = client.start_raid("channel-1", "target-1", token)
         client.cancel_raid("channel-1", token)
+
+        self.assertEqual(
+            created_at,
+            datetime(2026, 9, 25, tzinfo=timezone.utc),
+        )
 
         add_mod = open_url.call_args_list[0].args[0]
         self.assertEqual(add_mod.method, "POST")

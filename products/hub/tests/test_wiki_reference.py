@@ -130,6 +130,13 @@ def test_raid_page_reference_documents_runtime_finder_and_permissions() -> None:
     assert "user:read:follows" in text
     assert "channel:manage:raids" in text
     assert "does not save" in text
+    assert "raid message" in text
+    assert "sent through hub's normal twitch chat" in text
+    assert "never sends the message automatically" in text
+    assert "90-second" in text
+    assert "cancel raid" in text
+    assert "does not expose raid now" in text
+    assert "outgoing channel raid event" in text
 
 
 def test_wiki_search_is_local_case_insensitive_and_does_not_mutate_sources() -> None:
