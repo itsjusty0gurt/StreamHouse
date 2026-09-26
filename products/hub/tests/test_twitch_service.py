@@ -10,6 +10,10 @@ from products.hub.twitch.models import TwitchEventTransport, TwitchMessage
 from datetime import datetime, timezone
 from products.hub.twitch.service import TwitchConnectionState, TwitchService
 from products.hub.twitch.simulator import create_eventsub_notification
+from products.hub.twitch.slash_commands import (
+    TwitchSlashRequest,
+    parse_twitch_slash_request,
+)
 
 
 class TwitchServiceTests(unittest.TestCase):
@@ -313,6 +317,173 @@ class TwitchServiceTests(unittest.TestCase):
             duration=600,
             reason="spam",
         )
+
+    def test_slash_actions_reuse_authoritative_twitch_service_paths(self) -> None:
+        token = TwitchToken(
+            "access",
+            "refresh",
+            999,
+            [
+                "moderator:manage:banned_users",
+                "moderator:manage:chat_messages",
+                "moderator:manage:chat_settings",
+                "moderator:manage:announcements",
+                "channel:manage:moderators",
+                "channel:manage:vips",
+                "channel:manage:raids",
+            ],
+            user_id="channel-1",
+            login="streamer",
+        )
+        helix = Mock()
+        helix.get_user.return_value = {"id": "viewer-1"}
+        service = TwitchService(auth=Mock(token=token), helix=helix)
+        service.broadcaster_user_id = "channel-1"
+
+        self.assertEqual(
+            service.execute_slash_action(parse_twitch_slash_request("/slow 15")),
+            (True, "chat"),
+        )
+        helix.update_chat_settings.assert_called_once_with(
+            "channel-1",
+            "channel-1",
+            {"slow_mode": True, "slow_mode_wait_time": 15},
+            token,
+        )
+        service.execute_slash_action(parse_twitch_slash_request("/mod viewer"))
+        helix.update_channel_role.assert_called_once_with(
+            "channel-1", "viewer-1", "moderator", True, token
+        )
+        service.execute_slash_action(parse_twitch_slash_request("/vip viewer"))
+        helix.update_channel_role.assert_called_with(
+            "channel-1", "viewer-1", "vip", True, token
+        )
+        service.execute_slash_action(parse_twitch_slash_request("/clear"))
+        helix.delete_chat_message.assert_called_once_with(
+            "channel-1", "channel-1", "", token
+        )
+        service.execute_slash_action(parse_twitch_slash_request("/raid viewer"))
+        helix.start_raid.assert_called_once_with("channel-1", "viewer-1", token)
+        service.execute_slash_action(parse_twitch_slash_request("/unraid"))
+        helix.cancel_raid.assert_called_once_with("channel-1", token)
+        service.execute_slash_action(
+            parse_twitch_slash_request("/announce Stream starts now!")
+        )
+        helix.send_chat_announcement.assert_called_once_with(
+            "channel-1", "channel-1", "Stream starts now!", token
+        )
+
+    def test_users_role_action_uses_stable_id_without_lookup(self) -> None:
+        token = TwitchToken(
+            "access",
+            "refresh",
+            999,
+            ["channel:manage:vips"],
+            user_id="channel-1",
+            login="streamer",
+        )
+        helix = Mock()
+        service = TwitchService(auth=Mock(token=token), helix=helix)
+        service.broadcaster_user_id = "channel-1"
+        request = TwitchSlashRequest(
+            action="vip",
+            user_reference="Viewer",
+            user_id="stable-viewer-id",
+        )
+
+        self.assertEqual(service.execute_slash_action(request), (True, "Viewer"))
+        helix.get_user.assert_not_called()
+        helix.update_channel_role.assert_called_once_with(
+            "channel-1", "stable-viewer-id", "vip", True, token
+        )
+
+    def test_all_chat_mode_slash_actions_use_chat_settings_service(self) -> None:
+        token = TwitchToken(
+            "access",
+            "refresh",
+            999,
+            ["moderator:manage:chat_settings"],
+            user_id="moderator-1",
+        )
+        helix = Mock()
+        service = TwitchService(auth=Mock(token=token), helix=helix)
+        service.broadcaster_user_id = "channel-1"
+        cases = (
+            ("/slow 15", {"slow_mode": True, "slow_mode_wait_time": 15}),
+            ("/slowoff", {"slow_mode": False}),
+            (
+                "/followers 2h",
+                {"follower_mode": True, "follower_mode_duration": 120},
+            ),
+            ("/followersoff", {"follower_mode": False}),
+            ("/subscribers", {"subscriber_mode": True}),
+            ("/subscribersoff", {"subscriber_mode": False}),
+            ("/emoteonly", {"emote_mode": True}),
+            ("/emoteonlyoff", {"emote_mode": False}),
+            ("/uniquechat", {"unique_chat_mode": True}),
+            ("/uniquechatoff", {"unique_chat_mode": False}),
+        )
+
+        for source, expected in cases:
+            with self.subTest(source=source):
+                helix.update_chat_settings.reset_mock()
+                self.assertEqual(
+                    service.execute_slash_action(
+                        parse_twitch_slash_request(source)
+                    ),
+                    (True, "chat"),
+                )
+                helix.update_chat_settings.assert_called_once_with(
+                    "channel-1", "moderator-1", expected, token
+                )
+
+    def test_all_role_slash_actions_use_shared_role_service(self) -> None:
+        token = TwitchToken(
+            "access",
+            "refresh",
+            999,
+            ["channel:manage:moderators", "channel:manage:vips"],
+            user_id="channel-1",
+        )
+        helix = Mock()
+        helix.get_user.return_value = {"id": "viewer-1"}
+        service = TwitchService(auth=Mock(token=token), helix=helix)
+        service.broadcaster_user_id = "channel-1"
+        cases = (
+            ("/mod viewer", "moderator", True),
+            ("/unmod viewer", "moderator", False),
+            ("/vip viewer", "vip", True),
+            ("/unvip viewer", "vip", False),
+        )
+
+        for source, role, enabled in cases:
+            with self.subTest(source=source):
+                helix.update_channel_role.reset_mock()
+                self.assertEqual(
+                    service.execute_slash_action(
+                        parse_twitch_slash_request(source)
+                    ),
+                    (True, "viewer"),
+                )
+                helix.update_channel_role.assert_called_once_with(
+                    "channel-1", "viewer-1", role, enabled, token
+                )
+
+    def test_slash_permission_failure_is_distinct_from_network_failure(self) -> None:
+        token = TwitchToken(
+            "access", "refresh", 999, [], user_id="channel-1", login="streamer"
+        )
+        helix = Mock()
+        service = TwitchService(auth=Mock(token=token), helix=helix)
+        service.broadcaster_user_id = "channel-1"
+
+        with self.assertRaisesRegex(
+            PermissionError, "moderator:manage:announcements"
+        ):
+            service.execute_slash_action(
+                parse_twitch_slash_request("/announce Hello")
+            )
+        helix.send_chat_announcement.assert_not_called()
 
     def test_pinned_message_uses_bot_sender_and_broadcaster_moderator(self) -> None:
         broadcaster = TwitchToken(

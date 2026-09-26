@@ -34,7 +34,7 @@ from shared.streamhouse_shared.models import (
 )
 from products.hub.core.settings import AppSettings, SettingsStore
 from products.hub.core.backup import BackupComponent
-from products.hub.twitch.auth import TwitchAuthState
+from products.hub.twitch.auth import TwitchAuthState, TwitchToken
 from products.hub.config.twitch import TWITCH_BOT_SCOPES, TWITCH_SCOPES
 from products.hub.twitch.chatter_history import ChatterHistoryStore, ChatterRecord
 from products.hub.automation.routines import RoutineStore
@@ -3279,6 +3279,52 @@ class MainWindowTests(unittest.TestCase):
         self.assertEqual(worker.request.action, "timeout")
         self.assertEqual(worker.request.user_reference, "viewer")
         self.assertEqual(worker.request.duration, 30)
+
+    def test_harmless_slash_action_starts_worker_without_confirmation(self) -> None:
+        self.window.slash_action_thread_pool.start = Mock()
+        with patch.object(QMessageBox, "question") as question:
+            accepted = self.window._start_twitch_slash_action("/slow 15")
+
+        self.assertTrue(accepted)
+        question.assert_not_called()
+        worker = self.window.slash_action_thread_pool.start.call_args.args[0]
+        self.assertEqual(worker.request.action, "slow")
+        self.assertEqual(worker.request.duration, 15)
+
+    def test_chatter_role_menu_uses_shared_async_action_with_stable_id(self) -> None:
+        self.window.twitch_auth.token = TwitchToken(
+            "access",
+            "refresh",
+            999,
+            ["channel:manage:moderators", "channel:manage:vips"],
+            user_id="channel-1",
+        )
+        self.window.twitch_service.broadcaster_user_id = "channel-1"
+        self.window.slash_action_thread_pool.start = Mock()
+
+        menu = self.window._build_chatter_context_menu(
+            "viewer-1", "Viewer", ""
+        )
+        self.assertIsNotNone(menu)
+        role_menu = next(
+            action.menu()
+            for action in menu.actions()  # type: ignore[union-attr]
+            if action.text() == "Channel role"
+        )
+        vip_action = next(
+            action for action in role_menu.actions() if action.text() == "Add VIP"
+        )
+        with patch.object(
+            QMessageBox,
+            "question",
+            return_value=QMessageBox.StandardButton.Yes,
+        ):
+            vip_action.trigger()
+
+        worker = self.window.slash_action_thread_pool.start.call_args.args[0]
+        self.assertEqual(worker.request.action, "vip")
+        self.assertEqual(worker.request.user_id, "viewer-1")
+        self.assertEqual(worker.request.user_reference, "Viewer")
 
     def test_twitch_status_is_shown_in_bottom_status_bar(self) -> None:
         self.window.handle_twitch_status_changed(

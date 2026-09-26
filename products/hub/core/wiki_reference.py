@@ -24,6 +24,7 @@ from products.hub.twitch.automation_triggers import (
     twitch_trigger_display_name,
 )
 from products.hub.twitch.default_commands import default_command_definitions
+from products.hub.twitch.slash_commands import TWITCH_SLASH_COMMANDS
 
 
 WIKI_CATEGORIES = (
@@ -618,6 +619,39 @@ def _twitch_entries() -> tuple[WikiEntry, ...]:
                 ),
             ),
             ("EventSub", "chat", "moderation", "raids", "Channel Points", "ads"),
+        ),
+        WikiEntry(
+            "twitch:slash-commands",
+            "Twitch",
+            "Twitch chat slash commands",
+            "Hub dispatches supported slash commands through Twitch APIs; unsupported slash text is never sent as ordinary chat.",
+            (
+                WikiSection(
+                    "Supported commands",
+                    tuple(
+                        f"{command.syntax} — {command.description}. Permission: {command.required_scope}."
+                        for command in TWITCH_SLASH_COMMANDS
+                    ),
+                ),
+                WikiSection(
+                    "User roles",
+                    (
+                        "Moderator and VIP actions use the same Twitch action path as the Chatters/Users context menu.",
+                    ),
+                ),
+                WikiSection(
+                    "Durations",
+                    (
+                        "Timeout and Slow accept seconds, minutes, or hours such as 30s, 10m, or 2h; bare numbers are seconds.",
+                        "Followers-only accepts a whole-minute duration; bare numbers are minutes.",
+                    ),
+                ),
+            ),
+            tuple(
+                keyword
+                for command in TWITCH_SLASH_COMMANDS
+                for keyword in (command.name, command.syntax, command.required_scope)
+            ),
         ),
     )
 

@@ -18,6 +18,10 @@ from products.hub.twitch.models import (
     TwitchEventDiagnostic,
     TwitchMessage,
 )
+from products.hub.twitch.slash_commands import (
+    TwitchSlashRequest,
+    slash_command,
+)
 from datetime import datetime, timezone
 from products.hub.twitch.simulator import (
     create_chat_notification,
@@ -605,6 +609,179 @@ class TwitchService:
             source="TWITCH",
         )
         return True
+
+    def require_scope(self, scope: str, *, broadcaster_only: bool = False):
+        token = self.auth.token if self.auth is not None else None
+        if token is None or not token.user_id or not self.broadcaster_user_id:
+            raise PermissionError("Connect your Twitch account before using this action.")
+        if scope not in set(token.scopes):
+            raise PermissionError(
+                f"Twitch permission {scope} is required. Reauthorize the Main / Broadcaster Account."
+            )
+        if broadcaster_only and token.user_id != self.broadcaster_user_id:
+            raise PermissionError("This action requires the signed-in broadcaster account.")
+        return token
+
+    def manage_user_role(self, action: str, user_id: str) -> bool:
+        if action not in {"mod", "unmod", "vip", "unvip"}:
+            raise ValueError("Unsupported Twitch channel-role action.")
+        role = "moderator" if action in {"mod", "unmod"} else "vip"
+        scope = (
+            "channel:manage:moderators"
+            if role == "moderator"
+            else "channel:manage:vips"
+        )
+        token = self.require_scope(scope, broadcaster_only=True)
+        try:
+            self.helix.update_channel_role(
+                self.broadcaster_user_id,
+                user_id,
+                role,
+                action in {"mod", "vip"},
+                token,
+            )
+        except (HTTPError, URLError, OSError, ValueError) as error:
+            self._report_error(
+                f"Twitch role update failed: {error}",
+                change_state=False,
+            )
+            return False
+        return True
+
+    def update_chat_mode(self, action: str, duration: int | None = None) -> bool:
+        token = self.require_scope("moderator:manage:chat_settings")
+        settings = {
+            "slow": {"slow_mode": True, "slow_mode_wait_time": duration},
+            "slowoff": {"slow_mode": False},
+            "followers": {
+                "follower_mode": True,
+                "follower_mode_duration": duration,
+            },
+            "followersoff": {"follower_mode": False},
+            "subscribers": {"subscriber_mode": True},
+            "subscribersoff": {"subscriber_mode": False},
+            "emoteonly": {"emote_mode": True},
+            "emoteonlyoff": {"emote_mode": False},
+            "uniquechat": {"unique_chat_mode": True},
+            "uniquechatoff": {"unique_chat_mode": False},
+        }.get(action)
+        if settings is None:
+            raise ValueError("Unsupported Twitch chat-mode action.")
+        try:
+            self.helix.update_chat_settings(
+                self.broadcaster_user_id,
+                token.user_id,
+                settings,
+                token,
+            )
+        except (HTTPError, URLError, OSError, ValueError) as error:
+            self._report_error(
+                f"Twitch chat-mode update failed: {error}",
+                change_state=False,
+            )
+            return False
+        return True
+
+    def manage_raid(self, action: str, target_user_id: str = "") -> bool:
+        token = self.require_scope("channel:manage:raids", broadcaster_only=True)
+        try:
+            if action == "raid":
+                self.helix.start_raid(
+                    self.broadcaster_user_id,
+                    target_user_id,
+                    token,
+                )
+            elif action == "unraid":
+                self.helix.cancel_raid(self.broadcaster_user_id, token)
+            else:
+                raise ValueError("Unsupported Twitch raid action.")
+        except (HTTPError, URLError, OSError, ValueError) as error:
+            self._report_error(f"Twitch raid action failed: {error}", change_state=False)
+            return False
+        return True
+
+    def send_announcement(self, message: str) -> bool:
+        token = self.require_scope("moderator:manage:announcements")
+        try:
+            self.helix.send_chat_announcement(
+                self.broadcaster_user_id,
+                token.user_id,
+                message,
+                token,
+            )
+        except (HTTPError, URLError, OSError, ValueError) as error:
+            self._report_error(f"Twitch announcement failed: {error}", change_state=False)
+            return False
+        return True
+
+    def execute_slash_action(
+        self,
+        request: TwitchSlashRequest,
+    ) -> tuple[bool, str]:
+        command = slash_command(request.action)
+        self.require_scope(
+            command.required_scope,
+            broadcaster_only=request.action
+            in {"mod", "unmod", "vip", "unvip", "raid", "unraid"},
+        )
+        user_id = ""
+        target = request.user_reference
+        if command.requires_user:
+            user_id = request.user_id
+            if not user_id:
+                user = self.resolve_user(request.user_reference)
+                user_id = str(user.get("id", "")) if isinstance(user, dict) else ""
+            if not user_id:
+                raise ValueError(
+                    f"Twitch user @{request.user_reference} was not found."
+                )
+
+        if request.action in {"ban", "timeout", "unban"}:
+            success = self.moderate_user(
+                request.action,
+                user_id,
+                duration=request.duration,
+                reason=request.reason,
+            )
+        elif request.action == "clear":
+            token = self.require_scope(command.required_scope)
+            try:
+                self.helix.delete_chat_message(
+                    self.broadcaster_user_id,
+                    token.user_id,
+                    "",
+                    token,
+                )
+                success = True
+            except (HTTPError, URLError, OSError, ValueError) as error:
+                self._report_error(f"Twitch chat clear failed: {error}", change_state=False)
+                success = False
+            target = "chat"
+        elif request.action in {
+            "slow",
+            "slowoff",
+            "followers",
+            "followersoff",
+            "subscribers",
+            "subscribersoff",
+            "emoteonly",
+            "emoteonlyoff",
+            "uniquechat",
+            "uniquechatoff",
+        }:
+            success = self.update_chat_mode(request.action, request.duration)
+            target = "chat"
+        elif request.action in {"mod", "unmod", "vip", "unvip"}:
+            success = self.manage_user_role(request.action, user_id)
+        elif request.action in {"raid", "unraid"}:
+            success = self.manage_raid(request.action, user_id)
+            target = request.user_reference or "pending raid"
+        elif request.action == "announce":
+            success = self.send_announcement(request.message)
+            target = "chat"
+        else:
+            raise ValueError("Unsupported Twitch slash action.")
+        return success, target
 
     def disconnect(self) -> bool:
         if self.state is TwitchConnectionState.DISCONNECTED:

@@ -187,9 +187,12 @@ from products.hub.ui.structured_twitch_chat_view import TwitchChatView
 from products.hub.ui.twitch_chat_input import (
     TwitchChatInputController,
     TwitchSlashActionWorker,
-    TwitchSlashRequest,
     TwitchUserSuggestion,
+)
+from products.hub.twitch.slash_commands import (
+    TwitchSlashRequest,
     parse_twitch_slash_request,
+    slash_command,
 )
 from products.hub.ui.twitch_command_dialog import TwitchCommandDialog
 from products.hub.ui.channel_snapshot_worker import (
@@ -3679,18 +3682,19 @@ class MainWindow(QMainWindow):
         except ValueError as error:
             self.handle_twitch_error(str(error))
             return False
-        labels = {
-            "timeout": f"timeout @{request.user_reference}",
-            "ban": f"ban @{request.user_reference}",
-            "unban": f"remove the ban or timeout for @{request.user_reference}",
-        }
-        answer = QMessageBox.question(
-            self,
-            "Confirm Twitch moderation",
-            f"Are you sure you want to {labels[request.action]}?",
-        )
-        if answer != QMessageBox.StandardButton.Yes:
-            return False
+        return self._dispatch_twitch_slash_action(request)
+
+    def _dispatch_twitch_slash_action(self, request: TwitchSlashRequest) -> bool:
+        command = slash_command(request.action)
+        if command.requires_confirmation:
+            target = f" @{request.user_reference}" if request.user_reference else ""
+            answer = QMessageBox.question(
+                self,
+                "Confirm Twitch action",
+                f"Are you sure you want to {command.description.lower()}{target}?",
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return False
         worker = TwitchSlashActionWorker(self.twitch_service, request)
         self._slash_action_workers.add(worker)
         worker.signals.finished.connect(self._finish_twitch_slash_action)
@@ -3710,12 +3714,17 @@ class MainWindow(QMainWindow):
         if self._shutting_down:
             return
         if success:
+            target = (
+                f" for @{user_reference}"
+                if slash_command(request.action).requires_user and user_reference
+                else ""
+            )
             self.statusBar().showMessage(
-                f"Twitch {request.action} completed for @{user_reference}.",
+                f"Twitch /{request.action} completed{target}.",
                 5000,
             )
         elif detail:
-            self.handle_twitch_error(f"Twitch moderation failed: {detail}")
+            self.handle_twitch_error(f"Twitch /{request.action} failed: {detail}")
 
     @Slot()
     def simulate_twitch_message(self) -> None:
@@ -7216,8 +7225,27 @@ class MainWindow(QMainWindow):
         message_text: str = "",
         entry: TwitchChatEntry | None = None,
     ) -> None:
+        menu = self._build_chatter_context_menu(
+            user_id,
+            user_name,
+            message_id,
+            message_text=message_text,
+            entry=entry,
+        )
+        if menu is not None:
+            menu.exec(QCursor.pos())
+
+    def _build_chatter_context_menu(
+        self,
+        user_id: str,
+        user_name: str,
+        message_id: str,
+        *,
+        message_text: str = "",
+        entry: TwitchChatEntry | None = None,
+    ) -> QMenu | None:
         if not user_id:
-            return
+            return None
         menu = QMenu(self)
         heading = menu.addAction(user_name or user_id)
         heading.setEnabled(False)
@@ -7309,6 +7337,35 @@ class MainWindow(QMainWindow):
                     duration=seconds,
                 )
             )
+        broadcaster_actions = bool(
+            token is not None
+            and token.user_id == self.twitch_service.broadcaster_user_id
+            and moderation_target
+        )
+        role_menu = menu.addMenu("Channel role")
+        role_actions = (
+            ("Add Moderator", "mod", "channel:manage:moderators"),
+            ("Remove Moderator", "unmod", "channel:manage:moderators"),
+            ("Add VIP", "vip", "channel:manage:vips"),
+            ("Remove VIP", "unvip", "channel:manage:vips"),
+        )
+        any_role_action = False
+        for title, role_action, required_scope in role_actions:
+            available = broadcaster_actions and required_scope in scopes
+            action = role_menu.addAction(title)
+            action.setEnabled(available)
+            action.triggered.connect(
+                lambda _checked=False, selected=role_action: self._dispatch_twitch_slash_action(
+                    TwitchSlashRequest(
+                        action=selected,
+                        user_reference=user_name or user_id,
+                        user_id=user_id,
+                    )
+                )
+            )
+            any_role_action = any_role_action or available
+        role_menu.setEnabled(any_role_action)
+        role_menu.menuAction().setVisible(any_role_action)
         delete_action = menu.addAction("Delete this message")
         delete_action.setEnabled(can_delete)
         delete_action.setVisible(can_delete)
@@ -7320,11 +7377,11 @@ class MainWindow(QMainWindow):
                 message_id=message_id,
             )
         )
-        if not can_ban or (message_id and not can_delete):
+        if not can_ban or not any_role_action or (message_id and not can_delete):
             menu.addSeparator()
             permissions = menu.addAction("Enable moderation permissions…")
             permissions.triggered.connect(self.twitch_auth.sign_in)
-        menu.exec(QCursor.pos())
+        return menu
 
     def _reply_to_chat_user(self, user_name: str) -> None:
         self.ui.twitchSendEdit.setText(f"@{user_name} ")

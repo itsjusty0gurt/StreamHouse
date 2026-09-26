@@ -205,6 +205,80 @@ class TwitchHelixClientTests(unittest.TestCase):
         self.assertIn("message_id=message-1", request.full_url)
         self.assertNotIn("duration_seconds", request.full_url)
 
+    @patch("products.hub.twitch.live.urlopen")
+    def test_chat_settings_clear_and_announcement_use_helix_contracts(
+        self, open_url
+    ) -> None:
+        open_url.side_effect = (
+            _JsonResponse({"data": [{"slow_mode": True}]}),
+            _JsonResponse({}),
+            _JsonResponse({}),
+        )
+        token = TwitchToken("access", "refresh", 999, [])
+        client = TwitchHelixClient()
+
+        client.update_chat_settings(
+            "channel-1",
+            "moderator-1",
+            {"slow_mode": True, "slow_mode_wait_time": 15},
+            token,
+        )
+        client.delete_chat_message("channel-1", "moderator-1", "", token)
+        client.send_chat_announcement(
+            "channel-1", "moderator-1", "Stream starts now!", token
+        )
+
+        settings = open_url.call_args_list[0].args[0]
+        self.assertEqual(settings.method, "PATCH")
+        self.assertIn("chat/settings", settings.full_url)
+        self.assertEqual(
+            json.loads(settings.data.decode()),
+            {"slow_mode": True, "slow_mode_wait_time": 15},
+        )
+        clear = open_url.call_args_list[1].args[0]
+        self.assertEqual(clear.method, "DELETE")
+        self.assertIn("moderation/chat", clear.full_url)
+        self.assertNotIn("message_id", clear.full_url)
+        announcement = open_url.call_args_list[2].args[0]
+        self.assertEqual(announcement.method, "POST")
+        self.assertIn("chat/announcements", announcement.full_url)
+        self.assertEqual(
+            json.loads(announcement.data.decode()),
+            {"message": "Stream starts now!"},
+        )
+
+    @patch("products.hub.twitch.live.urlopen")
+    def test_role_and_raid_actions_use_current_helix_contracts(self, open_url) -> None:
+        open_url.side_effect = (
+            _JsonResponse({}),
+            _JsonResponse({}),
+            _JsonResponse({"data": [{"created_at": "2026-09-25T00:00:00Z"}]}),
+            _JsonResponse({}),
+        )
+        token = TwitchToken("access", "refresh", 999, [])
+        client = TwitchHelixClient()
+
+        client.update_channel_role(
+            "channel-1", "viewer-1", "moderator", True, token
+        )
+        client.update_channel_role("channel-1", "viewer-1", "vip", False, token)
+        client.start_raid("channel-1", "target-1", token)
+        client.cancel_raid("channel-1", token)
+
+        add_mod = open_url.call_args_list[0].args[0]
+        self.assertEqual(add_mod.method, "POST")
+        self.assertIn("moderation/moderators", add_mod.full_url)
+        remove_vip = open_url.call_args_list[1].args[0]
+        self.assertEqual(remove_vip.method, "DELETE")
+        self.assertIn("channels/vips", remove_vip.full_url)
+        start_raid = open_url.call_args_list[2].args[0]
+        self.assertEqual(start_raid.method, "POST")
+        self.assertIn("from_broadcaster_id=channel-1", start_raid.full_url)
+        self.assertIn("to_broadcaster_id=target-1", start_raid.full_url)
+        cancel_raid = open_url.call_args_list[3].args[0]
+        self.assertEqual(cancel_raid.method, "DELETE")
+        self.assertIn("broadcaster_id=channel-1", cancel_raid.full_url)
+
     def test_activity_subscriptions_include_stream_state(self) -> None:
         client = TwitchHelixClient()
         client._create_subscription = Mock()

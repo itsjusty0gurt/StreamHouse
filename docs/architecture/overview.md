@@ -888,12 +888,13 @@ removals preserve that reading state, while a full clear resets it. The view
 emits the selected structured entry, while reply/copy/user details and
 moderation are coordinated by `MainWindow`.
 
-`products/hub/ui/twitch_chat_input.py` owns UI-only slash completion and a
-bounded, session-only history of messages sent from Hub. Slash metadata exposes
-only actions backed by the current service (`ban`, `timeout`, and `unban`);
-selection prepares text but never executes it. Explicit submission resolves a
-known username off the UI thread and reuses `TwitchService.moderate_user()` and
-its Helix client. Unknown slash text is not sent blindly to Twitch.
+`products/hub/twitch/slash_commands.py` owns the read-only metadata and parser
+for API-backed chat slash actions. The chat input uses that registry for local
+completion, while Wiki uses it for reference content. Selection prepares text
+but never executes it. Explicit submission runs on a worker and routes through
+`TwitchService` to the same moderation and Mod/VIP role paths used by the
+Chatters/Users context menu, plus chat settings, clear, raids, and announcements.
+Unknown slash text is not sent blindly to Twitch.
 
 Python-script tasks expose trigger context only through `STREAMHOUSE_*`
 environment variables.

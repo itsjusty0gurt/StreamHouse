@@ -14,89 +14,17 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
-
-@dataclass(frozen=True)
-class TwitchSlashCommand:
-    name: str
-    syntax: str
-    description: str
-    requires_user: bool = False
-    availability: str = ""
-
-
-@dataclass(frozen=True)
-class TwitchSlashRequest:
-    action: str
-    user_reference: str
-    duration: int | None = None
-    reason: str = ""
+from products.hub.twitch.slash_commands import (
+    TWITCH_SLASH_COMMANDS,
+    TwitchSlashRequest,
+    parse_twitch_slash_request,
+)
 
 
 @dataclass(frozen=True)
 class TwitchUserSuggestion:
     login: str
     display_name: str = ""
-
-
-TWITCH_SLASH_COMMANDS = (
-    TwitchSlashCommand(
-        "ban",
-        "/ban <user> [reason]",
-        "Ban a user",
-        requires_user=True,
-        availability="Requires Twitch moderation permission",
-    ),
-    TwitchSlashCommand(
-        "timeout",
-        "/timeout <user> [seconds] [reason]",
-        "Temporarily timeout a user",
-        requires_user=True,
-        availability="Defaults to 600 seconds",
-    ),
-    TwitchSlashCommand(
-        "unban",
-        "/unban <user>",
-        "Remove a ban or timeout",
-        requires_user=True,
-        availability="Requires Twitch moderation permission",
-    ),
-)
-
-
-def parse_twitch_slash_request(text: str) -> TwitchSlashRequest:
-    parts = text.strip().split()
-    if not parts or not parts[0].startswith("/"):
-        raise ValueError("Enter a supported Twitch slash command.")
-    command = parts[0][1:].casefold()
-    supported = {item.name for item in TWITCH_SLASH_COMMANDS}
-    if command not in supported:
-        raise ValueError(f"Unsupported Twitch slash command: /{command or '?'}")
-    if len(parts) < 2:
-        raise ValueError(f"/{command} requires a Twitch username.")
-    user_reference = parts[1].lstrip("@").strip()
-    if not user_reference:
-        raise ValueError(f"/{command} requires a Twitch username.")
-    if command == "timeout":
-        duration = 600
-        reason_start = 2
-        if len(parts) > 2 and parts[2].isdigit():
-            duration = int(parts[2])
-            reason_start = 3
-        if not 1 <= duration <= 1_209_600:
-            raise ValueError(
-                "Timeout duration must be between 1 and 1,209,600 seconds."
-            )
-        return TwitchSlashRequest(
-            action=command,
-            user_reference=user_reference,
-            duration=duration,
-            reason=" ".join(parts[reason_start:])[:500],
-        )
-    return TwitchSlashRequest(
-        action=command,
-        user_reference=user_reference,
-        reason=" ".join(parts[2:])[:500] if command == "ban" else "",
-    )
 
 
 class TwitchChatInputController(QObject):
@@ -203,14 +131,14 @@ class TwitchChatInputController(QObject):
             for command in TWITCH_SLASH_COMMANDS:
                 if command.name.startswith(query):
                     item = QListWidgetItem(
-                        f"{command.syntax}\n{command.description} — {command.availability}"
+                        f"{command.syntax}\n{command.description}"
                     )
                     item.setData(
                         Qt.ItemDataRole.UserRole,
                         ("command", command.name),
                     )
                     item.setToolTip(
-                        f"{command.description}. {command.availability}."
+                        f"{command.description}. Requires {command.required_scope}."
                     )
                     self.suggestions.addItem(item)
         else:
@@ -337,7 +265,7 @@ class _SlashWorkerSignals(QObject):
 
 
 class TwitchSlashActionWorker(QRunnable):
-    """Resolve a named user and execute an existing Twitch moderation action."""
+    """Execute one API-backed Twitch chat action away from the Qt UI thread."""
 
     def __init__(self, service, request: TwitchSlashRequest) -> None:
         super().__init__()
@@ -347,23 +275,12 @@ class TwitchSlashActionWorker(QRunnable):
 
     def run(self) -> None:
         try:
-            user = self.service.resolve_user(self.request.user_reference)
-            user_id = str(user.get("id", "")) if isinstance(user, dict) else ""
-            if not user_id:
-                raise ValueError(
-                    f"Twitch user @{self.request.user_reference} was not found."
-                )
-            success = self.service.moderate_user(
-                self.request.action,
-                user_id,
-                duration=self.request.duration,
-                reason=self.request.reason,
-            )
+            success, target = self.service.execute_slash_action(self.request)
             self.signals.finished.emit(
                 self,
                 self.request,
                 success,
-                self.request.user_reference,
+                target,
                 "",
             )
         except Exception as error:

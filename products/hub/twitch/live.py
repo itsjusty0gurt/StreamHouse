@@ -46,6 +46,9 @@ class TwitchHelixClient:
     COMMERCIAL_URL = "https://api.twitch.tv/helix/channels/commercial"
     BANS_URL = "https://api.twitch.tv/helix/moderation/bans"
     DELETE_CHAT_URL = "https://api.twitch.tv/helix/moderation/chat"
+    CHAT_SETTINGS_URL = "https://api.twitch.tv/helix/chat/settings"
+    ANNOUNCEMENTS_URL = "https://api.twitch.tv/helix/chat/announcements"
+    RAIDS_URL = "https://api.twitch.tv/helix/raids"
     CUSTOM_REWARDS_URL = (
         "https://api.twitch.tv/helix/channel_points/custom_rewards"
     )
@@ -419,9 +422,97 @@ class TwitchHelixClient:
         message_id: str,
         token: TwitchToken,
     ) -> None:
-        url = f"{self.DELETE_CHAT_URL}?{urlencode({'broadcaster_id': broadcaster_id, 'moderator_id': moderator_id, 'message_id': message_id})}"
+        parameters = {
+            "broadcaster_id": broadcaster_id,
+            "moderator_id": moderator_id,
+        }
+        if message_id:
+            parameters["message_id"] = message_id
+        url = f"{self.DELETE_CHAT_URL}?{urlencode(parameters)}"
         with urlopen(
             Request(url, headers=self._headers(token), method="DELETE"),
+            timeout=15,
+        ):
+            pass
+
+    def update_chat_settings(
+        self,
+        broadcaster_id: str,
+        moderator_id: str,
+        settings: dict[str, Any],
+        token: TwitchToken,
+    ) -> None:
+        url = f"{self.CHAT_SETTINGS_URL}?{urlencode({'broadcaster_id': broadcaster_id, 'moderator_id': moderator_id})}"
+        headers = self._headers(token)
+        headers["Content-Type"] = "application/json"
+        self._read_json(
+            Request(
+                url,
+                data=json.dumps(settings).encode("utf-8"),
+                headers=headers,
+                method="PATCH",
+            )
+        )
+
+    def update_channel_role(
+        self,
+        broadcaster_id: str,
+        user_id: str,
+        role: str,
+        add: bool,
+        token: TwitchToken,
+    ) -> None:
+        if role == "moderator":
+            base_url = self.MODERATORS_URL
+        elif role == "vip":
+            base_url = self.VIPS_URL
+        else:
+            raise ValueError("Unsupported Twitch channel role.")
+        url = f"{base_url}?{urlencode({'broadcaster_id': broadcaster_id, 'user_id': user_id})}"
+        method = "POST" if add else "DELETE"
+        with urlopen(
+            Request(
+                url,
+                data=b"" if add else None,
+                headers=self._headers(token),
+                method=method,
+            ),
+            timeout=15,
+        ):
+            pass
+
+    def start_raid(
+        self,
+        broadcaster_id: str,
+        target_broadcaster_id: str,
+        token: TwitchToken,
+    ) -> None:
+        url = f"{self.RAIDS_URL}?{urlencode({'from_broadcaster_id': broadcaster_id, 'to_broadcaster_id': target_broadcaster_id})}"
+        self._read_json(
+            Request(url, data=b"", headers=self._headers(token), method="POST")
+        )
+
+    def cancel_raid(self, broadcaster_id: str, token: TwitchToken) -> None:
+        url = f"{self.RAIDS_URL}?{urlencode({'broadcaster_id': broadcaster_id})}"
+        with urlopen(
+            Request(url, headers=self._headers(token), method="DELETE"),
+            timeout=15,
+        ):
+            pass
+
+    def send_chat_announcement(
+        self,
+        broadcaster_id: str,
+        moderator_id: str,
+        message: str,
+        token: TwitchToken,
+    ) -> None:
+        url = f"{self.ANNOUNCEMENTS_URL}?{urlencode({'broadcaster_id': broadcaster_id, 'moderator_id': moderator_id})}"
+        headers = self._headers(token)
+        headers["Content-Type"] = "application/json"
+        body = json.dumps({"message": message[:500]}).encode("utf-8")
+        with urlopen(
+            Request(url, data=body, headers=headers, method="POST"),
             timeout=15,
         ):
             pass

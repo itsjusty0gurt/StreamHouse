@@ -15,6 +15,7 @@ from products.hub.automation.tasks import TaskRegistry
 from products.hub.automation.variable_providers import context_provider
 from products.hub.automation.variable_registry import VariableRegistry
 from products.hub.core.wiki_reference import WIKI_CATEGORIES, build_wiki_entries
+from products.hub.twitch.slash_commands import TWITCH_SLASH_COMMANDS
 from products.hub.ui.wiki_page import WikiPage
 
 
@@ -84,6 +85,30 @@ def test_timer_reference_documents_exact_random_units_and_resampling() -> None:
     )
     assert any("10 Minutes" in line for line in sections["Examples"])
     assert any("5 Minutes to 10 Minutes" in line for line in sections["Examples"])
+
+
+def test_twitch_slash_reference_is_derived_from_command_registry() -> None:
+    tasks, variables = _reference_sources()
+    entry = next(
+        item
+        for item in build_wiki_entries(tasks, variables)
+        if item.entry_id == "twitch:slash-commands"
+    )
+    supported = next(
+        section.lines
+        for section in entry.sections
+        if section.title == "Supported commands"
+    )
+
+    assert len(supported) == len(TWITCH_SLASH_COMMANDS)
+    for command in TWITCH_SLASH_COMMANDS:
+        assert any(
+            command.syntax in line
+            and command.description in line
+            and command.required_scope in line
+            for line in supported
+        )
+    assert "chatters/users context menu" in entry.search_text()
 
 
 def test_wiki_search_is_local_case_insensitive_and_does_not_mutate_sources() -> None:
