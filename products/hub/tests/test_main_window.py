@@ -11,7 +11,7 @@ from unittest.mock import Mock, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QPoint, Qt
+from PySide6.QtCore import QCoreApplication, QEvent, QPoint, Qt
 from PySide6.QtGui import QContextMenuEvent
 from PySide6.QtWidgets import (
     QApplication,
@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 from PySide6.QtTest import QSignalSpy, QTest
+from shiboken6 import isValid
 
 from shared.streamhouse_runtime.logger import Logger
 from shared.streamhouse_shared.models import (
@@ -37,6 +38,7 @@ from products.hub.core.backup import BackupComponent
 from products.hub.twitch.auth import TwitchAuthState, TwitchToken
 from products.hub.config.twitch import TWITCH_BOT_SCOPES, TWITCH_SCOPES
 from products.hub.twitch.chatter_history import ChatterHistoryStore, ChatterRecord
+from products.hub.twitch.activity_history import PersistedActivity
 from products.hub.automation.routines import RoutineStore
 from products.hub.automation.custom_variables import CustomVariableStore
 from products.hub.automation.models import (
@@ -2752,6 +2754,147 @@ class MainWindowTests(unittest.TestCase):
             card.findChild(QLabel, "activityFeedAge").text(),
             "just now",
         )
+
+    def test_activity_age_refresh_keeps_card_identity(self) -> None:
+        occurred_at = datetime(2026, 9, 27, 12, 0, tzinfo=timezone.utc)
+        entry = PersistedActivity(
+            category="Follows",
+            text="Viewer followed",
+            color="#bf94ff",
+            occurred_at=occurred_at.isoformat(),
+            user_id="viewer-1",
+        )
+        self.window.activity_entries[:] = [entry]
+        self.window._sync_activity_feed()
+        original_item = self.window.activity_feed_list.item(0)
+        original_card = self.window.activity_feed_list.itemWidget(original_item)
+
+        with patch.object(self.window, "_sync_activity_feed") as structural_sync:
+            self.window._refresh_activity_ages(
+                occurred_at + timedelta(minutes=5)
+            )
+
+        structural_sync.assert_not_called()
+        self.assertIs(self.window.activity_feed_list.item(0), original_item)
+        self.assertIs(
+            self.window.activity_feed_list.itemWidget(original_item),
+            original_card,
+        )
+        self.assertEqual(original_card.age_label.text(), "5m ago")
+        self.assertIn("5m ago", original_item.text())
+
+    def test_activity_age_refresh_stress_retains_100_cards(self) -> None:
+        occurred_at = datetime(2026, 9, 27, 12, 0, tzinfo=timezone.utc)
+        self.window.activity_entries[:] = [
+            PersistedActivity(
+                category="Follows",
+                text=f"Viewer {index} followed",
+                color="#bf94ff",
+                occurred_at=(occurred_at - timedelta(minutes=index)).isoformat(),
+                user_id=f"viewer-{index}",
+            )
+            for index in range(100)
+        ]
+        self.window._sync_activity_feed()
+        original_cards = tuple(
+            self.window.activity_feed_list.itemWidget(
+                self.window.activity_feed_list.item(index)
+            )
+            for index in range(100)
+        )
+
+        for tick in range(2_000):
+            self.window._refresh_activity_ages(
+                occurred_at + timedelta(minutes=tick + 1)
+            )
+
+        self.assertEqual(self.window.activity_feed_list.count(), 100)
+        self.assertEqual(len(self.window._activity_rows), 100)
+        self.assertEqual(
+            tuple(
+                self.window.activity_feed_list.itemWidget(
+                    self.window.activity_feed_list.item(index)
+                )
+                for index in range(100)
+            ),
+            original_cards,
+        )
+
+    def test_activity_structural_sync_controls_card_churn(self) -> None:
+        occurred_at = datetime(2026, 9, 27, 12, 0, tzinfo=timezone.utc)
+        self.window.activity_entries[:] = [
+            PersistedActivity(
+                category="Follows",
+                text=f"Viewer {index} followed",
+                color="#bf94ff",
+                occurred_at=occurred_at.isoformat(),
+                user_id=f"viewer-{index}",
+            )
+            for index in range(75)
+        ]
+        self.window._sync_activity_feed()
+        retained_entry = self.window.activity_entries[25]
+        retained_card = self.window._activity_rows[id(retained_entry)][2]
+
+        for index in range(250):
+            self.window.activity_entries.insert(
+                0,
+                PersistedActivity(
+                    category="Raids",
+                    text=f"Raider {index} raided",
+                    color="#ff75e6",
+                    occurred_at=occurred_at.isoformat(),
+                    user_id=f"raider-{index}",
+                ),
+            )
+            self.window.activity_entries.pop()
+            self.window._sync_activity_feed()
+            self.window._refresh_activity_ages(
+                occurred_at + timedelta(minutes=index + 1)
+            )
+            if index % 25 == 0:
+                self.application.processEvents()
+
+        self.assertEqual(self.window.activity_feed_list.count(), 75)
+        self.assertEqual(len(self.window._activity_rows), 75)
+        self.assertNotIn(id(retained_entry), self.window._activity_rows)
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        self.assertEqual(self.window.activity_feed_list.count(), 75)
+        self.assertFalse(isValid(retained_card))
+
+    def test_activity_filter_sync_retains_cards_that_remain_visible(self) -> None:
+        occurred_at = datetime(2026, 9, 27, 12, 0, tzinfo=timezone.utc)
+        followed = PersistedActivity(
+            "Follows", "Viewer followed", "#bf94ff", occurred_at.isoformat()
+        )
+        raided = PersistedActivity(
+            "Raids", "Raider raided", "#ff75e6", occurred_at.isoformat()
+        )
+        self.window.activity_entries[:] = [followed, raided]
+        self.window._sync_activity_feed()
+        raid_card = self.window._activity_rows[id(raided)][2]
+
+        self.window.activity_filter_combo.setCurrentText("Raids")
+
+        self.assertEqual(self.window.activity_feed_list.count(), 1)
+        self.assertNotIn(id(followed), self.window._activity_rows)
+        self.assertIs(self.window._activity_rows[id(raided)][2], raid_card)
+
+        self.window.activity_filter_combo.setCurrentText("All activity")
+
+        self.assertEqual(self.window.activity_feed_list.count(), 2)
+        self.assertIs(self.window._activity_rows[id(raided)][2], raid_card)
+
+    def test_activity_age_timer_stops_before_window_teardown(self) -> None:
+        self.window.activity_age_timer.start(1)
+        self.assertTrue(self.window.activity_age_timer.isActive())
+
+        self.window.close()
+        self.application.processEvents()
+
+        self.assertTrue(self.window._shutting_down)
+        self.assertFalse(self.window.activity_age_timer.isActive())
+        self.assertEqual(self.window._activity_rows, {})
 
     def test_subscription_chat_notice_enriches_without_duplicate_automation(self) -> None:
         direct = TwitchEvent(

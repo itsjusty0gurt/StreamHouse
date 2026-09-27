@@ -296,6 +296,7 @@ class ActivityFeedCard(QFrame):
 
     def __init__(self, entry: PersistedActivity, parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        self.entry = entry
         self.setObjectName("activityFeedCard")
         self.setAccessibleName(f"{entry.category}: {entry.display_text()}")
 
@@ -339,14 +340,14 @@ class ActivityFeedCard(QFrame):
             f"color: {accent_color}; font-size: 10px; font-weight: 700;"
             "letter-spacing: 0.5px; border: none; background: transparent;"
         )
-        age_label = QLabel(entry.age_text(), content)
-        age_label.setObjectName("activityFeedAge")
-        age_label.setStyleSheet(
+        self.age_label = QLabel(entry.age_text(), content)
+        self.age_label.setObjectName("activityFeedAge")
+        self.age_label.setStyleSheet(
             "color: #9b9ba6; font-size: 10px; border: none; background: transparent;"
         )
         heading.addWidget(category_label)
         heading.addStretch()
-        heading.addWidget(age_label)
+        heading.addWidget(self.age_label)
         content_layout.addLayout(heading)
 
         body_label = QLabel(entry.text, content)
@@ -358,6 +359,13 @@ class ActivityFeedCard(QFrame):
         body_label.setToolTip(entry.text)
         content_layout.addWidget(body_label)
         layout.addWidget(content, 1)
+
+    def update_age(self, now: datetime | None = None) -> None:
+        """Refresh only the transient age presentation for this card."""
+        self.age_label.setText(self.entry.age_text(now))
+        self.setAccessibleName(
+            f"{self.entry.category}: {self.entry.display_text(now)}"
+        )
 
 
 class MainWindow(QMainWindow):
@@ -1081,7 +1089,7 @@ class MainWindow(QMainWindow):
         self.daily_memory_timer.timeout.connect(self._expire_daily_memory)
         self.daily_memory_timer.start()
         self.activity_age_timer = QTimer(self)
-        self.activity_age_timer.timeout.connect(self._rebuild_activity_feed)
+        self.activity_age_timer.timeout.connect(self._refresh_activity_ages)
         self._schedule_activity_age_refresh()
         QTimer.singleShot(2_000, self, self._create_automatic_backup)
         if self.diagnostics_service is not None:
@@ -1747,10 +1755,14 @@ class MainWindow(QMainWindow):
         activity_layout.addLayout(activity_header)
         activity_layout.addWidget(self.activity_feed_list)
         self.activity_entries = self.activity_history.entries
+        self._activity_rows: dict[
+            int,
+            tuple[PersistedActivity, QListWidgetItem, ActivityFeedCard],
+        ] = {}
         self.activity_filter_combo.currentTextChanged.connect(
-            lambda _text: self._rebuild_activity_feed()
+            self._sync_activity_feed
         )
-        self._rebuild_activity_feed()
+        self._sync_activity_feed()
         self.channel_side_splitter = QSplitter(
             Qt.Orientation.Vertical,
             self.ui.twitchPage,
@@ -5483,19 +5495,68 @@ class MainWindow(QMainWindow):
             )
             self.activity_entries.insert(0, persisted)
             del self.activity_entries[ActivityHistoryStore.LIMIT :]
-        self._rebuild_activity_feed()
+        self._sync_activity_feed()
 
     @Slot()
-    def _rebuild_activity_feed(self) -> None:
+    def _sync_activity_feed(self, _filter_text: str | None = None) -> None:
+        """Synchronize cards after a structural Activity-model change."""
+        if self._shutting_down:
+            return
         selected = self.activity_filter_combo.currentText()
-        self.activity_feed_list.clear()
-        for entry in self.activity_entries:
-            if selected == "All activity" or selected == entry.category:
-                item = QListWidgetItem(entry.display_text())
-                self.activity_feed_list.addItem(item)
-                card = ActivityFeedCard(entry, self.activity_feed_list)
-                item.setSizeHint(card.sizeHint())
-                self.activity_feed_list.setItemWidget(item, card)
+        desired_entries = [
+            entry
+            for entry in self.activity_entries
+            if selected == "All activity" or selected == entry.category
+        ]
+        desired_keys = {id(entry) for entry in desired_entries}
+
+        for key in tuple(self._activity_rows):
+            if key not in desired_keys:
+                self._remove_activity_row(key)
+
+        now = datetime.now(timezone.utc)
+        for target_row, entry in enumerate(desired_entries):
+            key = id(entry)
+            existing = self._activity_rows.get(key)
+            if existing is not None:
+                _stored_entry, item, card = existing
+                if self.activity_feed_list.row(item) == target_row:
+                    card.update_age(now)
+                    item.setText(entry.display_text(now))
+                    continue
+                self._remove_activity_row(key)
+
+            item = QListWidgetItem(entry.display_text(now))
+            self.activity_feed_list.insertItem(target_row, item)
+            card = ActivityFeedCard(entry)
+            card.update_age(now)
+            item.setSizeHint(card.sizeHint())
+            self.activity_feed_list.setItemWidget(item, card)
+            self._activity_rows[key] = (entry, item, card)
+        self._schedule_activity_age_refresh()
+
+    def _remove_activity_row(self, key: int) -> None:
+        """Remove one custom list row without retaining a stale Qt wrapper."""
+        existing = self._activity_rows.pop(key, None)
+        if existing is None:
+            return
+        _entry, item, card = existing
+        row = self.activity_feed_list.row(item)
+        if row >= 0:
+            self.activity_feed_list.removeItemWidget(item)
+            removed_item = self.activity_feed_list.takeItem(row)
+            del removed_item
+        card.deleteLater()
+
+    @Slot()
+    def _refresh_activity_ages(self, now: datetime | None = None) -> None:
+        """Update age labels in place without destroying Activity cards."""
+        if self._shutting_down:
+            return
+        current = now or datetime.now(timezone.utc)
+        for entry, item, card in tuple(self._activity_rows.values()):
+            card.update_age(current)
+            item.setText(entry.display_text(current))
         self._schedule_activity_age_refresh()
 
     def _handle_twitch_automation_event(self, twitch_event: TwitchEvent) -> None:
@@ -8315,6 +8376,8 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event: QCloseEvent) -> None:
         self._shutting_down = True
+        self.activity_age_timer.stop()
+        self._activity_rows.clear()
         self.local_integration.shutdown()
         self.chat_user_page.shutdown()
         self.raid_page.shutdown()
