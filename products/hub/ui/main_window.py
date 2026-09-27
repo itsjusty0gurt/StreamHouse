@@ -3610,6 +3610,7 @@ class MainWindow(QMainWindow):
                     self.ui.twitchChannelEdit.setText(channel)
                 self.connect_twitch()
                 self.refresh_channel_snapshot()
+        self._refresh_twitch_chat_empty_state()
 
     @Slot(object, str)
     def handle_twitch_bot_auth_changed(
@@ -3849,6 +3850,7 @@ class MainWindow(QMainWindow):
             "Connected" if connected else "Stopped"
         )
         self._refresh_twitch_health(connection_state=state)
+        self._refresh_twitch_chat_empty_state(connection_state=state)
 
     @Slot(object)
     def handle_twitch_message(self, chat_message: TwitchMessage) -> None:
@@ -5636,14 +5638,45 @@ class MainWindow(QMainWindow):
     def _update_twitch_chat_count(self) -> None:
         self.ui.twitchChatCountLabel.setText("Chat")
 
-    def _show_empty_twitch_chat(self) -> None:
-        self.twitch_chat_has_content = False
-        self.ui.twitchChatOutput.clear()
+    def _twitch_chat_empty_state_text(
+        self,
+        connection_state: TwitchConnectionState | None = None,
+    ) -> str:
+        auth_state = self._last_twitch_auth_state
+        state = connection_state or self.twitch_service.state
+        if auth_state is TwitchAuthState.ERROR:
+            return (
+                "Twitch authentication expired. Reconnect Twitch to use chat."
+            )
+        if state is TwitchConnectionState.CONNECTED:
+            return "Welcome to your channel's chat."
+        if auth_state is TwitchAuthState.WAITING:
+            return "Finish signing in to Twitch to use chat."
+        if auth_state is not TwitchAuthState.SIGNED_IN:
+            return "Twitch isn't connected. Sign in to use chat."
+        if state is TwitchConnectionState.CONNECTING:
+            return "Connecting to your channel's chat…"
+        if state is TwitchConnectionState.ERROR:
+            return "Chat is temporarily unavailable. Check your Twitch connection."
+        return "Chat connection lost — reconnecting…"
+
+    def _refresh_twitch_chat_empty_state(
+        self,
+        *,
+        connection_state: TwitchConnectionState | None = None,
+    ) -> None:
+        if self.twitch_chat_has_content:
+            return
+        message = self._twitch_chat_empty_state_text(connection_state)
         self.ui.twitchChatOutput.setHtml(
             "<div style='color: #7f7f8b; margin: 8px;'>"
-            "No chat messages yet. Connect and simulate a message to begin."
+            f"{escape(message)}"
             "</div>"
         )
+
+    def _show_empty_twitch_chat(self) -> None:
+        self.twitch_chat_has_content = False
+        self._refresh_twitch_chat_empty_state()
 
     @Slot()
     def clear_twitch_chat(self) -> None:

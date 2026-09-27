@@ -2,7 +2,9 @@
 
 This experimental same-PC plugin exposes one Touch Portal action: **Run
 Streamhouse Routine**. It refreshes enabled routines from Hub every ten seconds
-and sends the selected routine's stable ID back to Hub.
+and shows their friendly names in the action picker. The adapter keeps the
+selected routine's stable ID authoritative internally and sends that ID back to
+Hub. Duplicate names use their Hub group for friendly disambiguation.
 
 The installed plugin folder contains `entry.tp` and a one-file
 `streamhouse_touch_portal.exe` built from `plugin.py`. The adapter uses Touch

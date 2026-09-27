@@ -10,8 +10,7 @@ from integrations.touch_portal.StreamhouseHub.plugin import (
     RUN_ROUTINE_ACTION_ID,
     HubApiError,
     TouchPortalPlugin,
-    routine_choice,
-    routine_id_from_choice,
+    routine_choices,
 )
 
 
@@ -32,27 +31,29 @@ class _Hub:
         self.runs.append(routine_id)
 
 
-def test_choice_carries_stable_id_across_rename() -> None:
-    before = routine_choice({"id": "stable-123", "name": "Old", "group": ""})
-    after = routine_choice({"id": "stable-123", "name": "New", "group": ""})
+def _action(value: str) -> dict[str, object]:
+    return {
+        "type": "action",
+        "actionId": RUN_ROUTINE_ACTION_ID,
+        "data": [{"id": ROUTINE_CHOICE_ID, "value": value}],
+    }
 
-    assert before != after
-    assert routine_id_from_choice(before) == "stable-123"
-    assert routine_id_from_choice(after) == "stable-123"
+
+def test_choice_labels_hide_stable_ids_and_track_rename() -> None:
+    before = routine_choices([{"id": "stable-123", "name": "Old", "group": ""}])
+    after = routine_choices([{"id": "stable-123", "name": "New", "group": ""}])
+
+    assert before == {"Old": "stable-123"}
+    assert after == {"New": "stable-123"}
+    assert "stable-123" not in next(iter(after))
 
 
 def test_action_dispatches_stable_id_not_display_name() -> None:
     hub = _Hub()
     plugin = TouchPortalPlugin(hub)
-    selected = routine_choice(hub.routines[0])
+    plugin.refresh_routines()
 
-    plugin.handle_message(
-        {
-            "type": "action",
-            "actionId": RUN_ROUTINE_ACTION_ID,
-            "data": [{"id": ROUTINE_CHOICE_ID, "value": selected}],
-        }
-    )
+    plugin.handle_message(_action("Go Live"))
 
     assert hub.runs == ["stable-123"]
 
@@ -68,7 +69,7 @@ def test_refresh_sends_dynamic_choices_and_unavailable_state() -> None:
     assert first == {
         "type": "choiceUpdate",
         "id": ROUTINE_CHOICE_ID,
-        "value": ["Show / Go Live  [stable-123]"],
+        "value": ["Go Live"],
     }
 
     hub.available = False
@@ -80,16 +81,62 @@ def test_refresh_sends_dynamic_choices_and_unavailable_state() -> None:
 def test_invalid_or_deleted_selection_does_not_fall_back_by_name() -> None:
     hub = _Hub()
     plugin = TouchPortalPlugin(hub)
+    plugin.refresh_routines()
+    hub.routines = []
+    plugin.refresh_routines()
 
-    plugin.handle_message(
-        {
-            "type": "action",
-            "actionId": RUN_ROUTINE_ACTION_ID,
-            "data": [{"id": ROUTINE_CHOICE_ID, "value": "Go Live"}],
-        }
-    )
+    plugin.handle_message(_action("Go Live"))
 
     assert hub.runs == []
+
+
+def test_disabled_routine_selection_is_removed_before_dispatch() -> None:
+    hub = _Hub()
+    plugin = TouchPortalPlugin(hub)
+    plugin.refresh_routines()
+    hub.routines = []  # Hub lists enabled routines only.
+    plugin.refresh_routines()
+
+    plugin.handle_message(_action("Go Live"))
+
+    assert hub.runs == []
+
+
+def test_duplicate_names_use_group_then_stable_opaque_disambiguation() -> None:
+    choices = routine_choices(
+        [
+            {"id": "routine-social", "name": "Discord Link", "group": "Social"},
+            {"id": "routine-command", "name": "Discord Link", "group": "Commands"},
+            {"id": "routine-command-2", "name": "Discord Link", "group": "Commands"},
+        ]
+    )
+
+    assert choices["Discord Link — Social"] == "routine-social"
+    command_labels = [
+        label for label in choices if label.startswith("Discord Link — Commands")
+    ]
+    assert len(command_labels) == 2
+    assert len(set(command_labels)) == 2
+    assert all("routine-command" not in label for label in command_labels)
+    assert set(choices.values()) == {
+        "routine-social",
+        "routine-command",
+        "routine-command-2",
+    }
+
+
+def test_rename_refresh_replaces_label_without_name_execution_fallback() -> None:
+    hub = _Hub()
+    plugin = TouchPortalPlugin(hub)
+    plugin.refresh_routines()
+    hub.routines[0]["name"] = "Starting Soon"
+    plugin.refresh_routines()
+
+    plugin.handle_message(_action("Go Live"))
+    assert hub.runs == []
+
+    plugin.handle_message(_action("Starting Soon"))
+    assert hub.runs == ["stable-123"]
 
 
 def test_touch_portal_close_message_stops_instead_of_reconnecting() -> None:

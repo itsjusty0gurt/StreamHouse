@@ -21,7 +21,8 @@ writable automation teardown. A port conflict disables this optional boundary
 without crashing Hub. The API is loopback-only, has no account/pairing layer,
 and is not yet a frozen public inter-app protocol.
 
-The Touch Portal adapter is a client of this boundary. Its action choice embeds
-the stable routine ID because Touch Portal choice values are strings; display
-names can therefore refresh after a rename without turning the name into
-identity.
+The Touch Portal adapter is a client of this boundary. Touch Portal choice lists
+contain display strings only, so the adapter maintains a runtime mapping from
+clean routine labels to stable IDs and submits only the ID to Hub. Duplicate
+names use group context and, only for identical name/group pairs, a short opaque
+stable suffix. Stale labels are rejected rather than executed by name.

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import socket
@@ -82,22 +83,57 @@ class HubApiClient:
         self.request("run_routine", routine_id=routine_id)
 
 
-def routine_choice(routine: dict[str, str]) -> str:
-    name = routine.get("name", "").strip() or "Unnamed Routine"
-    group = routine.get("group", "").strip()
-    label = f"{group} / {name}" if group else name
-    return f"{label}  [{routine['id']}]"
+def routine_choices(routines: list[dict[str, str]]) -> dict[str, str]:
+    """Return user-facing labels mapped to authoritative stable routine IDs.
 
+    Touch Portal's choice protocol supports strings only, rather than separate
+    labels and submitted values. Keep the stable IDs inside the adapter and add
+    presentation-only disambiguation when friendly names collide.
+    """
 
-def routine_id_from_choice(value: str) -> str:
-    value = value.strip()
-    opening = value.rfind("  [")
-    if opening < 0 or not value.endswith("]"):
-        raise ValueError("Select a current Streamhouse Hub routine.")
-    routine_id = value[opening + 3 : -1].strip()
-    if not routine_id:
-        raise ValueError("Select a current Streamhouse Hub routine.")
-    return routine_id
+    normalized = [
+        {
+            "id": str(routine.get("id", "")).strip(),
+            "name": str(routine.get("name", "")).strip() or "Unnamed Routine",
+            "group": str(routine.get("group", "")).strip(),
+        }
+        for routine in routines
+        if str(routine.get("id", "")).strip()
+    ]
+    name_counts: dict[str, int] = {}
+    for routine in normalized:
+        key = routine["name"].casefold()
+        name_counts[key] = name_counts.get(key, 0) + 1
+
+    candidates: list[tuple[str, str]] = []
+    for routine in normalized:
+        label = routine["name"]
+        if name_counts[label.casefold()] > 1 and routine["group"]:
+            label = f"{label} — {routine['group']}"
+        candidates.append((label, routine["id"]))
+
+    label_counts: dict[str, int] = {}
+    for label, _routine_id in candidates:
+        key = label.casefold()
+        label_counts[key] = label_counts.get(key, 0) + 1
+
+    choices: dict[str, str] = {}
+    for label, routine_id in candidates:
+        if label_counts[label.casefold()] > 1:
+            # Identical name/group pairs need a compact stable distinction. A
+            # digest avoids exposing the raw UUID while preventing stale labels
+            # from being rebound by list order.
+            digest = hashlib.sha256(routine_id.encode("utf-8")).hexdigest().upper()
+            suffix_length = 6
+            candidate = f"{label} ({digest[:suffix_length]})"
+            while candidate.casefold() in {
+                existing.casefold() for existing in choices
+            }:
+                suffix_length += 2
+                candidate = f"{label} ({digest[:suffix_length]})"
+            label = candidate
+        choices[label] = routine_id
+    return choices
 
 
 class TouchPortalPlugin:
@@ -106,6 +142,7 @@ class TouchPortalPlugin:
         self._socket: socket.socket | None = None
         self._writer = None
         self._last_choices: tuple[str, ...] = ()
+        self._routine_ids_by_choice: dict[str, str] = {}
 
     def run_forever(self) -> None:
         delay = 2.0
@@ -175,18 +212,27 @@ class TouchPortalPlugin:
             ),
             "",
         )
+        routine_id = self._routine_ids_by_choice.get(selected.strip())
+        if routine_id is None:
+            logging.error(
+                "Run Routine failed: select a current Streamhouse Hub routine."
+            )
+            return
         try:
-            self.hub.run_routine(routine_id_from_choice(selected))
-        except (HubApiError, ValueError) as error:
+            self.hub.run_routine(routine_id)
+        except HubApiError as error:
             logging.error("Run Routine failed: %s", error)
 
     def refresh_routines(self) -> None:
         try:
-            choices = tuple(routine_choice(item) for item in self.hub.list_routines())
+            choice_map = routine_choices(self.hub.list_routines())
+            choices = tuple(choice_map)
         except HubApiError:
+            choice_map = {}
             choices = (HUB_UNAVAILABLE_CHOICE,)
         if not choices:
             choices = ("No enabled Hub routines",)
+        self._routine_ids_by_choice = choice_map
         if choices == self._last_choices:
             return
         self._last_choices = choices

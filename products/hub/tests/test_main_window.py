@@ -3267,7 +3267,7 @@ class MainWindowTests(unittest.TestCase):
 
         self.window.ui.clearTwitchChatButton.click()
         self.assertIn(
-            "No chat messages yet",
+            "Welcome to your channel's chat.",
             self.window.ui.twitchChatOutput.toPlainText(),
         )
         self.assertEqual(
@@ -3296,6 +3296,85 @@ class MainWindowTests(unittest.TestCase):
         self.assertIn("ABCDEFGH", self.window.ui.twitchAccountStatusLabel.text())
         self.assertFalse(self.window.ui.twitchSignInButton.isEnabled())
         self.assertTrue(self.window.ui.twitchSignOutButton.isEnabled())
+
+    def test_twitch_chat_empty_state_tracks_auth_and_connection(self) -> None:
+        view = self.window.ui.twitchChatOutput
+        self.assertEqual(
+            view.toPlainText(),
+            "Twitch isn't connected. Sign in to use chat.",
+        )
+
+        self.window.handle_twitch_auth_changed(
+            TwitchAuthState.WAITING,
+            "Enter ABCDEFGH at twitch.tv/activate",
+        )
+        self.assertEqual(
+            view.toPlainText(),
+            "Finish signing in to Twitch to use chat.",
+        )
+
+        with patch.object(self.window.twitch_service, "disconnect"):
+            self.window.handle_twitch_auth_changed(
+                TwitchAuthState.ERROR,
+                "Twitch session expired",
+            )
+        self.assertEqual(
+            view.toPlainText(),
+            "Twitch authentication expired. Reconnect Twitch to use chat.",
+        )
+
+        self.window._last_twitch_auth_state = TwitchAuthState.SIGNED_IN
+        cases = (
+            (
+                TwitchConnectionState.CONNECTED,
+                "Welcome to your channel's chat.",
+            ),
+            (
+                TwitchConnectionState.CONNECTING,
+                "Connecting to your channel's chat…",
+            ),
+            (
+                TwitchConnectionState.DISCONNECTED,
+                "Chat connection lost — reconnecting…",
+            ),
+            (
+                TwitchConnectionState.ERROR,
+                "Chat is temporarily unavailable. Check your Twitch connection.",
+            ),
+        )
+        visible_states = []
+        for state, expected in cases:
+            with self.subTest(state=state):
+                self.window.handle_twitch_status_changed(state, "channel")
+                visible_states.append(view.toPlainText())
+                self.assertEqual(view.toPlainText(), expected)
+
+        self.assertFalse(
+            any("connect and simulate" in text.casefold() for text in visible_states)
+        )
+
+    def test_twitch_status_change_does_not_replace_existing_chat(self) -> None:
+        view = self.window.ui.twitchChatOutput
+        view.clear()
+        view.append_message(
+            TwitchMessage(
+                username="Viewer",
+                text="Keep this message",
+                received_at=datetime.now(timezone.utc),
+                message_id="message-1",
+                user_id="viewer-1",
+            )
+        )
+        self.window.twitch_chat_has_content = True
+        self.window._last_twitch_auth_state = TwitchAuthState.SIGNED_IN
+
+        self.window.handle_twitch_status_changed(
+            TwitchConnectionState.CONNECTING,
+            "channel",
+        )
+
+        self.assertIn("Keep this message", view.toPlainText())
+        self.assertNotIn("reconnecting", view.toPlainText().casefold())
 
     def test_bot_auth_has_independent_connection_controls(self) -> None:
         self.window.twitch_bot_auth.token = Mock(
@@ -5240,6 +5319,8 @@ class MainWindowTests(unittest.TestCase):
 
     def test_twitch_full_chat_clear_leaves_sane_empty_live_state(self) -> None:
         view = self.window.ui.twitchChatOutput
+        self.window._last_twitch_auth_state = TwitchAuthState.SIGNED_IN
+        self.window.twitch_service.state = TwitchConnectionState.CONNECTED
         view.clear()
         view.append_message(
             TwitchMessage(
@@ -5264,7 +5345,7 @@ class MainWindowTests(unittest.TestCase):
         self.assertEqual(view.history.entries, ())
         self.assertFalse(self.window.twitch_chat_has_content)
         self.assertEqual(self.window.twitch_message_count, 0)
-        self.assertIn("No chat messages yet", view.toPlainText())
+        self.assertIn("Welcome to your channel's chat.", view.toPlainText())
         self.assertNotIn("Chat was cleared", view.toPlainText())
 
     def test_worker_originating_moderation_notice_crosses_qt_bridge(self) -> None:
