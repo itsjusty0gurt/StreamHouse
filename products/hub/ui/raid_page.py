@@ -6,6 +6,7 @@ from math import ceil
 from typing import Callable
 
 from PySide6.QtCore import (
+    QEvent,
     QObject,
     QThreadPool,
     QRunnable,
@@ -41,6 +42,7 @@ from products.hub.twitch.raid_contract import (
 )
 from products.hub.ui.automation_task_cards import ElidingLabel
 from products.hub.ui.page_header import PageHeader
+from shared.streamhouse_shared.responsive import responsive_grid_columns
 from shared.streamhouse_runtime.logger import Logger
 
 
@@ -356,11 +358,19 @@ class RaidChannelCard(QFrame):
 
 class RaidPage(QWidget):
     MIN_CARD_WIDTH = 330
+    GRID_GAP = 10
+    GRID_HYSTERESIS = 24
     raid_event_received = Signal(object)
 
     @classmethod
-    def columns_for_width(cls, width: int) -> int:
-        return max(1, max(width, cls.MIN_CARD_WIDTH) // cls.MIN_CARD_WIDTH)
+    def columns_for_width(cls, width: int, *, current: int = 0) -> int:
+        return responsive_grid_columns(
+            width,
+            cls.MIN_CARD_WIDTH,
+            cls.GRID_GAP,
+            current=current,
+            hysteresis=cls.GRID_HYSTERESIS,
+        )
 
     def __init__(
         self,
@@ -510,12 +520,13 @@ class RaidPage(QWidget):
         self.grid_widget = QWidget(self.scroll_area)
         self.grid = QGridLayout(self.grid_widget)
         self.grid.setContentsMargins(0, 0, 0, 0)
-        self.grid.setHorizontalSpacing(10)
+        self.grid.setHorizontalSpacing(self.GRID_GAP)
         self.grid.setVerticalSpacing(10)
         self.grid.setAlignment(
             Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft
         )
         self.scroll_area.setWidget(self.grid_widget)
+        self.scroll_area.viewport().installEventFilter(self)
         root.addWidget(self.scroll_area, 1)
         self.scroll_area.hide()
 
@@ -790,7 +801,10 @@ class RaidPage(QWidget):
         *,
         force: bool = False,
     ) -> None:
-        columns = self.columns_for_width(self.scroll_area.viewport().width())
+        columns = self.columns_for_width(
+            self.scroll_area.viewport().width(),
+            current=self._columns,
+        )
         if not force and columns == self._columns:
             return
         previous_columns = self._columns
@@ -978,6 +992,15 @@ class RaidPage(QWidget):
         super().resizeEvent(event)
         if self._cards:
             self._reflow()
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:  # noqa: N802
+        if (
+            watched is self.scroll_area.viewport()
+            and event.type() == QEvent.Type.Resize
+            and self._cards
+        ):
+            self._reflow()
+        return super().eventFilter(watched, event)
 
     def shutdown(self) -> None:
         if self._shutting_down:

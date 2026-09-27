@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QEvent, QObject, Qt, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QGridLayout,
@@ -25,12 +25,15 @@ from products.hub.twitch.channel_information import (
 )
 from products.hub.twitch.commands import TwitchCommandTriggerStore
 from products.hub.ui.page_header import PageHeader
+from shared.streamhouse_shared.responsive import responsive_grid_columns
 
 
 class ChannelInformationPage(QWidget):
     saved = Signal()
 
-    _TWO_COLUMN_WIDTH = 1160
+    _SOCIAL_CARD_MIN_WIDTH = 500
+    _SOCIAL_CARD_COMPACT_WIDTH = 520
+    _SOCIAL_GRID_GAP = 20
     _LAYOUT_HYSTERESIS = 32
 
     def __init__(
@@ -50,6 +53,7 @@ class ChannelInformationPage(QWidget):
         self._social_entry_layouts: dict[str, QGridLayout] = {}
         self._other_headings: dict[str, QLabel] = {}
         self._compact_layout = False
+        self._social_columns = 0
         self._enable_default_id = ""
         self._loading = False
         self._build_ui()
@@ -79,13 +83,13 @@ class ChannelInformationPage(QWidget):
         )
         layout.addWidget(self.page_header)
 
-        social_group = QGroupBox("Social Links")
-        social_layout = QVBoxLayout(social_group)
+        self.social_group = QGroupBox("Social Links")
+        self.social_layout = QVBoxLayout(self.social_group)
         social_help = QLabel("Update each row to save its link and command setup. Include controls !socials only.")
         social_help.setWordWrap(True)
-        social_layout.addWidget(social_help)
+        self.social_layout.addWidget(social_help)
         self.social_grid = QGridLayout()
-        self.social_grid.setHorizontalSpacing(20)
+        self.social_grid.setHorizontalSpacing(self._SOCIAL_GRID_GAP)
         self.social_grid.setVerticalSpacing(10)
         for service_id, label in SOCIAL_SERVICES:
             include = QCheckBox()
@@ -109,7 +113,7 @@ class ChannelInformationPage(QWidget):
             error.hide()
             service_label = QLabel(label)
             service_label.setWordWrap(True)
-            entry = QWidget(social_group)
+            entry = QWidget(self.social_group)
             entry.setObjectName(f"channelInformation{service_id.title()}Entry")
             entry.setMaximumWidth(600)
             entry_layout = QGridLayout(entry)
@@ -123,15 +127,15 @@ class ChannelInformationPage(QWidget):
             include.toggled.connect(lambda _value, key=service_id: self._social_changed(key))
             edit.textChanged.connect(lambda _value, key=service_id: self._social_changed(key))
             update.clicked.connect(lambda _checked=False, key=service_id: self.update_social(key))
-        social_layout.addLayout(self.social_grid)
+        self.social_layout.addLayout(self.social_grid)
         preview_title = QLabel("!socials preview")
         preview_title.setStyleSheet("font-weight: 600;")
-        social_layout.addWidget(preview_title)
+        self.social_layout.addWidget(preview_title)
         self.socials_preview_label = QLabel()
         self.socials_preview_label.setObjectName("channelInformationSocialsPreview")
         self.socials_preview_label.setWordWrap(True)
-        social_layout.addWidget(self.socials_preview_label)
-        layout.addWidget(social_group)
+        self.social_layout.addWidget(self.socials_preview_label)
+        layout.addWidget(self.social_group)
 
         other_group = QGroupBox("Other Channel Information")
         self.other_layout = QGridLayout(other_group)
@@ -173,7 +177,8 @@ class ChannelInformationPage(QWidget):
         layout.addLayout(actions)
         layout.addStretch()
         self.save_button.clicked.connect(self.save_values)
-        self._apply_responsive_layout(compact=False)
+        self._apply_responsive_layout(columns=1, compact=True)
+        self.scroll_area.viewport().installEventFilter(self)
         self._apply_social_tab_order()
 
     @staticmethod
@@ -206,17 +211,27 @@ class ChannelInformationPage(QWidget):
             QWidget.setTabOrder(include, update)
             previous_update = update
 
-    def _apply_responsive_layout(self, *, compact: bool) -> None:
-        if compact == self._compact_layout and self.social_grid.count():
+    def _apply_responsive_layout(self, *, columns: int, compact: bool) -> None:
+        columns = max(1, columns)
+        if (
+            compact == self._compact_layout
+            and columns == self._social_columns
+            and self.social_grid.count()
+        ):
             return
+        previous_columns = self._social_columns
         self._compact_layout = compact
+        self._social_columns = columns
         self.setProperty("compactLayout", compact)
         self._clear_grid(self.social_grid)
         self._clear_grid(self.other_layout)
         for entry_layout in self._social_entry_layouts.values():
             self._clear_grid(entry_layout)
-        self.social_grid.setColumnStretch(0, 1)
-        self.social_grid.setColumnStretch(1, 0 if compact else 1)
+
+        for column in range(max(previous_columns, columns)):
+            self.social_grid.setColumnStretch(column, 0)
+        for column in range(columns):
+            self.social_grid.setColumnStretch(column, 1)
 
         if compact:
             for row, (service_id, _label) in enumerate(SOCIAL_SERVICES):
@@ -231,13 +246,7 @@ class ChannelInformationPage(QWidget):
                 entry_layout.addWidget(error, 3, 0, 1, 2)
                 entry_layout.setColumnStretch(0, 1)
                 entry_layout.setColumnStretch(1, 0)
-                self.social_grid.addWidget(
-                    entry,
-                    row,
-                    0,
-                    alignment=Qt.AlignmentFlag.AlignLeft
-                    | Qt.AlignmentFlag.AlignTop,
-                )
+                self.social_grid.addWidget(entry, row // columns, row % columns)
 
             for row, (field_id, editor) in enumerate(
                 (
@@ -271,10 +280,8 @@ class ChannelInformationPage(QWidget):
             entry_layout.setColumnStretch(2, 0)
             self.social_grid.addWidget(
                 entry,
-                index // 2,
-                index % 2,
-                alignment=Qt.AlignmentFlag.AlignLeft
-                | Qt.AlignmentFlag.AlignTop,
+                index // columns,
+                index % columns,
             )
 
         for row, (field_id, editor) in enumerate(
@@ -293,14 +300,44 @@ class ChannelInformationPage(QWidget):
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
+        self._update_responsive_layout()
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:  # noqa: N802
+        if (
+            watched is self.scroll_area.viewport()
+            and event.type() == QEvent.Type.Resize
+        ):
+            self._update_responsive_layout()
+        return super().eventFilter(watched, event)
+
+    def _update_responsive_layout(self) -> None:
+        viewport_width = self.scroll_area.viewport().width()
+        width = self._social_grid_available_width()
+        columns = responsive_grid_columns(
+            width,
+            self._SOCIAL_CARD_MIN_WIDTH,
+            self._SOCIAL_GRID_GAP,
+            current=self._social_columns,
+            hysteresis=self._LAYOUT_HYSTERESIS,
+        )
+        cell_width = max(
+            0,
+            (width - self._SOCIAL_GRID_GAP * (columns - 1)) // columns,
+        )
+        compact = cell_width < self._SOCIAL_CARD_COMPACT_WIDTH
+        self._apply_responsive_layout(columns=columns, compact=compact)
+        if compact and self.content_widget.width() > viewport_width:
+            self.content_widget.resize(
+                viewport_width,
+                self.content_widget.height(),
+            )
+
+    def _social_grid_available_width(self) -> int:
         width = self.scroll_area.viewport().width()
-        if self._compact_layout:
-            compact = width < self._TWO_COLUMN_WIDTH + self._LAYOUT_HYSTERESIS
-        else:
-            compact = width < self._TWO_COLUMN_WIDTH
-        self._apply_responsive_layout(compact=compact)
-        if compact and self.content_widget.width() > width:
-            self.content_widget.resize(width, self.content_widget.height())
+        for current_layout in (self.content_widget.layout(), self.social_layout):
+            margins = current_layout.contentsMargins()
+            width -= margins.left() + margins.right()
+        return max(width, 0)
 
     def load_values(self) -> None:
         self._loading = True

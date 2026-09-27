@@ -418,6 +418,78 @@ class ChannelInformationPageTests(unittest.TestCase):
         self.assertEqual(edit.text(), "discord.gg/draft")
         self.assertTrue(include.isChecked())
 
+    def test_social_cards_tile_beyond_two_columns_without_recreation(self) -> None:
+        self.page.show()
+        entries = dict(self.page._social_entries)
+        include, edit, update, _error = self.page.social_rows["discord"]
+        edit.setText("discord.gg/draft")
+        include.setChecked(True)
+
+        self.page.resize(2_200, 800)
+        self.application.processEvents()
+
+        self.assertGreaterEqual(self.page._social_columns, 4)
+        self.assertEqual(self.page.social_grid.count(), len(SOCIAL_SERVICES))
+        for index, (service_id, _label) in enumerate(SOCIAL_SERVICES):
+            entry = self.page._social_entries[service_id]
+            self.assertIs(entry, entries[service_id])
+            layout_index = self.page.social_grid.indexOf(entry)
+            row, column, row_span, column_span = (
+                self.page.social_grid.getItemPosition(layout_index)
+            )
+            self.assertEqual(
+                (row, column),
+                (
+                    index // self.page._social_columns,
+                    index % self.page._social_columns,
+                ),
+            )
+            self.assertEqual((row_span, column_span), (1, 1))
+
+        self.assertEqual(edit.text(), "discord.gg/draft")
+        self.assertTrue(include.isChecked())
+        self.assertTrue(update.isEnabled())
+
+        self.page.resize(420, 520)
+        self.application.processEvents()
+
+        self.assertEqual(self.page._social_columns, 1)
+        for service_id, _label in SOCIAL_SERVICES:
+            self.assertIs(self.page._social_entries[service_id], entries[service_id])
+        self.assertEqual(edit.text(), "discord.gg/draft")
+        self.assertTrue(include.isChecked())
+
+    def test_social_grid_skips_relayout_within_same_width_band(self) -> None:
+        self.page.show()
+        self.page.resize(2_200, 800)
+        self.application.processEvents()
+        columns = self.page._social_columns
+
+        with patch.object(
+            self.page,
+            "_clear_grid",
+            wraps=self.page._clear_grid,
+        ) as clear_grid:
+            self.page.resize(2_210, 800)
+            self.application.processEvents()
+
+        self.assertEqual(self.page._social_columns, columns)
+        clear_grid.assert_not_called()
+
+    def test_long_form_sections_are_not_part_of_social_tile_grid(self) -> None:
+        self.page.show()
+        for width in (420, 2_200):
+            with self.subTest(width=width):
+                self.page.resize(width, 700)
+                self.application.processEvents()
+                for editor in (
+                    self.page.schedule_edit,
+                    self.page.rules_edit,
+                    self.page.server_info_edit,
+                ):
+                    self.assertEqual(self.page.social_grid.indexOf(editor), -1)
+                    self.assertGreaterEqual(self.page.other_layout.indexOf(editor), 0)
+
     def test_long_text_uses_editor_and_page_scrolling(self) -> None:
         self.page.rules_edit.setPlainText("\n".join(f"Rule {index}" for index in range(40)))
         self.page.show()

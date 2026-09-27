@@ -7,6 +7,7 @@ from shared.streamhouse_shared.responsive import (
     LAYOUT_MODE_LANDSCAPE,
     LAYOUT_MODE_PORTRAIT,
     normalize_layout_mode,
+    responsive_grid_columns,
     resolve_orientation,
 )
 
@@ -55,6 +56,55 @@ class ResponsiveLayoutTests(unittest.TestCase):
         self.assertEqual(
             normalize_layout_mode("unknown"),
             "automatic",
+        )
+
+    def test_responsive_grid_accounts_for_spacing(self) -> None:
+        self.assertEqual(responsive_grid_columns(499, 500, 20), 1)
+        self.assertEqual(responsive_grid_columns(1_019, 500, 20), 1)
+        self.assertEqual(responsive_grid_columns(1_020, 500, 20), 2)
+        self.assertEqual(responsive_grid_columns(1_540, 500, 20), 3)
+        self.assertEqual(responsive_grid_columns(2_060, 500, 20), 4)
+
+    def test_responsive_grid_hysteresis_prevents_threshold_churn(self) -> None:
+        self.assertEqual(
+            responsive_grid_columns(
+                1_535,
+                500,
+                20,
+                current=2,
+                hysteresis=32,
+            ),
+            2,
+        )
+        self.assertEqual(
+            responsive_grid_columns(
+                1_575,
+                500,
+                20,
+                current=2,
+                hysteresis=32,
+            ),
+            3,
+        )
+        self.assertEqual(
+            responsive_grid_columns(
+                1_515,
+                500,
+                20,
+                current=3,
+                hysteresis=32,
+            ),
+            3,
+        )
+        self.assertEqual(
+            responsive_grid_columns(
+                1_500,
+                500,
+                20,
+                current=3,
+                hysteresis=32,
+            ),
+            2,
         )
 
 

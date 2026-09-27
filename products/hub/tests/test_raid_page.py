@@ -418,8 +418,59 @@ class RaidPageTests(unittest.TestCase):
 
     def test_responsive_grid_uses_fewer_columns_when_narrow(self) -> None:
         self.assertEqual(RaidPage.columns_for_width(300), 1)
-        self.assertEqual(RaidPage.columns_for_width(660), 2)
-        self.assertEqual(RaidPage.columns_for_width(990), 3)
+        self.assertEqual(RaidPage.columns_for_width(670), 2)
+        self.assertEqual(RaidPage.columns_for_width(1_010), 3)
+        self.assertEqual(RaidPage.columns_for_width(1_350), 4)
+
+    def test_responsive_reflow_preserves_cards_and_active_target(self) -> None:
+        self._apply(
+            [
+                _stream("viewer-1", name="Alpha", viewers=100),
+                _stream("viewer-2", name="Beta", viewers=50),
+                _stream("viewer-3", name="Gamma", viewers=25),
+                _stream("viewer-4", name="Delta", viewers=10),
+            ]
+        )
+        cards = dict(self.page._cards)
+        active = self.page._candidates[1]
+        self.page._set_active_raid(active, self.now)
+        self.page.show()
+
+        for width, expected_columns in ((380, 1), (760, 2), (1_120, 3)):
+            self.page.resize(width, 800)
+            self.application.processEvents()
+            self.assertEqual(self.page._columns, expected_columns)
+            self.assertEqual(self.page._cards, cards)
+            self.assertEqual(self.page.grid.count(), len(cards))
+            self.assertIs(self.page._active_raid.candidate, active)
+            self.assertTrue(
+                self.page._cards[active.user_id].property("activeRaidTarget")
+            )
+            for user_id, card in cards.items():
+                self.assertIs(self.page._cards[user_id], card)
+
+    def test_resize_does_not_reflow_when_column_count_is_unchanged(self) -> None:
+        self._apply([_stream("viewer-1"), _stream("viewer-2")])
+        self.page.show()
+        self.page.resize(760, 800)
+        self.application.processEvents()
+        positions = {
+            user_id: self.page.grid.indexOf(card)
+            for user_id, card in self.page._cards.items()
+        }
+
+        with patch.object(self.page.grid, "addWidget", wraps=self.page.grid.addWidget) as add:
+            self.page.resize(770, 800)
+            self.application.processEvents()
+
+        add.assert_not_called()
+        self.assertEqual(
+            {
+                user_id: self.page.grid.indexOf(card)
+                for user_id, card in self.page._cards.items()
+            },
+            positions,
+        )
 
     def test_resize_preserves_selected_sort_order(self) -> None:
         self._apply(
