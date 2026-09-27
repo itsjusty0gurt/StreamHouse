@@ -160,18 +160,46 @@ class AutomationService:
         routine_id: str,
         context: dict[str, str] | None = None,
     ) -> AutomationExecutionResult:
+        return self._run_routine_from_source(
+            routine_id,
+            service="streamhouse",
+            trigger_type="manual",
+            context=context,
+        )
+
+    def run_integration_routine(
+        self,
+        routine_id: str,
+        integration_source: str,
+    ) -> AutomationExecutionResult:
+        """Submit an external request through the routine's normal queue."""
+        return self._run_routine_from_source(
+            routine_id,
+            service="integration",
+            trigger_type=integration_source,
+            context=None,
+        )
+
+    def _run_routine_from_source(
+        self,
+        routine_id: str,
+        *,
+        service: str,
+        trigger_type: str,
+        context: dict[str, str] | None,
+    ) -> AutomationExecutionResult:
         routine = self.routine_store.get(routine_id)
         if routine is None:
             raise ValueError("The selected routine no longer exists.")
         trigger = TriggerEvent(
             trigger_id=routine.trigger_id or f"manual.{routine.routine_id}",
-            service="streamhouse",
-            trigger_type="manual",
+            service=service,
+            trigger_type=trigger_type,
             context=context or {},
         )
         trigger = self._prepare_trigger(trigger)
         Events.emit("trigger_fired", trigger=trigger)
-        Events.emit("trigger_fired.streamhouse.manual", trigger=trigger)
+        Events.emit(f"trigger_fired.{service}.{trigger_type}", trigger=trigger)
         result = self._publish_routine(routine, trigger)
         return AutomationExecutionResult(
             event_id=trigger.event_id,

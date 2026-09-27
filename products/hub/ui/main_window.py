@@ -60,6 +60,7 @@ from shared.streamhouse_runtime.json_store import UnsupportedJsonSchemaError
 from shared.streamhouse_runtime.logger import Logger
 from shared.streamhouse_ui import install_window_chrome
 from products.hub.core.settings import AppSettings, SettingsStore
+from products.hub.integrations.local_api import HubIntegrationController
 from products.hub.automation.service import AutomationService
 from products.hub.automation.models import TriggerEvent
 from products.hub.automation.custom_variables import CustomVariableStore
@@ -603,6 +604,10 @@ class MainWindow(QMainWindow):
             self.custom_variable_store,
             self.automation_queue_manager,
             variable_registry=self.variable_registry,
+        )
+        self.local_integration = HubIntegrationController(
+            self.automation_service,
+            parent=self,
         )
         self.soundboard_server = soundboard_server or SoundboardLocalServer(
             self.soundboard_store,
@@ -2895,6 +2900,11 @@ class MainWindow(QMainWindow):
             return
         self._core_started_fired = True
         self._fire_core_automation_event("application.started")
+
+    @Slot()
+    def start_local_integration(self) -> None:
+        """Start the primary instance's loopback-only integration listener."""
+        self.local_integration.start()
 
     def _fire_core_automation_event(self, event_type: str) -> None:
         context = {
@@ -8305,6 +8315,7 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event: QCloseEvent) -> None:
         self._shutting_down = True
+        self.local_integration.shutdown()
         self.chat_user_page.shutdown()
         self.raid_page.shutdown()
         self.automation_timer_scheduler.shutdown()

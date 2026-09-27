@@ -1,0 +1,45 @@
+{
+  "api": 13,
+  "version": 1,
+  "name": "Streamhouse Hub",
+  "id": "com.streamhouse.hub",
+  "configuration": {
+    "colorDark": "#171719",
+    "colorLight": "#a971ff",
+    "parentCategory": "streaming"
+  },
+  "plugin_start_cmd_windows": "\"%TP_PLUGIN_FOLDER%StreamhouseHub\\streamhouse_touch_portal.exe\"",
+  "categories": [
+    {
+      "id": "com.streamhouse.hub.category",
+      "name": "Streamhouse Hub",
+      "actions": [
+        {
+          "id": "com.streamhouse.hub.run_routine",
+          "name": "Run Streamhouse Routine",
+          "type": "communicate",
+          "lines": {
+            "action": [
+              {
+                "language": "default",
+                "data": [
+                  {
+                    "lineFormat": "Run Streamhouse routine {$com.streamhouse.hub.routine$}"
+                  }
+                ]
+              }
+            ]
+          },
+          "data": [
+            {
+              "id": "com.streamhouse.hub.routine",
+              "type": "choice",
+              "default": "Hub unavailable",
+              "valueChoices": ["Hub unavailable"]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

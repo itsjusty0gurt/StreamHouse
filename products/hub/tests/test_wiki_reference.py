@@ -44,6 +44,7 @@ def test_catalog_derives_tasks_triggers_variables_and_commands() -> None:
     assert "variable:legacy.command_data" not in ids
     assert "variables:automation-outputs" in ids
     assert "commands:overview" in ids
+    assert "integration:touch-portal" in ids
 
 
 def test_contextual_variables_are_documented_without_active_context() -> None:
@@ -187,3 +188,21 @@ def test_wiki_tasks_render_existing_task_library_reference_metadata() -> None:
     assert "Duration" in rendered
     assert "Variable placeholders" in rendered
     page.deleteLater()
+
+
+def test_touch_portal_reference_documents_the_narrow_local_boundary() -> None:
+    tasks, variables = _reference_sources()
+    entry = next(
+        item
+        for item in build_wiki_entries(tasks, variables)
+        if item.entry_id == "integration:touch-portal"
+    )
+    text = entry.search_text()
+
+    assert "run streamhouse routine" in text
+    assert "stable routine id" in text
+    assert "normal queue" in text
+    assert "loopback" in text
+    assert "experimental" in text
+    assert "does not fabricate" in text
+    assert "command.*" in text

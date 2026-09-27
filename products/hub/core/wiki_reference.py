@@ -41,6 +41,7 @@ WIKI_CATEGORIES = (
     "Commands",
     "Twitch",
     "OBS",
+    "Integrations",
     "Examples",
 )
 
@@ -95,6 +96,7 @@ def build_wiki_entries(
     entries.extend(_command_entries())
     entries.extend(_twitch_entries())
     entries.extend(_obs_entries(task_registry))
+    entries.extend(_integration_entries())
     entries.extend(_example_entries())
     order = {category: index for index, category in enumerate(WIKI_CATEGORIES)}
     return tuple(
@@ -752,6 +754,56 @@ def _obs_entries(task_registry: TaskRegistry) -> tuple[WikiEntry, ...]:
                 ),
             ),
             ("scene", "source", "input", "WebSocket", *OBS_TRIGGER_TYPES.values()),
+        ),
+    )
+
+
+def _integration_entries() -> tuple[WikiEntry, ...]:
+    return (
+        WikiEntry(
+            "integration:touch-portal",
+            "Integrations",
+            "Touch Portal (Experimental)",
+            "Run an enabled Streamhouse Hub Routine from Touch Portal on the same PC.",
+            (
+                WikiSection(
+                    "Current capability",
+                    (
+                        "The Streamhouse Hub Touch Portal plugin provides one action: Run Streamhouse Routine.",
+                        "Hub must be running. The plugin discovers enabled routines and keeps each routine's stable ID with the displayed selection.",
+                    ),
+                ),
+                WikiSection(
+                    "Execution",
+                    (
+                        "Touch Portal sends the selected stable routine ID to Hub; names and groups are presentation only.",
+                        "Hub submits the request through AutomationService and the routine's normal queue, including Default Queue fallback.",
+                        "Renaming or moving a routine keeps its stable ID. A deleted or disabled routine is rejected instead of being rebound by name.",
+                    ),
+                ),
+                WikiSection(
+                    "Local and experimental",
+                    (
+                        "Version 1 listens only on this computer's loopback interface and does not provide LAN or remote access.",
+                        "This is an Experimental / Local Integration for Alpha testing; Hub remains the owner of routine data and execution.",
+                    ),
+                ),
+                WikiSection(
+                    "Variable context",
+                    (
+                        "A Touch Portal launch does not fabricate user.*, command.*, keyword.*, or Twitch event context.",
+                        "Contextual Variables remain unavailable unless the routine's current execution genuinely provides them.",
+                    ),
+                ),
+            ),
+            (
+                "Touch Portal",
+                "Run Routine",
+                "local integration",
+                "stable routine ID",
+                "localhost",
+                "experimental",
+            ),
         ),
     )
 

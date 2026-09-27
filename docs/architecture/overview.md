@@ -74,6 +74,7 @@ flowchart LR
     Hub --> Automation["AutomationService"]
     Automation --> Tasks["Task providers"]
     Hub <--> LocalPreview["Local soundboard preview"]
+    TouchPortal["Touch Portal plugin"] -->|"versioned loopback routine API"| Hub
     Extension["Twitch Extension"] --> Relay["Hosted relay"]
     Hub -->|"outbound HTTPS polling"| Relay
     StreamhouseAI["Streamhouse AI"] -->|"Windows presence message"| Hub
@@ -184,6 +185,7 @@ normal writable composition.
 - chatter, activity, and stream-session stores
 - training/test-report remote proxies
 - `TaskRegistry` and `AutomationService`
+- the loopback-only local integration controller/server
 - diagnostics, release/backup, health, window-state, and settings helpers
 
 The constructor loads recoverable stores independently. A corrupt optional
@@ -194,6 +196,15 @@ Core `application.started` fires after the Qt loop begins. Core
 `application.closing` fires before service teardown. Shutdown must stop timers,
 unsubscribe event handlers, close Twitch/OBS, stop soundboard threads/servers,
 save state, and only then let `products/hub/streamhouse_hub/app.py` clear the event bus.
+
+The optional local integration listener starts after primary-instance ownership
+and MainWindow composition. `products.hub.integrations.local_api` exposes only
+enabled routine presentation metadata and run-by-stable-ID requests on
+`127.0.0.1`. Requests cross a queued Qt boundary before `AutomationService`
+submits them through normal queue ownership. External clients never read stores
+or execute task providers directly. The listener stops before automation and
+service teardown; a rejected duplicate Hub process never creates one. See
+`docs/hub/local-integrations.md` for the experimental protocol boundary.
 
 ### Hub tester support and crash diagnostics
 

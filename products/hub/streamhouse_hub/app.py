@@ -133,6 +133,7 @@ def run(diagnostics: DiagnosticsService | None = None) -> None:
     twitch_auth.restore()
     twitch_bot_auth.restore()
     QTimer.singleShot(0, window, window.fire_application_started_trigger)
+    QTimer.singleShot(0, window, window.start_local_integration)
     QTimer.singleShot(250, window, window.auto_connect_obs)
     QTimer.singleShot(350, window, window.auto_connect_soundboard_relay)
 
