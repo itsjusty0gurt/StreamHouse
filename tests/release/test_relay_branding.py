@@ -24,6 +24,7 @@ class RelayBrandingRegressionTests(unittest.TestCase):
             "extensions/twitch/app/viewer.js",
             "products/hub/soundboard/relay.py",
             "products/hub/tests/test_soundboard.py",
+            "shared/streamhouse_runtime/redaction.py",
             "shared/streamhouse_runtime/relay_config.py",
             "shared/streamhouse_shared/protocol.py",
             "shared/tests/test_relay_config.py",
@@ -54,6 +55,19 @@ class RelayBrandingRegressionTests(unittest.TestCase):
                 found.add(path.relative_to(root).as_posix())
         unexpected = sorted(found - allowed)
         self.assertEqual(unexpected, [], f"Unclassified legacy relay names: {unexpected}")
+
+    def test_legacy_relay_secret_names_remain_redacted(self) -> None:
+        from shared.streamhouse_runtime.redaction import redact_secret_text
+
+        secret = "legacy-relay-secret"
+        for value in (
+            f"SALLY_RELAY_KEYS={secret}",
+            f"X-Sally-Key: {secret}",
+        ):
+            with self.subTest(value=value):
+                redacted = redact_secret_text(value)
+                self.assertNotIn(secret, redacted)
+                self.assertIn("<REDACTED>", redacted)
 
     def test_current_extension_and_render_configuration_are_modern(self) -> None:
         root = Path(__file__).resolve().parents[2]

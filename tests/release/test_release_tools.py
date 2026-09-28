@@ -4,8 +4,19 @@ import unittest
 from pathlib import Path
 from zipfile import ZipFile
 
-from products.hub.core.backup import BackupManager
+from products.hub.automation.routines import RoutineStore
+from products.hub.core.backup import (
+    BackupComponent,
+    BackupManager,
+    BackupPreset,
+)
 from products.hub.core.diagnostics import DiagnosticsService
+from products.hub.core.settings import AppSettings, SettingsStore
+from products.hub.twitch.chatter_history import (
+    BACKUP_CHATTER_FIELDS,
+    ChatterHistoryStore,
+)
+from products.hub.twitch.commands import TwitchCommandTriggerStore
 from products.hub.ui.controllers.release_controller import ReleaseController
 
 
@@ -42,56 +53,70 @@ class ReleaseToolsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             settings = root / "config" / "settings.json"
-            settings.parent.mkdir(parents=True)
-            settings.write_text('{"value": 1}', encoding="utf-8")
+            SettingsStore(settings).save(AppSettings(startup_page="Automation"))
             manager = BackupManager(root, root / "backups")
-            archive = manager.create("test")
-            self.assertTrue(archive.name.startswith("streamhouse-test-"))
-            settings.write_text('{"value": 2}', encoding="utf-8")
-
-            report = manager.restore(archive)
-
-            self.assertIn("config/settings.json", report.restored_files)
+            archive = manager.create(
+                "manual",
+                preset=BackupPreset.CUSTOM,
+                components=[BackupComponent.HUB_SETTINGS],
+            )
+            self.assertEqual(archive.suffix, BackupManager.EXTENSION)
+            with ZipFile(archive) as source:
+                manifest = json.loads(source.read("manifest.json"))
+            self.assertEqual(manifest["backup_type"], "manual")
+            self.assertEqual(manifest["preset"], BackupPreset.CUSTOM.value)
+            self.assertEqual(manifest["included_components"], ["hub_settings"])
             self.assertEqual(
-                json.loads(settings.read_text(encoding="utf-8"))["value"],
-                1,
+                manifest["components"]["hub_settings"]["schema"],
+                SettingsStore.VERSION,
+            )
+            SettingsStore(settings).save(AppSettings(startup_page="Logs"))
+
+            report = manager.restore(
+                archive,
+                [BackupComponent.HUB_SETTINGS],
+                create_safety=False,
             )
 
-    def test_backup_includes_custom_twitch_commands(self) -> None:
+            self.assertEqual(report.restored_components, ("hub_settings",))
+            restored = SettingsStore(settings).load()
+            self.assertEqual(restored.startup_page, "Automation")
+
+    def test_backup_packages_command_with_required_routine_dependencies(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            commands = root / "twitch" / "commands.json"
-            commands.parent.mkdir(parents=True)
-            commands.write_text(
-                '{"version":2,"triggers":[]}', encoding="utf-8"
+            routine_store = RoutineStore(root / "automation" / "routines.json")
+            command_store = TwitchCommandTriggerStore(
+                root / "twitch" / "commands.json",
+                routine_store,
             )
-            channel_information = root / "twitch" / "channel-information.json"
-            channel_information.write_text(
-                '{"version":1,"social_links":{}}', encoding="utf-8"
+            command = command_store.add("hello", "Hello from Streamhouse")
+            archive = BackupManager(root, root / "backups").create(
+                "manual",
+                preset=BackupPreset.CUSTOM,
+                components=[BackupComponent.COMMANDS],
             )
-            event_triggers = root / "twitch" / "event_triggers.json"
-            event_triggers.write_text(
-                '{"version":1,"triggers":[]}', encoding="utf-8"
-            )
-            routines = root / "automation" / "routines.json"
-            routines.parent.mkdir(parents=True)
-            routines.write_text(
-                '{"version":1,"routines":[]}', encoding="utf-8"
-            )
-            core_triggers = root / "automation" / "core_triggers.json"
-            core_triggers.write_text(
-                '{"version":1,"triggers":[]}', encoding="utf-8"
-            )
-            archive = BackupManager(root, root / "backups").create("test")
 
             with ZipFile(archive) as source:
-                self.assertIn("twitch/commands.json", source.namelist())
-                self.assertIn("twitch/channel-information.json", source.namelist())
-                self.assertIn("twitch/event_triggers.json", source.namelist())
-                self.assertIn("automation/routines.json", source.namelist())
-                self.assertIn(
-                    "automation/core_triggers.json", source.namelist()
+                self.assertEqual(
+                    set(source.namelist()),
+                    {"manifest.json", "components/commands.json"},
                 )
+                manifest = json.loads(source.read("manifest.json"))
+                commands = json.loads(source.read("components/commands.json"))
+            self.assertEqual(manifest["included_components"], ["commands"])
+            self.assertEqual(
+                manifest["components"]["commands"]["schema"],
+                TwitchCommandTriggerStore.VERSION,
+            )
+            self.assertEqual(commands["schema"], TwitchCommandTriggerStore.VERSION)
+            self.assertEqual(commands["triggers"][0]["trigger_id"], command.trigger_id)
+            dependencies = commands["routine_dependencies"]
+            self.assertEqual(dependencies["scope"], "commands")
+            self.assertEqual(
+                dependencies["routines"]["routines"][0]["routine_id"],
+                command.routine_id,
+            )
 
     def test_support_bundle_includes_only_sanitized_diagnostic_log_lines(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -134,44 +159,36 @@ class ReleaseToolsTests(unittest.TestCase):
     def test_backup_scrub_removes_deleted_viewer_data(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            memory = root / "memory"
-            memory.mkdir()
-            (memory / "twitch_chatters.json").write_text(
-                json.dumps(
-                    {
-                        "version": 6,
-                        "chatters": {"1": {"user_name": "Viewer"}, "2": {}},
-                    }
-                ),
-                encoding="utf-8",
-            )
-            (memory / "twitch_activity.json").write_text(
-                json.dumps(
-                    {
-                        "version": 2,
-                        "events": [
-                            {"user_id": "1", "text": "Viewer followed"},
-                            {"user_id": "2", "text": "Other followed"},
-                        ],
-                    }
-                ),
-                encoding="utf-8",
-            )
+            store = ChatterHistoryStore(root / "memory" / "twitch_chatters.json")
+            store.observe_message("1", "Viewer", user_login="viewer")
+            store.set_manual_group("1", "Regulars")
+            store.observe_message("2", "Other", user_login="other")
+            store.records["1"].private_notes = "must never be archived"
+            store.save()
             controller = ReleaseController(root)
-            archive = controller.create_backup()
+            archive = controller.create_backup(BackupPreset.EVERYTHING_ELIGIBLE)
+
+            with ZipFile(archive) as source:
+                manifest = json.loads(source.read("manifest.json"))
+                users_before = json.loads(source.read("components/users.json"))
+            self.assertEqual(
+                manifest["components"]["users"]["schema"],
+                ChatterHistoryStore.VERSION,
+            )
+            self.assertEqual(set(users_before["chatters"]), {"1", "2"})
+            self.assertEqual(
+                users_before["chatters"]["1"]["manual_group"], "Regulars"
+            )
+            self.assertNotIn("must never be archived", json.dumps(users_before))
+            forbidden_fields = {"private_notes", "message", "text", "evidence"}
+            for record in users_before["chatters"].values():
+                self.assertLessEqual(set(record), BACKUP_CHATTER_FIELDS)
+                self.assertTrue(forbidden_fields.isdisjoint(record))
 
             self.assertEqual(controller.scrub_viewer_data("1"), 1)
             with ZipFile(archive) as source:
-                chatters = json.loads(
-                    source.read("memory/twitch_chatters.json")
-                )
-                activity = json.loads(
-                    source.read("memory/twitch_activity.json")
-                )
-            self.assertEqual(set(chatters["chatters"]), {"2"})
-            self.assertEqual(
-                [event["user_id"] for event in activity["events"]], ["2"]
-            )
+                users_after = json.loads(source.read("components/users.json"))
+            self.assertEqual(set(users_after["chatters"]), {"2"})
 
     def test_windows_release_assets_exist(self) -> None:
         root = Path(__file__).resolve().parents[2]
