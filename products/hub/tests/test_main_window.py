@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QMenu,
     QMessageBox,
+    QPushButton,
     QWidget,
 )
 from PySide6.QtTest import QSignalSpy, QTest
@@ -239,6 +240,16 @@ class MainWindowTests(unittest.TestCase):
             if str(item.data(0, Qt.ItemDataRole.UserRole) or "") == group_id:
                 return item
         self.fail(f"Routine group {group_id!r} is not visible.")
+
+    def _routine_item(self, routine_id: str):
+        tree = self.window.automation_page.routine_tree
+        for group_index in range(tree.topLevelItemCount()):
+            group_item = tree.topLevelItem(group_index)
+            for routine_index in range(group_item.childCount()):
+                item = group_item.child(routine_index)
+                if str(item.data(0, Qt.ItemDataRole.UserRole) or "") == routine_id:
+                    return item
+        self.fail(f"Routine {routine_id!r} is not visible.")
 
     def test_navigation_selects_one_button_and_correct_page(self) -> None:
         self.assertEqual(self.window.windowTitle(), "Streamhouse Hub")
@@ -543,6 +554,96 @@ class MainWindowTests(unittest.TestCase):
         saved = store.get(routine.routine_id)
         self.assertEqual(saved.name, "Welcome Everyone")
         self.assertEqual(saved.description, "Updated description")
+
+    def test_routine_context_test_captures_clicked_stable_id(self) -> None:
+        store = self.twitch_command_trigger_store.routine_store
+        clicked = store.add("Clicked routine")
+        store.add_task(
+            clicked.routine_id,
+            task_type="core.wait",
+            name="Clicked wait",
+            config={"duration": "0", "unit": "seconds"},
+        )
+        selected_later = store.add("Selected later")
+        store.add_task(
+            selected_later.routine_id,
+            task_type="core.wait",
+            name="Other wait",
+            config={"duration": "0", "unit": "seconds"},
+        )
+        page = self.window.automation_page
+        page.refresh()
+        menu = page._build_routine_context_menu(
+            self._routine_item(clicked.routine_id)
+        )
+
+        page.select_routine(selected_later.routine_id)
+        test_action = next(
+            action for action in menu.actions() if action.text() == "Test Routine"
+        )
+        with patch.object(page, "_test_routine") as test_routine:
+            test_action.trigger()
+
+        test_routine.assert_called_once_with(clicked.routine_id)
+
+    def test_routine_context_test_matches_existing_availability_and_run_path(
+        self,
+    ) -> None:
+        store = self.twitch_command_trigger_store.routine_store
+        empty = store.add("Empty routine")
+        disabled = store.add("Disabled routine", enabled=False)
+        store.add_task(
+            disabled.routine_id,
+            task_type="core.wait",
+            name="Disabled wait",
+            config={"duration": "0", "unit": "seconds"},
+        )
+        page = self.window.automation_page
+
+        def context_action(routine_id: str):
+            page.refresh()
+            menu = page._build_routine_context_menu(self._routine_item(routine_id))
+            return next(
+                action
+                for action in menu.actions()
+                if action.text() == "Test Routine"
+            )
+
+        self.assertFalse(context_action(empty.routine_id).isEnabled())
+        disabled_action = context_action(disabled.routine_id)
+        self.assertTrue(disabled_action.isEnabled())
+        self.assertTrue(page.test_routine_button.isEnabled())
+
+        with patch.object(
+            QMessageBox,
+            "question",
+            return_value=QMessageBox.StandardButton.Yes,
+        ), patch.object(QMessageBox, "information") as information, patch.object(
+            page.automation_service,
+            "run_routine",
+            wraps=page.automation_service.run_routine,
+        ) as run_routine:
+            disabled_action.trigger()
+
+        self.assertEqual(run_routine.call_args.args[0], disabled.routine_id)
+        self.assertIn("Routine failed", information.call_args.args[2])
+
+    def test_routines_toolbar_new_button_reuses_existing_creation_flow(self) -> None:
+        page = self.window.automation_page
+        dialog = Mock()
+        dialog.exec.return_value = QDialog.DialogCode.Rejected
+
+        with patch(
+            "products.hub.ui.automation_page.NewRoutineDialog",
+            return_value=dialog,
+        ) as dialog_type:
+            page.new_routine_button.click()
+
+        dialog_type.assert_called_once_with(
+            page.routine_store,
+            page,
+            page.event_trigger_store,
+        )
 
     def test_routine_group_expansion_survives_edit_add_delete_and_refresh(self) -> None:
         store = self.twitch_command_trigger_store.routine_store
@@ -2102,7 +2203,19 @@ class MainWindowTests(unittest.TestCase):
         )
         self.assertIs(
             self.window.automation_page.new_routine_button.parentWidget(),
+            self.window.automation_page.new_group_button.parentWidget(),
+        )
+        self.assertIsNot(
+            self.window.automation_page.new_routine_button.parentWidget(),
             self.window.automation_page.page_header.action_widget,
+        )
+        self.assertEqual(
+            [
+                button.text()
+                for button in self.window.automation_page.findChildren(QPushButton)
+                if button.text() == "+ New Routine"
+            ],
+            ["+ New Routine"],
         )
         self.assertIs(
             self.window.ui.saveSettingsButton.parentWidget(),

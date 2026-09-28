@@ -2781,7 +2781,6 @@ class AutomationPage(QWidget):
         self._build_queues_tab()
         self._build_variables_tab()
         self._build_history_tab()
-        self.page_header.add_action(self.new_routine_button)
         self.queue_timer = QTimer(self)
         self.queue_timer.setInterval(100)
         self.queue_timer.timeout.connect(self._poll_queues)
@@ -2822,6 +2821,7 @@ class AutomationPage(QWidget):
         self.sort_routines_button.setToolTip(
             "Show groups and routines alphabetically. Ungrouped always stays first."
         )
+        toolbar.addWidget(self.new_routine_button)
         toolbar.addWidget(self.new_group_button)
         browser_layout.addLayout(toolbar)
         transfer_toolbar = QHBoxLayout()
@@ -4191,6 +4191,13 @@ class AutomationPage(QWidget):
 
     def _routine_context_menu(self, position) -> None:
         item = self.routine_tree.itemAt(position)
+        menu = self._build_routine_context_menu(item)
+        menu.exec(self.routine_tree.viewport().mapToGlobal(position))
+
+    def _build_routine_context_menu(
+        self,
+        item: QTreeWidgetItem | None,
+    ) -> QMenu:
         menu = QMenu(self)
         if item is None:
             menu.addAction("New Routine", self._new_routine)
@@ -4210,6 +4217,11 @@ class AutomationPage(QWidget):
             routine_id = str(item.data(0, Qt.ItemDataRole.UserRole) or "")
             routine = self.routine_store.get(routine_id)
             menu.addAction("Edit Routine", self._edit_selected_routine)
+            test_action = menu.addAction(
+                "Test Routine",
+                lambda checked=False, rid=routine_id: self._test_routine(rid),
+            )
+            test_action.setEnabled(bool(routine and routine.tasks))
             menu.addAction("Duplicate Routine", self._duplicate_routine)
             menu.addAction("Export Routine…", self._export_routine)
             menu.addAction(
@@ -4232,7 +4244,7 @@ class AutomationPage(QWidget):
                 )
             menu.addSeparator()
             menu.addAction("Delete Routine", self._delete_routine)
-        menu.exec(self.routine_tree.viewport().mapToGlobal(position))
+        return menu
 
     def _export_routine(self) -> None:
         routine = self.routine_store.get(self._selected_routine_id)
@@ -5454,7 +5466,10 @@ class AutomationPage(QWidget):
         )
 
     def _test_selected_routine(self) -> None:
-        routine = self.routine_store.get(self._selected_routine_id)
+        self._test_routine(self._selected_routine_id)
+
+    def _test_routine(self, routine_id: str) -> None:
+        routine = self.routine_store.get(routine_id)
         if routine is None or not routine.tasks:
             return
         enabled_tasks = [task for task in routine.tasks if task.enabled]
