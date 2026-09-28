@@ -10,15 +10,14 @@ from products.ai.engine.memory_extractor import BufferedChatMessage, ExtractedMe
 from products.ai.engine.response_engine import ResponseDecision, ResponseMessage
 from products.hub.streamhouse_hub.ai_client import StreamhouseAIClient
 from shared.streamhouse_shared.protocol import (
-    LEGACY_PROTOCOL_HEADER,
-    LEGACY_PROTOCOL_VERSION,
     PROTOCOL_HEADER,
     PROTOCOL_VERSION,
+    response_message_to_dict,
 )
 from products.ai.streamhouse_ai.server import create_server
 
 
-class FakeCompanionService:
+class FakeStreamhouseAIService:
     def ping(self, _body: dict) -> dict:
         return {
             "protocol_version": PROTOCOL_VERSION,
@@ -46,7 +45,7 @@ class FakeCompanionService:
                     "source_text": source["text"],
                     "received_at": source["received_at"],
                     "decision": "reply",
-                    "reply": "Hello from the companion.",
+                    "reply": "Hello from Streamhouse AI.",
                     "reason": "direct invocation",
                     "confidence": 0.9,
                     "solicited": True,
@@ -76,9 +75,9 @@ class FakeCompanionService:
         }
 
 
-class CompanionProtocolTests(unittest.TestCase):
+class StreamhouseAIProtocolTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.server = create_server(port=0, service=FakeCompanionService())
+        self.server = create_server(port=0, service=FakeStreamhouseAIService())
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
         host, port = self.server.server_address
@@ -90,12 +89,34 @@ class CompanionProtocolTests(unittest.TestCase):
         self.thread.join(timeout=2.0)
 
     def test_status_proves_protocol_and_model(self) -> None:
-        self.assertEqual(PROTOCOL_VERSION, 2)
+        self.assertEqual(PROTOCOL_VERSION, 3)
         self.assertEqual(self.server.server_address[0], "127.0.0.1")
         status = self.client.status("http://127.0.0.1:11434", "qwen3:14b")
         self.assertTrue(status.available)
         self.assertEqual(status.protocol_version, PROTOCOL_VERSION)
         self.assertEqual(status.models, ("qwen3:14b",))
+
+    def test_response_message_wire_fields_are_product_neutral(self) -> None:
+        payload = response_message_to_dict(
+            ResponseMessage(
+                "request-1",
+                "message-1",
+                "user-1",
+                "Viewer",
+                "hello",
+                "now",
+                previous_ai_reply="Previous answer",
+                directed_at_ai=True,
+                reply_to_ai=True,
+            )
+        )
+
+        self.assertEqual(payload["previous_ai_reply"], "Previous answer")
+        self.assertTrue(payload["directed_at_ai"])
+        self.assertTrue(payload["reply_to_ai"])
+        self.assertNotIn("previous_sally_reply", payload)
+        self.assertNotIn("directed_at_sally", payload)
+        self.assertNotIn("reply_to_sally", payload)
 
     def test_reply_decision_round_trip(self) -> None:
         message = ResponseMessage(
@@ -106,7 +127,7 @@ class CompanionProtocolTests(unittest.TestCase):
         )
         self.assertEqual(len(decisions), 1)
         self.assertIsInstance(decisions[0], ResponseDecision)
-        self.assertEqual(decisions[0].reply, "Hello from the companion.")
+        self.assertEqual(decisions[0].reply, "Hello from Streamhouse AI.")
 
     def test_memory_extraction_round_trip(self) -> None:
         message = BufferedChatMessage(
@@ -119,23 +140,9 @@ class CompanionProtocolTests(unittest.TestCase):
         self.assertIsInstance(memories[0], ExtractedMemory)
         self.assertEqual(memories[0].key, "game-genre")
 
-    def test_closed_companion_is_reported_as_unavailable(self) -> None:
+    def test_closed_streamhouse_ai_is_reported_as_unavailable(self) -> None:
         client = StreamhouseAIClient("http://127.0.0.1:1", timeout=0.2)
         self.assertFalse(client.status("http://127.0.0.1:11434", "qwen3:14b").available)
-
-    def test_legacy_protocol_header_remains_temporarily_compatible(self) -> None:
-        request = Request(
-            self.client.endpoint + "/v1/ping",
-            data=b"{}",
-            headers={
-                "Content-Type": "application/json",
-                LEGACY_PROTOCOL_HEADER: str(LEGACY_PROTOCOL_VERSION),
-            },
-            method="POST",
-        )
-        with urlopen(request, timeout=2.0) as response:
-            payload = json.loads(response.read().decode("utf-8"))
-        self.assertEqual(payload["protocol_version"], LEGACY_PROTOCOL_VERSION)
 
     def test_unknown_protocol_version_has_clear_mismatch_error(self) -> None:
         request = Request(

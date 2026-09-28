@@ -7,7 +7,13 @@ from threading import RLock
 from typing import Any, Mapping
 from urllib.parse import urlparse
 
-from shared.streamhouse_runtime.json_store import atomic_write_json, load_json_with_backup
+from shared.streamhouse_runtime.json_store import (
+    UnsupportedJsonSchemaError,
+    atomic_write_bytes,
+    atomic_write_json,
+    json_store_exists,
+    load_validated_json,
+)
 from shared.streamhouse_runtime.paths import user_data_root
 
 
@@ -106,7 +112,7 @@ class ChannelInformation:
 
 
 class ChannelInformationStore:
-    VERSION = 1
+    VERSION = 3
 
     def __init__(self, path: Path | None = None) -> None:
         self.path = path or user_data_root() / "twitch" / "channel-information.json"
@@ -115,33 +121,97 @@ class ChannelInformationStore:
 
     def load(self) -> ChannelInformation:
         with self._lock:
-            if not self.path.exists():
+            if not json_store_exists(self.path):
                 self.information = ChannelInformation()
                 return self.snapshot()
-            payload = load_json_with_backup(self.path)
-            if not isinstance(payload, dict):
-                raise ValueError("Channel Information must contain a JSON object.")
-            try:
-                version = int(payload.get("version", 1))
-            except (TypeError, ValueError) as error:
-                raise ValueError("Channel Information has an invalid schema version.") from error
-            if version > self.VERSION:
-                raise ValueError("Channel Information data is newer than this app.")
-            self.information = ChannelInformation.from_dict(payload)
+            self.information = load_validated_json(self.path, self._parse_payload)
             return self.snapshot()
 
-    def save(self, information: ChannelInformation | None = None) -> ChannelInformation:
+    def load_for_startup(self) -> ChannelInformation:
+        """Load schema v3 or durably reset discarded pre-Alpha content."""
+        if not json_store_exists(self.path):
+            return self.save(ChannelInformation())
+        try:
+            information = self.load()
+        except UnsupportedJsonSchemaError:
+            backup_path = self.path.with_suffix(self.path.suffix + ".bak")
+            if backup_path.exists():
+                try:
+                    load_validated_json(backup_path, self._parse_payload)
+                except (OSError, TypeError, ValueError):
+                    pass
+                else:
+                    atomic_write_bytes(self.path, backup_path.read_bytes())
+                    return self.load()
+            self.information = ChannelInformation()
+            self.save()
+            self.save()
+            return self.snapshot()
+        self._repair_recovery_copy()
+        return information
+
+    def _repair_recovery_copy(self) -> None:
+        backup_path = self.path.with_suffix(self.path.suffix + ".bak")
+        if not backup_path.exists():
+            return
+        try:
+            load_validated_json(backup_path, self._parse_payload)
+        except (OSError, TypeError, ValueError):
+            atomic_write_bytes(backup_path, self.path.read_bytes())
+
+    def _parse_payload(self, payload: object) -> ChannelInformation:
+        if not isinstance(payload, dict):
+            raise ValueError("Channel Information must contain a JSON object.")
+        try:
+            version = int(payload.get("version", 0))
+        except (TypeError, ValueError) as error:
+            raise ValueError("Channel Information has an invalid schema version.") from error
+        if version != self.VERSION:
+            raise UnsupportedJsonSchemaError(
+                f"Unsupported Channel Information version {version}; "
+                f"expected {self.VERSION}."
+            )
+        return ChannelInformation.from_dict(payload)
+
+    def save(
+        self,
+        information: ChannelInformation | None = None,
+        *,
+        related_files: Mapping[Path, dict] | None = None,
+    ) -> ChannelInformation:
+        """Commit configuration and prepared managed-command files together.
+
+        Publish no runtime value until all writes succeed. Ordinary I/O failures
+        restore already-written files (including their recovery backups).
+        """
         with self._lock:
             candidate = ChannelInformation.from_dict(
                 asdict(information if information is not None else self.information)
             )
-            atomic_write_json(
-                self.path,
-                {
-                    "version": self.VERSION,
-                    **asdict(candidate),
-                },
-            )
+            writes = dict(related_files or {})
+            writes[self.path] = {"version": self.VERSION, **asdict(candidate)}
+            previous = {
+                path: path.read_bytes() if path.exists() else None
+                for target in writes
+                for path in (target, target.with_suffix(target.suffix + ".bak"))
+            }
+            attempted: list[Path] = []
+            try:
+                for path, payload in writes.items():
+                    attempted.append(path)
+                    atomic_write_json(path, payload)
+            except OSError:
+                for target in reversed(attempted):
+                    for path in (target, target.with_suffix(target.suffix + ".bak")):
+                        content = previous[path]
+                        if content is None:
+                            path.unlink(missing_ok=True)
+                        elif not path.exists() or path.read_bytes() != content:
+                            temporary = path.with_suffix(path.suffix + ".restore")
+                            temporary.write_bytes(content)
+                            temporary.replace(path)
+                    target.with_suffix(target.suffix + ".tmp").unlink(missing_ok=True)
+                raise
             self.information = candidate
             return self.snapshot()
 
@@ -161,9 +231,16 @@ class ChannelInformationStore:
         raise ValueError("Unknown Channel Information field.")
 
     def field_available(self, field_id: str) -> bool:
-        try:
-            return bool(self.field_value(field_id))
-        except ValueError:
+        clean = str(field_id).strip().casefold()
+        with self._lock:
+            if clean == "discord_url":
+                link = self.information.social_links["discord"]
+                return bool(link.url)
+            if clean == "youtube_url":
+                link = self.information.social_links["youtube"]
+                return bool(link.url)
+            if clean in {"schedule", "rules", "server_info"}:
+                return bool(str(getattr(self.information, clean)).strip())
             return False
 
     def usable_social_links(self) -> tuple[tuple[str, str], ...]:

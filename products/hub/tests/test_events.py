@@ -24,10 +24,10 @@ class EventsTests(unittest.TestCase):
 
         self.assertEqual(Events.listener_count("example_event"), 1)
         self.assertEqual(
-            Events.emit("example_event", message="Sally is ready."),
+            Events.emit("example_event", message="Streamhouse is ready."),
             1,
         )
-        self.assertEqual(received_messages, ["Sally is ready."])
+        self.assertEqual(received_messages, ["Streamhouse is ready."])
         self.assertTrue(Events.unsubscribe("example_event", receive))
         self.assertEqual(Events.listener_count("example_event"), 0)
 

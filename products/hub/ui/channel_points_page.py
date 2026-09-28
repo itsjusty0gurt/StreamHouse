@@ -22,6 +22,7 @@ from products.hub.twitch.auth import TwitchAuthService
 from products.hub.twitch.models import TwitchCustomReward
 from products.hub.twitch.service import TwitchService
 from products.hub.ui.channel_point_reward_dialog import ChannelPointRewardDialog
+from products.hub.ui.page_header import PageHeader
 
 
 class _RewardWorkerSignals(QObject):
@@ -59,23 +60,30 @@ class ChannelPointsPage(QWidget):
         self.rewards: list[TwitchCustomReward] = []
         self.loaded = False
         self.busy = False
+        self._shutting_down = False
         self.thread_pool = QThreadPool(self)
         self.thread_pool.setMaxThreadCount(1)
         self._workers: set[_RewardWorker] = set()
 
         layout = QVBoxLayout(self)
-        toolbar = QHBoxLayout()
+        self.page_header = PageHeader(
+            "Channel Points",
+            "Manage custom Twitch rewards owned by Streamhouse Hub.",
+            self,
+        )
         self.create_button = QPushButton("Create Reward")
+        self.refresh_button = QPushButton("Refresh")
+        self.page_header.add_action(self.refresh_button)
+        self.page_header.add_action(self.create_button)
+        layout.addWidget(self.page_header)
+        toolbar = QHBoxLayout()
         self.edit_button = QPushButton("Edit Selected")
         self.toggle_button = QPushButton("Disable Selected")
         self.delete_button = QPushButton("Delete Selected")
-        self.refresh_button = QPushButton("Refresh")
-        toolbar.addWidget(self.create_button)
         toolbar.addWidget(self.edit_button)
         toolbar.addWidget(self.toggle_button)
         toolbar.addWidget(self.delete_button)
         toolbar.addStretch()
-        toolbar.addWidget(self.refresh_button)
         layout.addLayout(toolbar)
 
         self.table = QTableWidget(0, 8)
@@ -298,6 +306,8 @@ class ChannelPointsPage(QWidget):
         operation: Callable[[], object],
         completed: Callable[[object], None],
     ) -> None:
+        if self._shutting_down:
+            return
         self.busy = True
         self.status_label.setText(message)
         self._update_actions()
@@ -306,6 +316,8 @@ class ChannelPointsPage(QWidget):
 
         def finish(result: object, error: object) -> None:
             self._workers.discard(worker)
+            if self._shutting_down:
+                return
             self.busy = False
             if isinstance(error, BaseException):
                 self.status_label.setText(self._error_message(error))
@@ -350,5 +362,6 @@ class ChannelPointsPage(QWidget):
         )
 
     def shutdown(self) -> None:
+        self._shutting_down = True
         self.thread_pool.clear()
         self.thread_pool.waitForDone(2_000)

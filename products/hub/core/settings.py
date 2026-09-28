@@ -1,10 +1,18 @@
 from __future__ import annotations
 
+import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, ClassVar
 
-from shared.streamhouse_runtime.json_store import atomic_write_json, load_json_with_backup
+from shared.streamhouse_runtime.json_store import (
+    UnsupportedJsonSchemaError,
+    atomic_write_bytes,
+    atomic_write_json,
+    json_store_exists,
+    load_validated_json,
+)
+from shared.streamhouse_runtime.logger import Logger
 from shared.streamhouse_runtime.paths import user_data_root
 
 
@@ -15,7 +23,6 @@ class AppSettings:
     STARTUP_PAGES: ClassVar[tuple[str, ...]] = (
         "Dashboard",
         "Twitch",
-        "AI",
         "Automation",
         "Logs",
         "Settings",
@@ -35,9 +42,10 @@ class AppSettings:
     twitch_chat_show_timestamps: bool = True
     twitch_chat_font_family: str = "Segoe UI"
     twitch_chat_font_size: int = 10
-    twitch_last_ad_duration: int = 30
+    twitch_last_ad_duration: int = 180
+    automatic_backups_enabled: bool = True
     local_ai_enabled: bool = True
-    ai_companion_endpoint: str = "http://127.0.0.1:8765"
+    streamhouse_ai_endpoint: str = "http://127.0.0.1:8765"
     local_ai_endpoint: str = "http://127.0.0.1:11434"
     local_ai_model: str = "qwen3:14b"
     ai_viewer_memory_enabled: bool = False
@@ -48,7 +56,6 @@ class AppSettings:
     ai_memory_promo_enabled: bool = True
     ai_memory_promo_interval_messages: int = 150
     ai_response_decisions_enabled: bool = True
-    ai_auto_send_replies: bool = True
     ai_response_max_age_seconds: int = 15
     ai_response_min_interval_seconds: int = 8
     ai_conversation_followup_seconds: int = 180
@@ -79,8 +86,6 @@ class AppSettings:
         defaults = cls()
 
         startup_page = values.get("startup_page", defaults.startup_page)
-        if startup_page == "Memories":
-            startup_page = "AI"
         if startup_page not in cls.STARTUP_PAGES:
             startup_page = defaults.startup_page
 
@@ -133,17 +138,24 @@ class AppSettings:
         ):
             ad_duration = defaults.twitch_last_ad_duration
 
+        automatic_backups_enabled = values.get(
+            "automatic_backups_enabled",
+            defaults.automatic_backups_enabled,
+        )
+        if not isinstance(automatic_backups_enabled, bool):
+            automatic_backups_enabled = defaults.automatic_backups_enabled
+
         local_ai_enabled = values.get("local_ai_enabled", defaults.local_ai_enabled)
         if not isinstance(local_ai_enabled, bool):
             local_ai_enabled = defaults.local_ai_enabled
-        companion_endpoint = values.get(
-            "ai_companion_endpoint", defaults.ai_companion_endpoint
+        ai_endpoint = values.get(
+            "streamhouse_ai_endpoint", defaults.streamhouse_ai_endpoint
         )
-        if not isinstance(companion_endpoint, str) or not companion_endpoint.strip():
-            companion_endpoint = defaults.ai_companion_endpoint
-        companion_endpoint = companion_endpoint.strip().rstrip("/")[:500]
-        if not companion_endpoint.startswith(("http://", "https://")):
-            companion_endpoint = defaults.ai_companion_endpoint
+        if not isinstance(ai_endpoint, str) or not ai_endpoint.strip():
+            ai_endpoint = defaults.streamhouse_ai_endpoint
+        ai_endpoint = ai_endpoint.strip().rstrip("/")[:500]
+        if not ai_endpoint.startswith(("http://", "https://")):
+            ai_endpoint = defaults.streamhouse_ai_endpoint
         local_ai_endpoint = values.get(
             "local_ai_endpoint", defaults.local_ai_endpoint
         )
@@ -208,9 +220,6 @@ class AppSettings:
         )
         if not isinstance(response_decisions_enabled, bool):
             response_decisions_enabled = defaults.ai_response_decisions_enabled
-        # Reasoning-approved replies are always sent. Keep the serialized field
-        # for backward compatibility with existing settings files.
-        auto_send_replies = True
         response_max_age = values.get(
             "ai_response_max_age_seconds",
             defaults.ai_response_max_age_seconds,
@@ -318,8 +327,9 @@ class AppSettings:
             twitch_chat_font_family=font_family,
             twitch_chat_font_size=font_size,
             twitch_last_ad_duration=ad_duration,
+            automatic_backups_enabled=automatic_backups_enabled,
             local_ai_enabled=local_ai_enabled,
-            ai_companion_endpoint=companion_endpoint,
+            streamhouse_ai_endpoint=ai_endpoint,
             local_ai_endpoint=local_ai_endpoint,
             local_ai_model=local_ai_model,
             ai_viewer_memory_enabled=viewer_memory_enabled,
@@ -330,7 +340,6 @@ class AppSettings:
             ai_memory_promo_enabled=memory_promo_enabled,
             ai_memory_promo_interval_messages=memory_promo_interval,
             ai_response_decisions_enabled=response_decisions_enabled,
-            ai_auto_send_replies=auto_send_replies,
             ai_response_max_age_seconds=response_max_age,
             ai_response_min_interval_seconds=response_min_interval,
             ai_conversation_followup_seconds=conversation_followup,
@@ -350,21 +359,96 @@ class AppSettings:
 class SettingsStore:
     """Load and save Streamhouse Hub preferences as a small JSON document."""
 
+    VERSION = 4
+
     def __init__(self, path: Path | None = None) -> None:
         self.path = path or user_data_root() / "config" / "settings.json"
 
     def load(self) -> AppSettings:
-        if not self.path.exists():
+        if not json_store_exists(self.path):
             return AppSettings()
 
-        values = load_json_with_backup(self.path)
+        return load_validated_json(self.path, self._parse_payload)
 
+    def load_for_startup(self) -> AppSettings:
+        """Load v4 settings or durably establish the pre-Alpha v4 baseline."""
+        if not self.path.exists():
+            backup_path = self.path.with_suffix(self.path.suffix + ".bak")
+            if not backup_path.exists():
+                defaults = AppSettings()
+                self.save(defaults)
+                return defaults
+            try:
+                self._read_current(backup_path)
+            except UnsupportedJsonSchemaError:
+                return self._reset_obsolete_schema()
+            return self.load()
+
+        try:
+            self._read_current(self.path)
+        except UnsupportedJsonSchemaError:
+            return self._reset_obsolete_schema()
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            # Current-schema corruption remains owned by the shared validated
+            # recovery path. It may recover a current .bak or fail explicitly.
+            return self._load_current_and_repair_recovery()
+        return self._load_current_and_repair_recovery()
+
+    def _load_current_and_repair_recovery(self) -> AppSettings:
+        settings = self.load()
+        backup_path = self.path.with_suffix(self.path.suffix + ".bak")
+        if backup_path.exists():
+            try:
+                self._read_current(backup_path)
+            except (OSError, TypeError, ValueError, json.JSONDecodeError):
+                # A validated current live file is authoritative. Repair an
+                # unusable recovery copy without rewriting the live settings.
+                atomic_write_bytes(backup_path, self.path.read_bytes())
+        return settings
+
+    def _read_current(self, path: Path) -> AppSettings:
+        with path.open(encoding="utf-8") as source:
+            return self._parse_payload(json.load(source))
+
+    def _reset_obsolete_schema(self) -> AppSettings:
+        """Replace discarded development settings, preferring a current backup."""
+        backup_path = self.path.with_suffix(self.path.suffix + ".bak")
+        if backup_path.exists():
+            try:
+                recovered = self._read_current(backup_path)
+            except (OSError, TypeError, ValueError, json.JSONDecodeError):
+                pass
+            else:
+                atomic_write_bytes(self.path, backup_path.read_bytes())
+                Logger.warning(
+                    "Recovered current Hub settings from backup after "
+                    "discarding an obsolete pre-Alpha live schema.",
+                    source="SETTINGS",
+                )
+                return self._load_current_and_repair_recovery()
+
+        defaults = AppSettings()
+        self.save(defaults)
+        # The first replacement correctly retains the obsolete live file as the
+        # prior copy. Replace that recovery copy so obsolete data cannot return.
+        atomic_write_bytes(backup_path, self.path.read_bytes())
+        Logger.warning(
+            "Reset obsolete pre-Alpha Hub settings to current defaults.",
+            source="SETTINGS",
+        )
+        return defaults
+
+    def _parse_payload(self, values: object) -> AppSettings:
         if not isinstance(values, dict):
             raise ValueError("Settings file must contain a JSON object.")
+        if int(values.get("_version", 0)) != self.VERSION:
+            raise UnsupportedJsonSchemaError(
+                "Hub settings use a discarded pre-alpha schema and must be reset."
+            )
 
         return AppSettings.from_dict(values)
 
     def save(self, settings: AppSettings) -> None:
         payload = asdict(settings)
-        payload["_version"] = 1
+        payload["_version"] = self.VERSION
         atomic_write_json(self.path, payload)

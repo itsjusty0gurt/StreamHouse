@@ -14,6 +14,9 @@ if ($LASTEXITCODE -ne 0) {
 
 Push-Location $projectRoot
 try {
+    # Hub uses Qt Widgets and Qt WebEngine, not the Python Qt Quick/QML APIs.
+    # Excluding them prevents PyInstaller from scanning incomplete, unused
+    # QML plugin metadata shipped in the PySide6 wheel.
     & $python -m PyInstaller `
         --noconfirm `
         --clean `
@@ -23,6 +26,8 @@ try {
         --version-file "tools\packaging\windows-hub-version-info.txt" `
         --exclude-module "products.ai.engine" `
         --exclude-module "products.ai.streamhouse_ai" `
+        --exclude-module "PySide6.QtQuick" `
+        --exclude-module "PySide6.QtQml" `
         --add-binary ".venv\Lib\site-packages\PySide6\plugins\platforms\qoffscreen.dll;PySide6\plugins\platforms" `
         --add-data "shared\assets\streamhouse-icons\streamhouse-hub.png;assets\streamhouse-icons" `
         --add-data "extensions\twitch\app;extensions\twitch\app" `
@@ -32,6 +37,7 @@ try {
     }
 
     $qtRoot = Join-Path $projectRoot "dist\StreamhouseHub\_internal\PySide6"
+    $internalRoot = Join-Path $projectRoot "dist\StreamhouseHub\_internal"
     $qtResources = Join-Path $qtRoot "resources"
     $qtQml = Join-Path $qtRoot "qml"
     $qtLocales = Join-Path $qtRoot "translations\qtwebengine_locales"
@@ -48,6 +54,17 @@ try {
             $_.Name -ne "en-US.pak"
         } | Remove-Item -Force
     }
+    # PyInstaller may discover Poppler's versioned ICU implementation from the
+    # build host PATH while resolving Qt6Core's Windows ICU dependency. That
+    # DLL does not export the compatibility procedures Qt requests and makes
+    # the packaged app fail while importing PySide6.QtCore. Windows supplies
+    # the correct System32 compatibility DLL; do not shadow it in the package.
+    $foreignIcu = Join-Path $internalRoot "icuuc.dll"
+    if (Test-Path -LiteralPath $foreignIcu) {
+        Remove-Item -LiteralPath $foreignIcu -Force
+    }
+    Get-ChildItem -LiteralPath $internalRoot -Filter "icudt*.dll" -File | `
+        Remove-Item -Force
     Write-Host "Streamhouse Hub created at dist\StreamhouseHub\StreamhouseHub.exe"
 }
 finally {

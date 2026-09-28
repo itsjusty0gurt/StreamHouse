@@ -8,17 +8,27 @@ dependencies are defined in the
 ## Authentication
 
 - `products/hub/twitch/auth.py` implements the public-client Device Code flow.
-- Access and refresh tokens are encrypted with Windows DPAPI by
-  `products/hub/twitch/token_store.py`.
+- The compiled Twitch client ID identifies this public application and is not a
+  credential. Hub uses no Twitch client secret.
+- Access and refresh tokens are encrypted for the current Windows account with
+  DPAPI by `products/hub/twitch/token_store.py`; broadcaster and bot token files
+  are separate from portable JSON configuration and Backup/Restore eligibility.
 - The broadcaster and optional bot identities use separate encrypted
   token files. The broadcaster token owns channel analytics and moderation;
   the bot token reads and sends chat as the bot account.
+- Ads schedule/EventSub and action scopes belong to the broadcaster identity:
+  `channel:read:ads`, `channel:manage:ads`, and
+  `channel:edit:commercial`. Missing Ads scopes are presented as an actionable
+  broadcaster reauthorization requirement, not as a bot-login problem.
 - The broadcaster grants `channel:bot`. The bot login requests
   `user:read:chat`, `user:write:chat`, and `user:bot`.
 - Existing tokens survive application and EventSub disconnects. Only explicit
   sign-out deletes credentials.
 - When Hub adds scopes, it starts an upgrade flow once and Twitch asks the
   user to approve the additional access.
+- After broadcaster reauthorization, Hub reopens the broadcaster EventSub
+  connection so subscriptions are created on the newly authorized,
+  identity-pinned socket.
 
 ## Live transport
 
@@ -43,6 +53,29 @@ published to both:
 Chat messages also produce typed `TwitchMessage` objects. The raw developer
 diagnostic stream is separate from the human-readable Activity Feed.
 
+The bounded live Chat view mirrors Twitch's v1 chat moderation events. A
+`channel.chat.message_delete` notification removes the visible entry matching
+Twitch's stable message ID, `channel.chat.clear_user_messages` removes visible
+messages matching the target's stable Twitch user ID, and `channel.chat.clear`
+clears the live pane. This presentation cleanup does not erase Activity,
+chatter/user, or other historical records. EventSub-originated UI changes cross
+the queued Twitch Qt bridge before the widget is touched.
+
+The Chat input derives local autocomplete from the API-backed slash-command
+registry, including moderation, chat modes, Mod/VIP management, raids, and
+announcements. Known-user suggestions come from Hub's local user records.
+Completion only prepares the command; explicit submission and the normal
+confirmation remain required. Sent-message Up/Down history is bounded and
+session-only. The live timeline follows while near the bottom, pauses when the
+streamer reads older messages, and shows a counted Jump to latest control until
+the streamer jumps or manually returns to the bottom.
+
+**Your Channel > Raid** uses Get Followed Streams with the broadcaster's
+`user:read:follows` permission. Twitch returns only followed broadcasters that
+are currently live, including the stream metadata and thumbnail template used
+by the runtime-only cards. Starting a raid reuses the same
+`channel:manage:raids` service path as `/raid`; results are not persisted.
+
 Custom commands are Twitch triggers evaluated by
 `TwitchCommandTriggerDispatcher`. Ready matches publish a normalized
 `TriggerEvent`; rejected matches publish a named outcome without exposing chat
@@ -61,40 +94,129 @@ ordered tasks are ordinary registered automation providers. The built-in
 definitions use the same editable routines as custom commands rather than
 dispatcher branches.
 
-Built-in commands have stable default IDs. Startup seeds only missing defaults,
-never overwrites an existing default, and records deletion tombstones so a
-streamer's removed default stays removed. The Commands page can reset one
-existing default to its current definition or explicitly restore missing
-defaults. A custom command or alias occupying a default name is reported as a
-conflict and is never overwritten.
+Every ready Chat Command trigger exposes `command.name` and `command.data`
+through the modern Variables registry. `command.name` is the recognized name
+without `!`; `command.data` is the raw text after that name with surrounding
+separator whitespace trimmed. It may be empty and preserves internal spaces.
+For example, `!title Tonight we're playing Vintage Story` provides
+`command.name = title` and
+`command.data = Tonight we're playing Vintage Story`.
+Both values are contextual for that one routine execution, remain available to
+every task in the routine, and are discarded afterward. Non-command triggers
+do not receive stale command context. Message-bearing values such as
+`command.data` are intentionally omitted from completed Run History snapshots.
 
-Reusable information providers live in `products/hub/twitch/tasks.py`:
+Keyword / Phrase is a separate Twitch Chat trigger for matching ordinary chat.
+One trigger handles both single words and multi-word phrases with Contains,
+Exact Message, Starts With, and Ends With modes plus Ignore Case and Whole Word
+controls. A match supplies the normal `user.*` and `chat.*` context plus:
+
+- `keyword.message`: the full triggering message;
+- `keyword.match`: the configured canonical text;
+- `keyword.before`: trimmed text before the match;
+- `keyword.after`: trimmed text after the match.
+
+These values are routine-scoped and never create `command.*` context. For
+`I think coffee is better than tea`, matching `coffee` yields `I think` and
+`is better than tea` as the before/after values. The full message, match, and
+before/after slices are not retained in completed Run History entries.
+
+The Automation **Variables** reference keeps Command, Keyword / Phrase, Ads
+Started requester, and other contextual definitions discoverable even outside
+a live routine. Their current value remains explicitly unavailable until the
+matching trigger context exists; the page shows their provider-owned context
+requirement and Routine lifetime rather than inventing global values.
+
+Built-in command definitions are code-owned. On a fresh Hub, the self-contained
+`!uptime`, `!followage`, `!accountage`, `!title`, `!game`, and `!commands`
+definitions create enabled managed routines automatically, so they work without
+opening Commands first. Defaults that depend on Channel Information remain
+**Not Configured** templates until their required setup is committed. A
+configured default can be reset to its current definition.
+
+Configured defaults and custom Chat Commands share the Automation **Commands**
+group. The group is created with the first configured command and removed when
+the last command routine is deleted, unless it contains another explicitly
+grouped routine. Editing command settings updates the existing trigger and
+routine rather than replacing their stable identities.
+
+Reusable Twitch lookup tasks live in `products/hub/twitch/tasks.py`:
 
 - Resolve User produces the target ID, login, display name, account creation
   time, and a controlled lookup status.
 - Get Stream Information produces live/offline/error status, start time, title,
   category, stream ID, and viewer count.
-- Get Channel Information produces title and category even while offline.
 - Get Follow Relationship distinguishes following, not following, missing
   permission, broadcaster-self, missing-user, and API-failure outcomes.
 - Build Command List returns enabled commands visible to the invoking viewer and
   stays within the configured Twitch message budget.
 
+Information Hub already owns does not need an Automation Get task. Cached
+Twitch title/category state resolves through `stream.title` and
+`stream.category`. Values configured in **Your Channel > Channel Information**
+always have read-only Text definitions through `ChannelInformationVariableProvider`:
+
+- `channel.schedule` and `channel.rules`;
+- `socials.discord`, `socials.youtube`, `socials.tiktok`, `socials.instagram`,
+  `socials.bluesky`, `socials.twitter`, `socials.facebook`, and
+  `socials.website`;
+- `serverinfo.details` for the current combined server description/address.
+
+Unconfigured values resolve to empty text; they remain discoverable in the
+Variables page and Picker. There are no exposure flags or aliases.
+
+Each social row has a draft link, **Include in !socials**, and **Update**.
+Update is enabled only when the draft text or inclusion differs from the saved
+row. Typing and toggling Include do not change Variables or command responses.
+Update validates with the existing link rules (outer trimming, optional HTTPS
+prefix, no internal whitespace), commits the whole row, and synchronizes its
+managed commands. Empty links are valid unconfigured values, even if Include
+remains checked. Other rows' drafts are preserved. Schedule, Rules, and Server
+Information retain their separate **Save Other Information** action; their
+Variables also resolve committed, not draft, text.
+
+The existing per-social templates are `!discord` and `!youtube`. A committed
+non-empty link configures/enables that default automatically, independently of
+Include. `!socials` is configured/enabled when at least one committed non-empty
+link is included. `build_social_links_message` composes only those saved links,
+deduplicates them in service order, and observes the Twitch message budget.
+Edits retain trigger/routine identity, tasks, and the single **Commands** group.
+Clearing setup disables an existing managed default without deleting its
+routine; restoring setup re-enables it. An unconfigured default remains a
+template. Custom commands and aliases are never overwritten, and routines that
+read a social Variable are never deleted by social setup.
+
+The command store prepares changes using the normal default-template factories.
+`ChannelInformationStore.save` writes the prepared routine/command files and
+configuration before publishing the committed value. On an ordinary write
+failure, already-written files and their backups are restored; the page keeps
+the draft and displays a row error. This is not a cross-file, crash-recovery
+database transaction: interruption/power loss during a multi-file write remains
+a persistence limitation. The current pre-alpha Channel Information schema is
+v3, without exposure fields; older development schemas are rejected/reset, not
+migrated. Twitch authentication is unrelated and unchanged.
+
+Default Channel Information commands use these canonical Variables directly;
+obsolete pre-alpha routines containing removed Get tasks are rejected/reset
+rather than supported by a compatibility path.
+
 `core.format_duration` and `core.select_text` provide reusable formatting and
-conditional response selection. Every output is routine-scoped and registered
-with the generated-variable catalog so later task editors show friendly,
+conditional response selection. Every output is routine-scoped and described
+by typed temporary-output definitions so later task editors show friendly,
 insertable values. Network-backed command routines run on a single Qt worker;
 the completion signal performs command statistics and UI updates on the main
 thread.
 
 ## UI responsibilities
 
-- **Your Channel** is the current stream companion. Its current top-level tabs
-  are Chat, Analytics, Soundboard, Channel Information, Commands, Channel
-  Points, Counters, and User. Session data is
+- **Your Channel** is the current Hub channel workspace. Its current top-level tabs
+  are Chat, Analytics, Raid, Commands, Channel Information, Channel Points,
+  Counters, and Users. Session data is
   currently presented within Analytics. Chat includes the overview, grouped
-  chatters, Activity Feed, and eligible ad controls. The broadcaster is
-  excluded from the grouped chatter total. Chat and the chatter list share
+  chatters, Activity Feed, and eligible ad controls. In narrow and portrait
+  layouts, Chat remains the primary pane while Chatters and Activity stay
+  stacked in a resizable side column; they do not move below Chat. The broadcaster
+  is excluded from the grouped chatter total. Chat and the chatter list share
   right-click local grouping and permission-aware Twitch moderation actions.
   Chat is a bounded structured timeline: normal rows remain compact and
   borderless, while Twitch, moderation, and Hub-system notices may use an
@@ -102,14 +224,20 @@ thread.
   bottom. Message menus provide reply/copy/user details plus service-backed
   delete, timeout, ban, and unban controls when OAuth scopes permit them. The
   User tab shows roles and recent messages from the current in-memory session.
+  Local Regulars/Bots/Viewers assignments are Hub-owned classifications stored
+  in `memory/twitch_chatters.json` by stable Twitch user ID. Twitch snapshot
+  refreshes update account names and roles without replacing those assignments.
+  The same saved Bots classification drives chat, memory, and counter bot
+  filtering; there is no separate known-bots list.
   Counters lives here because it is Twitch/stream interaction, while its store,
   service, and task providers remain under `products/hub/counters/`.
 - **Connections** contains independent broadcaster and optional bot OAuth
   controls plus transport details.
-- **Logs > Twitch Events** contains searchable raw EventSub diagnostics and
-  sanitized payload details.
+- **Logs > Twitch Events** contains an in-memory, restart-cleared view of
+  searchable raw EventSub diagnostics and sanitized payload details. Raw
+  payloads are not written to application logs or a durable EventSub store.
 - **Developer Tools** contains message and event simulators.
-- The companion splitter, activity filter, window geometry, and dock state are
+- The channel splitter, activity filter, window geometry, and dock state are
   restored with `products/hub/core/window_state.py`.
 
 ## Simulation
@@ -123,18 +251,57 @@ used by live traffic.
 Connection health is modeled separately from page widgets. It tracks auth,
 EventSub, missing scopes, Streamhouse AI refresh success, and endpoint-specific
 failures. Local JSON histories use atomic replacement plus one last-known-good
-backup. Command triggers persist at `twitch/commands.json`; their managed
-routines persist at `automation/routines.json`. Both are included in current
-Streamhouse Hub backups. Older chatter records migrate through defaulted
-version-three fields.
+backup. Command triggers persist in the exact current v6 schema at
+`twitch/commands.json`; their managed routines and the Commands group persist at
+`automation/routines.json`. The six self-contained defaults are materialized on
+load when absent; unconfigured setup-dependent templates are not persisted in
+either file. The private-development v5 seeded-default format is rejected, not
+migrated. Both stores are included in current Streamhouse Hub backups.
+Chatter records require the current management-only schema v8. It persists
+stable identity, local group/bot classification, known Twitch status,
+first/last seen, and aggregate participation counts. It rejects message text,
+message samples, memories/evidence, private notes, and timeline content; schema
+v7 is discarded before Alpha rather than migrated. Malformed identities and
+unsupported local group values are discarded or normalized at the store
+boundary. Activity history requires schema v2 and uses
+stable Twitch user IDs for viewer deletion; stream-session history requires
+schema v1 while preserving a current incomplete session across a restart.
+Older private-development schemas are rejected/reset. These history files
+retain same-schema last-known-good backup recovery.
 
-The stream companion reads Twitch's ad schedule with `channel:read:ads` and
-shows the next break and duration, the last break, remaining pre-roll-free
-time, available snoozes, and the next snooze refresh. A one-second local timer
-updates countdowns between the normal one-minute Helix refreshes. Running and
-snoozing ads continue to require `channel:edit:commercial` and
-`channel:manage:ads`; the last manually used commercial duration is retained
-as a local UI preference.
+The channel snapshot refresh reads Twitch's ad schedule with `channel:read:ads`.
+`AdsService` owns the single cached `AdsState`, including the next/last break,
+duration, preroll-free time, snoozes, manual-commercial retry time, and active
+break timing. The compact Ad Manager remains on the Chat tab and shows the next
+or active countdown, next duration, snooze count/refresh, a remembered
+30–180-second commercial duration (180 seconds by default), Run Ads, and
+Snooze. It intentionally has no preroll-free progress bar or separate Ads
+settings workspace; a compact `Preroll-free` time readout uses the same cached
+state. Unknown/offline values display a dash rather than an invented countdown.
+Live Helix Ads responses use Unix-second timestamps (zero means unavailable),
+while EventSub and Twitch's documented examples use RFC3339. `AdsService`
+normalizes these external wire formats to UTC before calculating countdowns,
+warnings, cooldowns and snooze refresh times.
+API operations run on the existing Qt worker pattern and
+call `AdsService`, not Helix from the widget.
+
+Stream online/offline EventSub notifications update stream status and Ads
+controls immediately, then request a fresh snapshot. A snapshot requested
+before that transition cannot overwrite it. The normal periodic snapshot path
+still detects live state when Hub connects to an already-live channel.
+
+With `channel:read:ads`, Hub subscribes to `channel.ad_break.begin`. The service
+retains Twitch's start time, duration, automatic/manual flag, and requester
+identity when supplied. Twitch has no public ad-break-end EventSub event, so
+Hub calculates the estimated end as start time plus duration, clears active
+state then, refreshes the schedule, and publishes Ads Ended. This is a Hub
+timing estimate, not confirmation of each viewer's playback completion.
+
+`AdsVariableProvider` exposes the authoritative state as typed `ads.*` values:
+`ads.next_at`, `ads.next_in`, `ads.next_duration`, `ads.last_at`, snooze and
+preroll fields, `ads.in_progress`, `ads.remaining`, active duration/start/mode,
+and `ads.manual_retry_after`. `ads.requester.id` and
+`ads.requester.name` are contextual to Ads Started when Twitch supplies them.
 
 Editing a Twitch command updates its managed chat-response task in place. Any
 additional tasks attached in Automation remain ordered and intact, even when
@@ -149,21 +316,91 @@ rejected authorization distinctly from a genuine not-following result.
 ## Automation event triggers
 
 Twitch EventSub automation triggers persist at
-`twitch/event_triggers.json`. The live-ready set is follow, subscribe,
-subscription gift, subscription message, cheer, incoming raid, custom channel
-point redemption, stream online, and stream offline. These correspond to the
-activity subscriptions Hub currently establishes with Twitch.
+`twitch/event_triggers.json` in the exact current v4 schema; unversioned and
+obsolete private-development formats are rejected rather than migrated. The
+live-ready set is follow, subscribe, subscription gift, subscription message,
+cheer, incoming and outgoing raid, custom channel point redemption, stream
+online, and stream offline. These correspond to the activity subscriptions Hub
+currently establishes with Twitch.
 
 A trigger may optionally match exact EventSub payload fields. Dot notation
 addresses nested fields, for example `reward.id` or `reward.title`. Matching is
-case-insensitive. The normalized task context includes `{event_type}`, `{user}`,
-`{message}`, `{input}`, `{amount}`, `{bits}`, `{viewers}`, `{tier}`, `{reward}`,
-`{reward_id}`, and `{reward_cost}` in addition to the existing Twitch message
-variables. Live traffic and Developer Simulation enter the same routing path.
+case-insensitive. Source adapters may carry raw keys internally, but
+user-facing templates use the registry's canonical dotted definitions, such as
+`{event.type}`, `{user.display_name}`, `{chat.message}`, `{event.input}`,
+`{event.amount}`, `{event.bits}`, `{event.viewers}`, `{event.tier}`,
+`{event.reward}`, `{event.reward_id}`, and `{event.reward_cost}`. Live traffic
+and Developer Simulation enter the same routing path.
 
-Counter actions do not require a counter-specific trigger system. The five
-registered Counter tasks may be placed in any routine reached by a Twitch chat
-command, supported EventSub trigger, OBS/Core trigger, or manual execution.
+**Channel Point Redemption** is a dedicated trigger in the Twitch tree rather
+than a free-form payload-filter workflow. Hub creates one broadcaster-level
+`channel.channel_points_custom_reward_redemption.add` v1 EventSub subscription
+when the broadcaster token has either `channel:read:redemptions` or
+`channel:manage:redemptions`; configured routines then match locally. The
+editor discovers all custom rewards asynchronously and stores the stable Twitch
+reward ID plus its title for display. Matching uses only the ID, so a renamed
+reward continues to work; a deleted or temporarily unavailable reward remains
+visible as a missing saved selection. **Any Custom Reward** leaves the ID empty
+and matches every custom reward. Multiple routines may match one redemption.
+
+Each matching execution receives normal `user.*` values plus the routine-scoped
+`channel_points.redemption_id`, `channel_points.reward_id`,
+`channel_points.reward_title`, `channel_points.reward_cost`,
+`channel_points.reward_prompt`, `channel_points.user_input`,
+`channel_points.status`, and `channel_points.redeemed_at` definitions. Viewer
+input remains an available empty string when a reward has no input. These
+values flow through nested routines and disappear with the root execution.
+EventSub message-ID deduplication remains owned by the shared Twitch ingress.
+
+Subscription events keep the direct `channel.subscribe`,
+`channel.subscription.message`, or `channel.subscription.gift` EventSub event
+as the single Automation event. Hub normalizes `subscription.tier`, gifted and
+anonymous state, resub cumulative/streak/duration months, plain message text,
+and gift count/cumulative count when Twitch supplies them. Twitch's direct
+subscribe/resub events do not identify Prime subscriptions, so Hub briefly
+correlates the same viewer's `channel.chat.notification` metadata to add
+`subscription.is_prime` when reliable. The bounded correlation waits up to one
+second, expires transient entries, clears them on disconnect, and falls back to
+the direct event without inventing a Prime value. The chat notification never
+creates a second subscription Automation execution. A gift aggregate remains
+one Gift Subscription execution with `subscription.gift_count`. Twitch's
+separate `channel.subscribe` events for individual gifted recipients remain
+available to Activity and subscriber/user state, but are excluded from
+Subscribe Automation by default; users do not need an `is_gift=false` filter.
+
+Hub creates both official `channel.raid` v1 conditions on the broadcaster
+EventSub socket: `to_broadcaster_user_id` for **Incoming Raid** and
+`from_broadcaster_user_id` for **Outgoing Raid**. Raid routines receive
+`raid.direction`, `raid.source.*`, `raid.target.*`, and `raid.viewers` Routine
+Variables. `user.*` represents the initiating/source broadcaster. Twitch does
+not publish a separate completed-raid EventSub event, so Hub does not expose a
+fake Raid Completed trigger.
+
+An incoming raid also starts the shared First Message raid-suppression window,
+enabled by default for three minutes and configurable with First Message. The
+newest incoming raid restarts the window. Eligible chatters are still recorded
+as seen during suppression, so they do not receive a delayed welcome afterward;
+Chat Commands and Keyword/Phrase triggers continue normally. The current-stream
+expiry survives a same-stream Hub restart and is cleared with a new stream.
+Outgoing raids never activate it, and suppressed welcomes do not create fake
+Run History entries. Twitch's raid event includes source, target, and viewer
+count but no viewer roster, so this protection intentionally applies to all
+first-time chatters during the short grace period.
+
+The Twitch trigger tree also provides an Ads category with 5-, 3-, 2-, and
+1-minute warnings, Ads Started, and Ads Ended. Warning state belongs to
+`AdsService`: each threshold fires at most once for one scheduled timestamp,
+and a successful snooze replaces that timestamp and recalculates warning
+eligibility. There are no built-in chat messages; users compose a warning
+trigger with an ordinary Chat task and any registry Variables they need.
+
+Counter actions do not require a counter-specific trigger system. The four
+registered Counter tasks—Increase, Decrease, Set, and Reset—may be placed in
+any routine reached by a Twitch chat command, supported EventSub trigger,
+OBS/Core trigger, or manual execution. Amount/Value fields accept literals or
+modern Variables. Thus `!counterset 4.5` plus Set value `{command.data}` and
+`!coffee 0.5` plus Increase amount `{command.data}` are ordinary composed
+automations, not hardcoded Counter commands.
 
 ## Planned Hub channel workspace
 
@@ -176,7 +413,7 @@ The planned **Your Channel** structure is:
 - Engagement
   - Polls
   - Predictions
-- Raids
+- Raid (implemented as the live-followed-channel finder)
 - Moderation
 - Soundboard
 - Commands
@@ -218,14 +455,21 @@ registered with a Task provider; they are plans, not current capability.
 
 ### Raids
 
-Planned raid controls and normalized events must distinguish:
+Raid controls and normalized events distinguish:
 
 - **Raid Initiated**: Hub successfully starts the Twitch raid countdown.
 - **Outgoing Raid Sent**: Twitch confirms that the outgoing raid occurred.
 - **Incoming Raid**: another broadcaster raids the channel.
 
-The `channel.raid` incoming-raid trigger is currently implemented. Outgoing
-raid controls, Raid Initiated, and Outgoing Raid Sent are planned.
+Incoming and outgoing `channel.raid` observation are implemented. Outgoing
+raid controls are implemented through the shared service used by `/raid` and
+**Your Channel > Raid**. The Raid page keeps its prepared message and active
+90-second countdown in memory only. Message sending reuses normal broadcaster
+chat sending; cancellation reuses Helix Cancel Raid. Twitch executes the raid
+automatically when the countdown expires, and Hub exposes no forced-completion
+action. An outgoing `channel.raid` event clears matching active UI state as soon
+as Twitch confirms the raid. A separate Raid Initiated Automation event remains
+planned; there is no separate public Twitch raid-completed event.
 
 ### Stream Health and Moderation
 

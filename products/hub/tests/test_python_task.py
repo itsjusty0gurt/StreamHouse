@@ -28,7 +28,10 @@ class PythonScriptTaskTests(unittest.TestCase):
             trigger_id="test.python",
             service="twitch",
             trigger_type="command",
-            context={"user": "Test Viewer", "channel": "samplechannel"},
+            context={
+                "user": "Test Viewer", "channel": "samplechannel",
+                "user.display_name": "Test Viewer",
+            },
         )
 
     def tearDown(self) -> None:
@@ -64,7 +67,7 @@ class PythonScriptTaskTests(unittest.TestCase):
         )
 
         result = PythonScriptTask().execute(
-            self._task(script, arguments='"{user}"'),
+            self._task(script, arguments='"{user.display_name}"'),
             self.trigger,
         )
 
@@ -73,20 +76,6 @@ class PythonScriptTaskTests(unittest.TestCase):
         self.assertEqual(payload["user"], "Test Viewer")
         self.assertEqual(payload["context"]["channel"], "samplechannel")
         self.assertEqual(payload["argument"], "Test Viewer")
-
-    def test_existing_scripts_receive_temporary_sally_environment_aliases(
-        self,
-    ) -> None:
-        environment = PythonScriptTask._environment(self.trigger)
-
-        self.assertEqual(
-            environment["SALLY_TRIGGER_CONTEXT"],
-            environment["STREAMHOUSE_TRIGGER_CONTEXT"],
-        )
-        self.assertEqual(
-            environment["SALLY_USER"],
-            environment["STREAMHOUSE_USER"],
-        )
 
     def test_nonzero_exit_can_stop_or_continue_the_routine(self) -> None:
         script = self.root / "failure.py"

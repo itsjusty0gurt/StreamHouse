@@ -1,16 +1,14 @@
 # Viewer Memories
 
 Viewer memories support Sally, the default personality inside Streamhouse AI.
-In the current Streamhouse Hub UI, Memories is the first internal tab in the AI
-remote/control workspace. This leaves the AI page free to grow with additional
-tools without adding a new left-navigation button for every feature. Memories
-currently reads the Hub-owned local chatter-history store and shows observed
-participation statistics and Twitch roles. Streamhouse AI may propose memories
-but does not approve or own live viewer authorization.
+Hub Alpha 0.1 has no visible AI or Memories workspace. Hub still owns viewer
+consent and the local chatter-history records used by the internal integration;
+Streamhouse AI may propose memories but does not approve or own live viewer
+authorization.
 
 ## Current data
 
-- Twitch user ID and latest observed display name
+- Twitch user ID and latest observed display name/login
 - first and last seen timestamps
 - distinct active days and days present in chatter snapshots
 - observed chat-message count
@@ -19,10 +17,12 @@ but does not approve or own live viewer authorization.
 
 ## AI-memory boundary
 
-Viewer memory is opt-in. A viewer uses `!sallymemory on` in chat; legacy
-profiles without an explicit consent record are not eligible. Unconsented
-viewer records remain session-only and are omitted when chatter history is
-saved. Available commands are:
+Viewer memory is opt-in. A viewer uses `!sallymemory on` in chat; records
+without an explicit consent record are not eligible. Hub persists a compact
+user-management identity record (stable Twitch ID, latest name/login, observed
+role state, group/bot classification, and first/last seen timestamps) without
+retaining their conversation content. Those fields do not authorize AI memory.
+Available commands are:
 
 - `!sallymemory` - explain the feature and controls.
 - `!sallymemory on` - consent to daily context and regular qualification.
@@ -31,8 +31,9 @@ saved. Available commands are:
   opt-out preference.
 - `!sallymemory delete` followed by `!sallymemory confirmdelete` - erase the
   complete viewer profile, consent metadata, runtime context, and associated
-  activity-feed entries. Existing Sally backup archives are scrubbed as part of
-  confirmed deletion so a later restore cannot silently recreate the profile.
+  activity-feed entries. Existing Streamhouse Hub backup archives are scrubbed
+  as part of confirmed deletion so a later restore cannot silently recreate the
+  profile.
 
 Daily context is capped at 100 messages per opted-in viewer. On startup and
 once per minute, Streamhouse Hub compares its last update with the configured local reset

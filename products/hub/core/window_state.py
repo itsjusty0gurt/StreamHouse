@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QByteArray, QSettings
-from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import (
     QAbstractButton,
     QComboBox,
@@ -10,6 +9,8 @@ from PySide6.QtWidgets import (
     QTabWidget,
     QWidget,
 )
+
+from products.hub.core.window_geometry import fit_window_to_screen
 
 
 class WindowStateStore:
@@ -26,13 +27,10 @@ class WindowStateStore:
         state = self.settings.value("window/main_state")
         if isinstance(state, QByteArray):
             window.restoreState(state)
-        if restored and not self._intersects_a_screen(window):
-            screen = QGuiApplication.primaryScreen()
-            if screen is not None:
-                available = screen.availableGeometry()
-                window.move(available.topLeft())
+        if restored:
+            fit_window_to_screen(window)
         splitter = window.findChild(QSplitter, "twitchChannelSplitter")
-        splitter_state = self.settings.value("window/companion_splitter")
+        splitter_state = self.settings.value("window/channel_splitter")
         if splitter is not None and isinstance(splitter_state, QByteArray):
             splitter.restoreState(splitter_state)
         memories_splitter = window.findChild(QSplitter, "memoriesSplitter")
@@ -90,7 +88,7 @@ class WindowStateStore:
         splitter = window.findChild(QSplitter, "twitchChannelSplitter")
         if splitter is not None:
             self.settings.setValue(
-                "window/companion_splitter",
+                "window/channel_splitter",
                 splitter.saveState(),
             )
         memories_splitter = window.findChild(QSplitter, "memoriesSplitter")
@@ -134,11 +132,3 @@ class WindowStateStore:
             if tabs is not None:
                 self.settings.setValue(key, tabs.currentIndex())
         self.settings.sync()
-
-    @staticmethod
-    def _intersects_a_screen(window: QMainWindow) -> bool:
-        frame = window.frameGeometry()
-        return any(
-            frame.intersects(screen.availableGeometry())
-            for screen in QGuiApplication.screens()
-        )

@@ -11,11 +11,75 @@ from products.hub.automation.variable_registry import (
     VariableSnapshot,
 )
 from products.hub.counters.service import CounterService
-
-
-RESERVED_NAMESPACES = frozenset(
-    {"stream", "user", "chat", "counter", "obs", "hub", "automation"}
+from products.hub.twitch.channel_information import (
+    SOCIAL_SERVICES,
+    ChannelInformationStore,
 )
+
+
+class ChannelInformationVariableProvider:
+    """Always describe Hub-owned fields; resolve committed text, including empty text."""
+
+    source = "Channel Information"
+    _OTHER_FIELDS = (
+        ("channel.schedule", "Schedule", "Configured channel schedule.", "schedule"),
+        ("channel.rules", "Channel Rules", "Configured channel rules.", "rules"),
+        (
+            "serverinfo.details",
+            "Server Information",
+            "Configured server name, address, or joining instructions.",
+            "server_info",
+        ),
+    )
+
+    def __init__(self, store: ChannelInformationStore) -> None:
+        self.store = store
+
+    def definitions(self) -> tuple[VariableDefinition, ...]:
+        information = self.store.snapshot()
+        definitions: list[VariableDefinition] = []
+        for service_id, label in SOCIAL_SERVICES:
+            link = information.social_links[service_id]
+            definitions.append(
+                VariableDefinition(
+                    name=f"socials.{service_id}",
+                    display_name=label,
+                    description=f"Configured {label} social link.",
+                    data_type=VariableDataType.TEXT,
+                    source=self.source,
+                    category="Socials",
+                    preview_value=link.url,
+                )
+            )
+        for name, display_name, description, field_id in self._OTHER_FIELDS:
+            definitions.append(
+                VariableDefinition(
+                    name=name,
+                    display_name=display_name,
+                    description=description,
+                    data_type=VariableDataType.TEXT,
+                    source=self.source,
+                    category=name.split(".", 1)[0].title(),
+                    preview_value=getattr(information, field_id),
+                )
+            )
+        return tuple(definitions)
+
+    def resolve(self, name: str, _context: Mapping[str, object]) -> VariableSnapshot:
+        definition = next(item for item in self.definitions() if item.name == name)
+        information = self.store.snapshot()
+        if name.startswith("socials."):
+            value = information.social_links[name.split(".", 1)[1]].url
+        else:
+            field_id = next(
+                field for candidate, _display, _description, field in self._OTHER_FIELDS
+                if candidate == name
+            )
+            value = getattr(information, field_id)
+        return VariableSnapshot(definition, value, True)
+
+    def set_value(self, name: str, value: object) -> VariableSnapshot:
+        raise PermissionError(f'Variable "{name}" is read-only.')
 
 
 class CustomVariableProvider:
@@ -58,6 +122,40 @@ class CustomVariableProvider:
 
 class CounterVariableProvider:
     source = "Counters"
+    _SCOPES = (
+        (
+            "total",
+            "Total",
+            "Channel lifetime total",
+            "channel_total",
+            False,
+            False,
+        ),
+        (
+            "stream",
+            "Stream",
+            "Channel total for the current Twitch stream",
+            "stream_total",
+            False,
+            True,
+        ),
+        (
+            "user.total",
+            "User Total",
+            "Current user's lifetime total",
+            "viewer_total",
+            True,
+            False,
+        ),
+        (
+            "user.stream",
+            "User Stream",
+            "Current user's total for the current Twitch stream",
+            "viewer_stream_total",
+            True,
+            True,
+        ),
+    )
 
     def __init__(
         self,
@@ -68,45 +166,306 @@ class CounterVariableProvider:
         self.stream_id = stream_id or (lambda: "")
 
     def definitions(self) -> tuple[VariableDefinition, ...]:
-        return tuple(
-            VariableDefinition(
-                name=f"counter.{counter.counter_id}",
-                display_name=counter.display_name,
-                description=f"Channel all-time total for {counter.display_name}.",
-                data_type=VariableDataType.INTEGER,
-                source=self.source,
-                category="Counters",
-                writable=counter.enabled and counter.track_channel_total,
+        definitions: list[VariableDefinition] = []
+        for counter in self.service.list_counters():
+            data_type = (
+                VariableDataType.INTEGER
+                if counter.numeric_type == "integer"
+                else VariableDataType.NUMBER
             )
-            for counter in self.service.list_counters()
-        )
+            for (
+                suffix,
+                label,
+                description,
+                scope,
+                needs_user,
+                _needs_stream,
+            ) in self._SCOPES:
+                definitions.append(
+                    VariableDefinition(
+                        name=f"counter.{counter.counter_id}.{suffix}",
+                        display_name=f"{counter.display_name} - {label}",
+                        description=f"{description} for {counter.display_name}.",
+                        data_type=data_type,
+                        source=self.source,
+                        category="Counters",
+                        availability=(
+                            VariableAvailability.CONTEXTUAL
+                            if needs_user
+                            else VariableAvailability.GLOBAL
+                        ),
+                        writable=(
+                            suffix == "total"
+                            and counter.enabled
+                            and counter.tracks(scope)
+                        ),
+                        required_context=("user.id",) if needs_user else (),
+                        context_label="User context" if needs_user else "",
+                    )
+                )
+        return tuple(definitions)
 
     def resolve(self, name: str, context: Mapping[str, object]) -> VariableSnapshot:
-        counter_id = name.removeprefix("counter.")
+        counter_id, suffix = self._parts(name)
         definition = next(item for item in self.definitions() if item.name == name)
         counter = self.service.get_counter(counter_id)
-        if counter is None or not counter.enabled or not counter.track_channel_total:
+        if counter is None or not counter.enabled:
             return VariableSnapshot(definition, None, False, "Counter is unavailable.")
-        values = self.service.get_values(counter_id, stream_id=self.stream_id())
-        return VariableSnapshot(definition, values.channel_total, True)
+        scope, needs_user, needs_stream = self._scope(suffix)
+        if not counter.tracks(scope):
+            return VariableSnapshot(
+                definition,
+                None,
+                False,
+                "Counter scope is not enabled.",
+            )
+        user_id = self._context_user_id(context) if needs_user else ""
+        if needs_user and not user_id:
+            return VariableSnapshot(definition, None, False, "Requires user context.")
+        stream_id = self.stream_id() if needs_stream else ""
+        if needs_stream and not stream_id:
+            return VariableSnapshot(
+                definition,
+                None,
+                False,
+                "Requires an active Twitch stream.",
+            )
+        values = self.service.get_values(
+            counter_id,
+            user_id=user_id,
+            stream_id=stream_id,
+        )
+        value = getattr(values, scope)
+        return VariableSnapshot(definition, value, True)
 
     def set_value(self, name: str, value: object) -> VariableSnapshot:
-        counter_id = name.removeprefix("counter.")
-        result = self.service.set_value(counter_id, "channel_total", int(value))
+        counter_id, suffix = self._parts(name)
+        if suffix != "total":
+            raise PermissionError(f'Variable "{name}" is read-only.')
+        result = self.service.set_value(counter_id, "channel_total", value)
         if result.status not in {"success", "minimum_reached"}:
             raise ValueError(result.detail or f"Counter update failed: {result.status}.")
         return self.resolve(name, {})
+
+    @classmethod
+    def _parts(cls, name: str) -> tuple[str, str]:
+        parts = name.split(".")
+        if len(parts) < 3 or parts[0] != "counter":
+            raise KeyError(f'Unknown counter variable "{name}".')
+        counter_id = parts[1]
+        suffix = ".".join(parts[2:])
+        if suffix not in {item[0] for item in cls._SCOPES}:
+            raise KeyError(f'Unknown counter variable "{name}".')
+        return counter_id, suffix
+
+    @classmethod
+    def _scope(cls, suffix: str) -> tuple[str, bool, bool]:
+        for (
+            candidate,
+            _label,
+            _description,
+            scope,
+            needs_user,
+            needs_stream,
+        ) in cls._SCOPES:
+            if candidate == suffix:
+                return scope, needs_user, needs_stream
+        raise KeyError(f'Unknown counter variable scope "{suffix}".')
+
+    @staticmethod
+    def _context_user_id(context: Mapping[str, object]) -> str:
+        for key in ("user.id", "user_id", "viewer_id"):
+            value = str(context.get(key, "")).strip()
+            if value not in {"", "--"}:
+                return value
+        return ""
+
+
+class AdsVariableProvider:
+    source = "Twitch Ads"
+
+    _FIELDS = (
+        ("next_at", "Next Ad At", "Scheduled start time of the next automatic ad.", VariableDataType.DATETIME),
+        ("next_in", "Next Ad In", "Seconds until the next scheduled automatic ad.", VariableDataType.INTEGER),
+        ("next_duration", "Next Ad Duration", "Scheduled duration of the next automatic ad in seconds.", VariableDataType.INTEGER),
+        ("last_at", "Last Ad At", "Start time of the most recently observed ad.", VariableDataType.DATETIME),
+        ("snooze_count", "Ad Snoozes", "Currently available Twitch ad snoozes.", VariableDataType.INTEGER),
+        ("snooze_refresh_at", "Next Snooze At", "Time Twitch will restore a snooze.", VariableDataType.DATETIME),
+        ("snooze_refresh_in", "Next Snooze In", "Seconds until Twitch restores a snooze.", VariableDataType.INTEGER),
+        ("preroll_free_time", "Preroll-Free Time", "Seconds of Twitch preroll-free time remaining.", VariableDataType.INTEGER),
+        ("in_progress", "Ads In Progress", "Whether Hub currently considers an ad break active.", VariableDataType.BOOLEAN),
+        ("remaining", "Ad Time Remaining", "Estimated seconds remaining in the active ad break.", VariableDataType.INTEGER),
+        ("duration", "Active Ad Duration", "Duration of the active ad break in seconds.", VariableDataType.INTEGER),
+        ("started_at", "Ad Started At", "Start time reported for the active ad break.", VariableDataType.DATETIME),
+        ("is_automatic", "Ad Is Automatic", "Whether Twitch reported the active ad as automatic.", VariableDataType.BOOLEAN),
+        ("manual_retry_after", "Manual Ad Retry", "Seconds until another manual commercial can be requested.", VariableDataType.INTEGER),
+    )
+
+    def __init__(self, values: Callable[[], Mapping[str, object]]) -> None:
+        self.values = values
+
+    def definitions(self) -> tuple[VariableDefinition, ...]:
+        return tuple(
+            VariableDefinition(
+                name=f"ads.{name}",
+                display_name=display_name,
+                description=description,
+                data_type=data_type,
+                source=self.source,
+                category="Ads",
+                preview_value={
+                    "next_at": "2026-08-22T20:00:00+00:00",
+                    "next_in": 300,
+                    "next_duration": 90,
+                    "last_at": "2026-08-22T19:30:00+00:00",
+                    "snooze_count": 2,
+                    "snooze_refresh_at": "2026-08-22T20:15:00+00:00",
+                    "snooze_refresh_in": 900,
+                    "preroll_free_time": 1200,
+                    "in_progress": False,
+                    "remaining": 45,
+                    "duration": 90,
+                    "started_at": "2026-08-22T19:58:30+00:00",
+                    "is_automatic": True,
+                    "manual_retry_after": 0,
+                }.get(name),
+            )
+            for name, display_name, description, data_type in self._FIELDS
+        )
+
+    def resolve(self, name: str, _context: Mapping[str, object]) -> VariableSnapshot:
+        definition = next(item for item in self.definitions() if item.name == name)
+        key = name.split(".", 1)[1]
+        value = self.values().get(key)
+        return VariableSnapshot(
+            definition,
+            value,
+            value is not None,
+            "" if value is not None else "Twitch ad state is unavailable.",
+        )
+
+    def set_value(self, name: str, value: object) -> VariableSnapshot:
+        raise PermissionError(f'Variable "{name}" is read-only.')
 
 
 CONTEXT_DEFINITIONS = (
     ("user.name", "User Name", "Triggering user's readable name.", VariableDataType.TEXT, ("user",)),
     ("user.display_name", "User Display Name", "Triggering user's Twitch display name.", VariableDataType.TEXT, ("user",)),
     ("user.id", "User ID", "Triggering user's Twitch ID.", VariableDataType.TEXT, ("user_id",)),
+    ("user.login", "User Login", "Triggering viewer's Twitch login.", VariableDataType.TEXT, ("user_login",)),
+    ("user.permission", "User Permission", "Triggering viewer's command permission.", VariableDataType.TEXT, ("viewer_permission",)),
     ("user.is_mod", "User Is Moderator", "Whether the triggering user is a moderator.", VariableDataType.BOOLEAN, ("user_is_mod", "is_mod")),
     ("user.is_subscriber", "User Is Subscriber", "Whether the triggering user is subscribed.", VariableDataType.BOOLEAN, ("user_is_subscriber", "is_subscriber")),
     ("chat.message", "Chat Message", "Triggering Twitch chat message.", VariableDataType.TEXT, ("message",)),
     ("chat.message_id", "Chat Message ID", "Triggering Twitch message ID.", VariableDataType.TEXT, ("message_id",)),
+    ("command.name", "Command Name", "Command name without the exclamation mark.", VariableDataType.TEXT, ("command",)),
+    ("command.data", "Command Data", "Raw text following the command name, trimmed at its outer edges.", VariableDataType.TEXT, ("command_data",)),
+    ("command.target", "Command Target", "First command argument without the at sign.", VariableDataType.TEXT, ("target",)),
+    ("command.uses", "Command Uses", "Number of times the command has run.", VariableDataType.INTEGER, ("uses",)),
+    ("keyword.message", "Keyword Message", "Full Twitch message that matched the Keyword / Phrase trigger.", VariableDataType.TEXT, ("keyword.message",)),
+    ("keyword.match", "Keyword Match", "Configured keyword or phrase that matched.", VariableDataType.TEXT, ("keyword.match",)),
+    ("keyword.before", "Text Before Keyword", "Text before the matched keyword or phrase.", VariableDataType.TEXT, ("keyword.before",)),
+    ("keyword.after", "Text After Keyword", "Text after the matched keyword or phrase.", VariableDataType.TEXT, ("keyword.after",)),
+    ("ads.requester.id", "Ad Requester ID", "Twitch ID of the requester reported for an Ads Started event.", VariableDataType.TEXT, ("ads.requester.id",)),
+    ("ads.requester.name", "Ad Requester Name", "Readable requester name reported for an Ads Started event.", VariableDataType.TEXT, ("ads.requester.name",)),
+    ("channel_points.redemption_id", "Redemption ID", "Stable ID of this channel-point redemption.", VariableDataType.TEXT, ("channel_points.redemption_id",)),
+    ("channel_points.reward_id", "Reward ID", "Stable Twitch ID of the redeemed custom reward.", VariableDataType.TEXT, ("channel_points.reward_id",)),
+    ("channel_points.reward_title", "Reward Title", "Current title of the redeemed custom reward.", VariableDataType.TEXT, ("channel_points.reward_title",)),
+    ("channel_points.reward_cost", "Reward Cost", "Channel Point cost of the redeemed reward.", VariableDataType.INTEGER, ("channel_points.reward_cost",)),
+    ("channel_points.reward_prompt", "Reward Prompt", "Prompt configured for the redeemed reward.", VariableDataType.TEXT, ("channel_points.reward_prompt",)),
+    ("channel_points.user_input", "Redemption User Input", "Viewer text supplied with this redemption, which may be empty.", VariableDataType.TEXT, ("channel_points.user_input",)),
+    ("channel_points.status", "Redemption Status", "Status reported by Twitch for this redemption.", VariableDataType.TEXT, ("channel_points.status",)),
+    ("channel_points.redeemed_at", "Redeemed At", "When Twitch recorded this redemption.", VariableDataType.DATETIME, ("channel_points.redeemed_at",)),
+    ("subscription.tier", "Subscription Tier", "Twitch subscription tier for this event.", VariableDataType.TEXT, ("subscription.tier",)),
+    ("subscription.is_gift", "Gifted Subscription", "Whether Twitch reported this subscription as gifted.", VariableDataType.BOOLEAN, ("subscription.is_gift",)),
+    ("subscription.is_prime", "Prime Subscription", "Whether chat notification metadata reliably identified this as a Prime subscription.", VariableDataType.BOOLEAN, ("subscription.is_prime",)),
+    ("subscription.cumulative_months", "Cumulative Subscription Months", "Total months Twitch reports for this resubscription.", VariableDataType.INTEGER, ("subscription.cumulative_months",)),
+    ("subscription.streak_months", "Subscription Streak Months", "Current subscription streak when the viewer shares it.", VariableDataType.INTEGER, ("subscription.streak_months",)),
+    ("subscription.duration_months", "Subscription Duration Months", "Duration in months reported for this subscription event.", VariableDataType.INTEGER, ("subscription.duration_months",)),
+    ("subscription.message", "Resubscription Message", "Plain text of the viewer's resubscription message.", VariableDataType.TEXT, ("subscription.message",)),
+    ("subscription.gift_count", "Gift Subscription Count", "Number of subscriptions in this gifting event.", VariableDataType.INTEGER, ("subscription.gift_count",)),
+    ("subscription.cumulative_gifts", "Cumulative Gift Count", "Total gifts Twitch reports for this gifter when available.", VariableDataType.INTEGER, ("subscription.cumulative_gifts",)),
+    ("subscription.is_anonymous", "Anonymous Gift", "Whether Twitch reported this gifting event as anonymous.", VariableDataType.BOOLEAN, ("subscription.is_anonymous",)),
+    ("raid.direction", "Raid Direction", "Whether this raid is incoming or outgoing.", VariableDataType.TEXT, ("raid.direction",)),
+    ("raid.source.id", "Raid Source ID", "Twitch ID of the broadcaster sending the raid.", VariableDataType.TEXT, ("raid.source.id",)),
+    ("raid.source.login", "Raid Source Login", "Twitch login of the broadcaster sending the raid.", VariableDataType.TEXT, ("raid.source.login",)),
+    ("raid.source.name", "Raid Source Name", "Display name of the broadcaster sending the raid.", VariableDataType.TEXT, ("raid.source.name",)),
+    ("raid.target.id", "Raid Target ID", "Twitch ID of the broadcaster receiving the raid.", VariableDataType.TEXT, ("raid.target.id",)),
+    ("raid.target.login", "Raid Target Login", "Twitch login of the broadcaster receiving the raid.", VariableDataType.TEXT, ("raid.target.login",)),
+    ("raid.target.name", "Raid Target Name", "Display name of the broadcaster receiving the raid.", VariableDataType.TEXT, ("raid.target.name",)),
+    ("raid.viewers", "Raid Viewer Count", "Number of viewers in the raid.", VariableDataType.INTEGER, ("raid.viewers",)),
+    ("event.name", "Event Name", "Readable trigger event name.", VariableDataType.TEXT, ("event",)),
+    ("event.type", "Event Type", "Owning service event type.", VariableDataType.TEXT, ("event_type",)),
+    ("event.input", "Event Input", "Viewer input or event input name.", VariableDataType.TEXT, ("input",)),
+    ("event.amount", "Event Amount", "Event amount, cost, bits, or viewers.", VariableDataType.NUMBER, ("amount",)),
+    ("event.bits", "Cheered Bits", "Number of cheered bits.", VariableDataType.INTEGER, ("bits",)),
+    ("event.viewers", "Event Viewers", "Viewer or raid count.", VariableDataType.INTEGER, ("viewers",)),
+    ("event.tier", "Subscription Tier", "Twitch subscription tier.", VariableDataType.TEXT, ("tier",)),
+    ("event.reward", "Reward Title", "Channel-point reward title.", VariableDataType.TEXT, ("reward",)),
+    ("event.reward_id", "Reward ID", "Channel-point reward ID.", VariableDataType.TEXT, ("reward_id",)),
+    ("event.reward_cost", "Reward Cost", "Channel-point reward cost.", VariableDataType.INTEGER, ("reward_cost",)),
+    ("event.redemption_id", "Redemption ID", "Channel-point redemption ID.", VariableDataType.TEXT, ("redemption_id",)),
+    ("event.is_anonymous", "Anonymous Event", "Whether Twitch reported this event as anonymous.", VariableDataType.BOOLEAN, ("event.is_anonymous",)),
+    ("event.stream_id", "Stream ID", "Stable Twitch stream ID supplied by Stream Online.", VariableDataType.TEXT, ("event.stream_id",)),
+    ("event.started_at", "Event Started At", "Start time supplied by the triggering Twitch event.", VariableDataType.DATETIME, ("event.started_at",)),
+    ("obs.scene", "OBS Scene", "Scene supplied by an OBS event.", VariableDataType.TEXT, ("scene",)),
+    ("obs.source", "OBS Source", "Source supplied by an OBS event.", VariableDataType.TEXT, ("source",)),
+    ("obs.input", "OBS Input", "Input supplied by an OBS event.", VariableDataType.TEXT, ("input",)),
+    ("obs.output_state", "OBS Output State", "Output state supplied by OBS.", VariableDataType.TEXT, ("output_state",)),
+    ("obs.enabled", "OBS Enabled", "Whether the OBS source or mode is enabled.", VariableDataType.BOOLEAN, ("enabled",)),
+    ("obs.muted", "OBS Muted", "Whether the OBS input is muted.", VariableDataType.BOOLEAN, ("muted", "mute")),
+    ("obs.volume_db", "OBS Volume", "OBS input volume in decibels.", VariableDataType.NUMBER, ("volume_db",)),
+    ("obs.media", "OBS Media", "Media input supplied by OBS.", VariableDataType.TEXT, ("media",)),
 )
+
+CONTEXT_PREVIEW = {
+    "user.name": "TestViewer", "user.display_name": "TestViewer",
+    "user.id": "123456", "user.login": "testviewer", "user.permission": "everyone",
+    "user.is_mod": False, "user.is_subscriber": False,
+    "chat.message": "Hello Streamhouse!", "chat.message_id": "message-123",
+    "command.name": "hello", "command.data": "friend", "command.target": "friend", "command.uses": 3,
+    "keyword.message": "I think coffee is better than tea", "keyword.match": "coffee",
+    "keyword.before": "I think", "keyword.after": "is better than tea",
+    "ads.requester.id": "123456", "ads.requester.name": "Streamer",
+    "channel_points.redemption_id": "redemption-123",
+    "channel_points.reward_id": "reward-123", "channel_points.reward_title": "Hydrate",
+    "channel_points.reward_cost": 500, "channel_points.reward_prompt": "Drink some water!",
+    "channel_points.user_input": "sparkling please", "channel_points.status": "unfulfilled",
+    "channel_points.redeemed_at": "2026-08-31T12:00:00Z",
+    "subscription.tier": "1000", "subscription.is_gift": False,
+    "subscription.is_prime": True, "subscription.cumulative_months": 17,
+    "subscription.streak_months": 6, "subscription.duration_months": 1,
+    "subscription.message": "17 months, let's go!", "subscription.gift_count": 5,
+    "subscription.cumulative_gifts": 42, "subscription.is_anonymous": False,
+    "raid.direction": "incoming", "raid.source.id": "123456",
+    "raid.source.login": "raider", "raid.source.name": "Raider",
+    "raid.target.id": "654321", "raid.target.login": "streamer",
+    "raid.target.name": "Streamer", "raid.viewers": 25,
+    "event.name": "Follow", "event.type": "channel.follow", "event.input": "Viewer input",
+    "event.amount": 100, "event.bits": 100, "event.viewers": 12, "event.tier": "1000",
+    "event.reward": "Hydrate", "event.reward_id": "reward-123", "event.reward_cost": 500,
+    "event.redemption_id": "redemption-123", "obs.scene": "Gameplay", "obs.source": "Camera",
+    "event.is_anonymous": False, "event.stream_id": "stream-123",
+    "event.started_at": "2026-08-31T12:00:00Z",
+    "obs.input": "Microphone", "obs.output_state": "OBS_WEBSOCKET_OUTPUT_STARTED",
+    "obs.enabled": True, "obs.muted": False, "obs.volume_db": -8.0, "obs.media": "Intro Video",
+}
+
+
+def _context_presentation(name: str) -> tuple[str, str]:
+    namespace = name.split(".", 1)[0]
+    return {
+        "user": ("User", "Viewer context"),
+        "chat": ("Chat", "Twitch chat trigger"),
+        "command": ("Command", "Chat Command routine"),
+        "keyword": ("Keyword / Phrase", "Keyword / Phrase routine"),
+        "ads": ("Ads", "Ads Started"),
+        "channel_points": ("Channel Points", "Channel Point Redemption"),
+        "subscription": ("Subscriptions", "Subscription event"),
+        "raid": ("Raids", "Raid event"),
+        "event": ("Twitch Event", "Matching Twitch event"),
+        "obs": ("OBS", "Matching OBS event"),
+    }.get(namespace, (namespace.title(), "Matching trigger context"))
 
 
 def context_provider() -> CallbackVariableProvider:
@@ -117,8 +476,11 @@ def context_provider() -> CallbackVariableProvider:
             description=description,
             data_type=data_type,
             source="Twitch Context",
-            category=name.split(".", 1)[0].title(),
+            category=_context_presentation(name)[0],
             availability=VariableAvailability.CONTEXTUAL,
+            required_context=tuple(_aliases),
+            preview_value=CONTEXT_PREVIEW.get(name),
+            context_label=_context_presentation(name)[1],
         )
         for name, display, description, data_type, _aliases in CONTEXT_DEFINITIONS
     )
@@ -126,9 +488,14 @@ def context_provider() -> CallbackVariableProvider:
 
     def resolve(name: str, context: Mapping[str, object]) -> tuple[bool, object, str]:
         for key in (name, *aliases[name]):
-            if key in context and str(context[key]).strip() not in {"", "--"}:
+            allow_empty = name.startswith("channel_points.") or name == "subscription.message"
+            if key in context and (allow_empty or str(context[key]).strip() not in {"", "--"}):
                 value: object = context[key]
-                if name in {"user.is_mod", "user.is_subscriber"}:
+                if name in {
+                    "user.is_mod", "user.is_subscriber", "obs.enabled", "obs.muted",
+                    "subscription.is_gift", "subscription.is_prime",
+                    "subscription.is_anonymous", "event.is_anonymous",
+                }:
                     value = str(value).strip().casefold() in {"1", "true", "yes", "on"}
                 return True, value, ""
         return False, None, "Only available during a matching trigger event."
@@ -145,6 +512,7 @@ def runtime_provider(
 ) -> CallbackVariableProvider:
     definitions = (
         VariableDefinition("stream.title", "Stream Title", "Current cached Twitch title.", VariableDataType.TEXT, "Twitch", "Stream"),
+        VariableDefinition("stream.channel", "Stream Channel", "Connected Twitch channel name.", VariableDataType.TEXT, "Twitch", "Stream"),
         VariableDefinition("stream.category", "Stream Category", "Current cached Twitch category.", VariableDataType.TEXT, "Twitch", "Stream"),
         VariableDefinition("stream.viewer_count", "Viewer Count", "Current cached live viewer count.", VariableDataType.INTEGER, "Twitch", "Stream"),
         VariableDefinition("stream.game_id", "Twitch Game ID", "Current cached Twitch category ID.", VariableDataType.TEXT, "Twitch", "Stream"),

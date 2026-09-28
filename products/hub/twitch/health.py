@@ -9,16 +9,16 @@ class TwitchHealth:
     auth_state: str = "Signed out"
     connection_state: str = "Disconnected"
     eventsub_state: str = "Stopped"
-    last_companion_success: datetime | None = None
-    last_companion_error: str = ""
+    last_channel_snapshot_success: datetime | None = None
+    last_channel_snapshot_error: str = ""
     missing_scopes: set[str] = field(default_factory=set)
 
-    def companion_succeeded(self, warnings: tuple[str, ...]) -> None:
-        self.last_companion_success = datetime.now(timezone.utc)
-        self.last_companion_error = "; ".join(warnings)
+    def channel_snapshot_succeeded(self, warnings: tuple[str, ...]) -> None:
+        self.last_channel_snapshot_success = datetime.now(timezone.utc)
+        self.last_channel_snapshot_error = "; ".join(warnings)
 
-    def companion_failed(self, message: str) -> None:
-        self.last_companion_error = message
+    def channel_snapshot_failed(self, message: str) -> None:
+        self.last_channel_snapshot_error = message
 
     @staticmethod
     def elapsed_text(value: datetime | None) -> str:

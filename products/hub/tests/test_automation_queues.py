@@ -1,15 +1,31 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
-from products.hub.automation.models import TaskDefinition, TaskExecutionResult, TriggerEvent
+from products.hub.automation.models import (
+    DEFAULT_AUTOMATION_QUEUE_ID,
+    DEFAULT_AUTOMATION_QUEUE_NAME,
+    TaskDefinition,
+    TaskExecutionResult,
+    TriggerEvent,
+)
 from products.hub.automation.control_tasks import register_control_tasks
+from products.hub.automation.logic_tasks import register_logic_tasks
 from products.hub.automation.queues import AutomationQueueManager, AutomationQueueStore
 from products.hub.automation.routines import RoutineStore
 from products.hub.automation.service import AutomationService
 from products.hub.automation.tasks import TaskRegistry
+from products.hub.automation.variable_tasks import RunRoutineTask
+from products.hub.twitch.automation_triggers import (
+    KEYWORD_PHRASE_EVENT_TYPE,
+    TwitchEventTriggerStore,
+)
+from products.hub.twitch.commands import TwitchCommandTriggerStore
+from shared.streamhouse_runtime.json_store import JsonStoreCorruptionError
 
 
 class CaptureTask:
@@ -21,6 +37,30 @@ class CaptureTask:
     def execute(self, task: TaskDefinition, trigger: TriggerEvent) -> TaskExecutionResult:
         self.users.append(str(trigger.context.get("user", "")))
         return TaskExecutionResult(task.task_id, task.task_type, True, "Captured.")
+
+
+class CancelCurrentTask:
+    task_type = "test.cancel_current"
+
+    def __init__(self, manager: AutomationQueueManager, queue_id: str) -> None:
+        self.manager = manager
+        self.queue_id = queue_id
+
+    def execute(self, task: TaskDefinition, trigger: TriggerEvent) -> TaskExecutionResult:
+        self.manager.cancel_current(self.queue_id)
+        return TaskExecutionResult(task.task_id, task.task_type, True, "Requested cancellation.")
+
+
+class StopQueueTask:
+    task_type = "test.stop_queue"
+
+    def __init__(self, manager: AutomationQueueManager, queue_id: str) -> None:
+        self.manager = manager
+        self.queue_id = queue_id
+
+    def execute(self, task: TaskDefinition, trigger: TriggerEvent) -> TaskExecutionResult:
+        self.manager.stop(self.queue_id)
+        return TaskExecutionResult(task.task_id, task.task_type, True, "Stopped queue.")
 
 
 class AutomationQueueTests(unittest.TestCase):
@@ -44,6 +84,7 @@ class AutomationQueueTests(unittest.TestCase):
             self.registry,
             queue_manager=self.manager,
         )
+        register_logic_tasks(self.registry, self.service)
 
     def tearDown(self) -> None:
         self.temporary.cleanup()
@@ -61,8 +102,296 @@ class AutomationQueueTests(unittest.TestCase):
         )
         return self.routine_store.get(routine.routine_id)
 
+    def test_end_routine_leaves_waiting_and_unrelated_queues_intact(self) -> None:
+        primary_queue = self.queue_store.add("Primary")
+        other_queue = self.queue_store.add("Other")
+        ending = self.routine_store.add("Ending", queue_id=primary_queue.queue_id)
+        self.routine_store.add_task(
+            ending.routine_id,
+            task_type="core.end_routine",
+            name="End Routine",
+        )
+        self.routine_store.add_task(
+            ending.routine_id,
+            task_type=self.capture.task_type,
+            name="Must not run",
+        )
+        waiting = self.routine_store.add("Waiting", queue_id=primary_queue.queue_id)
+        self.routine_store.add_task(
+            waiting.routine_id,
+            task_type=self.capture.task_type,
+            name="Waiting capture",
+        )
+        unrelated = self.routine_store.add("Unrelated", queue_id=other_queue.queue_id)
+        self.routine_store.add_task(
+            unrelated.routine_id,
+            task_type=self.capture.task_type,
+            name="Other capture",
+        )
+        self.manager.enqueue(
+            primary_queue.queue_id,
+            ending.routine_id,
+            ending.name,
+            self.event("ending"),
+        )
+        self.manager.enqueue(
+            primary_queue.queue_id,
+            waiting.routine_id,
+            waiting.name,
+            self.event("waiting"),
+        )
+        self.manager.enqueue(
+            other_queue.queue_id,
+            unrelated.routine_id,
+            unrelated.name,
+            self.event("other"),
+        )
+
+        first_pass = self.service.process_queues()
+
+        ending_result = next(
+            execution.routine_results[0]
+            for execution in first_pass
+            if execution.routine_results[0].routine_id == ending.routine_id
+        )
+        self.assertTrue(ending_result.succeeded)
+        self.assertFalse(ending_result.cancelled)
+        self.assertEqual(self.manager.count(primary_queue.queue_id), 1)
+        self.assertEqual(self.manager.count(other_queue.queue_id), 0)
+        self.assertEqual(self.capture.users, ["other"])
+
+        self.service.process_queues()
+
+        self.assertEqual(self.capture.users, ["other", "waiting"])
+        self.assertEqual(self.manager.count(primary_queue.queue_id), 0)
+
     def event(self, user: str = "Viewer") -> TriggerEvent:
         return TriggerEvent("trigger", "test", "event", {"user": user})
+
+    def test_fresh_store_persists_one_stable_default_queue(self) -> None:
+        queues = self.queue_store.load()
+
+        self.assertTrue(self.queue_store.path.exists())
+        self.assertEqual(len(queues), 1)
+        self.assertEqual(queues[0].queue_id, DEFAULT_AUTOMATION_QUEUE_ID)
+        self.assertEqual(queues[0].name, DEFAULT_AUTOMATION_QUEUE_NAME)
+
+        reloaded = AutomationQueueStore(self.queue_store.path)
+        reloaded.load()
+        self.assertEqual(
+            [queue.queue_id for queue in reloaded.queues],
+            [DEFAULT_AUTOMATION_QUEUE_ID],
+        )
+
+    def test_obsolete_or_unversioned_queue_data_is_rejected(self) -> None:
+        for payload in (
+            {"queues": []},
+            {"version": 0, "queues": []},
+            {"version": "1", "queues": []},
+            {"version": 2, "queues": []},
+        ):
+            with self.subTest(payload=payload):
+                self.queue_store.path.write_text(json.dumps(payload), encoding="utf-8")
+                with self.assertRaisesRegex(ValueError, "Unsupported Automation queue"):
+                    self.queue_store.load()
+
+    def test_current_queue_schema_does_not_invent_missing_ids(self) -> None:
+        self.queue_store.path.write_text(
+            json.dumps(
+                {
+                    "version": self.queue_store.VERSION,
+                    "queues": [
+                        {
+                            "queue_id": DEFAULT_AUTOMATION_QUEUE_ID,
+                            "name": DEFAULT_AUTOMATION_QUEUE_NAME,
+                        },
+                        {"name": "Missing identity"},
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with self.assertRaisesRegex(JsonStoreCorruptionError, "stable IDs"):
+            self.queue_store.load()
+
+        self.assertEqual(
+            len(
+                list(
+                    (self.queue_store.path.parent / "corrupt").glob("queues-*.json")
+                )
+            ),
+            1,
+        )
+
+    def test_invalid_current_queue_file_recovers_validated_backup(self) -> None:
+        self.queue_store.load()
+        self.queue_store.add("Alerts")
+        self.queue_store.path.write_text(
+            json.dumps({"version": self.queue_store.VERSION, "queues": "broken"}),
+            encoding="utf-8",
+        )
+
+        recovered = AutomationQueueStore(self.queue_store.path)
+        recovered.load()
+
+        self.assertEqual(
+            [queue.name for queue in recovered.queues],
+            [DEFAULT_AUTOMATION_QUEUE_NAME],
+        )
+        self.assertEqual(
+            len(
+                list(
+                    (self.queue_store.path.parent / "corrupt").glob("queues-*.json")
+                )
+            ),
+            1,
+        )
+
+    def test_default_queue_cannot_be_deleted_or_renamed(self) -> None:
+        self.assertFalse(self.queue_store.delete(DEFAULT_AUTOMATION_QUEUE_ID))
+        with self.assertRaisesRegex(ValueError, "cannot be renamed"):
+            self.queue_store.update(
+                DEFAULT_AUTOMATION_QUEUE_ID,
+                name="Something Else",
+            )
+        self.assertEqual(
+            self.queue_store.default().name,
+            DEFAULT_AUTOMATION_QUEUE_NAME,
+        )
+
+    def test_failed_queue_save_does_not_publish_unpersisted_state(self) -> None:
+        self.queue_store.load()
+        original = self.queue_store.path.read_bytes()
+
+        with patch(
+            "products.hub.automation.queues.atomic_write_json",
+            side_effect=OSError("disk full"),
+        ):
+            with self.assertRaises(OSError):
+                self.queue_store.add("Must not appear")
+
+        self.assertFalse(any(queue.name == "Must not appear" for queue in self.queue_store.queues))
+        self.assertEqual(self.queue_store.path.read_bytes(), original)
+
+    def test_unassigned_manual_routine_runs_through_default_queue(self) -> None:
+        routine = self.routine_store.add("Default queued routine")
+        self.routine_store.add_task(
+            routine.routine_id,
+            task_type=self.capture.task_type,
+            name="Capture",
+        )
+        self.queue_store.update(DEFAULT_AUTOMATION_QUEUE_ID, paused=True)
+
+        result = self.service.run_routine(routine.routine_id, {"user": "Queued"})
+
+        self.assertEqual(routine.queue_id, DEFAULT_AUTOMATION_QUEUE_ID)
+        self.assertTrue(result.succeeded)
+        self.assertEqual(self.capture.users, [])
+        self.assertEqual(self.manager.count(DEFAULT_AUTOMATION_QUEUE_ID), 1)
+
+        self.queue_store.update(DEFAULT_AUTOMATION_QUEUE_ID, paused=False)
+        self.service.process_queues()
+        self.assertEqual(self.capture.users, ["Queued"])
+
+    def test_multiple_unassigned_routines_share_default_queue_order(self) -> None:
+        self.queue_store.update(DEFAULT_AUTOMATION_QUEUE_ID, paused=True)
+        for name in ("First routine", "Second routine"):
+            routine = self.routine_store.add(name, trigger_id="shared")
+            self.routine_store.add_task(
+                routine.routine_id,
+                task_type=self.capture.task_type,
+                name="Capture",
+            )
+
+        self.service.publish_trigger(
+            TriggerEvent("shared", "test", "event", {"user": "Viewer"})
+        )
+        self.assertEqual(self.manager.count(DEFAULT_AUTOMATION_QUEUE_ID), 2)
+
+        self.queue_store.update(DEFAULT_AUTOMATION_QUEUE_ID, paused=False)
+        self.service.process_queues()
+        self.service.process_queues()
+        self.assertEqual(self.capture.users, ["Viewer", "Viewer"])
+
+    def test_missing_custom_queue_assignment_normalizes_to_default(self) -> None:
+        custom = self.queue_store.add("Alerts")
+        routine = self.routine_store.add("Alert", queue_id=custom.queue_id)
+        self.queue_store.delete(custom.queue_id)
+
+        changed = self.routine_store.normalize_queue_assignments(
+            queue.queue_id for queue in self.queue_store.queues
+        )
+
+        self.assertEqual(changed, 1)
+        self.assertEqual(
+            self.routine_store.get(routine.routine_id).queue_id,
+            DEFAULT_AUTOMATION_QUEUE_ID,
+        )
+
+    def test_blank_pre_alpha_queue_assignment_is_rewritten_to_default(self) -> None:
+        self.routine_store.path.write_text(
+            json.dumps(
+                {
+                    "version": self.routine_store.VERSION,
+                    "groups": [],
+                    "routines": [
+                        {
+                            "routine_id": "old-routine",
+                            "name": "Old routine",
+                            "trigger_id": "old-trigger",
+                            "tasks": [],
+                            "queue_id": "",
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        self.routine_store.load()
+
+        self.assertEqual(
+            self.routine_store.get("old-routine").queue_id,
+            DEFAULT_AUTOMATION_QUEUE_ID,
+        )
+        saved = json.loads(self.routine_store.path.read_text(encoding="utf-8"))
+        self.assertEqual(
+            saved["routines"][0]["queue_id"],
+            DEFAULT_AUTOMATION_QUEUE_ID,
+        )
+
+    def test_command_keyword_and_ads_routines_use_default_queue(self) -> None:
+        command_store = TwitchCommandTriggerStore(
+            Path(self.temporary.name) / "commands.json",
+            self.routine_store,
+        )
+        command = command_store.configure_default("uptime")
+        event_store = TwitchEventTriggerStore(
+            Path(self.temporary.name) / "events.json",
+            self.routine_store,
+        )
+        keyword_routine = self.routine_store.add("Keyword")
+        event_store.add(
+            keyword_routine.routine_id,
+            KEYWORD_PHRASE_EVENT_TYPE,
+            filters={"phrase": "coffee", "match_type": "contains"},
+        )
+        ads_routine = self.routine_store.add("Ads Started")
+        event_store.add(ads_routine.routine_id, "ads.started")
+
+        self.assertEqual(
+            self.routine_store.get(command.routine_id).queue_id,
+            DEFAULT_AUTOMATION_QUEUE_ID,
+        )
+        self.assertEqual(
+            self.routine_store.get(keyword_routine.routine_id).queue_id,
+            DEFAULT_AUTOMATION_QUEUE_ID,
+        )
+        self.assertEqual(
+            self.routine_store.get(ads_routine.routine_id).queue_id,
+            DEFAULT_AUTOMATION_QUEUE_ID,
+        )
 
     def test_queue_settings_and_routine_assignment_persist(self) -> None:
         queue = self.queue_store.add(
@@ -149,6 +478,173 @@ class AutomationQueueTests(unittest.TestCase):
 
         self.assertIsNone(self.manager.take_ready(queue.queue_id, now=11.9))
         self.assertIsNotNone(self.manager.take_ready(queue.queue_id, now=12))
+
+    def test_completed_cancellation_does_not_leak_into_next_queue_item(self) -> None:
+        queue = self.queue_store.add("Reusable")
+        first = self.manager.enqueue(
+            queue.queue_id,
+            "first",
+            "First",
+            self.event("First"),
+        ).item
+        self.assertIsNotNone(first)
+        current = self.manager.take_ready(queue.queue_id)
+        self.assertEqual(current, first)
+        self.assertEqual(self.manager.cancel_all_current("Shutdown"), 1)
+        self.assertTrue(self.manager.current_cancelled(queue.queue_id))
+        self.manager.complete(queue.queue_id)
+
+        second = self.manager.enqueue(
+            queue.queue_id,
+            "second",
+            "Second",
+            self.event("Second"),
+        ).item
+        current = self.manager.take_ready(queue.queue_id)
+
+        self.assertEqual(current, second)
+        self.assertFalse(self.manager.current_cancelled(queue.queue_id))
+
+    def test_stop_current_cancels_remaining_tasks_and_next_item_can_run(self) -> None:
+        queue = self.queue_store.add("Recovery")
+        self.registry.register(CancelCurrentTask(self.manager, queue.queue_id))
+        current_routine = self.routine_store.add("Current", queue_id=queue.queue_id)
+        self.routine_store.add_task(
+            current_routine.routine_id,
+            task_type="test.cancel_current",
+            name="Cancel current",
+        )
+        self.routine_store.add_task(
+            current_routine.routine_id,
+            task_type=self.capture.task_type,
+            name="Must not run",
+        )
+        next_routine = self.add_queued_routine(queue.queue_id)
+        self.manager.enqueue(
+            queue.queue_id,
+            current_routine.routine_id,
+            current_routine.name,
+            self.event("Current"),
+        )
+        self.manager.enqueue(
+            queue.queue_id,
+            next_routine.routine_id,
+            next_routine.name,
+            self.event("Next"),
+        )
+
+        first = self.service.process_queues()[0].routine_results[0]
+
+        self.assertTrue(first.cancelled)
+        self.assertFalse(first.succeeded)
+        self.assertEqual(self.capture.users, [])
+        current, pending = self.manager.state(queue.queue_id)
+        self.assertIsNone(current)
+        self.assertEqual(len(pending), 1)
+        self.assertEqual(pending[0].queue_id, queue.queue_id)
+
+        second = self.service.process_queues()[0].routine_results[0]
+        self.assertTrue(second.succeeded)
+        self.assertEqual(self.capture.users, ["Next"])
+
+    def test_stop_queue_cancels_current_clears_waiting_and_isolates_queues(self) -> None:
+        stopped_queue = self.queue_store.add("Stopped")
+        other_queue = self.queue_store.add("Unaffected")
+        self.queue_store.update(other_queue.queue_id, paused=True)
+        self.registry.register(StopQueueTask(self.manager, stopped_queue.queue_id))
+        current_routine = self.routine_store.add(
+            "Current",
+            queue_id=stopped_queue.queue_id,
+        )
+        self.routine_store.add_task(
+            current_routine.routine_id,
+            task_type="test.stop_queue",
+            name="Stop queue",
+        )
+        self.routine_store.add_task(
+            current_routine.routine_id,
+            task_type=self.capture.task_type,
+            name="Must not run",
+        )
+        for name in ("Waiting B", "Waiting C"):
+            waiting = self.routine_store.add(name, queue_id=stopped_queue.queue_id)
+            self.routine_store.add_task(
+                waiting.routine_id,
+                task_type=self.capture.task_type,
+                name="Capture",
+            )
+        unaffected = self.add_queued_routine(other_queue.queue_id)
+        for routine in (
+            current_routine,
+            *(
+                routine
+                for routine in self.routine_store.routines
+                if routine.name in {"Waiting B", "Waiting C"}
+            ),
+        ):
+            self.manager.enqueue(
+                stopped_queue.queue_id,
+                routine.routine_id,
+                routine.name,
+                self.event(routine.name),
+            )
+        self.manager.enqueue(
+            other_queue.queue_id,
+            unaffected.routine_id,
+            unaffected.name,
+            self.event("Other"),
+        )
+
+        stopped = self.service.process_queues()[0].routine_results[0]
+
+        self.assertTrue(stopped.cancelled)
+        self.assertEqual(self.manager.state(stopped_queue.queue_id), (None, ()))
+        self.assertEqual(self.manager.count(other_queue.queue_id), 1)
+        self.assertEqual(self.capture.users, [])
+
+    def test_nested_routine_uses_root_cancellation_and_skips_parent_remainder(self) -> None:
+        queue = self.queue_store.add("Nested")
+        self.registry.register(CancelCurrentTask(self.manager, queue.queue_id))
+        child = self.routine_store.add("Child")
+        self.routine_store.add_task(
+            child.routine_id,
+            task_type="test.cancel_current",
+            name="Cancel root",
+        )
+        self.routine_store.add_task(
+            child.routine_id,
+            task_type=self.capture.task_type,
+            name="Child remainder",
+        )
+        parent = self.routine_store.add("Parent", queue_id=queue.queue_id)
+        self.routine_store.add_task(
+            parent.routine_id,
+            task_type="core.run_routine",
+            name="Run child",
+            config={"routine_id": child.routine_id, "stop_on_failure": True},
+        )
+        self.routine_store.add_task(
+            parent.routine_id,
+            task_type=self.capture.task_type,
+            name="Parent remainder",
+        )
+        self.registry.register(
+            RunRoutineTask(
+                self.service.run_nested_routine,
+                self.service.routine_name,
+            )
+        )
+
+        result = self.service.run_routine(parent.routine_id).routine_results[0]
+
+        self.assertTrue(result.cancelled)
+        self.assertEqual(self.capture.users, [])
+        self.assertEqual(result.task_results[0].task_type, "core.run_routine")
+        self.assertTrue(result.task_results[0].cancelled)
+        nested = result.task_results[0].nested_results
+        self.assertEqual(len(nested), 1)
+        self.assertEqual(nested[0].routine_id, child.routine_id)
+        self.assertTrue(nested[0].cancelled)
 
     def test_routine_and_task_state_tasks_toggle_enabled_state(self) -> None:
         routine = self.routine_store.add("Toggle me")

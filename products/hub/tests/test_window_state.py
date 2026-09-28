@@ -2,10 +2,11 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QSettings, Qt
+from PySide6.QtCore import QSettings, Qt, QRect
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -17,7 +18,6 @@ from PySide6.QtWidgets import (
 )
 
 from products.hub.core.window_state import WindowStateStore
-from shared.streamhouse_runtime.qt_settings import migrate_qsettings_values
 
 
 class WindowStateStoreTests(unittest.TestCase):
@@ -49,38 +49,50 @@ class WindowStateStoreTests(unittest.TestCase):
                 )
             )
 
-    def test_legacy_qt_values_copy_without_overwriting_streamhouse_values(
-        self,
-    ) -> None:
+    def test_valid_saved_geometry_is_preserved(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            legacy = QSettings(
-                str(root / "legacy.ini"),
-                QSettings.Format.IniFormat,
-            )
-            destination = QSettings(
-                str(root / "streamhouse.ini"),
-                QSettings.Format.IniFormat,
-            )
-            legacy.setValue("window/main_geometry", b"legacy-geometry")
-            legacy.setValue("window/layout_mode", "portrait")
-            destination.setValue("window/layout_mode", "landscape")
+            store = WindowStateStore(QSettings(
+                str(Path(directory) / "window.ini"), QSettings.Format.IniFormat))
+            original = QMainWindow()
+            original.setGeometry(40, 55, 600, 400)
+            store.save(original)
+            restored = QMainWindow()
+            self.assertTrue(store.restore(restored))
+            self.assertEqual(restored.geometry(), original.geometry())
 
-            copied = migrate_qsettings_values(destination, legacy)
-            copied_again = migrate_qsettings_values(destination, legacy)
+    def test_saved_oversized_and_offscreen_geometry_is_fully_contained(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = WindowStateStore(QSettings(
+                str(Path(directory) / "window.ini"), QSettings.Format.IniFormat))
+            area = self.application.primaryScreen().availableGeometry()
+            for rectangle in (QRect(700, 700, 600, 400),
+                              QRect(9000, -3000, 2800, 1600)):
+                with self.subTest(rectangle=rectangle):
+                    original = QMainWindow()
+                    original.setGeometry(rectangle)
+                    store.save(original)
+                    restored = QMainWindow()
+                    self.assertTrue(store.restore(restored))
+                    self.assertTrue(area.contains(restored.frameGeometry()))
 
-            self.assertEqual(copied, 1)
-            self.assertEqual(copied_again, 0)
-            self.assertEqual(
-                destination.value("window/main_geometry"),
-                b"legacy-geometry",
-            )
-            self.assertEqual(
-                destination.value("window/layout_mode"),
-                "landscape",
-            )
+    def test_partial_intersection_is_not_accepted_as_valid_restoration(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = WindowStateStore(QSettings(
+                str(Path(directory) / "window.ini"), QSettings.Format.IniFormat))
+            original = QMainWindow()
+            store.save(original)
+            restored = QMainWindow()
+            area = self.application.primaryScreen().availableGeometry()
+            def restore_as_partial(_geometry):
+                restored.setGeometry(area.right() - 10, area.bottom() - 10, 600, 400)
+                return True
+            # Bypass Qt's own saved-position correction to verify Hub's stricter
+            # whole-frame correction, rather than merely testing Qt restoration.
+            with patch.object(restored, "restoreGeometry", side_effect=restore_as_partial):
+                self.assertTrue(store.restore(restored))
+            self.assertTrue(area.contains(restored.frameGeometry()))
 
-    def test_companion_layout_round_trip(self) -> None:
+    def test_channel_layout_round_trip(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             settings = QSettings(
                 str(Path(directory) / "window.ini"),

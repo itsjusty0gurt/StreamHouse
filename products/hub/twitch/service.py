@@ -4,8 +4,10 @@ from enum import StrEnum
 from secrets import token_hex
 from urllib.error import HTTPError, URLError
 
+from products.hub.config.twitch import TWITCH_REDEMPTION_SCOPES
 from products.hub.core.events import Events
 from shared.streamhouse_runtime.logger import Logger
+from shared.streamhouse_runtime.redaction import redact_secret_text
 from products.hub.twitch.eventsub import EventSubWebhookProcessor, LocalEventSubListener
 from products.hub.twitch.auth import TwitchAuthService
 from products.hub.twitch.live import TwitchEventSubSocket, TwitchHelixClient
@@ -15,6 +17,10 @@ from products.hub.twitch.models import (
     TwitchEvent,
     TwitchEventDiagnostic,
     TwitchMessage,
+)
+from products.hub.twitch.slash_commands import (
+    TwitchSlashRequest,
+    slash_command,
 )
 from datetime import datetime, timezone
 from products.hub.twitch.simulator import (
@@ -56,6 +62,12 @@ class TwitchService:
         self.local_listener = LocalEventSubListener(self.webhook_processor)
         self.live_socket: TwitchEventSubSocket | None = None
         self.activity_socket: TwitchEventSubSocket | None = None
+        # Pin the identities selected when the sockets open. Twitch auth
+        # restore completes asynchronously, so looking the tokens up again in
+        # a later welcome callback can otherwise mix broadcaster and bot
+        # subscriptions on the same WebSocket session.
+        self._live_chat_token = None
+        self._activity_token = None
         self.broadcaster_user_id = ""
         self.broadcaster_display_name = ""
         self.badge_urls: dict[tuple[str, str], str] = {}
@@ -164,8 +176,10 @@ class TwitchService:
             on_error=self._receive_live_error,
             on_bus_event=self._publish_bus_event,
         )
+        self._live_chat_token = self._chat_token()
+        self._activity_token = token
         self.live_socket.open()
-        chat_token = self._chat_token()
+        chat_token = self._live_chat_token
         if (
             chat_token is not None
             and token.user_id
@@ -192,8 +206,8 @@ class TwitchService:
         return True
 
     def _receive_live_welcome(self, session_id: str) -> None:
-        broadcaster_token = self.auth.token if self.auth is not None else None
-        chat_token = self._chat_token()
+        broadcaster_token = self._activity_token
+        chat_token = self._live_chat_token
         if chat_token is None or not chat_token.user_id:
             self._report_error("The Twitch sign-in is missing its user identity.")
             return
@@ -224,7 +238,7 @@ class TwitchService:
         )
 
     def _receive_activity_welcome(self, session_id: str) -> None:
-        token = self.auth.token if self.auth is not None else None
+        token = self._activity_token
         if token is None or not token.user_id:
             Logger.warning(
                 "Channel activity EventSub is missing broadcaster identity.",
@@ -298,7 +312,7 @@ class TwitchService:
         return True
 
     def send_pinned_message(self, text: str) -> tuple[bool, bool]:
-        """Send as Sally, then pin with the broadcaster's authorization."""
+        """Send through the bot account, then pin as the broadcaster."""
 
         clean_text = text.strip()
         if self.state is not TwitchConnectionState.CONNECTED:
@@ -357,13 +371,18 @@ class TwitchService:
     def badge_url(self, set_id: str, badge_id: str) -> str:
         return self.badge_urls.get((set_id, badge_id), "")
 
-    def _broadcaster_credentials(self):
+    def _broadcaster_credentials(self, required_scope: str = ""):
         token = self.auth.token if self.auth is not None else None
         broadcaster_id = self.broadcaster_user_id or (
             token.user_id if token is not None else ""
         )
         if token is None or not broadcaster_id:
             raise ValueError("Sign in with your channel account first.")
+        if required_scope and required_scope not in set(token.scopes):
+            raise ValueError(
+                "Reconnect Twitch to grant the required permission: "
+                f"{required_scope}."
+            )
         return broadcaster_id, token
 
     def get_custom_rewards(self) -> list[TwitchCustomReward]:
@@ -381,6 +400,22 @@ class TwitchService:
                 manageable=str(item.get("id", "")) in manageable_ids,
             )
             for item in all_rewards
+        ]
+
+    def get_custom_rewards_for_discovery(self) -> list[TwitchCustomReward]:
+        """Return every custom reward using either supported redemption scope."""
+
+        broadcaster_id, token = self._broadcaster_credentials()
+        if not set(token.scopes).intersection(TWITCH_REDEMPTION_SCOPES):
+            raise ValueError(
+                "Reconnect Twitch to grant channel:read:redemptions or "
+                "channel:manage:redemptions."
+            )
+        return [
+            TwitchCustomReward.from_dict(item)
+            for item in self.helix.get_custom_rewards(
+                broadcaster_id, token, only_manageable=False
+            )
         ]
 
     def create_custom_reward(
@@ -420,13 +455,17 @@ class TwitchService:
         )
 
     def run_commercial(self, length: int) -> dict:
-        broadcaster_id, token = self._broadcaster_credentials()
+        broadcaster_id, token = self._broadcaster_credentials(
+            "channel:edit:commercial"
+        )
         return self.helix.start_commercial(
             broadcaster_id, min(max(int(length), 30), 180), token
         )
 
     def snooze_next_ad(self) -> dict:
-        broadcaster_id, token = self._broadcaster_credentials()
+        broadcaster_id, token = self._broadcaster_credentials(
+            "channel:manage:ads"
+        )
         return self.helix.snooze_ad(broadcaster_id, token)
 
     def update_stream_title(self, title: str) -> None:
@@ -498,6 +537,19 @@ class TwitchService:
     def get_stream_information(self) -> dict | None:
         broadcaster_id, token = self._broadcaster_credentials()
         return self.helix.get_stream_information(broadcaster_id, token)
+
+    def get_followed_live_channels(self) -> list[dict]:
+        token = self.auth.token if self.auth is not None else None
+        if token is None or not token.user_id:
+            raise PermissionError(
+                "Connect Twitch to find channels to raid."
+            )
+        if "user:read:follows" not in set(token.scopes):
+            raise PermissionError(
+                "Additional Twitch permission is required to view followed "
+                "live channels. Reauthorize the Main / Broadcaster Account."
+            )
+        return self.helix.get_followed_streams(token.user_id, token)
 
     def get_channel_information(self) -> dict | None:
         broadcaster_id, token = self._broadcaster_credentials()
@@ -571,6 +623,192 @@ class TwitchService:
         )
         return True
 
+    def require_scope(self, scope: str, *, broadcaster_only: bool = False):
+        token = self.auth.token if self.auth is not None else None
+        if token is None or not token.user_id or not self.broadcaster_user_id:
+            raise PermissionError("Connect your Twitch account before using this action.")
+        if scope not in set(token.scopes):
+            raise PermissionError(
+                f"Twitch permission {scope} is required. Reauthorize the Main / Broadcaster Account."
+            )
+        if broadcaster_only and token.user_id != self.broadcaster_user_id:
+            raise PermissionError("This action requires the signed-in broadcaster account.")
+        return token
+
+    def manage_user_role(self, action: str, user_id: str) -> bool:
+        if action not in {"mod", "unmod", "vip", "unvip"}:
+            raise ValueError("Unsupported Twitch channel-role action.")
+        role = "moderator" if action in {"mod", "unmod"} else "vip"
+        scope = (
+            "channel:manage:moderators"
+            if role == "moderator"
+            else "channel:manage:vips"
+        )
+        token = self.require_scope(scope, broadcaster_only=True)
+        try:
+            self.helix.update_channel_role(
+                self.broadcaster_user_id,
+                user_id,
+                role,
+                action in {"mod", "vip"},
+                token,
+            )
+        except (HTTPError, URLError, OSError, ValueError) as error:
+            self._report_error(
+                f"Twitch role update failed: {error}",
+                change_state=False,
+            )
+            return False
+        return True
+
+    def update_chat_mode(self, action: str, duration: int | None = None) -> bool:
+        token = self.require_scope("moderator:manage:chat_settings")
+        settings = {
+            "slow": {"slow_mode": True, "slow_mode_wait_time": duration},
+            "slowoff": {"slow_mode": False},
+            "followers": {
+                "follower_mode": True,
+                "follower_mode_duration": duration,
+            },
+            "followersoff": {"follower_mode": False},
+            "subscribers": {"subscriber_mode": True},
+            "subscribersoff": {"subscriber_mode": False},
+            "emoteonly": {"emote_mode": True},
+            "emoteonlyoff": {"emote_mode": False},
+            "uniquechat": {"unique_chat_mode": True},
+            "uniquechatoff": {"unique_chat_mode": False},
+        }.get(action)
+        if settings is None:
+            raise ValueError("Unsupported Twitch chat-mode action.")
+        try:
+            self.helix.update_chat_settings(
+                self.broadcaster_user_id,
+                token.user_id,
+                settings,
+                token,
+            )
+        except (HTTPError, URLError, OSError, ValueError) as error:
+            self._report_error(
+                f"Twitch chat-mode update failed: {error}",
+                change_state=False,
+            )
+            return False
+        return True
+
+    def start_raid(self, target_user_id: str) -> datetime | None:
+        token = self.require_scope("channel:manage:raids", broadcaster_only=True)
+        try:
+            return self.helix.start_raid(
+                self.broadcaster_user_id,
+                target_user_id,
+                token,
+            )
+        except (HTTPError, URLError, OSError, ValueError) as error:
+            self._report_error(
+                f"Twitch raid start failed: {error}",
+                change_state=False,
+            )
+            return None
+
+    def cancel_raid(self) -> bool:
+        token = self.require_scope("channel:manage:raids", broadcaster_only=True)
+        try:
+            self.helix.cancel_raid(self.broadcaster_user_id, token)
+        except (HTTPError, URLError, OSError, ValueError) as error:
+            self._report_error(
+                f"Twitch raid cancellation failed: {error}",
+                change_state=False,
+            )
+            return False
+        return True
+
+    def send_announcement(self, message: str) -> bool:
+        token = self.require_scope("moderator:manage:announcements")
+        try:
+            self.helix.send_chat_announcement(
+                self.broadcaster_user_id,
+                token.user_id,
+                message,
+                token,
+            )
+        except (HTTPError, URLError, OSError, ValueError) as error:
+            self._report_error(f"Twitch announcement failed: {error}", change_state=False)
+            return False
+        return True
+
+    def execute_slash_action(
+        self,
+        request: TwitchSlashRequest,
+    ) -> tuple[bool, str]:
+        command = slash_command(request.action)
+        self.require_scope(
+            command.required_scope,
+            broadcaster_only=request.action
+            in {"mod", "unmod", "vip", "unvip", "raid", "unraid"},
+        )
+        user_id = ""
+        target = request.user_reference
+        if command.requires_user:
+            user_id = request.user_id
+            if not user_id:
+                user = self.resolve_user(request.user_reference)
+                user_id = str(user.get("id", "")) if isinstance(user, dict) else ""
+            if not user_id:
+                raise ValueError(
+                    f"Twitch user @{request.user_reference} was not found."
+                )
+
+        if request.action in {"ban", "timeout", "unban"}:
+            success = self.moderate_user(
+                request.action,
+                user_id,
+                duration=request.duration,
+                reason=request.reason,
+            )
+        elif request.action == "clear":
+            token = self.require_scope(command.required_scope)
+            try:
+                self.helix.delete_chat_message(
+                    self.broadcaster_user_id,
+                    token.user_id,
+                    "",
+                    token,
+                )
+                success = True
+            except (HTTPError, URLError, OSError, ValueError) as error:
+                self._report_error(f"Twitch chat clear failed: {error}", change_state=False)
+                success = False
+            target = "chat"
+        elif request.action in {
+            "slow",
+            "slowoff",
+            "followers",
+            "followersoff",
+            "subscribers",
+            "subscribersoff",
+            "emoteonly",
+            "emoteonlyoff",
+            "uniquechat",
+            "uniquechatoff",
+        }:
+            success = self.update_chat_mode(request.action, request.duration)
+            target = "chat"
+        elif request.action in {"mod", "unmod", "vip", "unvip"}:
+            success = self.manage_user_role(request.action, user_id)
+        elif request.action in {"raid", "unraid"}:
+            success = (
+                self.start_raid(user_id) is not None
+                if request.action == "raid"
+                else self.cancel_raid()
+            )
+            target = request.user_reference or "pending raid"
+        elif request.action == "announce":
+            success = self.send_announcement(request.message)
+            target = "chat"
+        else:
+            raise ValueError("Unsupported Twitch slash action.")
+        return success, target
+
     def disconnect(self) -> bool:
         if self.state is TwitchConnectionState.DISCONNECTED:
             return False
@@ -584,6 +822,8 @@ class TwitchService:
             self.activity_socket.close()
             self.activity_socket.deleteLater()
             self.activity_socket = None
+        self._live_chat_token = None
+        self._activity_token = None
         self.local_listener.stop()
         self.channel = ""
         self.broadcaster_user_id = ""
@@ -673,7 +913,7 @@ class TwitchService:
 
     def _receive_chat_message(self, chat_message: TwitchMessage) -> None:
         # Chat content is intentionally not written to application logs. The
-        # live UI and opted-in daily memory are the only content consumers.
+        # message remains transient for live UI and runtime trigger consumers.
         Logger.debug("Twitch chat message received.", source="TWITCH")
         Events.emit(
             "twitch_message_received",
@@ -720,6 +960,7 @@ class TwitchService:
                 "clear_user",
                 f"Messages from {login} were cleared.",
                 now,
+                target_user_id=str(event.get("target_user_id", "")),
                 target_user_login=login,
             )
         if subscription_type == "channel.chat.message_delete":
@@ -729,6 +970,7 @@ class TwitchService:
                 f"A message from {login} was deleted.",
                 now,
                 target_message_id=str(event.get("message_id", "")),
+                target_user_id=str(event.get("target_user_id", "")),
                 target_user_login=login,
             )
         if subscription_type == "channel.chat.notification":
@@ -756,6 +998,7 @@ class TwitchService:
         )
 
     def _report_error(self, message: str, change_state: bool = True) -> None:
+        message = redact_secret_text(message)
         if change_state:
             self.state = TwitchConnectionState.ERROR
         Logger.error(message, source="TWITCH")

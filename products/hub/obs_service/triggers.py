@@ -7,7 +7,12 @@ from uuid import uuid4
 
 from products.hub.automation.models import TriggerEvent
 from products.hub.automation.routines import RoutineStore
-from shared.streamhouse_runtime.json_store import atomic_write_json, load_json_with_backup
+from shared.streamhouse_runtime.json_store import (
+    UnsupportedJsonSchemaError,
+    atomic_write_json,
+    json_store_exists,
+    load_validated_json,
+)
 from shared.streamhouse_runtime.paths import user_data_root
 from products.hub.obs_service.models import ObsEvent
 
@@ -59,7 +64,7 @@ class ObsAutomationTrigger:
     def from_dict(cls, values: Mapping[str, Any]) -> ObsAutomationTrigger:
         raw_filters = values.get("filters", {})
         return cls(
-            trigger_id=str(values.get("trigger_id", "")) or uuid4().hex,
+            trigger_id=str(values.get("trigger_id", "")),
             routine_id=str(values.get("routine_id", "")),
             event_type=str(values.get("event_type", "")).strip(),
             filters={
@@ -86,30 +91,40 @@ class ObsTriggerStore:
     def load(self) -> list[ObsAutomationTrigger]:
         if not self.routine_store.routines and self.routine_store.path.exists():
             self.routine_store.load()
-        if not self.path.exists():
+        if not json_store_exists(self.path):
             self.triggers = []
             return []
-        payload = load_json_with_backup(self.path)
+        loaded = load_validated_json(self.path, self._parse_payload)
+        self.triggers = loaded
+        return list(loaded)
+
+    def _parse_payload(self, payload: object) -> list[ObsAutomationTrigger]:
         if not isinstance(payload, dict):
             raise ValueError("OBS triggers must contain a JSON object.")
+        version = payload.get("version")
+        if type(version) is not int or version != self.VERSION:
+            raise UnsupportedJsonSchemaError(
+                f"Unsupported OBS trigger version {version}; expected {self.VERSION}."
+            )
         values = payload.get("triggers", [])
         if not isinstance(values, list):
             raise ValueError("OBS triggers must contain a trigger list.")
         loaded: list[ObsAutomationTrigger] = []
         for value in values:
             if not isinstance(value, dict):
-                continue
+                raise ValueError("Every OBS trigger must be a JSON object.")
             try:
+                if not isinstance(value.get("filters", {}), dict):
+                    raise ValueError("OBS trigger filters must be a JSON object.")
                 trigger = ObsAutomationTrigger.from_dict(value)
                 self._validate(trigger)
                 routine = self.routine_store.get(trigger.routine_id)
                 if routine is None or trigger.trigger_id not in routine.trigger_ids:
                     raise ValueError("OBS trigger has no linked routine.")
-            except (TypeError, ValueError):
-                continue
+            except (TypeError, ValueError) as error:
+                raise ValueError("OBS trigger data contains an invalid trigger.") from error
             loaded.append(trigger)
-        self.triggers = loaded
-        return list(loaded)
+        return loaded
 
     def save(self) -> None:
         atomic_write_json(
@@ -220,11 +235,11 @@ class ObsTriggerStore:
 
         muted_value = values.get("inputMuted")
         if isinstance(muted_value, bool):
-            muted = "Muted" if muted_value else "Not Muted"
+            muted = "true" if muted_value else "false"
         elif str(muted_value).strip().casefold() in {"true", "1", "yes", "on"}:
-            muted = "Muted"
+            muted = "true"
         elif str(muted_value).strip().casefold() in {"false", "0", "no", "off"}:
-            muted = "Not Muted"
+            muted = "false"
         else:
             muted = "--" if muted_value is None else str(muted_value).strip()
         return {
@@ -235,14 +250,12 @@ class ObsTriggerStore:
             "input": first("inputName"),
             "output_state": first("outputState"),
             "enabled": first("sceneItemEnabled", "studioModeEnabled"),
-            "mute": muted,
             "muted": muted,
             "volume_db": first("inputVolumeDb"),
             "media": first("inputName"),
-            "channel": "--", "user": "--", "message": "--", "amount": "--",
             "bits": "--", "viewers": "--", "tier": "--", "reward": "--",
             "reward_id": "--", "reward_cost": "--", "title": "--", "game": "--",
-            "uptime": "--", "followers": "--", "command": "--", "args": "--",
+            "uptime": "--", "followers": "--", "command": "--", "command_data": "--",
             "target": "--", "uses": "--",
         }
 

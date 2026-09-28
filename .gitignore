@@ -19,4 +19,4 @@ __pycache__/
 *.spec
 
 # Local planning notes
-/sallyAI changes.txt
+/* changes.txt

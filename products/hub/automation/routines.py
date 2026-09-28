@@ -6,8 +6,18 @@ from pathlib import Path
 from typing import Any, Iterable
 from uuid import uuid4
 
-from products.hub.automation.models import RoutineDefinition, RoutineGroup, TaskDefinition
-from shared.streamhouse_runtime.json_store import atomic_write_json, load_json_with_backup
+from products.hub.automation.models import (
+    DEFAULT_AUTOMATION_QUEUE_ID,
+    RoutineDefinition,
+    RoutineGroup,
+    TaskDefinition,
+)
+from shared.streamhouse_runtime.json_store import (
+    UnsupportedJsonSchemaError,
+    atomic_write_json,
+    json_store_exists,
+    load_validated_json,
+)
 from shared.streamhouse_runtime.paths import user_data_root
 
 
@@ -19,7 +29,7 @@ class RoutineStore:
     routine relationships.
     """
 
-    VERSION = 4
+    VERSION = 5
 
     def __init__(self, path: Path | None = None) -> None:
         self.path = path or user_data_root() / "automation" / "routines.json"
@@ -27,38 +37,86 @@ class RoutineStore:
         self.routines: list[RoutineDefinition] = []
 
     def load(self) -> list[RoutineDefinition]:
-        if not self.path.exists():
+        if not json_store_exists(self.path):
             self.groups = []
             self.routines = []
             return []
-        payload = load_json_with_backup(self.path)
+        groups, routines, normalized_queues = load_validated_json(
+            self.path, self._parse_payload
+        )
+        self.groups = groups
+        self.routines = routines
+        if normalized_queues:
+            self._write(groups, routines)
+        return list(self.routines)
+
+    def _parse_payload(
+        self, payload: Any
+    ) -> tuple[list[RoutineGroup], list[RoutineDefinition], bool]:
         if not isinstance(payload, dict):
             raise ValueError("Routines must contain a JSON object.")
-        version = int(payload.get("version", 1))
-        if version > self.VERSION:
-            raise ValueError("Routine data is newer than this app.")
+        version = int(payload.get("version", 0))
+        if version != self.VERSION:
+            raise UnsupportedJsonSchemaError(
+                "Routine data uses a discarded pre-alpha schema and must be reset."
+            )
         raw_groups = payload.get("groups", [])
         values = payload.get("routines", [])
         if not isinstance(raw_groups, list):
             raise ValueError("Routines must contain a group list.")
         if not isinstance(values, list):
             raise ValueError("Routines must contain a routine list.")
-        groups = [
-            RoutineGroup.from_dict(value)
-            for value in raw_groups
-            if isinstance(value, dict)
-        ]
-        routines = [
-            RoutineDefinition.from_dict(value)
+        if any(not isinstance(value, dict) for value in raw_groups):
+            raise ValueError("Every routine group must be a JSON object.")
+        if any(not isinstance(value, dict) for value in values):
+            raise ValueError("Every routine must be a JSON object.")
+        self._validate_persisted_structure(raw_groups, values)
+        groups = [RoutineGroup.from_dict(value) for value in raw_groups]
+        routines = [RoutineDefinition.from_dict(value) for value in values]
+        normalized_queues = any(
+            isinstance(value, dict)
+            and not str(value.get("queue_id", "")).strip()
             for value in values
-            if isinstance(value, dict)
-        ]
+        )
         self._validate_state(groups, routines)
-        self.groups = groups
-        self.routines = routines
-        if version < self.VERSION:
-            self.save()
-        return list(self.routines)
+        return groups, routines, normalized_queues
+
+    @classmethod
+    def _validate_persisted_structure(
+        cls,
+        raw_groups: list[dict[str, Any]],
+        raw_routines: list[dict[str, Any]],
+    ) -> None:
+        """Reject current-schema data that would lose or invent identity.
+
+        ``from_dict`` is also used by transfer/clipboard import, where fresh IDs
+        are intentional. Durable routine data has a stricter contract: every
+        persisted entity already owns its stable ID and every task container
+        must be structurally intact before deserialization.
+        """
+        if any(not str(group.get("group_id", "")).strip() for group in raw_groups):
+            raise ValueError("Every persisted routine group requires a stable ID.")
+        for routine in raw_routines:
+            if not str(routine.get("routine_id", "")).strip():
+                raise ValueError("Every persisted routine requires a stable ID.")
+            additional = routine.get("additional_trigger_ids", [])
+            if not isinstance(additional, list):
+                raise ValueError("Additional routine trigger IDs must be a list.")
+            cls._validate_persisted_tasks(routine.get("tasks", []))
+
+    @classmethod
+    def _validate_persisted_tasks(cls, values: Any) -> None:
+        if not isinstance(values, list):
+            raise ValueError("Persisted routine tasks must be a list.")
+        for task in values:
+            if not isinstance(task, dict):
+                raise ValueError("Every persisted task must be a JSON object.")
+            if not str(task.get("task_id", "")).strip():
+                raise ValueError("Every persisted task requires a stable ID.")
+            if not isinstance(task.get("config", {}), dict):
+                raise ValueError("Persisted task configuration must be an object.")
+            cls._validate_persisted_tasks(task.get("then_tasks", []))
+            cls._validate_persisted_tasks(task.get("else_tasks", []))
 
     def save(self) -> None:
         self._validate_state(self.groups, self.routines)
@@ -147,6 +205,28 @@ class RoutineStore:
         self._commit(deepcopy(self.groups), routines)
         return self.get(routine_id)  # type: ignore[return-value]
 
+    def remove_trigger_references(self, trigger_ids: Iterable[str]) -> int:
+        """Remove discarded trigger identities without disturbing other links."""
+
+        discarded = {
+            str(value).strip()
+            for value in trigger_ids
+            if str(value).strip()
+        }
+        if not discarded:
+            return 0
+        routines = deepcopy(self.routines)
+        removed = 0
+        for routine in routines:
+            current = list(routine.trigger_ids)
+            retained = [value for value in current if value not in discarded]
+            removed += len(current) - len(retained)
+            routine.trigger_id = retained[0] if retained else ""
+            routine.additional_trigger_ids = retained[1:]
+        if removed:
+            self._commit(deepcopy(self.groups), routines)
+        return removed
+
     # Groups -----------------------------------------------------------------
 
     def add_group(self, name: str, *, collapsed: bool = False) -> RoutineGroup:
@@ -210,7 +290,7 @@ class RoutineStore:
         group_id: str = "",
         description: str = "",
         enabled: bool = True,
-        queue_id: str = "",
+        queue_id: str = DEFAULT_AUTOMATION_QUEUE_ID,
         tasks: Iterable[TaskDefinition] = (),
     ) -> RoutineDefinition:
         routine = RoutineDefinition(
@@ -221,7 +301,7 @@ class RoutineStore:
             enabled=bool(enabled),
             group_id=group_id,
             description=description.strip()[:500],
-            queue_id=queue_id.strip(),
+            queue_id=queue_id.strip() or DEFAULT_AUTOMATION_QUEUE_ID,
         )
         routines = deepcopy(self.routines)
         routines.append(routine)
@@ -256,7 +336,7 @@ class RoutineStore:
         if enabled is not None:
             routine.enabled = bool(enabled)
         if queue_id is not None:
-            routine.queue_id = queue_id.strip()
+            routine.queue_id = queue_id.strip() or DEFAULT_AUTOMATION_QUEUE_ID
         self._commit(deepcopy(self.groups), routines)
         return self.get(routine_id)  # type: ignore[return-value]
 
@@ -297,7 +377,7 @@ class RoutineStore:
             raise ValueError("The selected routine no longer exists.")
         tasks = deepcopy(source.tasks)
         for task in tasks:
-            task.task_id = uuid4().hex
+            self._renew_task_ids(task)
             task.managed_key = ""
         duplicate = RoutineDefinition(
             routine_id=uuid4().hex,
@@ -332,6 +412,20 @@ class RoutineStore:
         self._commit(deepcopy(self.groups), routines)
         return True
 
+    def normalize_queue_assignments(self, valid_queue_ids: Iterable[str]) -> int:
+        """Replace empty or missing queue assignments with the Default Queue."""
+        valid = set(valid_queue_ids)
+        valid.add(DEFAULT_AUTOMATION_QUEUE_ID)
+        routines = deepcopy(self.routines)
+        changed = 0
+        for routine in routines:
+            if routine.queue_id not in valid:
+                routine.queue_id = DEFAULT_AUTOMATION_QUEUE_ID
+                changed += 1
+        if changed:
+            self._commit(deepcopy(self.groups), routines)
+        return changed
+
     # Tasks ------------------------------------------------------------------
 
     def add_task(
@@ -343,6 +437,8 @@ class RoutineStore:
         config: dict[str, Any] | None = None,
         enabled: bool = True,
         index: int | None = None,
+        then_tasks: Iterable[TaskDefinition] = (),
+        else_tasks: Iterable[TaskDefinition] = (),
     ) -> TaskDefinition:
         routines = deepcopy(self.routines)
         routine = self._find_routine(routines, routine_id)
@@ -352,6 +448,8 @@ class RoutineStore:
             name=self._clean_name(name),
             config=deepcopy(config or {}),
             enabled=bool(enabled),
+            then_tasks=deepcopy(list(then_tasks)),
+            else_tasks=deepcopy(list(else_tasks)),
         )
         insert_at = len(routine.tasks) if index is None else max(
             0, min(int(index), len(routine.tasks))
@@ -370,6 +468,8 @@ class RoutineStore:
         name: str | None = None,
         config: dict[str, Any] | None = None,
         enabled: bool | None = None,
+        then_tasks: Iterable[TaskDefinition] | None = None,
+        else_tasks: Iterable[TaskDefinition] | None = None,
     ) -> TaskDefinition:
         routines = deepcopy(self.routines)
         routine = self._find_routine(routines, routine_id)
@@ -386,6 +486,10 @@ class RoutineStore:
             task.config = deepcopy(config)
         if enabled is not None:
             task.enabled = bool(enabled)
+        if then_tasks is not None:
+            task.then_tasks = deepcopy(list(then_tasks))
+        if else_tasks is not None:
+            task.else_tasks = deepcopy(list(else_tasks))
         self._commit(deepcopy(self.groups), routines)
         saved = self.get(routine_id)
         return self._find_task(saved, task_id)  # type: ignore[arg-type]
@@ -424,7 +528,7 @@ class RoutineStore:
         routine = self._find_routine(routines, routine_id)
         source = self._find_task(routine, task_id)
         task = deepcopy(source)
-        task.task_id = uuid4().hex
+        self._renew_task_ids(task)
         task.name = self._clean_name(f"{task.name} Copy")
         task.managed_key = ""
         source_index = routine.tasks.index(source)
@@ -459,6 +563,7 @@ class RoutineStore:
         trigger_id: str,
         name: str,
         managed_by: str,
+        group_id: str = "",
         task_type: str = "",
         task_name: str = "",
         task_config: dict[str, Any] | None = None,
@@ -479,6 +584,7 @@ class RoutineStore:
             name=self._clean_name(name),
             trigger_id=trigger_id.strip(),
             managed_by=managed_by,
+            group_id=group_id,
             tasks=tasks,
         )
         routines = deepcopy(self.routines)
@@ -641,18 +747,20 @@ class RoutineStore:
         if len(group.name.strip()) > 60:
             raise ValueError("Routine group names can contain at most 60 characters.")
 
-    @staticmethod
-    def _validate_routine(routine: RoutineDefinition) -> None:
+    @classmethod
+    def _validate_routine(cls, routine: RoutineDefinition) -> None:
         if not routine.routine_id or not routine.name.strip():
             raise ValueError("Routines require an ID and name.")
         if len(routine.name.strip()) > 100:
             raise ValueError("Routine names can contain at most 100 characters.")
+        if not routine.queue_id.strip():
+            raise ValueError("Routines require an automation queue.")
         trigger_ids = list(routine.trigger_ids)
         if len(trigger_ids) != len(set(trigger_ids)):
             raise ValueError("Routine trigger IDs must be unique.")
         task_ids: set[str] = set()
         managed_keys: set[str] = set()
-        for task in routine.tasks:
+        for task in cls._walk_tasks(routine.tasks):
             if not task.task_id or not task.task_type or not task.name.strip():
                 raise ValueError("Tasks require an ID, type, and name.")
             if task.task_id in task_ids:
@@ -662,6 +770,24 @@ class RoutineStore:
                 if task.managed_key in managed_keys:
                     raise ValueError("Managed task keys must be unique within a routine.")
                 managed_keys.add(task.managed_key)
+            if task.task_type != "core.if" and task.child_tasks:
+                raise ValueError("Only structured control-flow tasks may own child tasks.")
+
+    @classmethod
+    def _walk_tasks(
+        cls,
+        tasks: Iterable[TaskDefinition],
+    ) -> Iterable[TaskDefinition]:
+        for task in tasks:
+            yield task
+            yield from cls._walk_tasks(task.then_tasks)
+            yield from cls._walk_tasks(task.else_tasks)
+
+    @classmethod
+    def _renew_task_ids(cls, task: TaskDefinition) -> None:
+        task.task_id = uuid4().hex
+        for child in task.child_tasks:
+            cls._renew_task_ids(child)
 
     @staticmethod
     def _clean_name(name: str) -> str:

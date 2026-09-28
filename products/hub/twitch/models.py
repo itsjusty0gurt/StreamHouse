@@ -127,6 +127,7 @@ class TwitchChatNotice:
     text: str
     received_at: datetime
     target_message_id: str = ""
+    target_user_id: str = ""
     target_user_login: str = ""
 
 

@@ -10,6 +10,12 @@ TWITCH_SCOPES = (
     "moderation:read",
     "moderator:manage:banned_users",
     "moderator:manage:chat_messages",
+    "moderator:manage:chat_settings",
+    "moderator:manage:announcements",
+    "channel:manage:moderators",
+    "channel:manage:vips",
+    "channel:manage:raids",
+    "user:read:follows",
     "channel:read:vips",
     "channel:read:subscriptions",
     "channel:read:ads",
@@ -26,7 +32,22 @@ TWITCH_BOT_SCOPES = (
     "user:bot",
 )
 
-TWITCH_COMPANION_SCOPES = frozenset(
+TWITCH_AD_SCOPES = frozenset(
+    {
+        "channel:read:ads",
+        "channel:manage:ads",
+        "channel:edit:commercial",
+    }
+)
+
+TWITCH_REDEMPTION_SCOPES = frozenset(
+    {
+        "channel:read:redemptions",
+        "channel:manage:redemptions",
+    }
+)
+
+TWITCH_CHANNEL_SNAPSHOT_SCOPES = frozenset(
     {
         "moderator:read:chatters",
         "moderator:read:followers",

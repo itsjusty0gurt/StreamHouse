@@ -4,6 +4,8 @@ from enum import StrEnum
 from typing import Callable
 from urllib.error import URLError
 
+from shared.streamhouse_runtime.redaction import redact_secret_text
+
 
 class AIConnectionState(StrEnum):
     DISCONNECTED = "disconnected"
@@ -12,7 +14,7 @@ class AIConnectionState(StrEnum):
 
 
 def is_ai_transport_failure(error: BaseException) -> bool:
-    """Return whether an error means the localhost companion disappeared."""
+    """Return whether an error means the localhost AI service disappeared."""
 
     current: BaseException | None = error
     seen: set[int] = set()
@@ -61,11 +63,11 @@ class AIConnectionLifecycle:
         self.state = AIConnectionState.DISCONNECTED
         self.endpoint = ""
         if was_connected and self._on_disconnect is not None:
-            self._on_disconnect(reason)
+            self._on_disconnect(redact_secret_text(reason))
         return was_connected
 
     def transport_failed(self, error: BaseException) -> bool:
         if not is_ai_transport_failure(error):
             return False
-        self.disconnect(str(error))
+        self.disconnect(redact_secret_text(error))
         return True

@@ -1,31 +1,47 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from datetime import datetime, time, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
 from uuid import uuid4
 
-from shared.streamhouse_runtime.json_store import atomic_write_json, load_json_with_backup
-from products.hub.core.migrations import migrate_payload
+from shared.streamhouse_runtime.json_store import (
+    UnsupportedJsonSchemaError,
+    atomic_write_json,
+    json_store_exists,
+    load_validated_json,
+)
 from shared.streamhouse_runtime.paths import user_data_root
 
 
-def _normalize_memory(values: dict[str, Any]) -> dict[str, Any]:
-    """Fill structured-memory fields on legacy and current records."""
-    memory = dict(values)
-    source = str(memory.get("source", "manual"))
-    memory["source"] = source
-    memory.setdefault("status", "approved" if source == "manual" else "pending")
-    memory.setdefault("confidence", 1.0 if source == "manual" else 0.5)
-    memory.setdefault("evidence", [])
-    memory.setdefault("key", "")
-    memory.setdefault("last_confirmed_at", memory.get("created_at", ""))
-    memory.setdefault("conflicts_with", "")
-    memory.setdefault("rejection_reason", "")
-    memory.setdefault("pinned", False)
-    memory.setdefault("archived", False)
-    return memory
+LOCAL_CHATTER_GROUPS = frozenset({"", "Regulars", "Bots", "Viewers"})
+
+PERSISTED_CHATTER_FIELDS = frozenset(
+    {
+        "user_id",
+        "user_name",
+        "user_login",
+        "first_seen",
+        "last_seen",
+        "active_days",
+        "message_count",
+        "snapshot_days",
+        "last_snapshot_day",
+        "is_bot",
+        "roles",
+        "followed_at",
+        "session_messages",
+        "manual_group",
+        "twitch_status",
+    }
+)
+BACKUP_CHATTER_FIELDS = PERSISTED_CHATTER_FIELDS - {"session_messages"}
+
+
+def _normalize_manual_group(value: Any) -> str:
+    group = str(value).strip()
+    return group if group in LOCAL_CHATTER_GROUPS else ""
 
 
 @dataclass(slots=True)
@@ -56,6 +72,8 @@ class ChatterRecord:
     daily_memory: list[dict[str, str]] = field(default_factory=list)
     daily_memory_updated_at: str = ""
     daily_memory_stream_id: str = ""
+    user_login: str = ""
+    twitch_status: dict[str, bool] = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, values: dict[str, Any]) -> ChatterRecord:
@@ -64,6 +82,15 @@ class ChatterRecord:
             user_name=str(values.get("user_name", "")),
             first_seen=str(values.get("first_seen", "")),
             last_seen=str(values.get("last_seen", "")),
+            user_login=str(values.get("user_login", "")),
+            twitch_status={
+                key: value
+                for key, value in values.get("twitch_status", {}).items()
+                if key in {"Moderator", "VIP", "Subscriber"}
+                and isinstance(value, bool)
+            }
+            if isinstance(values.get("twitch_status"), dict)
+            else {},
             active_days=[str(day) for day in values.get("active_days", [])][
                 -90:
             ],
@@ -73,13 +100,6 @@ class ChatterRecord:
             is_bot=bool(values.get("is_bot", False)),
             roles=[str(role) for role in values.get("roles", [])],
             followed_at=str(values.get("followed_at", "")),
-            memories=[
-                _normalize_memory(memory)
-                for memory in values.get("memories", [])
-                if isinstance(memory, dict)
-            ],
-            tags=[str(tag) for tag in values.get("tags", [])][:50],
-            private_notes=str(values.get("private_notes", ""))[:5000],
             session_messages={
                 str(session_id): max(int(count), 0)
                 for session_id, count in values.get(
@@ -88,43 +108,7 @@ class ChatterRecord:
             }
             if isinstance(values.get("session_messages", {}), dict)
             else {},
-            timeline=[
-                dict(item)
-                for item in values.get("timeline", [])[-200:]
-                if isinstance(item, dict)
-            ],
-            role_history=[
-                dict(item)
-                for item in values.get("role_history", [])[-100:]
-                if isinstance(item, dict)
-            ],
-            memory_enabled=(
-                bool(values.get("memory_enabled", False))
-                and values.get("memory_consent") == "opted_in"
-            ),
-            manual_group=str(values.get("manual_group", "")),
-            memory_consent=str(values.get("memory_consent", "unknown")),
-            memory_consented_at=str(values.get("memory_consented_at", "")),
-            memory_consent_version=str(values.get("memory_consent_version", "")),
-            memory_stream_ids=list(
-                dict.fromkeys(
-                    str(value)
-                    for value in values.get("memory_stream_ids", [])
-                    if str(value)
-                )
-            )[-100:],
-            daily_memory=[
-                {
-                    "speaker": str(item.get("speaker", "viewer"))[:20],
-                    "viewer": str(item.get("viewer", ""))[:100],
-                    "message": str(item.get("message", ""))[:500],
-                    "timestamp": str(item.get("timestamp", ""))[:50],
-                }
-                for item in values.get("daily_memory", [])[-100:]
-                if isinstance(item, dict) and str(item.get("message", "")).strip()
-            ],
-            daily_memory_updated_at=str(values.get("daily_memory_updated_at", "")),
-            daily_memory_stream_id=str(values.get("daily_memory_stream_id", "")),
+            manual_group=_normalize_manual_group(values.get("manual_group", "")),
         )
 
 
@@ -136,6 +120,7 @@ class ChatterHistoryStore:
     REGULAR_SNAPSHOT_DAYS = 10
     MEMORY_REGULAR_STREAMS = 5
     MEMORY_CONSENT_VERSION = "1"
+    VERSION = 8
 
     def __init__(self, path: Path | None = None) -> None:
         self.path = path or user_data_root() / "memory" / "twitch_chatters.json"
@@ -143,26 +128,43 @@ class ChatterHistoryStore:
         self.dirty = False
 
     def load(self) -> None:
-        if not self.path.exists():
+        if not json_store_exists(self.path):
             return
-        values = load_json_with_backup(self.path)
+        loaded, normalized = load_validated_json(self.path, self._parse_payload)
+        self.records = loaded
+        self.dirty = normalized
+
+    def _parse_payload(
+        self, values: object
+    ) -> tuple[dict[str, ChatterRecord], bool]:
         if not isinstance(values, dict):
             raise ValueError("Chatter history must contain a JSON object.")
-        values = migrate_payload("chatters", values)
+        if int(values.get("version", 0)) != self.VERSION:
+            raise UnsupportedJsonSchemaError(
+                "Chatter history uses a discarded pre-alpha schema and must be reset."
+            )
         records = values.get("chatters", {})
         if not isinstance(records, dict):
             raise ValueError("Chatter history chatters must be an object.")
-        self.records = {
-            str(user_id): ChatterRecord.from_dict(record)
-            for user_id, record in records.items()
-            if isinstance(record, dict) and str(user_id)
-        }
-        # Rewriting once removes legacy viewer profiles that lack explicit
-        # consent; bots and explicit opt-in/opt-out preferences remain.
-        self.dirty = any(
-            record.memory_consent == "unknown" and not record.is_bot
-            for record in self.records.values()
-        )
+        loaded: dict[str, ChatterRecord] = {}
+        normalized = False
+        for raw_user_id, raw_record in records.items():
+            user_id = str(raw_user_id).strip()
+            if not isinstance(raw_record, dict) or not user_id:
+                raise ValueError("Every chatter must have a stable ID and JSON object record.")
+            unexpected = set(raw_record) - PERSISTED_CHATTER_FIELDS
+            if unexpected:
+                raise ValueError(
+                    "Chatter history must contain management metadata only."
+                )
+            record = ChatterRecord.from_dict(raw_record)
+            if record.user_id != user_id:
+                normalized = True
+            record.user_id = user_id
+            if str(raw_record.get("manual_group", "")).strip() != record.manual_group:
+                normalized = True
+            loaded[user_id] = record
+        return loaded, normalized
 
     def observe_message(
         self,
@@ -171,9 +173,19 @@ class ChatterHistoryStore:
         observed_at: datetime | None = None,
         is_bot: bool = False,
         session_id: str = "",
+        user_login: str = "",
+        badges: Iterable[str] | None = None,
     ) -> None:
         record = self._observe(user_id, user_name, observed_at)
         if record is not None:
+            record.user_login = user_login or record.user_login
+            if badges is not None:
+                badge_names = set(badges)
+                record.twitch_status = {
+                    "Moderator": "moderator" in badge_names or "broadcaster" in badge_names,
+                    "VIP": "vip" in badge_names,
+                    "Subscriber": bool(badge_names & {"subscriber", "founder"}),
+                }
             record.message_count += 1
             record.is_bot = record.is_bot or is_bot
             if session_id:
@@ -206,6 +218,14 @@ class ChatterHistoryStore:
             if record is not None and session_id:
                 record.session_messages.setdefault(session_id, 0)
             if record is not None:
+                record.user_login = (
+                    str(chatter.get("user_login", "")) or record.user_login
+                )
+                record.twitch_status = {
+                    "Moderator": record.user_id in moderator_ids,
+                    "VIP": record.user_id in vip_ids,
+                    "Subscriber": record.user_id in subscriber_ids,
+                }
                 roles: list[str] = []
                 if record.user_id in moderator_ids:
                     roles.append("Moderator")
@@ -700,6 +720,8 @@ class ChatterHistoryStore:
         target.message_count += source.message_count
         target.snapshot_days += source.snapshot_days
         target.is_bot = target.is_bot or source.is_bot
+        if not target.manual_group:
+            target.manual_group = source.manual_group
         target.tags = list(dict.fromkeys(target.tags + source.tags))[:50]
         if source.private_notes:
             separator = "\n\n" if target.private_notes else ""
@@ -770,12 +792,11 @@ class ChatterHistoryStore:
 
     def is_bot(self, user_id: str) -> bool:
         record = self.records.get(user_id)
-        return bool(record and record.is_bot)
+        return bool(record and (record.is_bot or record.manual_group == "Bots"))
 
     def set_manual_group(self, user_id: str, group: str) -> None:
         """Override a chatter's local display group without changing Twitch roles."""
-        allowed = {"", "Regulars", "Bots", "Viewers"}
-        if group not in allowed:
+        if group not in LOCAL_CHATTER_GROUPS:
             raise ValueError(f"Unsupported local chatter group: {group}")
         record = self.records[user_id]
         record.manual_group = group
@@ -785,16 +806,37 @@ class ChatterHistoryStore:
         if not self.dirty:
             return
         payload = {
-            "version": 6,
+            "version": self.VERSION,
             "chatters": {
-                user_id: asdict(record)
+                user_id: self.management_record(record)
                 for user_id, record in self.records.items()
-                if record.memory_consent in {"opted_in", "opted_out"}
-                or record.is_bot
             },
         }
         atomic_write_json(self.path, payload)
         self.dirty = False
+
+    @staticmethod
+    def management_record(record: ChatterRecord) -> dict[str, Any]:
+        # Chatter persistence is deliberately an explicit management-only
+        # projection. AI memories, message samples, evidence, notes, and
+        # timelines may never turn this store into a chat transcript.
+        return {
+            "user_id": record.user_id,
+            "user_name": record.user_name,
+            "user_login": record.user_login,
+            "first_seen": record.first_seen,
+            "last_seen": record.last_seen,
+            "active_days": list(record.active_days),
+            "message_count": record.message_count,
+            "snapshot_days": record.snapshot_days,
+            "last_snapshot_day": record.last_snapshot_day,
+            "is_bot": record.is_bot,
+            "roles": list(record.roles),
+            "followed_at": record.followed_at,
+            "session_messages": dict(record.session_messages),
+            "manual_group": record.manual_group,
+            "twitch_status": dict(record.twitch_status),
+        }
 
     def _observe(
         self,

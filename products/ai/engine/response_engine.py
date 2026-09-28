@@ -145,10 +145,10 @@ class ResponseDecisionEngine:
                 "viewer": message.user_name,
                 "message": message.text,
                 "conversation_continuation": message.conversation_continuation,
-                "previous_sally_reply": message.previous_sally_reply,
+                "previous_ai_reply": message.previous_ai_reply,
                 "response_expected": message.response_expected,
-                "directed_at_sally": message.directed_at_sally,
-                "reply_to_sally": message.reply_to_sally,
+                "directed_at_ai": message.directed_at_ai,
+                "reply_to_ai": message.reply_to_ai,
                 "third_person_reference": message.third_person_reference,
                 "addressed_to_other": message.addressed_to_other,
             }
@@ -215,8 +215,8 @@ Return exactly:
         return (
             cls.requires_reply(message.text)
             or message.response_expected
-            or message.directed_at_sally
-            or message.reply_to_sally
+            or message.directed_at_ai
+            or message.reply_to_ai
         )
 
     @staticmethod
@@ -295,10 +295,10 @@ Return exactly:
                 "approved_memory_summary": message.memory_summary,
                 "approved_memories": list(message.memories),
                 "conversation_continuation": message.conversation_continuation,
-                "previous_sally_reply": message.previous_sally_reply,
+                "previous_ai_reply": message.previous_ai_reply,
                 "response_expected": message.response_expected,
-                "directed_at_sally": message.directed_at_sally,
-                "reply_to_sally": message.reply_to_sally,
+                "directed_at_ai": message.directed_at_ai,
+                "reply_to_ai": message.reply_to_ai,
                 "third_person_reference": message.third_person_reference,
                 "addressed_to_other": message.addressed_to_other,
             }
@@ -327,12 +327,12 @@ viewer repeats an invocation because no Sally reply followed the earlier copy,
 answer the newest invocation instead of treating it as spam.
 
 `conversation_continuation` means Sally recently replied to this same viewer.
-Use `previous_sally_reply` to understand their next turn. If `response_expected`
+Use `previous_ai_reply` to understand their next turn. If `response_expected`
 is true, the viewer is answering Sally's question or asking a follow-up question;
 reply unless doing so would be unsafe. They do not need to say `hey sally` again.
 
-`directed_at_sally` means the message names or mentions Sally.
-`reply_to_sally` means Twitch identifies it as a direct reply to Sally's message.
+`directed_at_ai` means the message names or mentions Sally.
+`reply_to_ai` means Twitch identifies it as a direct reply to Sally's message.
 Both require a response unless unsafe. Also infer an implicit address from recent
 chat: a viewer may clearly be speaking to Sally through wording and turn order
 without using her name. Do not require a magic phrase.
@@ -448,7 +448,7 @@ Messages to decide:
         }:
             engagement_type = (
                 "direct"
-                if source.directed_at_sally or source.reply_to_sally
+                if source.directed_at_ai or source.reply_to_ai
                 else "conversation"
                 if source.conversation_continuation
                 else "interjection"

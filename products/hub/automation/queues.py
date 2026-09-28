@@ -1,13 +1,25 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from threading import RLock
 from time import monotonic
 from typing import Iterable
 from uuid import uuid4
 
-from products.hub.automation.models import TriggerEvent
-from shared.streamhouse_runtime.json_store import atomic_write_json, load_json_with_backup
+from products.hub.automation.cancellation import AutomationCancellation
+from products.hub.automation.models import (
+    DEFAULT_AUTOMATION_QUEUE_ID,
+    DEFAULT_AUTOMATION_QUEUE_NAME,
+    TriggerEvent,
+)
+from shared.streamhouse_runtime.json_store import (
+    UnsupportedJsonSchemaError,
+    atomic_write_json,
+    json_store_exists,
+    load_validated_json,
+)
 from shared.streamhouse_runtime.paths import user_data_root
 
 
@@ -26,7 +38,7 @@ class AutomationQueueDefinition:
     @classmethod
     def from_dict(cls, values: dict) -> AutomationQueueDefinition:
         return cls(
-            queue_id=str(values.get("queue_id", "")) or uuid4().hex,
+            queue_id=str(values.get("queue_id", "")),
             name=str(values.get("name", "")),
             paused=bool(values.get("paused", False)),
             max_length=int(values.get("max_length", 100)),
@@ -56,35 +68,60 @@ class AutomationQueueStore:
 
     def __init__(self, path: Path | None = None) -> None:
         self.path = path or user_data_root() / "automation" / "queues.json"
-        self.queues: list[AutomationQueueDefinition] = []
+        self.queues: list[AutomationQueueDefinition] = [self._default_queue()]
 
     def load(self) -> list[AutomationQueueDefinition]:
-        if not self.path.exists():
-            self.queues = []
-            return []
-        payload = load_json_with_backup(self.path)
-        if not isinstance(payload, dict):
-            raise ValueError("Automation queues must contain a JSON object.")
-        if int(payload.get("version", 1)) > self.VERSION:
-            raise ValueError("Automation queue data is newer than this app.")
-        raw = payload.get("queues", [])
-        if not isinstance(raw, list):
-            raise ValueError("Automation queues must contain a queue list.")
-        queues = [
-            AutomationQueueDefinition.from_dict(value)
-            for value in raw
-            if isinstance(value, dict)
-        ]
-        self._validate(queues)
+        if not json_store_exists(self.path):
+            self.reset()
+            return list(self.queues)
+        queues = load_validated_json(self.path, self._parse_payload)
         self.queues = queues
         return list(self.queues)
 
+    def _parse_payload(self, payload: object) -> list[AutomationQueueDefinition]:
+        if not isinstance(payload, dict):
+            raise ValueError("Automation queues must contain a JSON object.")
+        version = payload.get("version")
+        if type(version) is not int or version != self.VERSION:
+            raise UnsupportedJsonSchemaError(
+                f"Unsupported Automation queue version {version}; "
+                f"expected {self.VERSION}."
+            )
+        raw = payload.get("queues", [])
+        if not isinstance(raw, list):
+            raise ValueError("Automation queues must contain a queue list.")
+        if any(not isinstance(value, dict) for value in raw):
+            raise ValueError("Every Automation queue must be a JSON object.")
+        queues = [AutomationQueueDefinition.from_dict(value) for value in raw]
+        self._validate(queues)
+        if queues[0].queue_id != DEFAULT_AUTOMATION_QUEUE_ID:
+            raise ValueError("The Default Queue must be the first queue.")
+        return queues
+
+    def reset(self) -> AutomationQueueDefinition:
+        self.queues = [self._default_queue()]
+        self.save()
+        return self.queues[0]
+
+    @staticmethod
+    def _default_queue() -> AutomationQueueDefinition:
+        return AutomationQueueDefinition(
+            queue_id=DEFAULT_AUTOMATION_QUEUE_ID,
+            name=DEFAULT_AUTOMATION_QUEUE_NAME,
+        )
+
+    def default(self) -> AutomationQueueDefinition:
+        queue = self.get(DEFAULT_AUTOMATION_QUEUE_ID)
+        if queue is None:
+            raise RuntimeError("The Default Queue is unavailable.")
+        return queue
+
+    def resolve(self, queue_id: str) -> AutomationQueueDefinition:
+        return self.get(queue_id) or self.default()
+
     def save(self) -> None:
         self._validate(self.queues)
-        atomic_write_json(
-            self.path,
-            {"version": self.VERSION, "queues": [asdict(queue) for queue in self.queues]},
-        )
+        self._write(self.queues)
 
     def get(self, queue_id: str) -> AutomationQueueDefinition | None:
         return next((queue for queue in self.queues if queue.queue_id == queue_id), None)
@@ -104,30 +141,48 @@ class AutomationQueueStore:
             duplicate_policy=duplicate_policy,
             delay_seconds=delay_seconds,
         )
-        values = [*self.queues, queue]
+        values = [*deepcopy(self.queues), queue]
         self._validate(values)
+        self._write(values)
         self.queues = values
-        self.save()
         return queue
 
     def update(self, queue_id: str, **changes) -> AutomationQueueDefinition:
-        queue = self.get(queue_id)
+        values = deepcopy(self.queues)
+        queue = next((item for item in values if item.queue_id == queue_id), None)
         if queue is None:
             raise ValueError("The selected queue no longer exists.")
+        if (
+            queue_id == DEFAULT_AUTOMATION_QUEUE_ID
+            and "name" in changes
+            and str(changes["name"]).strip() != DEFAULT_AUTOMATION_QUEUE_NAME
+        ):
+            raise ValueError("The Default Queue cannot be renamed.")
         for key in ("name", "paused", "max_length", "duplicate_policy", "delay_seconds"):
             if key in changes:
                 setattr(queue, key, changes[key])
-        self._validate(self.queues)
-        self.save()
-        return queue
+        self._validate(values)
+        self._write(values)
+        self.queues = values
+        return self.get(queue_id)  # type: ignore[return-value]
 
     def delete(self, queue_id: str) -> bool:
+        if queue_id == DEFAULT_AUTOMATION_QUEUE_ID:
+            return False
         queue = self.get(queue_id)
         if queue is None:
             return False
-        self.queues.remove(queue)
-        self.save()
+        values = [item for item in deepcopy(self.queues) if item.queue_id != queue_id]
+        self._validate(values)
+        self._write(values)
+        self.queues = values
         return True
+
+    def _write(self, queues: Iterable[AutomationQueueDefinition]) -> None:
+        atomic_write_json(
+            self.path,
+            {"version": self.VERSION, "queues": [asdict(queue) for queue in queues]},
+        )
 
     @staticmethod
     def _validate(queues: Iterable[AutomationQueueDefinition]) -> None:
@@ -136,10 +191,19 @@ class AutomationQueueStore:
         names: set[str] = set()
         if len(ids) != len(set(ids)):
             raise ValueError("Automation queue IDs must be unique.")
+        if any(not queue_id for queue_id in ids):
+            raise ValueError("Automation queues require stable IDs.")
+        if ids.count(DEFAULT_AUTOMATION_QUEUE_ID) != 1:
+            raise ValueError("Automation queues require exactly one Default Queue.")
         for queue in values:
             queue.name = queue.name.strip()
             if not queue.name:
                 raise ValueError("Queue names cannot be empty.")
+            if (
+                queue.queue_id == DEFAULT_AUTOMATION_QUEUE_ID
+                and queue.name != DEFAULT_AUTOMATION_QUEUE_NAME
+            ):
+                raise ValueError("The Default Queue must keep its system name.")
             folded = queue.name.casefold()
             if folded in names:
                 raise ValueError("Queue names must be unique.")
@@ -156,7 +220,9 @@ class AutomationQueueManager:
         self.store = store
         self.pending: dict[str, list[QueuedRoutine]] = {}
         self.current: dict[str, QueuedRoutine] = {}
+        self._cancellations: dict[str, AutomationCancellation] = {}
         self.ready_at: dict[str, float] = {}
+        self._lock = RLock()
 
     def enqueue(
         self,
@@ -165,9 +231,40 @@ class AutomationQueueManager:
         routine_name: str,
         trigger: TriggerEvent,
     ) -> QueueAddResult:
-        queue = self.store.get(queue_id)
-        if queue is None:
-            return QueueAddResult(False, detail="The assigned automation queue no longer exists.")
+        with self._lock:
+            return self._enqueue(queue_id, routine_id, routine_name, trigger)
+
+    def submit(
+        self,
+        queue_id: str,
+        routine_id: str,
+        routine_name: str,
+        trigger: TriggerEvent,
+    ) -> tuple[QueueAddResult, QueuedRoutine | None]:
+        """Atomically enqueue and claim the item when its queue is idle."""
+        with self._lock:
+            queue = self.store.resolve(queue_id)
+            queue_id = queue.queue_id
+            was_busy = bool(self.pending.get(queue_id)) or queue_id in self.current
+            result = self._enqueue(
+                queue_id,
+                routine_id,
+                routine_name,
+                trigger,
+            )
+            if not result.accepted or was_busy:
+                return result, None
+            return result, self._take_ready(queue_id)
+
+    def _enqueue(
+        self,
+        queue_id: str,
+        routine_id: str,
+        routine_name: str,
+        trigger: TriggerEvent,
+    ) -> QueueAddResult:
+        queue = self.store.resolve(queue_id)
+        queue_id = queue.queue_id
         items = self.pending.setdefault(queue_id, [])
         duplicate = any(item.routine_id == routine_id for item in items) or (
             self.current.get(queue_id) is not None
@@ -190,11 +287,17 @@ class AutomationQueueManager:
         return QueueAddResult(True, item, f'Queued in "{queue.name}".')
 
     def take_ready(self, queue_id: str, *, now: float | None = None) -> QueuedRoutine | None:
-        queue = self.store.get(queue_id)
+        with self._lock:
+            return self._take_ready(queue_id, now=now)
+
+    def _take_ready(
+        self, queue_id: str, *, now: float | None = None
+    ) -> QueuedRoutine | None:
+        queue = self.store.resolve(queue_id)
+        queue_id = queue.queue_id
         current_time = monotonic() if now is None else now
         if (
-            queue is None
-            or queue.paused
+            queue.paused
             or queue_id in self.current
             or current_time < self.ready_at.get(queue_id, 0)
         ):
@@ -204,36 +307,109 @@ class AutomationQueueManager:
             return None
         item = items.pop(0)
         self.current[queue_id] = item
+        self._cancellations[queue_id] = AutomationCancellation(
+            queue_id,
+            item.item_id,
+        )
         return item
 
     def complete(self, queue_id: str, *, now: float | None = None) -> None:
-        queue = self.store.get(queue_id)
-        self.current.pop(queue_id, None)
-        if queue is not None:
-            self.ready_at[queue_id] = (monotonic() if now is None else now) + queue.delay_seconds
+        with self._lock:
+            queue = self.store.get(queue_id)
+            self.current.pop(queue_id, None)
+            self._cancellations.pop(queue_id, None)
+            if queue is None:
+                self.ready_at.pop(queue_id, None)
+                return
+            self.ready_at[queue_id] = (
+                (monotonic() if now is None else now) + queue.delay_seconds
+            )
 
     def remove(self, queue_id: str, item_id: str) -> bool:
-        items = self.pending.get(queue_id, [])
-        item = next((value for value in items if value.item_id == item_id), None)
-        if item is None:
-            return False
-        items.remove(item)
-        return True
+        with self._lock:
+            items = self.pending.get(queue_id, [])
+            item = next((value for value in items if value.item_id == item_id), None)
+            if item is None:
+                return False
+            items.remove(item)
+            return True
 
     def clear(self, queue_id: str) -> int:
-        items = self.pending.get(queue_id, [])
-        count = len(items)
-        items.clear()
-        return count
+        with self._lock:
+            items = self.pending.get(queue_id, [])
+            count = len(items)
+            items.clear()
+            return count
+
+    def cancellation_for(self, item: QueuedRoutine) -> AutomationCancellation:
+        with self._lock:
+            current = self.current.get(item.queue_id)
+            cancellation = self._cancellations.get(item.queue_id)
+            if (
+                current is None
+                or current.item_id != item.item_id
+                or cancellation is None
+            ):
+                raise RuntimeError("The queued routine is no longer current.")
+            return cancellation
+
+    def cancel_current(
+        self,
+        queue_id: str,
+        reason: str = "Cancelled by user.",
+    ) -> bool:
+        with self._lock:
+            cancellation = self._cancellations.get(queue_id)
+            return cancellation.cancel(reason) if cancellation is not None else False
+
+    def stop(
+        self,
+        queue_id: str,
+        reason: str = "Queue stopped by user.",
+    ) -> tuple[bool, int]:
+        """Cancel the current routine and remove every waiting queue item."""
+        with self._lock:
+            items = self.pending.get(queue_id, [])
+            cleared = len(items)
+            items.clear()
+            cancellation = self._cancellations.get(queue_id)
+            cancelled = (
+                cancellation.cancel(reason)
+                if cancellation is not None
+                else False
+            )
+            return cancelled, cleared
+
+    def current_cancelled(self, queue_id: str) -> bool:
+        with self._lock:
+            cancellation = self._cancellations.get(queue_id)
+            return bool(cancellation is not None and cancellation.cancelled)
+
+    def cancel_all_current(self, reason: str = "Automation cancelled.") -> int:
+        with self._lock:
+            cancellations = tuple(self._cancellations.values())
+            return sum(cancellation.cancel(reason) for cancellation in cancellations)
 
     def reorder(self, queue_id: str, item_ids: Iterable[str]) -> None:
-        items = self.pending.get(queue_id, [])
-        ordered = list(item_ids)
-        existing = [item.item_id for item in items]
-        if len(ordered) != len(set(ordered)) or set(ordered) != set(existing):
-            raise ValueError("The queue order must contain every pending item exactly once.")
-        by_id = {item.item_id: item for item in items}
-        self.pending[queue_id] = [by_id[item_id] for item_id in ordered]
+        with self._lock:
+            items = self.pending.get(queue_id, [])
+            ordered = list(item_ids)
+            existing = [item.item_id for item in items]
+            if len(ordered) != len(set(ordered)) or set(ordered) != set(existing):
+                raise ValueError("The queue order must contain every pending item exactly once.")
+            by_id = {item.item_id: item for item in items}
+            self.pending[queue_id] = [by_id[item_id] for item_id in ordered]
 
     def count(self, queue_id: str) -> int:
-        return len(self.pending.get(queue_id, []))
+        with self._lock:
+            return len(self.pending.get(queue_id, []))
+
+    def state(
+        self, queue_id: str
+    ) -> tuple[QueuedRoutine | None, tuple[QueuedRoutine, ...]]:
+        """Return one consistent queue snapshot for UI and diagnostics."""
+        with self._lock:
+            return (
+                self.current.get(queue_id),
+                tuple(self.pending.get(queue_id, ())),
+            )

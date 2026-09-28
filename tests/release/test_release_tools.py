@@ -5,8 +5,7 @@ from pathlib import Path
 from zipfile import ZipFile
 
 from products.hub.core.backup import BackupManager
-from products.hub.core.diagnostics import export_diagnostics
-from products.hub.core.migrations import migrate_payload
+from products.hub.core.diagnostics import DiagnosticsService
 from products.hub.ui.controllers.release_controller import ReleaseController
 
 
@@ -94,43 +93,35 @@ class ReleaseToolsTests(unittest.TestCase):
                     "automation/core_triggers.json", source.namelist()
                 )
 
-    def test_diagnostics_include_only_warning_and_error_logs(self) -> None:
+    def test_support_bundle_includes_only_sanitized_diagnostic_log_lines(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             logs = root / "logs"
             logs.mkdir()
-            (logs / "latest.log").write_text(
+            current_log = logs / "StreamhouseHub-current.log"
+            current_log.write_text(
                 "[   INFO  ] user: private chat\n"
                 "[ WARNING ] Authorization=secret-value\n",
                 encoding="utf-8",
             )
-            destination = root / "diagnostics.zip"
-            export_diagnostics(
-                destination,
-                root,
-                {"startup_page": "AI"},
-                {"connection": "Connected"},
-            )
+            service = DiagnosticsService(root)
+            service.set_state_provider(lambda: {"health": {"connection": "Connected"}})
+            from shared.streamhouse_runtime.logger import Logger
+
+            previous_log_path = Logger._session_log_path
+            Logger._session_log_path = current_log
+            try:
+                destination = service.create_support_bundle(root / "support.zip")
+            finally:
+                Logger._session_log_path = previous_log_path
+                service.clean_shutdown()
 
             with ZipFile(destination) as archive:
-                warnings = archive.read("warnings.log").decode()
-                payload = json.loads(archive.read("diagnostics.json"))
+                warnings = archive.read("logs/current-session.log").decode()
+                payload = json.loads(archive.read("diagnostics/state.json"))
             self.assertNotIn("private chat", warnings)
             self.assertNotIn("secret-value", warnings)
             self.assertEqual(payload["health"]["connection"], "Connected")
-
-    def test_chatter_migration_adds_release_fields(self) -> None:
-        migrated = migrate_payload(
-            "chatters",
-            {"version": 1, "chatters": {"1": {"user_name": "Viewer"}}},
-        )
-        record = migrated["chatters"]["1"]
-        self.assertEqual(migrated["version"], 6)
-        self.assertEqual(record["manual_group"], "")
-        self.assertEqual(record["timeline"], [])
-        self.assertEqual(record["private_notes"], "")
-        self.assertFalse(record["memory_enabled"])
-        self.assertEqual(record["memory_consent"], "unknown")
 
     def test_release_controller_creates_daily_backup(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -169,7 +160,7 @@ class ReleaseToolsTests(unittest.TestCase):
             controller = ReleaseController(root)
             archive = controller.create_backup()
 
-            self.assertEqual(controller.scrub_viewer_data("1", "Viewer"), 1)
+            self.assertEqual(controller.scrub_viewer_data("1"), 1)
             with ZipFile(archive) as source:
                 chatters = json.loads(
                     source.read("memory/twitch_chatters.json")

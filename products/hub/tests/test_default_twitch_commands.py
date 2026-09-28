@@ -9,8 +9,18 @@ from products.hub.automation.models import TriggerEvent
 from products.hub.automation.routines import RoutineStore
 from products.hub.automation.service import AutomationService
 from products.hub.automation.tasks import TaskRegistry
+from products.hub.automation.variable_providers import (
+    ChannelInformationVariableProvider,
+    context_provider,
+    runtime_provider,
+)
+from products.hub.automation.variable_registry import VariableRegistry
 from products.hub.automation.value_tasks import register_value_tasks
-from products.hub.twitch.commands import TwitchCommandTriggerStore
+from products.hub.twitch.commands import (
+    TwitchCommandTriggerStore, TwitchCommandTriggerDispatcher, TwitchCommandTriggerOutcome,
+)
+from products.hub.twitch.models import TwitchMessage
+from products.hub.twitch.default_commands import default_command_definitions
 from products.hub.twitch.channel_information import (
     ChannelInformation,
     ChannelInformationStore,
@@ -78,21 +88,44 @@ class DefaultTwitchCommandTests(unittest.TestCase):
         root = Path(self.temporary.name)
         self.routines = RoutineStore(root / "routines.json")
         self.store = TwitchCommandTriggerStore(root / "commands.json", self.routines)
-        self.store.seed_default_commands()
+        self.store.load()
+        for definition in default_command_definitions():
+            if definition.setup_requirement:
+                self.store.configure_default(definition.default_id)
         self.channel_information = ChannelInformationStore(
             root / "channel-information.json"
         )
         self.channel_information.load()
         self.twitch = FakeTwitchInformationService()
+        self.variable_registry = VariableRegistry()
+        self.variable_registry.register(context_provider())
+        self.variable_registry.register(
+            runtime_provider(
+                lambda: {
+                    "title": str((self.twitch.channel or {}).get("title", "")),
+                    "category": str((self.twitch.channel or {}).get("game_name", "")),
+                    "connected": True,
+                },
+                obs_connected=lambda: False,
+                obs_scene=lambda: "",
+                hub_uptime=lambda: "1 minute",
+            )
+        )
+        self.variable_registry.register(
+            ChannelInformationVariableProvider(self.channel_information)
+        )
         self.registry = TaskRegistry()
         register_twitch_tasks(
             self.registry,
             self.twitch,
             command_provider=lambda: self.store,
             channel_information_provider=lambda: self.channel_information,
+            variable_registry=self.variable_registry,
         )
         register_value_tasks(self.registry)
-        self.automation = AutomationService(self.routines, self.registry)
+        self.automation = AutomationService(
+            self.routines, self.registry, variable_registry=self.variable_registry
+        )
 
     def tearDown(self) -> None:
         self.temporary.cleanup()
@@ -187,13 +220,27 @@ class DefaultTwitchCommandTests(unittest.TestCase):
             "TargetViewer's Twitch account was created",
             self.run_command("accountage", target="targetviewer"),
         )
+        self.twitch.user_error = OSError("user API")
+        self.assertEqual(
+            self.run_command("accountage", target="targetviewer"),
+            "I couldn't retrieve that Twitch account right now.",
+        )
 
-    def test_title_and_game_work_from_channel_information_offline(self) -> None:
+    def test_title_and_game_use_cached_stream_variables(self) -> None:
         self.assertEqual(self.run_command("title"), "Current title: Building Streamhouse")
         self.assertEqual(self.run_command("game"), "We're currently streaming Science & Technology.")
         self.twitch.channel = {"title": "Offline title", "game_name": "", "game_id": ""}
         self.assertEqual(self.run_command("title"), "Current title: Offline title")
-        self.assertEqual(self.run_command("game"), "No Twitch category is currently set.")
+        self.assertEqual(
+            self.run_command("game"),
+            "The channel does not currently have a category set.",
+        )
+        self.twitch.channel = {"title": "", "game_name": "Just Chatting", "game_id": "509658"}
+        self.assertEqual(
+            self.run_command("title"),
+            "The current channel title is unavailable.",
+        )
+        self.assertEqual(self.run_command("game"), "We're currently streaming Just Chatting.")
 
     def test_commands_excludes_disabled_and_respects_permissions(self) -> None:
         game = self.store.resolve("game")
@@ -211,6 +258,12 @@ class DefaultTwitchCommandTests(unittest.TestCase):
         response = self.run_command("commands")
         self.assertNotIn("!game", response)
         self.assertNotIn("!followage", response)
+        for unavailable in (
+            "!discord", "!socials", "!youtube", "!schedule", "!rules", "!server"
+        ):
+            self.assertNotIn(unavailable, response)
+        for available in ("!uptime", "!accountage", "!title"):
+            self.assertIn(available, response)
         self.assertEqual(response.count("!commands"), 1)
 
     def enable(self, name: str) -> None:
@@ -265,19 +318,15 @@ class DefaultTwitchCommandTests(unittest.TestCase):
         self.enable("discord")
         command = self.store.resolve("discord")
 
-        result = self.automation.publish_trigger(
-            TriggerEvent(
-                command.trigger_id,
-                "twitch",
-                "command",
-                {"user": "TestViewer", "viewer_permission": "everyone"},
-            )
+        dispatcher = TwitchCommandTriggerDispatcher(
+            self.store, channel_information=self.channel_information
         )
-
-        self.assertFalse(result.succeeded)
+        result = dispatcher.evaluate(TwitchMessage(
+            username="TestViewer", text="!discord", received_at=datetime.now(timezone.utc),
+            user_id="2", user_login="testviewer",
+        ))
+        self.assertEqual(result.outcome, TwitchCommandTriggerOutcome.CONFIGURATION_ERROR)
         self.assertEqual(self.twitch.messages, [])
-        detail = result.routine_results[0].task_results[0].detail
-        self.assertIn("Configure Discord URL", detail)
 
 
 if __name__ == "__main__":

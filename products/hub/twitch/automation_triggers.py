@@ -1,14 +1,25 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from collections import deque
+from copy import deepcopy
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timedelta, timezone
+import json
 from pathlib import Path
-from typing import Any, Mapping
+import re
+from time import monotonic
+from typing import Any, Callable, Mapping
 from uuid import uuid4
 
 from products.hub.automation.models import TriggerEvent
 from products.hub.automation.routines import RoutineStore
-from shared.streamhouse_runtime.json_store import atomic_write_json, load_json_with_backup
+from shared.streamhouse_runtime.json_store import (
+    UnsupportedJsonSchemaError,
+    atomic_write_json,
+    json_store_exists,
+    load_validated_json,
+)
+from shared.streamhouse_runtime.logger import Logger
 from shared.streamhouse_runtime.paths import user_data_root
 from products.hub.twitch.catalog import EVENTSUB_SUBSCRIPTIONS
 from products.hub.twitch.models import TwitchEvent, TwitchMessage
@@ -17,18 +28,283 @@ from products.hub.twitch.models import TwitchEvent, TwitchMessage
 TWITCH_EVENT_TYPES = tuple(
     sorted({subscription.type for subscription in EVENTSUB_SUBSCRIPTIONS})
 )
-TWITCH_AUTOMATION_EVENT_TYPES = (
+TWITCH_EVENT_AUTOMATION_TYPES = (
     "channel.follow",
     "channel.subscribe",
     "channel.subscription.gift",
     "channel.subscription.message",
     "channel.cheer",
     "channel.raid",
+    "channel.raid.outgoing",
     "channel.channel_points_custom_reward_redemption.add",
     "stream.online",
     "stream.offline",
     "channel.chat.first_message",
 )
+CHANNEL_POINT_REDEMPTION_EVENT_TYPE = (
+    "channel.channel_points_custom_reward_redemption.add"
+)
+KEYWORD_PHRASE_EVENT_TYPE = "channel.chat.keyword_phrase"
+ADS_TRIGGER_TYPES = {
+    "ads.warning.5_minutes": "5 Minute Warning",
+    "ads.warning.3_minutes": "3 Minute Warning",
+    "ads.warning.2_minutes": "2 Minute Warning",
+    "ads.warning.1_minute": "1 Minute Warning",
+    "ads.started": "Ads Started",
+    "ads.ended": "Ads Ended",
+}
+TWITCH_TRIGGER_DISPLAY_NAMES = {
+    "channel.follow": "Follow",
+    "channel.subscribe": "Subscribe",
+    "channel.subscription.message": "Resubscribe",
+    "channel.subscription.gift": "Gift Subscription",
+    "channel.cheer": "Cheer",
+    "channel.raid": "Incoming Raid",
+    "channel.raid.outgoing": "Outgoing Raid",
+    "channel.channel_points_custom_reward_redemption.add": "Channel Point Redemption",
+    "stream.online": "Stream Online",
+    "stream.offline": "Stream Offline",
+    "channel.chat.first_message": "First Message Of Stream",
+    KEYWORD_PHRASE_EVENT_TYPE: "Keyword / Phrase",
+    **ADS_TRIGGER_TYPES,
+}
+TWITCH_TRIGGER_MENU_NAMES = {
+    "channel.subscription.gift": "Subscription › Gift",
+    "channel.subscription.message": "Subscription › Message",
+    "stream.online": "Stream › Online",
+    "stream.offline": "Stream › Offline",
+}
+TWITCH_AUTOMATION_EVENT_TYPES = (
+    *TWITCH_EVENT_AUTOMATION_TYPES,
+    KEYWORD_PHRASE_EVENT_TYPE,
+    *ADS_TRIGGER_TYPES,
+)
+KEYWORD_MATCH_TYPES = {
+    "contains": "Contains",
+    "exact": "Exact Message",
+    "starts_with": "Starts With",
+    "ends_with": "Ends With",
+}
+
+
+def twitch_trigger_display_name(event_type: str, *, menu: bool = False) -> str:
+    """Return the canonical user-facing name for a supported Twitch trigger."""
+    clean = str(event_type).strip()
+    if menu and clean in TWITCH_TRIGGER_MENU_NAMES:
+        return TWITCH_TRIGGER_MENU_NAMES[clean]
+    return TWITCH_TRIGGER_DISPLAY_NAMES.get(
+        clean,
+        clean.replace("channel.", "")
+        .replace("_", " ")
+        .replace(".", " › ")
+        .title(),
+    )
+
+SUBSCRIPTION_AUTOMATION_TYPES = {
+    "channel.subscribe",
+    "channel.subscription.message",
+}
+
+
+@dataclass(frozen=True, slots=True)
+class _CorrelationEntry:
+    event: TwitchEvent
+    observed_at: float
+
+
+class TwitchSubscriptionEventCorrelator:
+    """Enrich one authoritative subscription event without firing twice."""
+
+    def __init__(
+        self,
+        *,
+        wait_seconds: float = 1.0,
+        ttl_seconds: float = 10.0,
+        max_entries: int = 256,
+    ) -> None:
+        self.wait_seconds = max(float(wait_seconds), 0.0)
+        self.ttl_seconds = max(float(ttl_seconds), self.wait_seconds)
+        self.max_entries = max(int(max_entries), 1)
+        self._notifications: dict[tuple[str, str, str], deque[_CorrelationEntry]] = {}
+        self._pending: dict[tuple[str, str, str], deque[_CorrelationEntry]] = {}
+        self._recent_direct: dict[tuple[str, str, str], float] = {}
+
+    def observe(
+        self,
+        event: TwitchEvent,
+        *,
+        now: float | None = None,
+    ) -> tuple[TwitchEvent, ...]:
+        observed_at = monotonic() if now is None else float(now)
+        self._prune(observed_at)
+        if event.subscription_type == "channel.chat.notification":
+            target_type = self._notification_target(event)
+            if not target_type:
+                return (event,)
+            key = self._key(event, target_type, chat_notification=True)
+            pending = self._pop(self._pending, key)
+            if pending is not None:
+                self._remember_direct(key, observed_at)
+                return (self._enrich(pending.event, event),)
+            if key in self._recent_direct:
+                return (event,)
+            self._append(
+                self._notifications,
+                key,
+                _CorrelationEntry(event, observed_at),
+            )
+            return (event,)
+        if event.subscription_type not in SUBSCRIPTION_AUTOMATION_TYPES:
+            return (event,)
+        key = self._key(event, event.subscription_type)
+        notification = self._pop(self._notifications, key)
+        if notification is not None:
+            self._remember_direct(key, observed_at)
+            return (self._enrich(event, notification.event),)
+        self._append(self._pending, key, _CorrelationEntry(event, observed_at))
+        return ()
+
+    def flush(
+        self,
+        *,
+        now: float | None = None,
+        force: bool = False,
+    ) -> tuple[TwitchEvent, ...]:
+        observed_at = monotonic() if now is None else float(now)
+        ready: list[TwitchEvent] = []
+        for key, entries in list(self._pending.items()):
+            while entries and (
+                force
+                or observed_at - entries[0].observed_at >= self.wait_seconds
+            ):
+                entry = entries.popleft()
+                ready.append(entry.event)
+                self._remember_direct(key, observed_at)
+            if not entries:
+                self._pending.pop(key, None)
+        self._prune(observed_at)
+        return tuple(ready)
+
+    def clear(self) -> None:
+        self._notifications.clear()
+        self._pending.clear()
+        self._recent_direct.clear()
+
+    @property
+    def pending_count(self) -> int:
+        return sum(len(entries) for entries in self._pending.values())
+
+    @property
+    def notification_count(self) -> int:
+        return sum(len(entries) for entries in self._notifications.values())
+
+    def _prune(self, now: float) -> None:
+        for values in (self._notifications, self._pending):
+            for key, entries in list(values.items()):
+                while entries and now - entries[0].observed_at > self.ttl_seconds:
+                    entries.popleft()
+                if not entries:
+                    values.pop(key, None)
+        self._recent_direct = {
+            key: value
+            for key, value in self._recent_direct.items()
+            if now - value <= self.ttl_seconds
+        }
+
+    def _append(
+        self,
+        values: dict[tuple[str, str, str], deque[_CorrelationEntry]],
+        key: tuple[str, str, str],
+        entry: _CorrelationEntry,
+    ) -> None:
+        values.setdefault(key, deque()).append(entry)
+        while sum(len(items) for items in values.values()) > self.max_entries:
+            oldest_key = min(
+                values,
+                key=lambda item: values[item][0].observed_at,
+            )
+            values[oldest_key].popleft()
+            if not values[oldest_key]:
+                values.pop(oldest_key, None)
+
+    def _remember_direct(
+        self,
+        key: tuple[str, str, str],
+        observed_at: float,
+    ) -> None:
+        self._recent_direct[key] = observed_at
+        while len(self._recent_direct) > self.max_entries:
+            oldest_key = min(self._recent_direct, key=self._recent_direct.get)
+            self._recent_direct.pop(oldest_key, None)
+
+    @staticmethod
+    def _pop(
+        values: dict[tuple[str, str, str], deque[_CorrelationEntry]],
+        key: tuple[str, str, str],
+    ) -> _CorrelationEntry | None:
+        entries = values.get(key)
+        if not entries:
+            return None
+        entry = entries.popleft()
+        if not entries:
+            values.pop(key, None)
+        return entry
+
+    @staticmethod
+    def _notification_target(event: TwitchEvent) -> str:
+        payload = event.payload.get("event", {})
+        if not isinstance(payload, Mapping):
+            return ""
+        return {
+            "sub": "channel.subscribe",
+            "resub": "channel.subscription.message",
+        }.get(str(payload.get("notice_type", "")), "")
+
+    @staticmethod
+    def _key(
+        event: TwitchEvent,
+        target_type: str,
+        *,
+        chat_notification: bool = False,
+    ) -> tuple[str, str, str]:
+        payload = event.payload.get("event", {})
+        if not isinstance(payload, Mapping):
+            payload = {}
+        broadcaster = str(payload.get("broadcaster_user_id", "")).strip()
+        user_id = str(
+            payload.get("chatter_user_id" if chat_notification else "user_id", "")
+            or payload.get("chatter_user_login" if chat_notification else "user_login", "")
+        ).strip().casefold()
+        return target_type, broadcaster, user_id
+
+    @staticmethod
+    def _enrich(direct: TwitchEvent, notification: TwitchEvent) -> TwitchEvent:
+        direct_payload = dict(direct.payload)
+        direct_event = direct_payload.get("event", {})
+        notice_event = notification.payload.get("event", {})
+        if not isinstance(direct_event, Mapping) or not isinstance(notice_event, Mapping):
+            return direct
+        enriched = dict(direct_event)
+        notice_type = str(notice_event.get("notice_type", ""))
+        details = notice_event.get(notice_type, {})
+        if not isinstance(details, Mapping):
+            details = {}
+        field_map = {
+            "sub_tier": "tier",
+            "is_prime": "is_prime",
+            "is_gift": "is_gift",
+            "cumulative_months": "cumulative_months",
+            "streak_months": "streak_months",
+            "duration_months": "duration_months",
+        }
+        for source, target in field_map.items():
+            if source in details and target not in enriched:
+                enriched[target] = details[source]
+        message = notice_event.get("message", {})
+        if isinstance(message, Mapping) and str(message.get("text", "")):
+            enriched["message"] = {"text": str(message["text"])}
+        direct_payload["event"] = enriched
+        return replace(direct, payload=direct_payload)
 
 
 @dataclass(slots=True)
@@ -39,6 +315,8 @@ class TwitchEventAutomationTrigger:
     filters: dict[str, str] = field(default_factory=dict)
     enabled: bool = True
     reset_minutes: int = 15
+    reward_id: str = ""
+    reward_title: str = ""
 
     @classmethod
     def from_dict(
@@ -46,7 +324,7 @@ class TwitchEventAutomationTrigger:
     ) -> TwitchEventAutomationTrigger:
         raw_filters = values.get("filters", {})
         return cls(
-            trigger_id=str(values.get("trigger_id", "")) or uuid4().hex,
+            trigger_id=str(values.get("trigger_id", "")),
             routine_id=str(values.get("routine_id", "")),
             event_type=str(values.get("event_type", "")).strip(),
             filters={
@@ -61,62 +339,168 @@ class TwitchEventAutomationTrigger:
                 max(int(values.get("reset_minutes", 15)), 1),
                 180,
             ),
+            reward_id=str(values.get("reward_id", "")).strip(),
+            reward_title=str(values.get("reward_title", "")).strip(),
         )
 
 
 class TwitchEventTriggerStore:
-    VERSION = 2
+    VERSION = 4
+    FIRST_MESSAGE_STATE_VERSION = 2
+    DEFAULT_RAID_SUPPRESSION_MINUTES = 3
+    MAX_RAID_SUPPRESSION_MINUTES = 30
 
     def __init__(
         self,
         path: Path | None = None,
         routine_store: RoutineStore | None = None,
+        first_message_state_path: Path | None = None,
+        monotonic_clock: Callable[[], float] = monotonic,
     ) -> None:
         self.path = path or user_data_root() / "twitch" / "event_triggers.json"
+        self.first_message_state_path = (
+            first_message_state_path
+            or self.path.with_name("first_message_state.json")
+        )
         self.routine_store = routine_store or RoutineStore()
         self.triggers: list[TwitchEventAutomationTrigger] = []
+        self.first_message_raid_suppression_enabled = True
+        self.first_message_raid_suppression_minutes = (
+            self.DEFAULT_RAID_SUPPRESSION_MINUTES
+        )
         self._first_message_seen: dict[str, set[str]] = {}
         self._stream_key = ""
         self._offline_since: datetime | None = None
+        self._raid_suppression_until: datetime | None = None
+        self._raid_suppression_deadline: float | None = None
+        self._monotonic = monotonic_clock
 
     def load(self) -> list[TwitchEventAutomationTrigger]:
         if not self.routine_store.routines and self.routine_store.path.exists():
             self.routine_store.load()
-        if not self.path.exists():
+        if not json_store_exists(self.path):
             self.triggers = []
+            self._load_first_message_state()
             return []
-        payload = load_json_with_backup(self.path)
+        loaded, suppression_enabled, suppression_minutes = load_validated_json(
+            self.path, self._parse_payload
+        )
+        self.triggers = loaded
+        self.first_message_raid_suppression_enabled = suppression_enabled
+        self.first_message_raid_suppression_minutes = suppression_minutes
+        self._load_first_message_state()
+        return list(loaded)
+
+    def _parse_payload(
+        self, payload: object
+    ) -> tuple[list[TwitchEventAutomationTrigger], bool, int]:
         if not isinstance(payload, dict):
             raise ValueError("Twitch event triggers must contain a JSON object.")
-        if int(payload.get("version", 1)) > self.VERSION:
-            raise ValueError("Twitch event trigger data is newer than this app.")
+        version = payload.get("version")
+        if type(version) is not int or version != self.VERSION:
+            raise UnsupportedJsonSchemaError(
+                f"Unsupported Twitch event trigger version {version}; "
+                f"expected {self.VERSION}."
+            )
         values = payload.get("triggers", [])
         if not isinstance(values, list):
             raise ValueError("Twitch event triggers must contain a trigger list.")
+        first_message = payload.get("first_message", {})
+        if not isinstance(first_message, Mapping):
+            raise ValueError("Twitch First Message settings must contain an object.")
+        suppression_enabled = first_message.get("raid_suppression_enabled")
+        suppression_minutes = first_message.get("raid_suppression_minutes")
+        self._validate_raid_suppression(
+            suppression_enabled,
+            suppression_minutes,
+        )
         loaded: list[TwitchEventAutomationTrigger] = []
         for value in values:
             if not isinstance(value, dict):
-                continue
+                raise ValueError("Every Twitch event trigger must be a JSON object.")
             try:
+                if not isinstance(value.get("filters", {}), dict):
+                    raise ValueError(
+                        "Twitch event trigger filters must be a JSON object."
+                    )
                 trigger = TwitchEventAutomationTrigger.from_dict(value)
                 self._validate(trigger)
                 routine = self.routine_store.get(trigger.routine_id)
                 if routine is None or trigger.trigger_id not in routine.trigger_ids:
                     raise ValueError("Twitch event trigger has no linked routine.")
-            except (TypeError, ValueError):
-                continue
+            except (TypeError, ValueError) as error:
+                raise ValueError("Twitch event trigger data contains an invalid trigger.") from error
             loaded.append(trigger)
-        self.triggers = loaded
-        return list(loaded)
+        return loaded, bool(suppression_enabled), int(suppression_minutes)
 
     def save(self) -> None:
         atomic_write_json(
             self.path,
             {
                 "version": self.VERSION,
+                "first_message": {
+                    "raid_suppression_enabled": (
+                        self.first_message_raid_suppression_enabled
+                    ),
+                    "raid_suppression_minutes": (
+                        self.first_message_raid_suppression_minutes
+                    ),
+                },
                 "triggers": [asdict(trigger) for trigger in self.triggers],
             },
         )
+
+    def reset_obsolete_schema(self) -> int:
+        """Discard a pre-Alpha trigger file and its routine references.
+
+        The obsolete trigger definitions are not loaded or migrated. Their stable
+        IDs are read only so the reset does not leave broken routine references.
+        """
+
+        payload = json.loads(self.path.read_text(encoding="utf-8"))
+        raw_triggers = (
+            payload.get("triggers", []) if isinstance(payload, dict) else []
+        )
+        discarded_ids = {
+            str(value.get("trigger_id", "")).strip()
+            for value in raw_triggers
+            if isinstance(value, dict) and str(value.get("trigger_id", "")).strip()
+        }
+        tracked_paths = {
+            path: path.read_bytes() if path.exists() else None
+            for target in (self.path, self.routine_store.path)
+            for path in (target, target.with_suffix(target.suffix + ".bak"))
+        }
+        previous_groups = deepcopy(self.routine_store.groups)
+        previous_routines = deepcopy(self.routine_store.routines)
+        try:
+            self.triggers = []
+            self.first_message_raid_suppression_enabled = True
+            self.first_message_raid_suppression_minutes = (
+                self.DEFAULT_RAID_SUPPRESSION_MINUTES
+            )
+            self.save()
+            removed = self.routine_store.remove_trigger_references(discarded_ids)
+            # Replace the obsolete recovery copy as well, so a later recovery
+            # cannot reintroduce a discarded development schema.
+            self.save()
+        except (OSError, ValueError):
+            self.routine_store.groups = previous_groups
+            self.routine_store.routines = previous_routines
+            for path, content in tracked_paths.items():
+                if content is None:
+                    path.unlink(missing_ok=True)
+                    continue
+                temporary = path.with_suffix(path.suffix + ".restore")
+                try:
+                    temporary.write_bytes(content)
+                    temporary.replace(path)
+                finally:
+                    temporary.unlink(missing_ok=True)
+            raise
+        self._first_message_seen = {}
+        self._clear_raid_suppression()
+        return removed
 
     def add(
         self,
@@ -126,6 +510,10 @@ class TwitchEventTriggerStore:
         filters: Mapping[str, str] | None = None,
         enabled: bool = True,
         reset_minutes: int = 15,
+        reward_id: str = "",
+        reward_title: str = "",
+        raid_suppression_enabled: bool | None = None,
+        raid_suppression_minutes: int | None = None,
     ) -> TwitchEventAutomationTrigger:
         trigger = TwitchEventAutomationTrigger(
             trigger_id=uuid4().hex,
@@ -134,10 +522,23 @@ class TwitchEventTriggerStore:
             filters=self._clean_filters(filters or {}),
             enabled=bool(enabled),
             reset_minutes=int(reset_minutes),
+            reward_id=reward_id.strip(),
+            reward_title=reward_title.strip(),
         )
         self._validate(trigger)
         if self.routine_store.get(routine_id) is None:
             raise ValueError("The selected routine no longer exists.")
+        previous_suppression = (
+            self.first_message_raid_suppression_enabled,
+            self.first_message_raid_suppression_minutes,
+            self._raid_suppression_until,
+            self._raid_suppression_deadline,
+        )
+        self._apply_raid_suppression_settings(
+            event_type,
+            raid_suppression_enabled,
+            raid_suppression_minutes,
+        )
         self.routine_store.link_trigger(routine_id, trigger.trigger_id)
         self.triggers.append(trigger)
         try:
@@ -145,7 +546,15 @@ class TwitchEventTriggerStore:
         except OSError:
             self.triggers.remove(trigger)
             self.routine_store.unlink_trigger(routine_id, trigger.trigger_id)
+            (
+                self.first_message_raid_suppression_enabled,
+                self.first_message_raid_suppression_minutes,
+                self._raid_suppression_until,
+                self._raid_suppression_deadline,
+            ) = previous_suppression
             raise
+        if not self.first_message_raid_suppression_enabled:
+            self._persist_first_message_state()
         return trigger
 
     def update(
@@ -156,6 +565,10 @@ class TwitchEventTriggerStore:
         filters: Mapping[str, str] | None = None,
         enabled: bool | None = None,
         reset_minutes: int | None = None,
+        reward_id: str = "",
+        reward_title: str = "",
+        raid_suppression_enabled: bool | None = None,
+        raid_suppression_minutes: int | None = None,
     ) -> TwitchEventAutomationTrigger:
         trigger = self.get(trigger_id)
         if trigger is None:
@@ -171,15 +584,36 @@ class TwitchEventTriggerStore:
                 if reset_minutes is None
                 else int(reset_minutes)
             ),
+            reward_id=reward_id.strip(),
+            reward_title=reward_title.strip(),
         )
         self._validate(candidate)
+        previous_suppression = (
+            self.first_message_raid_suppression_enabled,
+            self.first_message_raid_suppression_minutes,
+            self._raid_suppression_until,
+            self._raid_suppression_deadline,
+        )
+        self._apply_raid_suppression_settings(
+            event_type,
+            raid_suppression_enabled,
+            raid_suppression_minutes,
+        )
         index = self.triggers.index(trigger)
         self.triggers[index] = candidate
         try:
             self.save()
         except OSError:
             self.triggers[index] = trigger
+            (
+                self.first_message_raid_suppression_enabled,
+                self.first_message_raid_suppression_minutes,
+                self._raid_suppression_until,
+                self._raid_suppression_deadline,
+            ) = previous_suppression
             raise
+        if not self.first_message_raid_suppression_enabled:
+            self._persist_first_message_state()
         return candidate
 
     def delete(self, trigger_id: str) -> bool:
@@ -188,13 +622,16 @@ class TwitchEventTriggerStore:
             return False
         self.routine_store.unlink_trigger(trigger.routine_id, trigger.trigger_id)
         self.triggers.remove(trigger)
-        self._first_message_seen.pop(trigger.trigger_id, None)
+        previous_seen = self._first_message_seen.pop(trigger.trigger_id, None)
         try:
             self.save()
         except OSError:
             self.triggers.append(trigger)
             self.routine_store.link_trigger(trigger.routine_id, trigger.trigger_id)
+            if previous_seen is not None:
+                self._first_message_seen[trigger.trigger_id] = previous_seen
             raise
+        self._persist_first_message_state()
         return True
 
     def get(self, trigger_id: str) -> TwitchEventAutomationTrigger | None:
@@ -218,7 +655,23 @@ class TwitchEventTriggerStore:
         event = twitch_event.payload.get("event", {})
         if not isinstance(event, dict):
             event = {}
-        context = self.context_for(twitch_event, event)
+        effective_type = self._automation_event_type(twitch_event)
+        if self._is_incoming_raid(twitch_event):
+            self._activate_raid_suppression(twitch_event.received_at)
+        if (
+            effective_type == "channel.subscribe"
+            and self._bool_text(event.get("is_gift")) == "true"
+        ):
+            # Twitch also emits channel.subscribe for individual recipients of
+            # an aggregate channel.subscription.gift. Those remain useful to
+            # Activity/subscriber state, but Gift Subscription exclusively
+            # owns the user-facing gifting Automation execution.
+            return ()
+        context = self.context_for(
+            twitch_event,
+            event,
+            event_type=effective_type,
+        )
         if twitch_event.subscription_type == "stream.online":
             self.observe_stream(
                 {
@@ -238,9 +691,145 @@ class TwitchEventTriggerStore:
             )
             for trigger in self.triggers
             if trigger.enabled
-            and trigger.event_type == twitch_event.subscription_type
+            and trigger.event_type == effective_type
+            and self._matches_reward(event, trigger)
             and self._matches(event, trigger.filters)
         )
+
+    def add_channel_point_redemption(
+        self,
+        routine_id: str,
+        *,
+        reward_id: str = "",
+        reward_title: str = "",
+        enabled: bool = True,
+    ) -> TwitchEventAutomationTrigger:
+        return self.add(
+            routine_id,
+            CHANNEL_POINT_REDEMPTION_EVENT_TYPE,
+            enabled=enabled,
+            reward_id=reward_id,
+            reward_title=reward_title,
+        )
+
+    def update_channel_point_redemption(
+        self,
+        trigger_id: str,
+        *,
+        reward_id: str = "",
+        reward_title: str = "",
+        enabled: bool | None = None,
+    ) -> TwitchEventAutomationTrigger:
+        return self.update(
+            trigger_id,
+            event_type=CHANNEL_POINT_REDEMPTION_EVENT_TYPE,
+            enabled=enabled,
+            reward_id=reward_id,
+            reward_title=reward_title,
+        )
+
+    def evaluate_named(
+        self,
+        event_type: str,
+        context: Mapping[str, object],
+        *,
+        trigger_type: str = "event",
+    ) -> tuple[TriggerEvent, ...]:
+        """Publish Hub-derived Twitch events through the normal trigger store."""
+
+        values = {str(key): str(value) for key, value in context.items()}
+        return tuple(
+            TriggerEvent(
+                trigger_id=trigger.trigger_id,
+                service="twitch",
+                trigger_type=trigger_type,
+                context=values,
+            )
+            for trigger in self.triggers
+            if trigger.enabled and trigger.event_type == event_type
+        )
+
+    def add_keyword_phrase(
+        self,
+        routine_id: str,
+        phrase: str,
+        *,
+        match_type: str = "contains",
+        ignore_case: bool = True,
+        whole_word: bool = True,
+        enabled: bool = True,
+    ) -> TwitchEventAutomationTrigger:
+        return self.add(
+            routine_id,
+            KEYWORD_PHRASE_EVENT_TYPE,
+            filters={
+                "phrase": phrase,
+                "match_type": match_type,
+                "ignore_case": str(bool(ignore_case)).lower(),
+                "whole_word": str(bool(whole_word)).lower(),
+            },
+            enabled=enabled,
+        )
+
+    def update_keyword_phrase(
+        self,
+        trigger_id: str,
+        phrase: str,
+        *,
+        match_type: str = "contains",
+        ignore_case: bool = True,
+        whole_word: bool = True,
+        enabled: bool | None = None,
+    ) -> TwitchEventAutomationTrigger:
+        return self.update(
+            trigger_id,
+            event_type=KEYWORD_PHRASE_EVENT_TYPE,
+            filters={
+                "phrase": phrase,
+                "match_type": match_type,
+                "ignore_case": str(bool(ignore_case)).lower(),
+                "whole_word": str(bool(whole_word)).lower(),
+            },
+            enabled=enabled,
+        )
+
+    def evaluate_keyword_phrase(
+        self,
+        message: TwitchMessage,
+    ) -> tuple[TriggerEvent, ...]:
+        matches: list[TriggerEvent] = []
+        for trigger in self.triggers:
+            if not trigger.enabled or trigger.event_type != KEYWORD_PHRASE_EVENT_TYPE:
+                continue
+            phrase = trigger.filters.get("phrase", "")
+            span = self._keyword_span(
+                message.text,
+                phrase,
+                trigger.filters.get("match_type", "contains"),
+                self._filter_bool(trigger.filters, "ignore_case", True),
+                self._filter_bool(trigger.filters, "whole_word", True),
+            )
+            if span is None:
+                continue
+            start, end = span
+            context = self.chat_context_for(message)
+            context.update(
+                {
+                    "keyword.message": message.text,
+                    "keyword.match": phrase,
+                    "keyword.before": message.text[:start].strip(),
+                    "keyword.after": message.text[end:].strip(),
+                }
+            )
+            matches.append(
+                TriggerEvent(
+                    trigger_id=trigger.trigger_id,
+                    service="twitch",
+                    trigger_type="keyword_phrase",
+                    context=context,
+                )
+            )
+        return tuple(matches)
 
     def observe_stream(
         self,
@@ -252,13 +841,19 @@ class TwitchEventTriggerStore:
             stream_key = self._first(stream, "id", "started_at")
             if self._stream_key and stream_key and stream_key != self._stream_key:
                 self._first_message_seen.clear()
+                self._clear_raid_suppression()
+            changed = bool(stream_key and stream_key != self._stream_key)
             if self._offline_since is not None:
-                self._expire_first_message_state(now)
+                changed = self._expire_first_message_state(now) or changed
             self._stream_key = stream_key or self._stream_key or now.isoformat()
+            changed = self._offline_since is not None or changed
             self._offline_since = None
+            if changed:
+                self._persist_first_message_state()
             return
         if self._stream_key and self._offline_since is None:
             self._offline_since = now
+            self._persist_first_message_state()
 
     def evaluate_first_message(
         self,
@@ -269,14 +864,11 @@ class TwitchEventTriggerStore:
     ) -> tuple[TriggerEvent, ...]:
         now = self._aware(observed_at or message.received_at)
         if self._offline_since is not None:
-            self._expire_first_message_state(now)
+            if self._expire_first_message_state(now):
+                self._persist_first_message_state()
         if not stream_is_live and not self._stream_key:
             return ()
-        identity = (
-            message.user_id.strip()
-            or message.user_login.strip().casefold()
-            or message.username.strip().casefold()
-        )
+        identity = self._message_identity(message)
         if not identity:
             return ()
         event = {
@@ -288,17 +880,9 @@ class TwitchEventTriggerStore:
             "message_type": message.message_type,
         }
         context = {
-            "user": message.username or "--",
-            "user_id": message.user_id or "--",
-            "channel": (
-                message.broadcaster_user_name
-                or message.broadcaster_user_login
-                or "--"
-            ),
+            **self.chat_context_for(message),
             "event": "first message",
             "event_type": "channel.chat.first_message",
-            "message": message.text or "--",
-            "message_id": message.message_id or "--",
             "input": message.text or "--",
             "amount": "--",
             "bits": str(message.bits) if message.bits is not None else "--",
@@ -314,11 +898,12 @@ class TwitchEventTriggerStore:
             "uptime": "--",
             "followers": "--",
             "command": "--",
-            "args": "--",
+            "command_data": "--",
             "target": "--",
             "uses": "--",
         }
         matches: list[TriggerEvent] = []
+        suppression_active = self._raid_suppression_active(now)
         for trigger in self.triggers:
             if (
                 not trigger.enabled
@@ -330,6 +915,9 @@ class TwitchEventTriggerStore:
             if identity in seen:
                 continue
             seen.add(identity)
+            self._persist_first_message_state()
+            if suppression_active:
+                continue
             matches.append(
                 TriggerEvent(
                     trigger_id=trigger.trigger_id,
@@ -340,22 +928,308 @@ class TwitchEventTriggerStore:
             )
         return tuple(matches)
 
-    def _expire_first_message_state(self, now: datetime) -> None:
+    @staticmethod
+    def chat_context_for(message: TwitchMessage) -> dict[str, str]:
+        badges = {badge.set_id for badge in message.badges}
+        is_broadcaster = "broadcaster" in badges or (
+            bool(message.broadcaster_user_id)
+            and message.user_id == message.broadcaster_user_id
+        )
+        context = {
+            "user": message.username or "--",
+            "user_id": message.user_id or "--",
+            "user_login": message.user_login or "--",
+            "user_is_mod": str(is_broadcaster or "moderator" in badges).lower(),
+            "user_is_subscriber": str(
+                is_broadcaster or bool(badges.intersection({"subscriber", "founder"}))
+            ).lower(),
+            "channel": (
+                message.broadcaster_user_name
+                or message.broadcaster_user_login
+                or "--"
+            ),
+            "message": message.text or "--",
+            "message_id": message.message_id or "--",
+        }
+        return context
+
+    @staticmethod
+    def _filter_bool(
+        filters: Mapping[str, str], key: str, default: bool
+    ) -> bool:
+        value = filters.get(key)
+        if value is None:
+            return default
+        return value.strip().casefold() in {"1", "true", "yes", "on"}
+
+    @staticmethod
+    def _keyword_span(
+        message: str,
+        phrase: str,
+        match_type: str,
+        ignore_case: bool,
+        whole_word: bool,
+    ) -> tuple[int, int] | None:
+        if not phrase:
+            return None
+        flags = re.IGNORECASE if ignore_case else 0
+        escaped = re.escape(phrase)
+        if whole_word:
+            escaped = rf"(?<!\w){escaped}(?!\w)"
+        anchors = {
+            "contains": escaped,
+            "exact": rf"^{escaped}$",
+            "starts_with": rf"^{escaped}",
+            "ends_with": rf"{escaped}$",
+        }
+        pattern = anchors.get(match_type)
+        if pattern is None:
+            return None
+        match = re.search(pattern, message, flags)
+        return match.span() if match is not None else None
+
+    def _expire_first_message_state(self, now: datetime) -> bool:
         if self._offline_since is None:
-            return
+            return False
+        changed = False
         elapsed = now - self._offline_since
         for trigger in self.triggers:
             if (
                 trigger.event_type == "channel.chat.first_message"
                 and elapsed >= timedelta(minutes=trigger.reset_minutes)
             ):
-                self._first_message_seen.pop(trigger.trigger_id, None)
+                if self._first_message_seen.pop(trigger.trigger_id, None) is not None:
+                    changed = True
         if not any(
             trigger.event_type == "channel.chat.first_message"
             and elapsed < timedelta(minutes=trigger.reset_minutes)
             for trigger in self.triggers
         ):
+            if self._stream_key:
+                self._stream_key = ""
+                self._clear_raid_suppression()
+                changed = True
+        return changed
+
+    @staticmethod
+    def _message_identity(message: TwitchMessage) -> str:
+        if message.user_id.strip():
+            return f"id:{message.user_id.strip()}"
+        if message.user_login.strip():
+            return f"login:{message.user_login.strip().casefold()}"
+        if message.username.strip():
+            return f"name:{message.username.strip().casefold()}"
+        return ""
+
+    def _load_first_message_state(self) -> None:
+        self._first_message_seen = {}
+        self._stream_key = ""
+        self._offline_since = None
+        self._clear_raid_suppression()
+        if not json_store_exists(self.first_message_state_path):
+            return
+        try:
+            (
+                stream_id,
+                parsed_offline,
+                parsed_suppression,
+                loaded_seen,
+            ) = load_validated_json(
+                self.first_message_state_path,
+                self._parse_first_message_state,
+            )
+            self._stream_key = stream_id.strip()
+            self._offline_since = (
+                self._aware(parsed_offline) if parsed_offline is not None else None
+            )
+            self._first_message_seen = loaded_seen if self._stream_key else {}
+            if self._stream_key and parsed_suppression is not None:
+                remaining = (
+                    parsed_suppression - datetime.now(timezone.utc)
+                ).total_seconds()
+                if remaining > 0 and self.first_message_raid_suppression_enabled:
+                    self._raid_suppression_until = parsed_suppression
+                    self._raid_suppression_deadline = self._monotonic() + remaining
+        except (OSError, TypeError, ValueError) as error:
+            self._first_message_seen = {}
             self._stream_key = ""
+            self._offline_since = None
+            self._clear_raid_suppression()
+            Logger.warning(
+                f"Could not load First Message trigger state; reset it: {error}",
+                source="TWITCH",
+            )
+
+    def _parse_first_message_state(
+        self, payload: object
+    ) -> tuple[str, datetime | None, datetime | None, dict[str, set[str]]]:
+        if not isinstance(payload, Mapping):
+            raise ValueError("First Message state must contain an object.")
+        version = payload.get("version")
+        if type(version) is not int or version != self.FIRST_MESSAGE_STATE_VERSION:
+            raise UnsupportedJsonSchemaError(
+                f"Unsupported First Message state version {version}; "
+                f"expected {self.FIRST_MESSAGE_STATE_VERSION}."
+            )
+        stream_id = payload.get("stream_id", "")
+        offline_since = payload.get("offline_since", "")
+        raid_suppression_until = payload.get("raid_suppression_until", "")
+        seen = payload.get("seen_by_trigger", {})
+        if not all(
+            isinstance(value, str)
+            for value in (stream_id, offline_since, raid_suppression_until)
+        ):
+            raise ValueError("First Message stream state is invalid.")
+        if not isinstance(seen, Mapping):
+            raise ValueError("First Message viewer state is invalid.")
+        valid_trigger_ids = {
+            trigger.trigger_id
+            for trigger in self.triggers
+            if trigger.event_type == "channel.chat.first_message"
+        }
+        loaded_seen: dict[str, set[str]] = {}
+        for trigger_id, identities in seen.items():
+            if trigger_id not in valid_trigger_ids:
+                continue
+            if not isinstance(identities, list):
+                raise ValueError("First Message identities must be a list.")
+            values = {str(identity).strip() for identity in identities if str(identity).strip()}
+            if values:
+                loaded_seen[str(trigger_id)] = values
+        parsed_offline = (
+            self._aware(datetime.fromisoformat(offline_since.replace("Z", "+00:00")))
+            if offline_since
+            else None
+        )
+        parsed_suppression = (
+            self._aware(datetime.fromisoformat(raid_suppression_until.replace("Z", "+00:00")))
+            if raid_suppression_until
+            else None
+        )
+        return stream_id, parsed_offline, parsed_suppression, loaded_seen
+
+    def _save_first_message_state(self) -> None:
+        atomic_write_json(
+            self.first_message_state_path,
+            {
+                "version": self.FIRST_MESSAGE_STATE_VERSION,
+                "stream_id": self._stream_key,
+                "offline_since": (
+                    self._offline_since.isoformat()
+                    if self._offline_since is not None
+                    else ""
+                ),
+                "raid_suppression_until": (
+                    self._raid_suppression_until.isoformat()
+                    if self._raid_suppression_until is not None
+                    else ""
+                ),
+                "seen_by_trigger": {
+                    trigger_id: sorted(identities)
+                    for trigger_id, identities in sorted(self._first_message_seen.items())
+                    if identities
+                },
+            },
+        )
+
+    def _persist_first_message_state(self) -> None:
+        try:
+            self._save_first_message_state()
+        except OSError as error:
+            Logger.warning(
+                f"Could not save First Message trigger state: {error}",
+                source="TWITCH",
+            )
+
+    def _apply_raid_suppression_settings(
+        self,
+        event_type: str,
+        enabled: bool | None,
+        minutes: int | None,
+    ) -> None:
+        if event_type != "channel.chat.first_message":
+            return
+        next_enabled = (
+            self.first_message_raid_suppression_enabled
+            if enabled is None
+            else enabled
+        )
+        next_minutes = (
+            self.first_message_raid_suppression_minutes
+            if minutes is None
+            else minutes
+        )
+        self._validate_raid_suppression(next_enabled, next_minutes)
+        self.first_message_raid_suppression_enabled = next_enabled
+        self.first_message_raid_suppression_minutes = next_minutes
+        if not next_enabled:
+            self._clear_raid_suppression()
+
+    @classmethod
+    def _validate_raid_suppression(cls, enabled: object, minutes: object) -> None:
+        if type(enabled) is not bool:
+            raise ValueError(
+                "First Message raid suppression must be enabled or disabled."
+            )
+        if (
+            type(minutes) is not int
+            or not 1 <= minutes <= cls.MAX_RAID_SUPPRESSION_MINUTES
+        ):
+            raise ValueError(
+                "First Message raid suppression must be between 1 and "
+                f"{cls.MAX_RAID_SUPPRESSION_MINUTES} minutes."
+            )
+
+    def _activate_raid_suppression(self, observed_at: datetime) -> None:
+        if not self.first_message_raid_suppression_enabled:
+            return
+        duration = timedelta(minutes=self.first_message_raid_suppression_minutes)
+        suppression_until = self._aware(observed_at) + duration
+        if (
+            self._raid_suppression_until is not None
+            and suppression_until <= self._raid_suppression_until
+        ):
+            return
+        self._raid_suppression_until = suppression_until
+        self._raid_suppression_deadline = (
+            self._monotonic() + duration.total_seconds()
+        )
+        self._persist_first_message_state()
+
+    def _raid_suppression_active(self, observed_at: datetime) -> bool:
+        if (
+            not self.first_message_raid_suppression_enabled
+            or self._raid_suppression_until is None
+            or self._raid_suppression_deadline is None
+        ):
+            return False
+        active = (
+            self._monotonic() < self._raid_suppression_deadline
+            and self._aware(observed_at) < self._raid_suppression_until
+        )
+        if not active:
+            self._clear_raid_suppression()
+            self._persist_first_message_state()
+        return active
+
+    def _clear_raid_suppression(self) -> None:
+        self._raid_suppression_until = None
+        self._raid_suppression_deadline = None
+
+    @staticmethod
+    def _is_incoming_raid(twitch_event: TwitchEvent) -> bool:
+        if twitch_event.subscription_type != "channel.raid":
+            return False
+        subscription = twitch_event.payload.get("subscription", {})
+        condition = (
+            subscription.get("condition", {})
+            if isinstance(subscription, Mapping)
+            else {}
+        )
+        return bool(
+            isinstance(condition, Mapping)
+            and condition.get("to_broadcaster_user_id")
+        )
 
     @staticmethod
     def _aware(value: datetime) -> datetime:
@@ -370,6 +1244,8 @@ class TwitchEventTriggerStore:
         cls,
         twitch_event: TwitchEvent,
         event: Mapping[str, Any],
+        *,
+        event_type: str | None = None,
     ) -> dict[str, str]:
         reward = event.get("reward", {})
         if not isinstance(reward, dict):
@@ -387,15 +1263,20 @@ class TwitchEventTriggerStore:
             "to_broadcaster_user_name",
         ) or twitch_event.broadcaster_user_name
         user_input = cls._first(event, "user_input")
-        message = cls._first(event, "message", "text") or user_input
+        raw_message = event.get("message")
+        message = (
+            str(raw_message.get("text", ""))
+            if isinstance(raw_message, Mapping)
+            else cls._first(event, "message", "text")
+        ) or user_input
         amount = cls._first(event, "bits", "total", "viewers", "amount")
         if not amount:
             amount = str(reward.get("cost", ""))
-        return {
+        context = {
             "user": user or "--",
             "channel": channel or twitch_event.broadcaster_user_login or "--",
-            "event": twitch_event.subscription_type.rsplit(".", 1)[-1],
-            "event_type": twitch_event.subscription_type,
+            "event": (event_type or twitch_event.subscription_type).rsplit(".", 1)[-1],
+            "event_type": event_type or twitch_event.subscription_type,
             "message": message or "--",
             "input": user_input or "--",
             "amount": amount or "--",
@@ -412,6 +1293,11 @@ class TwitchEventTriggerStore:
                 "from_broadcaster_user_id",
                 "moderator_user_id",
             ) or "--",
+            "user_login": cls._first(
+                event,
+                "user_login",
+                "from_broadcaster_user_login",
+            ) or "--",
             "target_user_id": cls._first(event, "target_user_id") or "--",
             "message_id": cls._first(event, "message_id") or "--",
             "redemption_id": (
@@ -424,10 +1310,120 @@ class TwitchEventTriggerStore:
             "uptime": "--",
             "followers": "--",
             "command": "--",
-            "args": "--",
+            "command_data": "--",
             "target": "--",
             "uses": "--",
         }
+        if twitch_event.subscription_type == CHANNEL_POINT_REDEMPTION_EVENT_TYPE:
+            context.update(
+                {
+                    "channel_points.redemption_id": cls._first(event, "id"),
+                    "channel_points.reward_id": str(reward.get("id", "")),
+                    "channel_points.reward_title": str(reward.get("title", "")),
+                    "channel_points.reward_cost": str(reward.get("cost", "")),
+                    "channel_points.reward_prompt": str(reward.get("prompt", "")),
+                    "channel_points.user_input": str(event.get("user_input", "")),
+                    "channel_points.status": cls._first(event, "status"),
+                    "channel_points.redeemed_at": cls._first(event, "redeemed_at"),
+                }
+            )
+        if twitch_event.subscription_type in {
+            "channel.subscribe",
+            "channel.subscription.message",
+            "channel.subscription.gift",
+        }:
+            cls._add_subscription_context(context, event)
+        if twitch_event.subscription_type == "channel.raid":
+            context.update(
+                {
+                    "raid.direction": (
+                        "outgoing"
+                        if event_type == "channel.raid.outgoing"
+                        else "incoming"
+                    ),
+                    "raid.source.id": cls._first(event, "from_broadcaster_user_id"),
+                    "raid.source.login": cls._first(event, "from_broadcaster_user_login"),
+                    "raid.source.name": cls._first(event, "from_broadcaster_user_name"),
+                    "raid.target.id": cls._first(event, "to_broadcaster_user_id"),
+                    "raid.target.login": cls._first(event, "to_broadcaster_user_login"),
+                    "raid.target.name": cls._first(event, "to_broadcaster_user_name"),
+                    "raid.viewers": cls._first(event, "viewers"),
+                }
+            )
+        if twitch_event.subscription_type == "channel.cheer" and "is_anonymous" in event:
+            context["event.is_anonymous"] = cls._bool_text(event.get("is_anonymous"))
+        if twitch_event.subscription_type == "stream.online":
+            context.update(
+                {
+                    "event.stream_id": cls._first(event, "id"),
+                    "event.started_at": cls._first(event, "started_at"),
+                }
+            )
+        return context
+
+    @classmethod
+    def _add_subscription_context(
+        cls,
+        context: dict[str, str],
+        event: Mapping[str, Any],
+    ) -> None:
+        fields = {
+            "tier": "subscription.tier",
+            "cumulative_months": "subscription.cumulative_months",
+            "streak_months": "subscription.streak_months",
+            "duration_months": "subscription.duration_months",
+            "total": "subscription.gift_count",
+            "cumulative_total": "subscription.cumulative_gifts",
+        }
+        for source, target in fields.items():
+            if source in event and event.get(source) is not None:
+                context[target] = str(event[source])
+        for source, target in {
+            "is_gift": "subscription.is_gift",
+            "is_prime": "subscription.is_prime",
+            "is_anonymous": "subscription.is_anonymous",
+        }.items():
+            if source in event and event.get(source) is not None:
+                context[target] = cls._bool_text(event[source])
+        raw_message = event.get("message")
+        if isinstance(raw_message, Mapping):
+            context["subscription.message"] = str(raw_message.get("text", ""))
+        elif raw_message is not None:
+            context["subscription.message"] = str(raw_message)
+
+    @staticmethod
+    def _bool_text(value: object) -> str:
+        if isinstance(value, str):
+            return str(value.strip().casefold() in {"1", "true", "yes", "on"}).lower()
+        return str(bool(value)).lower()
+
+    @staticmethod
+    def _automation_event_type(twitch_event: TwitchEvent) -> str:
+        if twitch_event.subscription_type != "channel.raid":
+            return twitch_event.subscription_type
+        subscription = twitch_event.payload.get("subscription", {})
+        condition = (
+            subscription.get("condition", {})
+            if isinstance(subscription, Mapping)
+            else {}
+        )
+        return (
+            "channel.raid.outgoing"
+            if isinstance(condition, Mapping)
+            and condition.get("from_broadcaster_user_id")
+            else "channel.raid"
+        )
+
+    @staticmethod
+    def _matches_reward(
+        event: Mapping[str, Any], trigger: TwitchEventAutomationTrigger
+    ) -> bool:
+        if trigger.event_type != CHANNEL_POINT_REDEMPTION_EVENT_TYPE:
+            return True
+        if not trigger.reward_id:
+            return True
+        reward = event.get("reward", {})
+        return isinstance(reward, Mapping) and str(reward.get("id", "")) == trigger.reward_id
 
     @staticmethod
     def _first(values: Mapping[str, Any], *keys: str) -> str:
@@ -469,6 +1465,14 @@ class TwitchEventTriggerStore:
             raise ValueError(
                 "That Twitch EventSub type is not connected for live automation yet."
             )
+        if trigger.event_type == KEYWORD_PHRASE_EVENT_TYPE:
+            phrase = trigger.filters.get("phrase", "").strip()
+            if not phrase:
+                raise ValueError("Keyword / Phrase triggers require text to match.")
+            if len(phrase) > 500:
+                raise ValueError("Keyword / Phrase text is limited to 500 characters.")
+            if trigger.filters.get("match_type", "contains") not in KEYWORD_MATCH_TYPES:
+                raise ValueError("Unknown Keyword / Phrase match type.")
         if not 1 <= trigger.reset_minutes <= 180:
             raise ValueError("First-message reset must be between 1 and 180 minutes.")
         for path in trigger.filters:

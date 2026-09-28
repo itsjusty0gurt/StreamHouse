@@ -29,7 +29,7 @@ class MemoryExtractionWorker(QRunnable):
         user_name: str,
         messages: tuple[BufferedChatMessage, ...],
         existing_memories: tuple[str, ...],
-        companion_endpoint: str,
+        ai_endpoint: str,
         endpoint: str,
         model: str,
         generation: int = 0,
@@ -39,7 +39,7 @@ class MemoryExtractionWorker(QRunnable):
         self.user_name = user_name
         self.messages = messages
         self.existing_memories = existing_memories
-        self.companion_endpoint = companion_endpoint
+        self.ai_endpoint = ai_endpoint
         self.endpoint = endpoint
         self.model = model
         self.generation = generation
@@ -50,7 +50,7 @@ class MemoryExtractionWorker(QRunnable):
         buffer_ids = tuple(message.buffer_id for message in self.messages)
         try:
             proposals = StreamhouseAIClient(
-                self.companion_endpoint,
+                self.ai_endpoint,
                 timeout=125.0,
             ).extract_memories(
                 self.user_name,

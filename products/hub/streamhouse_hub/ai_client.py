@@ -6,6 +6,8 @@ from typing import Any
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
+from shared.streamhouse_runtime.redaction import redact_secret_text
+
 from shared.streamhouse_shared.models import (
     BufferedChatMessage,
     ExtractedMemory,
@@ -60,7 +62,7 @@ class StreamhouseAIClient:
                 str(payload.get("error", "")),
             )
         except Exception as error:
-            return StreamhouseAIStatus(False, error=str(error))
+            return StreamhouseAIStatus(False, error=redact_secret_text(error))
 
     def ping(self) -> StreamhouseAIStatus:
         try:
@@ -77,7 +79,7 @@ class StreamhouseAIClient:
                 ),
             )
         except Exception as error:
-            return StreamhouseAIStatus(False, error=str(error))
+            return StreamhouseAIStatus(False, error=redact_secret_text(error))
 
     def decide(
         self,
@@ -151,7 +153,9 @@ class StreamhouseAIClient:
             except (UnicodeDecodeError, json.JSONDecodeError, AttributeError):
                 detail = ""
             raise ValueError(
-                detail or f"Streamhouse AI request failed with HTTP {error.code}."
+                redact_secret_text(
+                    detail or f"Streamhouse AI request failed with HTTP {error.code}."
+                )
             ) from error
         if not isinstance(payload, dict):
             raise ValueError("Streamhouse AI returned an invalid response.")

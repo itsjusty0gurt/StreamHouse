@@ -38,6 +38,31 @@ class PackageBoundaryTests(unittest.TestCase):
     def test_ai_does_not_import_hub_product(self) -> None:
         self._assert_no_prefix(self.root / "products" / "ai", "products.hub")
 
+    def test_hub_and_shared_do_not_import_model_providers(self) -> None:
+        for root in (self.root / "products" / "hub", self.root / "shared"):
+            for provider in ("openai", "ollama", "transformers", "llama_cpp"):
+                self._assert_no_prefix(root, provider)
+
+    def test_hub_settings_do_not_own_model_provider_credentials(self) -> None:
+        from dataclasses import fields
+
+        from products.hub.core.settings import AppSettings
+
+        names = {field.name.casefold() for field in fields(AppSettings)}
+        for forbidden in (
+            "openai_api_key",
+            "anthropic_api_key",
+            "ollama_api_key",
+            "provider_api_key",
+            "provider_access_token",
+        ):
+            self.assertNotIn(forbidden, names)
+
+    def test_shared_reply_policy_cannot_generate_fallback_text(self) -> None:
+        from shared.streamhouse_shared.response_policy import ResponsePolicy
+
+        self.assertFalse(hasattr(ResponsePolicy, "fallback_reply"))
+
     def test_shared_does_not_import_either_product(self) -> None:
         self._assert_no_prefix(self.root / "shared", "products")
 
@@ -51,6 +76,15 @@ class PackageBoundaryTests(unittest.TestCase):
             "extensions/twitch/tools/build_extension.ps1",
         ):
             self.assertTrue((self.root / relative).is_file(), relative)
+
+    def test_hub_build_excludes_unused_qt_quick_qml_python_modules(self) -> None:
+        self._assert_no_prefix(self.root / "products" / "hub", "PySide6.QtQuick")
+        self._assert_no_prefix(self.root / "products" / "hub", "PySide6.QtQml")
+        build = (self.root / "tools" / "build" / "build_hub.ps1").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('--exclude-module "PySide6.QtQuick"', build)
+        self.assertIn('--exclude-module "PySide6.QtQml"', build)
 
 
 if __name__ == "__main__":

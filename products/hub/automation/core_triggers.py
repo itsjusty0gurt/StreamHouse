@@ -1,20 +1,42 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+from decimal import Decimal, InvalidOperation
+from math import isfinite
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 from uuid import uuid4
 
 from products.hub.automation.models import TriggerEvent
 from products.hub.automation.routines import RoutineStore
-from shared.streamhouse_runtime.json_store import atomic_write_json, load_json_with_backup
+from shared.streamhouse_runtime.json_store import (
+    UnsupportedJsonSchemaError,
+    atomic_write_json,
+    json_store_exists,
+    load_validated_json,
+)
 from shared.streamhouse_runtime.paths import user_data_root
 
 
 CORE_TRIGGER_TYPES = {
     "application.started": "Application Started",
     "application.closing": "Application Closing",
+    "timer": "Timer",
 }
+TIMER_MODES = {"fixed": "Exact", "random": "Random"}
+TIMER_UNITS = {
+    "milliseconds": Decimal("0.001"),
+    "seconds": Decimal("1"),
+    "minutes": Decimal("60"),
+    "hours": Decimal("3600"),
+}
+TIMER_UNIT_LABELS = {
+    "milliseconds": "Milliseconds",
+    "seconds": "Seconds",
+    "minutes": "Minutes",
+    "hours": "Hours",
+}
+MINIMUM_TIMER_MILLISECONDS = 100
 
 
 @dataclass(slots=True)
@@ -23,21 +45,31 @@ class CoreAutomationTrigger:
     routine_id: str
     event_type: str
     enabled: bool = True
+    timer_mode: str = ""
+    timer_minimum: str = ""
+    timer_minimum_unit: str = "seconds"
+    timer_maximum: str = ""
+    timer_maximum_unit: str = "seconds"
 
     @classmethod
     def from_dict(cls, values: Mapping[str, Any]) -> CoreAutomationTrigger:
         return cls(
-            trigger_id=str(values.get("trigger_id", "")) or uuid4().hex,
+            trigger_id=str(values.get("trigger_id", "")),
             routine_id=str(values.get("routine_id", "")),
             event_type=str(values.get("event_type", "")).strip(),
             enabled=bool(values.get("enabled", True)),
+            timer_mode=str(values.get("timer_mode", "")).strip(),
+            timer_minimum=str(values.get("timer_minimum", "")).strip(),
+            timer_minimum_unit=str(values.get("timer_minimum_unit", "seconds")).strip(),
+            timer_maximum=str(values.get("timer_maximum", "")).strip(),
+            timer_maximum_unit=str(values.get("timer_maximum_unit", "seconds")).strip(),
         )
 
 
 class CoreTriggerStore:
     """Persistent bindings between Streamhouse Hub lifecycle events and routines."""
 
-    VERSION = 1
+    VERSION = 2
 
     def __init__(
         self,
@@ -47,36 +79,55 @@ class CoreTriggerStore:
         self.path = path or user_data_root() / "automation" / "core_triggers.json"
         self.routine_store = routine_store or RoutineStore()
         self.triggers: list[CoreAutomationTrigger] = []
+        self._change_subscribers: list[Callable[[], None]] = []
+
+    def subscribe_changes(self, callback: Callable[[], None]) -> None:
+        if callback not in self._change_subscribers:
+            self._change_subscribers.append(callback)
+
+    def unsubscribe_changes(self, callback: Callable[[], None]) -> None:
+        if callback in self._change_subscribers:
+            self._change_subscribers.remove(callback)
+
+    def _notify_changed(self) -> None:
+        for callback in tuple(self._change_subscribers):
+            callback()
 
     def load(self) -> list[CoreAutomationTrigger]:
         if not self.routine_store.routines and self.routine_store.path.exists():
             self.routine_store.load()
-        if not self.path.exists():
+        if not json_store_exists(self.path):
             self.triggers = []
             return []
-        payload = load_json_with_backup(self.path)
+        loaded = load_validated_json(self.path, self._parse_payload)
+        self.triggers = loaded
+        return list(loaded)
+
+    def _parse_payload(self, payload: object) -> list[CoreAutomationTrigger]:
         if not isinstance(payload, dict):
             raise ValueError("Core triggers must contain a JSON object.")
-        if int(payload.get("version", 1)) > self.VERSION:
-            raise ValueError("Core trigger data is newer than this app.")
+        version = payload.get("version")
+        if type(version) is not int or version != self.VERSION:
+            raise UnsupportedJsonSchemaError(
+                f"Unsupported Core trigger version {version}; expected {self.VERSION}."
+            )
         values = payload.get("triggers", [])
         if not isinstance(values, list):
             raise ValueError("Core triggers must contain a trigger list.")
         loaded: list[CoreAutomationTrigger] = []
         for value in values:
             if not isinstance(value, dict):
-                continue
+                raise ValueError("Every Core trigger must be a JSON object.")
             try:
                 trigger = CoreAutomationTrigger.from_dict(value)
                 self._validate(trigger)
                 routine = self.routine_store.get(trigger.routine_id)
                 if routine is None or trigger.trigger_id not in routine.trigger_ids:
                     raise ValueError("Core trigger has no linked routine.")
-            except (TypeError, ValueError):
-                continue
+            except (TypeError, ValueError) as error:
+                raise ValueError("Core trigger data contains an invalid trigger.") from error
             loaded.append(trigger)
-        self.triggers = loaded
-        return list(loaded)
+        return loaded
 
     def save(self) -> None:
         atomic_write_json(
@@ -93,12 +144,22 @@ class CoreTriggerStore:
         event_type: str,
         *,
         enabled: bool = True,
+        timer_mode: str = "",
+        timer_minimum: str = "",
+        timer_minimum_unit: str = "seconds",
+        timer_maximum: str = "",
+        timer_maximum_unit: str = "seconds",
     ) -> CoreAutomationTrigger:
         trigger = CoreAutomationTrigger(
             trigger_id=uuid4().hex,
             routine_id=routine_id,
             event_type=event_type.strip(),
             enabled=bool(enabled),
+            timer_mode=timer_mode.strip(),
+            timer_minimum=timer_minimum.strip(),
+            timer_minimum_unit=timer_minimum_unit.strip(),
+            timer_maximum=timer_maximum.strip(),
+            timer_maximum_unit=timer_maximum_unit.strip(),
         )
         self._validate(trigger)
         if self.routine_store.get(routine_id) is None:
@@ -111,6 +172,7 @@ class CoreTriggerStore:
             self.triggers.remove(trigger)
             self.routine_store.unlink_trigger(routine_id, trigger.trigger_id)
             raise
+        self._notify_changed()
         return trigger
 
     def update(
@@ -119,6 +181,11 @@ class CoreTriggerStore:
         *,
         event_type: str,
         enabled: bool | None = None,
+        timer_mode: str = "",
+        timer_minimum: str = "",
+        timer_minimum_unit: str = "seconds",
+        timer_maximum: str = "",
+        timer_maximum_unit: str = "seconds",
     ) -> CoreAutomationTrigger:
         trigger = self.get(trigger_id)
         if trigger is None:
@@ -128,6 +195,11 @@ class CoreTriggerStore:
             routine_id=trigger.routine_id,
             event_type=event_type.strip(),
             enabled=trigger.enabled if enabled is None else bool(enabled),
+            timer_mode=timer_mode.strip(),
+            timer_minimum=timer_minimum.strip(),
+            timer_minimum_unit=timer_minimum_unit.strip(),
+            timer_maximum=timer_maximum.strip(),
+            timer_maximum_unit=timer_maximum_unit.strip(),
         )
         self._validate(candidate)
         index = self.triggers.index(trigger)
@@ -137,6 +209,7 @@ class CoreTriggerStore:
         except OSError:
             self.triggers[index] = trigger
             raise
+        self._notify_changed()
         return candidate
 
     def delete(self, trigger_id: str) -> bool:
@@ -151,7 +224,52 @@ class CoreTriggerStore:
             self.triggers.append(trigger)
             self.routine_store.link_trigger(trigger.routine_id, trigger.trigger_id)
             raise
+        self._notify_changed()
         return True
+
+    def add_timer(
+        self,
+        routine_id: str,
+        *,
+        timer_mode: str,
+        timer_minimum: str,
+        timer_minimum_unit: str,
+        timer_maximum: str = "",
+        timer_maximum_unit: str = "seconds",
+        enabled: bool = True,
+    ) -> CoreAutomationTrigger:
+        return self.add(
+            routine_id,
+            "timer",
+            enabled=enabled,
+            timer_mode=timer_mode,
+            timer_minimum=timer_minimum,
+            timer_minimum_unit=timer_minimum_unit,
+            timer_maximum=timer_maximum,
+            timer_maximum_unit=timer_maximum_unit,
+        )
+
+    def update_timer(
+        self,
+        trigger_id: str,
+        *,
+        timer_mode: str,
+        timer_minimum: str,
+        timer_minimum_unit: str,
+        timer_maximum: str = "",
+        timer_maximum_unit: str = "seconds",
+        enabled: bool | None = None,
+    ) -> CoreAutomationTrigger:
+        return self.update(
+            trigger_id,
+            event_type="timer",
+            enabled=enabled,
+            timer_mode=timer_mode,
+            timer_minimum=timer_minimum,
+            timer_minimum_unit=timer_minimum_unit,
+            timer_maximum=timer_maximum,
+            timer_maximum_unit=timer_maximum_unit,
+        )
 
     def get(self, trigger_id: str) -> CoreAutomationTrigger | None:
         return next(
@@ -190,9 +308,116 @@ class CoreTriggerStore:
             if trigger.enabled and trigger.event_type == clean_type
         )
 
+    def event_for(self, trigger_id: str) -> TriggerEvent | None:
+        trigger = self.get(trigger_id)
+        if trigger is None or not trigger.enabled or trigger.event_type != "timer":
+            return None
+        return TriggerEvent(
+            trigger_id=trigger.trigger_id,
+            service="core",
+            trigger_type="timer",
+            context={"event": "Timer", "event_type": "timer"},
+        )
+
+    @classmethod
+    def timer_bounds_seconds(
+        cls,
+        trigger: CoreAutomationTrigger,
+    ) -> tuple[Decimal, Decimal]:
+        minimum = cls._seconds(trigger.timer_minimum, trigger.timer_minimum_unit)
+        maximum = (
+            minimum
+            if trigger.timer_mode == "fixed"
+            else cls._seconds(trigger.timer_maximum, trigger.timer_maximum_unit)
+        )
+        return minimum, maximum
+
+    @classmethod
+    def timer_bounds_milliseconds(
+        cls,
+        trigger: CoreAutomationTrigger,
+    ) -> tuple[int, int]:
+        minimum, maximum = cls.timer_bounds_seconds(trigger)
+        return (
+            cls._milliseconds(minimum),
+            cls._milliseconds(maximum),
+        )
+
+    @staticmethod
+    def timer_description(trigger: CoreAutomationTrigger) -> str:
+        minimum_unit = CoreTriggerStore._display_unit(
+            trigger.timer_minimum,
+            trigger.timer_minimum_unit,
+        )
+        if trigger.timer_mode == "random":
+            maximum_unit = CoreTriggerStore._display_unit(
+                trigger.timer_maximum,
+                trigger.timer_maximum_unit,
+            )
+            if trigger.timer_minimum_unit == trigger.timer_maximum_unit:
+                return (
+                    f"Random: {trigger.timer_minimum}–{trigger.timer_maximum} "
+                    f"{maximum_unit}"
+                )
+            return (
+                f"Random: {trigger.timer_minimum} {minimum_unit}–"
+                f"{trigger.timer_maximum} {maximum_unit}"
+            )
+        return f"Every {trigger.timer_minimum} {minimum_unit}"
+
+    @staticmethod
+    def _display_unit(value: str, unit: str) -> str:
+        try:
+            singular = Decimal(value) == 1
+        except InvalidOperation:
+            singular = False
+        return unit[:-1] if singular else unit
+
+    @staticmethod
+    def _seconds(value: str, unit: str) -> Decimal:
+        if unit not in TIMER_UNITS:
+            raise ValueError(
+                "Timer unit must be Milliseconds, Seconds, Minutes, or Hours."
+            )
+        try:
+            number = Decimal(value)
+        except (InvalidOperation, ValueError):
+            raise ValueError("Timer values must be positive numbers.") from None
+        if not number.is_finite() or number <= 0:
+            raise ValueError("Timer values must be positive finite numbers.")
+        return number * TIMER_UNITS[unit]
+
+    @staticmethod
+    def _milliseconds(seconds: Decimal) -> int:
+        milliseconds = seconds * 1000
+        integral = milliseconds.to_integral_value()
+        if milliseconds != integral:
+            raise ValueError("Timer values must resolve to a whole millisecond.")
+        if not isfinite(float(milliseconds)):
+            raise ValueError("Timer duration is too large.")
+        value = int(integral)
+        if value < MINIMUM_TIMER_MILLISECONDS:
+            raise ValueError(
+                "Timer intervals must be at least "
+                f"{MINIMUM_TIMER_MILLISECONDS} milliseconds."
+            )
+        return value
+
+    @classmethod
+    def validate_timer(cls, trigger: CoreAutomationTrigger) -> None:
+        if trigger.timer_mode not in TIMER_MODES:
+            raise ValueError("Choose Exact or Random.")
+        minimum, maximum = cls.timer_bounds_milliseconds(trigger)
+        if minimum > maximum:
+            raise ValueError("Random timer minimum must not exceed its maximum.")
+
     @staticmethod
     def _validate(trigger: CoreAutomationTrigger) -> None:
         if not trigger.trigger_id or not trigger.routine_id:
             raise ValueError("Core triggers require IDs.")
         if trigger.event_type not in CORE_TRIGGER_TYPES:
             raise ValueError("That Core program trigger is not supported.")
+        if trigger.event_type == "timer":
+            CoreTriggerStore.validate_timer(trigger)
+        elif any((trigger.timer_mode, trigger.timer_minimum, trigger.timer_maximum)):
+            raise ValueError("Only Timer triggers may contain timer settings.")

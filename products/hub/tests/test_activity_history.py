@@ -6,6 +6,9 @@ from pathlib import Path
 from unittest.mock import Mock
 
 from products.hub.twitch.activity_history import ActivityHistoryStore, PersistedActivity
+from products.hub.twitch.activity import format_twitch_activity
+from products.hub.twitch.models import TwitchEvent, TwitchEventTransport
+from shared.streamhouse_runtime.json_store import JsonStoreCorruptionError
 
 
 class ActivityHistoryStoreTests(unittest.TestCase):
@@ -27,16 +30,19 @@ class ActivityHistoryStoreTests(unittest.TestCase):
 
             restored = ActivityHistoryStore(path)
             entries = restored.load()
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(payload["version"], ActivityHistoryStore.VERSION)
             self.assertEqual(len(entries), store.LIMIT)
             self.assertEqual(entries[0].text, "Viewer 204 followed")
             self.assertEqual(entries[-1].text, "Viewer 5 followed")
 
-    def test_skips_malformed_entries(self) -> None:
+    def test_current_schema_malformed_entry_is_preserved_as_corruption(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "activity.json"
             path.write_text(
                 json.dumps(
                     {
+                        "version": ActivityHistoryStore.VERSION,
                         "events": [
                             {"text": "bad date", "occurred_at": "nope"},
                             {
@@ -50,8 +56,20 @@ class ActivityHistoryStoreTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            entries = ActivityHistoryStore(path).load()
-            self.assertEqual([entry.text for entry in entries], ["A raid"])
+            with self.assertRaises(JsonStoreCorruptionError):
+                ActivityHistoryStore(path).load()
+            self.assertEqual(len(list((path.parent / "corrupt").glob("activity-*.json"))), 1)
+
+    def test_obsolete_schema_is_rejected_before_alpha(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "activity.json"
+            path.write_text(
+                json.dumps({"version": 1, "events": []}),
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "discarded pre-alpha schema"):
+                ActivityHistoryStore(path).load()
 
     def test_display_uses_elapsed_time_bands(self) -> None:
         now = datetime(2026, 7, 12, 12, 0, tzinfo=timezone.utc)
@@ -104,7 +122,7 @@ class ActivityHistoryStoreTests(unittest.TestCase):
         store.entries = []
         self.assertIsNone(store.refresh_interval_ms(now))
 
-    def test_delete_user_removes_identified_and_legacy_activity(self) -> None:
+    def test_delete_user_uses_stable_twitch_identity(self) -> None:
         store = ActivityHistoryStore(Path("unused.json"))
         occurred = datetime.now(timezone.utc).isoformat()
         store.entries = [
@@ -114,9 +132,29 @@ class ActivityHistoryStoreTests(unittest.TestCase):
         ]
         store.save = Mock()
 
-        self.assertEqual(store.delete_user("1", "Viewer"), 2)
-        self.assertEqual([entry.user_id for entry in store.entries], ["2"])
+        self.assertEqual(store.delete_user("1"), 1)
+        self.assertEqual([entry.user_id for entry in store.entries], ["", "2"])
         store.save.assert_called_once()
+
+    def test_ordinary_chat_message_is_not_persistable_activity(self) -> None:
+        event = TwitchEvent(
+            subscription_type="channel.chat.message",
+            version="1",
+            received_at=datetime.now(timezone.utc),
+            message_id="event-1",
+            broadcaster_user_id="channel-1",
+            broadcaster_user_login="channel",
+            broadcaster_user_name="Channel",
+            transport=TwitchEventTransport.WEBSOCKET,
+            payload={
+                "event": {
+                    "chatter_user_id": "viewer-1",
+                    "message": {"text": "private viewer message"},
+                }
+            },
+        )
+
+        self.assertIsNone(format_twitch_activity(event))
 
 
 if __name__ == "__main__":

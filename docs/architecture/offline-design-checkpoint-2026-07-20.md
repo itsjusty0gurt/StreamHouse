@@ -1,5 +1,10 @@
 # Offline design checkpoint - 2026-07-20
 
+> Historical planning checkpoint. It is not the current implementation map;
+> use [`overview.md`](overview.md) for implemented architecture and treat every
+> future capability below as unimplemented unless current code/docs say
+> otherwise.
+
 This checkpoint came from external planning and captures the current long-term
 shape for the local-first Streamhouse ecosystem. Product naming has since been
 normalized by the

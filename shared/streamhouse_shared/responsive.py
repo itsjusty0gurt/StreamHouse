@@ -13,6 +13,33 @@ AUTOMATIC_ORIENTATION_RATIO = 1.75
 AUTOMATIC_ORIENTATION_TOLERANCE = 0.05
 
 
+def responsive_grid_columns(
+    available_width: int,
+    minimum_item_width: int,
+    gap: int = 0,
+    *,
+    current: int = 0,
+    hysteresis: int = 0,
+) -> int:
+    """Return the number of readable tiles that fit in an available width."""
+    width = max(int(available_width), 0)
+    minimum = max(int(minimum_item_width), 1)
+    spacing = max(int(gap), 0)
+    columns = max(1, (width + spacing) // (minimum + spacing))
+    previous = max(int(current), 0)
+    tolerance = max(int(hysteresis), 0)
+    if previous < 1 or tolerance == 0 or columns == previous:
+        return columns
+
+    previous_minimum = previous * minimum + (previous - 1) * spacing
+    next_minimum = (previous + 1) * minimum + previous * spacing
+    if columns < previous and width >= previous_minimum - tolerance:
+        return previous
+    if columns > previous and width < next_minimum + tolerance:
+        return previous
+    return columns
+
+
 def normalize_layout_mode(value: object) -> str:
     mode = str(value or "").strip().lower()
     return mode if mode in LAYOUT_MODES else LAYOUT_MODE_AUTOMATIC

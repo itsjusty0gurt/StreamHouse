@@ -5,7 +5,6 @@ import unittest
 from products.ai.streamhouse_ai.windows_presence import WindowsHubPresenceNotifier
 from shared.streamhouse_shared.presence_protocol import (
     HUB_WINDOW_TITLE,
-    LEGACY_HUB_WINDOW_TITLE,
 )
 
 
@@ -60,17 +59,6 @@ class WindowsHubPresenceNotifierTests(unittest.TestCase):
             (42, 50000, 2, 0),
         )
         self.assertFalse(self.notifier.connected)
-
-    def test_legacy_hub_window_title_is_a_discovery_fallback(self) -> None:
-        self.user32.available_title = LEGACY_HUB_WINDOW_TITLE
-
-        self.assertTrue(self.notifier.refresh())
-
-        self.assertEqual(
-            self.user32.searched_titles,
-            [HUB_WINDOW_TITLE, LEGACY_HUB_WINDOW_TITLE],
-        )
-
 
 if __name__ == "__main__":
     unittest.main()

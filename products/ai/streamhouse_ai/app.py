@@ -39,7 +39,6 @@ from shared.streamhouse_ui import install_window_chrome
 from shared.streamhouse_runtime.paths import smoke_test_enabled
 from shared.streamhouse_runtime.qt_settings import (
     AI_APPLICATION_NAME,
-    LEGACY_AI_APPLICATION_NAME,
     ORGANIZATION_NAME,
     streamhouse_qsettings,
 )
@@ -99,18 +98,9 @@ class StreamhouseAIWindow(QMainWindow):
         self.setMinimumSize(620, 420)
         self.resize(1050, 680)
         if window_settings is None:
-            self.window_settings, migrated_qt_values = streamhouse_qsettings(
-                AI_APPLICATION_NAME,
-                LEGACY_AI_APPLICATION_NAME,
-            )
+            self.window_settings = streamhouse_qsettings(AI_APPLICATION_NAME)
         else:
             self.window_settings = window_settings
-            migrated_qt_values = 0
-        if migrated_qt_values:
-            Logger.info(
-                f"Migrated {migrated_qt_values} AI UI preference(s).",
-                source="DATA",
-            )
         self._responsive_ready = False
         self._active_layout_orientation = ""
         self.settings_store = StreamhouseAISettingsStore()
@@ -364,7 +354,7 @@ class StreamhouseAIWindow(QMainWindow):
         )
         self.personality_status_label = QLabel("")
         save = QPushButton("Save Personality")
-        save.clicked.connect(self._save_companion_settings)
+        save.clicked.connect(self._save_ai_settings)
         layout.addWidget(description)
         layout.addWidget(self.personality_edit, 1)
         layout.addWidget(self.mild_profanity_check)
@@ -408,7 +398,7 @@ class StreamhouseAIWindow(QMainWindow):
         layout.addWidget(appearance_group)
         self.settings_status_label = QLabel("")
         save = QPushButton("Save Settings")
-        save.clicked.connect(self._save_companion_settings)
+        save.clicked.connect(self._save_ai_settings)
         layout.addWidget(save)
         layout.addWidget(self.settings_status_label)
         layout.addStretch()
@@ -430,7 +420,7 @@ class StreamhouseAIWindow(QMainWindow):
         self.strong_profanity_check.setChecked(settings.allow_strong_profanity)
         self.dashboard_model_label.setText(settings.model)
 
-    def _save_companion_settings(self) -> None:
+    def _save_ai_settings(self) -> None:
         settings = StreamhouseAISettings.from_dict(
             {
                 "ollama_endpoint": self.ollama_endpoint_edit.text(),

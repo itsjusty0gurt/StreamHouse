@@ -24,14 +24,17 @@ bound only to `127.0.0.1:8765`.
 | Ollama, response reasoning, personality execution | `products/ai/` |
 | Lightweight protocol and presence contracts | `shared/streamhouse_shared/` |
 | Cross-product runtime utilities | `shared/streamhouse_runtime/` |
-| Shared PySide6 window chrome and UI components | `shared/streamhouse_ui/` |
+| AI window chrome and reusable Qt UI components | `shared/streamhouse_ui/` |
 | Hosted Twitch extension and relay | `extensions/twitch/` |
 | Build, packaging, release, smoke, development tools | `tools/` |
 | Cross-product and release tests | `tests/integration/`, `tests/release/` |
 
 See [architecture](docs/architecture/overview.md) for ownership and change
 routing, and [product family](docs/architecture/product-family.md) for canonical
-product names and dependency rules. Relay operators should use the
+product names and dependency rules. Streamhouse is pre-alpha; the
+[development and compatibility policy](docs/architecture/development-policy.md)
+defines the clean-architecture baseline and the point at which upgrade
+compatibility begins. Relay operators should use the
 [production migration runbook](docs/deployment/relay-brand-migration.md), which
 keeps the old service available until Render, Hub, Twitch Extension, and
 database verification are complete.
@@ -72,7 +75,9 @@ Independent outputs:
 - `release\StreamhouseHub-0.1.0-windows-x64.zip`
 - `release\StreamhouseAI-0.1.0-windows-x64.zip`
 
-User data remains under `%LOCALAPPDATA%\Streamhouse`. Missing legacy files from
-`%LOCALAPPDATA%\SallyAI` are copied without overwrite or deletion. The new
-`STREAMHOUSE_DATA_DIR` and `STREAMHOUSE_SMOKE_TEST` environment variables take
-precedence; `SALLY_DATA_DIR` and `SALLY_SMOKE_TEST` remain deprecated fallbacks.
+Current user data lives under `%LOCALAPPDATA%\Streamhouse`. Development and
+smoke overrides use `STREAMHOUSE_DATA_DIR` and `STREAMHOUSE_SMOKE_TEST` only.
+Pre-alpha Sally-era local data, settings, routines, and environment aliases are
+not loaded or migrated. Encrypted Twitch tokens already stored under the
+Streamhouse data root are unchanged by this cleanup; preserving older token
+locations is not a compatibility requirement.

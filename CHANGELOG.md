@@ -9,9 +9,9 @@
 - Rebranded the two applications as Streamhouse Hub and Streamhouse AI,
   including entry points, Python packages, executable metadata, release
   artifacts, localhost discovery, environment variables, and user-data paths.
-- Added non-destructive migration from `%LOCALAPPDATA%\SallyAI`, legacy
-  environment/protocol fallbacks, and QSettings migration while preserving
-  Sally as Streamhouse AI's default personality.
+- Removed the private-development `%LOCALAPPDATA%\SallyAI`, environment,
+  protocol, and QSettings compatibility paths before the external Alpha;
+  Sally remains Streamhouse AI's default personality.
 - Made Sally viewer memory explicitly opt-in through `!sallymemory` chat
   controls, with confirmed complete deletion and no persistent unconsented
   chatter profiles.
@@ -71,6 +71,10 @@
 ## 0.1.0 - 2026-07-12
 
 First release-readiness checkpoint.
+
+Historical compatibility entries below describe that checkpoint. Those
+private-development migration paths were subsequently removed before the first
+external Alpha under the current development policy.
 
 - Twitch Device Code authentication, saved encrypted login, EventSub chat,
   activity events, emotes, badges, links, chat sending, and ad controls

@@ -59,6 +59,7 @@ class TwitchTaskTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
         self.service = FakeTwitchService()
+        self.ads_service = FakeTwitchService()
         self.channel_information = ChannelInformationStore(
             Path(self.temporary.name) / "channel-information.json"
         )
@@ -68,6 +69,7 @@ class TwitchTaskTests(unittest.TestCase):
             self.registry,
             self.service,
             channel_information_provider=lambda: self.channel_information,
+            ads_service=self.ads_service,
         )
         self.trigger = TriggerEvent(
             "event",
@@ -79,6 +81,10 @@ class TwitchTaskTests(unittest.TestCase):
                 "message_id": "message-1",
                 "reward_id": "reward-1",
                 "redemption_id": "redeem-1",
+                "user.id": "42",
+                "chat.message_id": "message-1",
+                "event.reward_id": "reward-1",
+                "event.redemption_id": "redeem-1",
             },
         )
 
@@ -95,15 +101,15 @@ class TwitchTaskTests(unittest.TestCase):
     def test_template_variables_do_not_include_value_padding(self) -> None:
         self.assertEqual(
             SendTwitchChatMessageTask.render(
-                "hey {user}!",
-                {"user": "  TestViewer  "},
+                "hey {user.display_name}!",
+                {"user.display_name": "  TestViewer  "},
             ),
             "hey TestViewer!",
         )
 
     def test_canonical_dotted_variables_are_valid_templates(self) -> None:
         SendTwitchChatMessageTask.validate_template(
-            "{user.name}: {custom.game_mode} / {counter.deaths}"
+            "{user.name}: {custom.game_mode} / {counter.deaths.total}"
         )
         self.assertEqual(
             SendTwitchChatMessageTask.render(
@@ -112,6 +118,11 @@ class TwitchTaskTests(unittest.TestCase):
             ),
             "Viewer: Hardcore",
         )
+        with self.assertRaisesRegex(
+            ValueError, "Invalid canonical variable placeholder"
+        ) as raised:
+            SendTwitchChatMessageTask.validate_template("{random_line}")
+        self.assertNotIn("command variable", str(raised.exception).casefold())
 
     def test_moderation_uses_trigger_user_and_message_ids(self) -> None:
         self.assertTrue(
@@ -119,8 +130,8 @@ class TwitchTaskTests(unittest.TestCase):
                 "twitch.moderate_user",
                 {
                     "action": "delete_message",
-                    "user": "{user_id}",
-                    "message_id": "{message_id}",
+                    "user": "{user.id}",
+                    "message_id": "{chat.message_id}",
                     "duration_seconds": 600,
                     "reason": "",
                 },
@@ -136,35 +147,36 @@ class TwitchTaskTests(unittest.TestCase):
             self.execute(
                 "twitch.update_redemption",
                 {
-                    "reward_id": "{reward_id}",
-                    "redemption_id": "{redemption_id}",
+                    "reward_id": "{event.reward_id}",
+                    "redemption_id": "{event.redemption_id}",
                     "action": "refund",
                 },
             )
         )
-        self.assertIn(("commercial", 90), self.service.calls)
+        self.assertIn(("commercial", 90), self.ads_service.calls)
+        self.assertNotIn(("commercial", 90), self.service.calls)
         self.assertIn(("redemption", "reward-1", "redeem-1", "CANCELED"), self.service.calls)
 
     def test_stream_title_and_category_tasks_render_variables(self) -> None:
-        self.trigger.context.update({"game": "Portal 2", "user": "Viewer"})
+        self.trigger.context.update({"stream.category": "Portal 2", "user.display_name": "Viewer"})
 
         self.assertTrue(
             self.execute(
                 "twitch.update_stream_title",
-                {"title": "Playing {game} with {user}"},
+                {"title": "Playing {stream.category} with {user.display_name}"},
             )
         )
         self.assertTrue(
             self.execute(
                 "twitch.update_stream_category",
-                {"category": "{game}"},
+                {"category": "{stream.category}"},
             )
         )
 
         self.assertIn(("title", "Playing Portal 2 with Viewer"), self.service.calls)
         self.assertIn(("category", "Portal 2"), self.service.calls)
 
-    def test_channel_information_tasks_generate_values_and_status(self) -> None:
+    def test_social_links_message_uses_selected_channel_information(self) -> None:
         information = ChannelInformation(schedule="Friday at 8 PM")
         information.social_links["discord"] = SocialLink(
             True, "https://discord.gg/example"
@@ -176,48 +188,17 @@ class TwitchTaskTests(unittest.TestCase):
 
         self.assertTrue(
             self.execute(
-                "twitch.get_channel_information_field",
-                {"field": "schedule"},
-            )
-        )
-        self.assertEqual(self.trigger.context["schedule"], "Friday at 8 PM")
-        self.assertEqual(self.trigger.context["schedule_status"], "available")
-        self.assertEqual(self.trigger.context["channel_information_available"], "true")
-        self.assertTrue(
-            self.execute(
-                "twitch.get_channel_information_field",
-                {"field": "schedule", "output_variable": "next_stream"},
-            )
-        )
-        self.assertEqual(self.trigger.context["next_stream"], "Friday at 8 PM")
-        self.assertEqual(self.trigger.context["next_stream_status"], "available")
-        self.assertTrue(
-            self.execute(
                 "twitch.build_social_links_message",
                 {"maximum_characters": 480},
             )
         )
         self.assertEqual(
-            self.trigger.context["social_links_message"],
+            self.trigger.context["automation.social_links_message"],
             "Discord: https://discord.gg/example",
         )
-        self.assertNotIn("YouTube", self.trigger.context["social_links_message"])
+        self.assertNotIn("YouTube", self.trigger.context["automation.social_links_message"])
 
-    def test_unavailable_channel_information_and_missing_templates_never_send(self) -> None:
-        self.assertFalse(
-            self.execute(
-                "twitch.get_channel_information_field",
-                {"field": "discord_url"},
-            )
-        )
-        self.assertEqual(self.trigger.context["discord_url_status"], "unavailable")
-        self.assertFalse(
-            self.execute(
-                "twitch.send_chat_message",
-                {"message": "Join: {discord_url}", "as_bot": True},
-            )
-        )
-        self.assertEqual(self.service.calls, [])
+    def test_unavailable_social_message_never_sends(self) -> None:
         checked_blank = ChannelInformation()
         checked_blank.social_links["discord"] = SocialLink(True, "")
         self.channel_information.save(checked_blank)
@@ -228,7 +209,7 @@ class TwitchTaskTests(unittest.TestCase):
             )
         )
         self.assertEqual(
-            self.trigger.context["social_links_message_status"],
+            self.trigger.context["automation.social_links_message_status"],
             "unavailable",
         )
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 from copy import deepcopy
 from dataclasses import asdict, dataclass, field
@@ -10,21 +11,32 @@ from time import monotonic
 from typing import Any, Callable, Mapping
 from uuid import uuid4
 
-from products.hub.automation.custom_variables import CustomVariableStore
-from products.hub.automation.models import RoutineDefinition, TriggerEvent
+from products.hub.automation.variable_outputs import task_output_definitions
+from products.hub.automation.variable_registry import VariableDefinition, VariableRegistry
+from products.hub.automation.models import RoutineDefinition, RoutineGroup, TriggerEvent
 from products.hub.automation.routines import RoutineStore
-from shared.streamhouse_runtime.json_store import atomic_write_json, load_json_with_backup
+from shared.streamhouse_runtime.json_store import (
+    UnsupportedJsonSchemaError,
+    atomic_write_bytes,
+    atomic_write_json,
+    json_store_exists,
+    load_validated_json,
+)
 from shared.streamhouse_runtime.paths import user_data_root
 from products.hub.twitch.models import TwitchMessage
 from products.hub.twitch.tasks import SendTwitchChatMessageTask
 from products.hub.twitch.channel_information import (
     CHANNEL_INFORMATION_FIELD_LABELS,
+    SOCIAL_SERVICE_LABELS,
     ChannelInformationStore,
+    SocialLink,
+    normalize_social_url,
 )
 from products.hub.twitch.default_commands import (
     DefaultCommandDefinition,
     default_command_order,
     default_command_definitions,
+    self_contained_default_commands,
 )
 
 
@@ -71,13 +83,8 @@ class TwitchCommandTrigger:
 
     @classmethod
     def from_dict(cls, values: Mapping[str, Any]) -> TwitchCommandTrigger:
-        trigger_id = (
-            str(values.get("trigger_id", ""))
-            or str(values.get("command_id", ""))
-            or uuid4().hex
-        )
         return cls(
-            trigger_id=trigger_id,
+            trigger_id=str(values.get("trigger_id", "")),
             routine_id=str(values.get("routine_id", "")),
             name=str(values.get("name", "")),
             aliases=[str(value) for value in values.get("aliases", [])],
@@ -102,12 +109,6 @@ class TwitchCommandTrigger:
     @property
     def is_default(self) -> bool:
         return bool(self.default_id)
-
-
-@dataclass(frozen=True, slots=True)
-class DefaultCommandSeedResult:
-    created: tuple[str, ...] = ()
-    conflicts: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -138,8 +139,9 @@ class TwitchCommandTriggerResult:
 
 
 class TwitchCommandTriggerStore:
-    VERSION = 4
+    VERSION = 6
     MANAGED_BY = "twitch.command"
+    COMMANDS_GROUP_NAME = "Commands"
     NAME_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]{0,24}$")
     RESERVED_NAMES = frozenset({"sallymemory", "sallytrain"})
 
@@ -147,54 +149,149 @@ class TwitchCommandTriggerStore:
         self,
         path: Path | None = None,
         routine_store: RoutineStore | None = None,
+        variable_registry: VariableRegistry | None = None,
     ) -> None:
         self.path = path or user_data_root() / "twitch" / "commands.json"
         self.routine_store = routine_store or RoutineStore()
+        self.variable_registry = variable_registry
         self.triggers: list[TwitchCommandTrigger] = []
-        self.removed_default_ids: set[str] = set()
-        self.default_seed_conflicts: tuple[str, ...] = ()
 
     def load(self) -> list[TwitchCommandTrigger]:
         self.routine_store.load()
-        if not self.path.exists():
+        if not json_store_exists(self.path):
             self.triggers = []
-            self.removed_default_ids = set()
-            return []
-        payload = load_json_with_backup(self.path)
+            self.reconcile_managed_routines()
+            self._ensure_self_contained_defaults()
+            return list(self.triggers)
+        self.triggers = load_validated_json(self.path, self._parse_payload)
+        self.reconcile_managed_routines()
+        self._ensure_self_contained_defaults()
+        return list(self.triggers)
+
+    def load_for_startup(self) -> list[TwitchCommandTrigger]:
+        """Load schema v6 or durably reset discarded pre-Alpha commands."""
+        try:
+            triggers = self.load()
+        except UnsupportedJsonSchemaError:
+            backup_path = self.path.with_suffix(self.path.suffix + ".bak")
+            if backup_path.exists():
+                try:
+                    load_validated_json(backup_path, self._parse_payload)
+                except (OSError, TypeError, ValueError, json.JSONDecodeError):
+                    pass
+                else:
+                    atomic_write_bytes(self.path, backup_path.read_bytes())
+                    return self.load()
+            return self.reset_obsolete_schema()
+        self._repair_recovery_copy()
+        return triggers
+
+    def _repair_recovery_copy(self) -> None:
+        backup_path = self.path.with_suffix(self.path.suffix + ".bak")
+        if not backup_path.exists():
+            return
+        try:
+            load_validated_json(backup_path, self._parse_payload)
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            atomic_write_bytes(backup_path, self.path.read_bytes())
+
+    def reset_obsolete_schema(self) -> list[TwitchCommandTrigger]:
+        """Discard obsolete commands and rebuild current managed defaults."""
+        tracked_paths = {
+            path: path.read_bytes() if path.exists() else None
+            for target in (self.path, self.routine_store.path)
+            for path in (target, target.with_suffix(target.suffix + ".bak"))
+        }
+        previous_triggers = deepcopy(self.triggers)
+        previous_groups = deepcopy(self.routine_store.groups)
+        previous_routines = deepcopy(self.routine_store.routines)
+        try:
+            self.triggers = []
+            self.reconcile_managed_routines()
+            self.save()
+            self.save()
+            self._ensure_self_contained_defaults()
+        except (OSError, TypeError, ValueError):
+            self.triggers = previous_triggers
+            self.routine_store.groups = previous_groups
+            self.routine_store.routines = previous_routines
+            for path, content in tracked_paths.items():
+                if content is None:
+                    path.unlink(missing_ok=True)
+                else:
+                    atomic_write_bytes(path, content)
+            raise
+        return list(self.triggers)
+
+    def _parse_payload(self, payload: object) -> list[TwitchCommandTrigger]:
         if not isinstance(payload, dict):
             raise ValueError("Twitch command triggers must contain a JSON object.")
-        version = int(payload.get("version", 1))
-        if version > self.VERSION:
-            raise ValueError("Twitch command trigger data is newer than this app.")
-        values = payload.get("triggers", payload.get("commands", []))
+        version = int(payload.get("version", 0))
+        if version != self.VERSION:
+            raise UnsupportedJsonSchemaError(
+                "Twitch command data uses a discarded pre-alpha schema and must be reset."
+            )
+        values = payload.get("triggers", [])
         if not isinstance(values, list):
             raise ValueError("Twitch command triggers must contain a trigger list.")
         loaded: list[TwitchCommandTrigger] = []
+        previous = self.triggers
         self.triggers = loaded
-        removed = payload.get("removed_default_ids", [])
-        self.removed_default_ids = {
-            str(value) for value in removed if str(value).strip()
-        } if isinstance(removed, list) else set()
-        migrated = False
-        for value in values:
-            if not isinstance(value, dict):
+        try:
+            for value in values:
+                if not isinstance(value, dict):
+                    raise ValueError("Every Twitch command trigger must be a JSON object.")
+                try:
+                    if not isinstance(value.get("aliases", []), list):
+                        raise ValueError("Twitch command aliases must be a list.")
+                    trigger = TwitchCommandTrigger.from_dict(value)
+                    if not trigger.routine_id:
+                        raise ValueError("Twitch command trigger is missing its routine.")
+                    self._validate_trigger(trigger)
+                    self._validate_routine(trigger)
+                except (TypeError, ValueError) as error:
+                    raise ValueError("Twitch command data contains an invalid trigger.") from error
+                loaded.append(trigger)
+        finally:
+            self.triggers = previous
+        return loaded
+
+    def _ensure_self_contained_defaults(self) -> None:
+        """Materialize code-owned commands that need no user configuration."""
+        for definition in self_contained_default_commands():
+            if self.default(definition.default_id) is None:
+                self.configure_default(definition.default_id)
+
+    def reconcile_managed_routines(self) -> tuple[int, int]:
+        """Release routines whose owning command no longer exists.
+
+        Custom routines keep their tasks and become ordinary routines so they
+        can be edited, assigned a new trigger, or deleted. Orphaned built-in
+        routines are removed because default templates do not own routines.
+        """
+        active = {
+            trigger.routine_id: trigger.trigger_id
+            for trigger in self.triggers
+        }
+        default_routine_ids = {
+            definition.routine_id for definition in default_command_definitions()
+        }
+        detached = 0
+        deleted = 0
+        for routine in tuple(self.routine_store.routines):
+            if routine.managed_by != self.MANAGED_BY:
                 continue
-            try:
-                trigger = TwitchCommandTrigger.from_dict(value)
-                response = self._validated_response(value.get("response", ""))
-                if not trigger.routine_id:
-                    trigger.has_chat_response = bool(response)
-                    routine = self._create_routine(trigger, response)
-                    trigger.routine_id = routine.routine_id
-                    migrated = True
-                self._validate_trigger(trigger)
-                self._validate_routine(trigger)
-            except (TypeError, ValueError):
+            if active.get(routine.routine_id) == routine.trigger_id:
                 continue
-            loaded.append(trigger)
-        if migrated or version < self.VERSION:
-            self.save()
-        return list(loaded)
+            if routine.routine_id in default_routine_ids:
+                self.routine_store.delete_managed(routine.routine_id, self.MANAGED_BY)
+                deleted += 1
+            else:
+                self.routine_store.detach_managed(routine.routine_id, self.MANAGED_BY)
+                detached += 1
+        if not self.triggers:
+            self._remove_empty_commands_group()
+        return detached, deleted
 
     def save(self) -> None:
         atomic_write_json(
@@ -202,7 +299,6 @@ class TwitchCommandTriggerStore:
             {
                 "version": self.VERSION,
                 "triggers": [asdict(trigger) for trigger in self.triggers],
-                "removed_default_ids": sorted(self.removed_default_ids),
             },
         )
 
@@ -239,6 +335,7 @@ class TwitchCommandTriggerStore:
             self.routine_store.delete_managed(
                 routine.routine_id, self.MANAGED_BY
             )
+            self._remove_empty_commands_group()
             raise
         return trigger
 
@@ -266,6 +363,13 @@ class TwitchCommandTriggerStore:
             default_id="",
         )
         self._validate_trigger(trigger)
+        routine = self.routine_store.get(routine_id)
+        if (
+            routine is not None
+            and routine.managed_by == self.MANAGED_BY
+            and self.for_routine(routine_id) is None
+        ):
+            self.routine_store.detach_managed(routine_id, self.MANAGED_BY)
         self.routine_store.attach_managed(
             routine_id,
             trigger_id=trigger.trigger_id,
@@ -284,6 +388,7 @@ class TwitchCommandTriggerStore:
         except OSError:
             self.triggers.remove(trigger)
             self.routine_store.detach_managed(routine_id, self.MANAGED_BY)
+            self._remove_empty_commands_group()
             raise
         return trigger
 
@@ -346,53 +451,101 @@ class TwitchCommandTriggerStore:
         if trigger is None:
             return False
         self.triggers.remove(trigger)
-        if trigger.default_id:
-            self.removed_default_ids.add(trigger.default_id)
         if delete_routine:
             self.routine_store.delete_managed(trigger.routine_id, self.MANAGED_BY)
         else:
             self.routine_store.detach_managed(trigger.routine_id, self.MANAGED_BY)
+        self._remove_empty_commands_group()
         self.save()
         return True
 
-    def seed_default_commands(
-        self,
-        *,
-        restore_removed: bool = False,
-    ) -> DefaultCommandSeedResult:
-        created: list[str] = []
-        conflicts: list[str] = []
-        for definition in default_command_definitions():
-            if self.default(definition.default_id) is not None:
-                continue
-            if definition.default_id in self.removed_default_ids and not restore_removed:
-                continue
-            conflict = self._default_conflict(definition)
-            if conflict:
-                conflicts.append(conflict)
-                continue
-            self._install_default(definition)
-            self.removed_default_ids.discard(definition.default_id)
-            created.append(definition.name)
-        if created:
-            self.save()
-        self.default_seed_conflicts = tuple(conflicts)
-        return DefaultCommandSeedResult(tuple(created), tuple(conflicts))
+    def configure_default(self, default_id: str) -> TwitchCommandTrigger:
+        existing = self.default(default_id)
+        if existing is not None:
+            return existing
+        definition = self._default_definition(default_id)
+        conflict = self._default_conflict(definition)
+        if conflict:
+            raise ValueError(conflict)
+        return self._install_default(definition)
 
-    def restore_default_commands(self) -> DefaultCommandSeedResult:
-        return self.seed_default_commands(restore_removed=True)
+    def commit_social(
+        self,
+        information_store: ChannelInformationStore,
+        service_id: str,
+        url: str,
+        include: bool,
+    ) -> None:
+        """Commit one row and its setup-driven defaults without publishing drafts.
+
+        Prepare with the normal template factories. Keep configured routines and
+        custom commands intact; an empty field disables its managed default.
+        """
+        if service_id not in SOCIAL_SERVICE_LABELS:
+            raise ValueError("Unknown social service.")
+        information = information_store.snapshot()
+        information.social_links[service_id] = SocialLink(include, normalize_social_url(url))
+        triggers = deepcopy(self.triggers)
+        routines = deepcopy(self.routine_store.routines)
+        groups = deepcopy(self.routine_store.groups)
+        for definition in default_command_definitions():
+            requirement = definition.setup_requirement
+            if requirement not in {f"{service_id}_url", "socials"}:
+                continue
+            ready = (
+                any(link.url and link.enabled_in_socials for link in information.social_links.values())
+                if requirement == "socials"
+                else bool(information.social_links[service_id].url)
+            )
+            trigger = next(
+                (item for item in triggers if item.default_id == definition.default_id), None
+            )
+            if trigger is None and not ready:
+                continue
+            if trigger is None:
+                # A custom command (including an alias) owns its name. Never
+                # replace it just because a Channel Information field changes.
+                occupant = self.resolve(definition.name)
+                if occupant is not None:
+                    continue
+                conflict = self._default_conflict(definition)
+                if conflict:
+                    raise ValueError(conflict)
+                group = next(
+                    (item for item in groups
+                     if item.name.casefold() == self.COMMANDS_GROUP_NAME.casefold()), None
+                )
+                if group is None:
+                    group = RoutineGroup(uuid4().hex, self.COMMANDS_GROUP_NAME)
+                    groups.append(group)
+                trigger = self._trigger_for(definition)
+                self._validate_trigger(trigger)
+                routines.append(self._routine_for(definition, group_id=group.group_id))
+                triggers.append(trigger)
+            trigger.enabled = ready
+        self.routine_store._validate_state(groups, routines)
+        related_files = {}
+        if groups != self.routine_store.groups or routines != self.routine_store.routines:
+            related_files[self.routine_store.path] = {
+                "version": self.routine_store.VERSION,
+                "groups": [asdict(item) for item in groups],
+                "routines": [asdict(item) for item in routines],
+            }
+        if triggers != self.triggers:
+            related_files[self.path] = {
+                "version": self.VERSION,
+                "triggers": [asdict(item) for item in triggers],
+            }
+        information_store.save(information, related_files=related_files)
+        self.triggers = triggers
+        self.routine_store.groups = groups
+        self.routine_store.routines = routines
 
     def reset_default(self, default_id: str) -> TwitchCommandTrigger:
         definition = self._default_definition(default_id)
         existing = self.default(default_id)
         if existing is None:
-            conflict = self._default_conflict(definition)
-            if conflict:
-                raise ValueError(conflict)
-            self._install_default(definition)
-            self.removed_default_ids.discard(default_id)
-            self.save()
-            return self.default(default_id)  # type: ignore[return-value]
+            raise ValueError("Configure the default command before resetting it.")
         occupied = {
             name
             for trigger in self.triggers
@@ -404,8 +557,16 @@ class TwitchCommandTriggerStore:
                 f"Could not reset !{definition.name}: that name is used by another command."
             )
         routine = self.routine_store.get(existing.routine_id)
-        group_id = routine.group_id if routine is not None else ""
-        replacement = self._routine_for(definition, group_id=group_id)
+        replacement = self._routine_for(
+            definition,
+            group_id=(
+                routine.group_id
+                if routine is not None
+                else self._ensure_commands_group()
+            ),
+        )
+        if routine is not None:
+            replacement.queue_id = routine.queue_id
         routines = [
             replacement if value.routine_id == existing.routine_id else value
             for value in self.routine_store.routines
@@ -420,7 +581,6 @@ class TwitchCommandTriggerStore:
             last_used_at=existing.last_used_at,
         )
         self.triggers[self.triggers.index(existing)] = replacement_trigger
-        self.removed_default_ids.discard(default_id)
         self.save()
         return replacement_trigger
 
@@ -449,18 +609,26 @@ class TwitchCommandTriggerStore:
             return f"Could not restore !{definition.name}: its routine ID is already in use."
         return ""
 
-    def _install_default(self, definition: DefaultCommandDefinition) -> None:
+    def _install_default(
+        self, definition: DefaultCommandDefinition
+    ) -> TwitchCommandTrigger:
         trigger = self._trigger_for(definition)
-        routine = self._routine_for(definition)
+        routine = self._routine_for(
+            definition,
+            group_id=self._ensure_commands_group(),
+        )
         self._validate_trigger(trigger)
         self.routine_store.routines.append(routine)
         self.triggers.append(trigger)
         try:
             self.routine_store.save()
+            self.save()
         except Exception:
             self.routine_store.routines.remove(routine)
             self.triggers.remove(trigger)
+            self._remove_empty_commands_group()
             raise
+        return trigger
 
     def _trigger_for(
         self,
@@ -638,6 +806,7 @@ class TwitchCommandTriggerStore:
             trigger_id=trigger.trigger_id,
             name=f"Command !{trigger.name}",
             managed_by=self.MANAGED_BY,
+            group_id=self._ensure_commands_group(),
             task_type=SendTwitchChatMessageTask.task_type,
             task_name="Send Twitch chat response",
             task_config=(
@@ -646,6 +815,27 @@ class TwitchCommandTriggerStore:
                 else None
             ),
         )
+
+    def _ensure_commands_group(self) -> str:
+        group = next(
+            (
+                value
+                for value in self.routine_store.groups
+                if value.name.casefold() == self.COMMANDS_GROUP_NAME.casefold()
+            ),
+            None,
+        )
+        if group is None:
+            group = self.routine_store.add_group(self.COMMANDS_GROUP_NAME)
+        return group.group_id
+
+    def _remove_empty_commands_group(self) -> None:
+        for group in tuple(self.routine_store.groups):
+            if (
+                group.name.casefold() == self.COMMANDS_GROUP_NAME.casefold()
+                and not self.routine_store.grouped(group.group_id)
+            ):
+                self.routine_store.delete_group(group.group_id)
 
     def _validate_routine(self, trigger: TwitchCommandTrigger) -> None:
         routine = self.routine_store.get(trigger.routine_id)
@@ -663,24 +853,25 @@ class TwitchCommandTriggerStore:
         if trigger.has_chat_response and task is None:
             raise ValueError("The Twitch command trigger has no response task.")
         if task is not None:
-            generated_variables = {
-                name
-                for candidate in routine.tasks
-                for name in CustomVariableStore.generated_names(
-                    candidate.task_type,
-                    candidate.config,
+            generated_definitions: list[VariableDefinition] = []
+            for candidate in routine.tasks:
+                if candidate.task_id == task.task_id:
+                    break
+                generated_definitions.extend(
+                    task_output_definitions(candidate)
                 )
-            }
             SendTwitchChatMessageTask.validate_template(
                 str(task.config.get("message", "")),
-                generated_variables,
+                registry=self.variable_registry,
+                extra_definitions=tuple(generated_definitions),
             )
 
-    @staticmethod
-    def _validated_response(value: object) -> str:
+    def _validated_response(self, value: object) -> str:
         response = str(value or "").strip()
         if response:
-            SendTwitchChatMessageTask.validate_template(response)
+            SendTwitchChatMessageTask.validate_template(
+                response, registry=self.variable_registry
+            )
         return response
 
     def _validate_trigger(
@@ -689,6 +880,8 @@ class TwitchCommandTriggerStore:
         *,
         excluding_id: str = "",
     ) -> None:
+        if not trigger.trigger_id:
+            raise ValueError("Twitch command trigger is missing its stable ID.")
         names = [trigger.name, *trigger.aliases]
         if not self.NAME_PATTERN.fullmatch(trigger.name):
             raise ValueError(
@@ -805,7 +998,6 @@ class TwitchCommandTriggerDispatcher:
         values = {
             key: str(value)
             for key, value in (context or {}).items()
-            if key in SendTwitchChatMessageTask.TEMPLATE_VARIABLES
         }
         values.update(
             {
@@ -826,7 +1018,7 @@ class TwitchCommandTriggerDispatcher:
                 "message_id": message.message_id or "--",
                 "redemption_id": "--",
                 "command": trigger.name,
-                "args": arguments,
+                "command_data": arguments,
                 "target": (
                     arguments.split(maxsplit=1)[0].lstrip("@")
                     if arguments
@@ -835,8 +1027,6 @@ class TwitchCommandTriggerDispatcher:
                 "uses": str(trigger.uses + 1),
             }
         )
-        for variable in SendTwitchChatMessageTask.TEMPLATE_VARIABLES:
-            values.setdefault(variable, "--")
         return TwitchCommandTriggerResult(
             TwitchCommandTriggerOutcome.READY,
             context=values,

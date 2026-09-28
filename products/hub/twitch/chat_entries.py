@@ -138,3 +138,26 @@ class TwitchChatHistory:
                 self._entries[index] = updated
                 return updated
         return None
+
+    def remove_message(self, message_id: str) -> TwitchChatEntry | None:
+        if not message_id:
+            return None
+        for index, entry in enumerate(self._entries):
+            if entry.message_id == message_id:
+                return self._entries.pop(index)
+        return None
+
+    def remove_user_messages(self, user_id: str) -> tuple[TwitchChatEntry, ...]:
+        if not user_id:
+            return ()
+        removed = tuple(
+            entry
+            for entry in self._entries
+            if entry.message is not None and entry.user_id == user_id
+        )
+        if removed:
+            removed_ids = {entry.entry_id for entry in removed}
+            self._entries = [
+                entry for entry in self._entries if entry.entry_id not in removed_ids
+            ]
+        return removed

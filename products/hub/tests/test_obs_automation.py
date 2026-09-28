@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -10,13 +11,14 @@ from unittest.mock import Mock
 from PySide6.QtWidgets import QApplication
 
 from products.hub.automation.core_tasks import (
-    DelayTask,
     DesktopNotificationTask,
     PlayAudioTask,
     RandomDelayTask,
+    WaitTask,
     WaitForServiceTask,
 )
 from products.hub.automation.models import TaskDefinition, TriggerEvent
+from shared.streamhouse_runtime.json_store import JsonStoreCorruptionError
 from products.hub.automation.routines import RoutineStore
 from products.hub.automation.tasks import TaskRegistry
 from products.hub.obs_service.models import ObsConnectionState, ObsEvent, ObsRequestResult
@@ -30,18 +32,33 @@ class FakeObsService:
     def __init__(self) -> None:
         self.connected = True
         self.requests: list[tuple[str, dict[str, object]]] = []
+        self.next_result: ObsRequestResult | None = None
+
+    def _result(self, request_type: str) -> ObsRequestResult:
+        result = self.next_result or ObsRequestResult(
+            "request-id",
+            request_type,
+            True,
+            100,
+        )
+        self.next_result = None
+        return result
 
     def send_request(self, request_type, request_data=None, callback=None):
         self.requests.append((request_type, request_data or {}))
         return "request-id"
 
+    def request_and_wait(self, request_type, request_data=None, **_kwargs):
+        self.requests.append((request_type, request_data or {}))
+        return self._result(request_type)
+
     def set_scene_item_enabled(self, scene, source, action):
         self.requests.append(("resolved-scene-item", {"scene": scene, "source": source, "action": action}))
-        return "request-id"
+        return self._result("SetSceneItemEnabled")
 
     def set_source_filter_enabled(self, source, filter_name, action):
         self.requests.append(("source-filter", {"source": source, "filter": filter_name, "action": action}))
-        return "request-id"
+        return self._result("SetSourceFilterEnabled")
 
 
 class ObsServiceTests(unittest.TestCase):
@@ -65,6 +82,14 @@ class ObsServiceTests(unittest.TestCase):
             ).default_mute_input,
             "Mic/Aux",
         )
+        self.assertEqual(
+            ObsConnectionConfig.from_dict(
+                {"host": "user:password@obs.example.test"}
+            ).host,
+            "127.0.0.1",
+        )
+        with self.assertRaisesRegex(ValueError, "without credentials"):
+            ObsConnectionConfig(host="user:password@obs.example.test").validate()
 
     def test_identified_message_marks_service_connected(self) -> None:
         service = ObsWebSocketService()
@@ -151,7 +176,66 @@ class ObsTriggerStoreTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 store.add(routine.routine_id, "MadeUpEvent")
 
-    def test_mute_context_is_human_readable(self) -> None:
+    def test_obsolete_or_unversioned_schema_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            routines = RoutineStore(root / "routines.json")
+            store = ObsTriggerStore(root / "triggers.json", routines)
+            for payload in (
+                {"triggers": []},
+                {"version": 0, "triggers": []},
+                {"version": "1", "triggers": []},
+            ):
+                with self.subTest(payload=payload):
+                    store.path.write_text(json.dumps(payload), encoding="utf-8")
+                    with self.assertRaisesRegex(ValueError, "Unsupported OBS trigger"):
+                        store.load()
+
+    def test_current_schema_does_not_invent_missing_trigger_ids(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            routines = RoutineStore(root / "routines.json")
+            routine = routines.add("OBS Connected")
+            store = ObsTriggerStore(root / "triggers.json", routines)
+            store.path.write_text(
+                json.dumps(
+                    {
+                        "version": store.VERSION,
+                        "triggers": [
+                            {
+                                "routine_id": routine.routine_id,
+                                "event_type": "ConnectionOpened",
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with self.assertRaises(JsonStoreCorruptionError):
+                store.load()
+
+    def test_current_schema_rejects_malformed_filters_instead_of_broadening_trigger(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            routines = RoutineStore(root / "routines.json")
+            routine = routines.add("OBS Connected")
+            store = ObsTriggerStore(root / "triggers.json", routines)
+            payload = {
+                "version": store.VERSION,
+                "triggers": [
+                    {
+                        "trigger_id": "obs-trigger",
+                        "routine_id": routine.routine_id,
+                        "event_type": "ConnectionOpened",
+                        "filters": [],
+                    }
+                ],
+            }
+            with self.assertRaisesRegex(ValueError, "invalid trigger"):
+                store._parse_payload(payload)
+
+    def test_mute_context_is_typed_and_canonicalizable(self) -> None:
         muted = ObsTriggerStore.context_for(
             ObsEvent("InputMuteStateChanged", {"inputMuted": True})
         )
@@ -159,10 +243,10 @@ class ObsTriggerStoreTests(unittest.TestCase):
             ObsEvent("InputMuteStateChanged", {"inputMuted": False})
         )
 
-        self.assertEqual(muted["muted"], "Muted")
-        self.assertEqual(muted["mute"], "Muted")
-        self.assertEqual(unmuted["muted"], "Not Muted")
-        self.assertEqual(unmuted["mute"], "Not Muted")
+        self.assertEqual(muted["muted"], "true")
+        self.assertNotIn("mute", muted)
+        self.assertEqual(unmuted["muted"], "false")
+        self.assertNotIn("mute", unmuted)
 
 
 class ObsTaskTests(unittest.TestCase):
@@ -170,11 +254,15 @@ class ObsTaskTests(unittest.TestCase):
         self.service = FakeObsService()
         self.registry = TaskRegistry()
         register_obs_tasks(self.registry, self.service)
-        self.trigger = TriggerEvent("manual", "sally", "manual", {})
+        self.trigger = TriggerEvent("manual", "test", "manual", {})
 
     def run_task(self, task_type: str, config: dict) -> bool:
         task = TaskDefinition("task", task_type, task_type, config)
         return self.registry.execute(task, self.trigger).succeeded
+
+    def run_result(self, task_type: str, config: dict) -> TaskExecutionResult:
+        task = TaskDefinition("task", task_type, task_type, config)
+        return self.registry.execute(task, self.trigger)
 
     def test_all_advertised_obs_tasks_are_registered(self) -> None:
         self.assertEqual(set(OBS_TASK_LABELS), set(self.registry.registered_types()))
@@ -184,6 +272,27 @@ class ObsTaskTests(unittest.TestCase):
         self.assertTrue(self.run_task("obs.set_input_mute", {"input": "Mic/Aux", "action": "toggle"}))
         self.assertEqual(self.service.requests[0][0], "SetCurrentProgramScene")
         self.assertEqual(self.service.requests[1][0], "ToggleInputMute")
+
+    def test_explicit_mute_and_unmute_payloads(self) -> None:
+        self.assertTrue(
+            self.run_task(
+                "obs.set_input_mute",
+                {"input": "Mic/Aux", "action": "mute"},
+            )
+        )
+        self.assertTrue(
+            self.run_task(
+                "obs.set_input_mute",
+                {"input": "Mic/Aux", "action": "unmute"},
+            )
+        )
+        self.assertEqual(
+            self.service.requests,
+            [
+                ("SetInputMute", {"inputName": "Mic/Aux", "inputMuted": True}),
+                ("SetInputMute", {"inputName": "Mic/Aux", "inputMuted": False}),
+            ],
+        )
 
     def test_source_visibility_uses_scene_item_resolution(self) -> None:
         self.assertTrue(self.run_task("obs.set_scene_item_enabled", {"scene": "Gameplay", "source": "Camera", "action": "hide"}))
@@ -220,20 +329,20 @@ class ObsTaskTests(unittest.TestCase):
     def test_text_and_image_sources_use_overlay_input_settings(self) -> None:
         self.trigger = TriggerEvent(
             "manual",
-            "sally",
+            "test",
             "manual",
-            {"game": "Portal 2", "image": "C:/art/portal.png"},
+            {"stream.category": "Portal 2", "automation.image": "C:/art/portal.png"},
         )
         self.assertTrue(
             self.run_task(
                 "obs.set_text_source",
-                {"input": "Now Playing", "text": "Playing {game}"},
+                {"input": "Now Playing", "text": "Playing {stream.category}"},
             )
         )
         self.assertTrue(
             self.run_task(
                 "obs.set_image_source",
-                {"input": "Game Art", "file": "{image}"},
+                {"input": "Game Art", "file": "{automation.image}"},
             )
         )
         self.assertEqual(
@@ -255,17 +364,76 @@ class ObsTaskTests(unittest.TestCase):
     def test_raw_request_rejects_non_object_json(self) -> None:
         self.assertFalse(self.run_task("obs.raw_request", {"request_type": "GetVersion", "request_data": "[]"}))
 
+    def test_raw_request_reports_actual_success(self) -> None:
+        result = self.run_result(
+            "obs.raw_request",
+            {"request_type": "GetVersion", "request_data": "{}"},
+        )
+        self.assertTrue(result.succeeded)
+        self.assertEqual(self.service.requests[-1], ("GetVersion", {}))
+        self.assertIn("completed", result.detail)
+
+    def test_every_obs_task_propagates_obs_failure(self) -> None:
+        configs = {
+            "obs.set_program_scene": {"scene": "Gameplay"},
+            "obs.set_preview_scene": {"scene": "Preview"},
+            "obs.set_scene_item_enabled": {
+                "scene": "Gameplay",
+                "source": "Camera",
+                "action": "show",
+            },
+            "obs.set_input_mute": {"input": "Mic/Aux", "action": "mute"},
+            "obs.set_input_volume": {"input": "Mic/Aux", "volume_db": -8},
+            "obs.set_source_filter_state": {
+                "source": "Camera",
+                "filter": "Blur",
+                "action": "enable",
+            },
+            "obs.set_scene_filter_state": {
+                "scene": "Gameplay",
+                "filter": "Color",
+                "action": "disable",
+            },
+            "obs.set_text_source": {"input": "Title", "text": "Hello"},
+            "obs.set_image_source": {"input": "Art", "file": "C:/art.png"},
+            "obs.stream_control": {"action": "start"},
+            "obs.record_control": {"action": "start"},
+            "obs.replay_buffer_control": {"action": "save"},
+            "obs.media_control": {"input": "Intro", "action": "restart"},
+            "obs.trigger_hotkey": {"hotkey": "OBSBasic.StartStreaming"},
+            "obs.set_studio_mode": {"enabled": True},
+            "obs.raw_request": {"request_type": "GetVersion", "request_data": {}},
+        }
+        self.assertEqual(set(configs), set(OBS_TASK_LABELS))
+        for task_type, config in configs.items():
+            with self.subTest(task_type=task_type):
+                self.service.next_result = ObsRequestResult(
+                    "failed-request",
+                    "RejectedRequest",
+                    False,
+                    600,
+                    "OBS rejected the request.",
+                )
+                result = self.run_result(task_type, config)
+                self.assertFalse(result.succeeded)
+                self.assertIn("OBS rejected the request", result.detail)
+
 
 class CoreTaskTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.application = QApplication.instance() or QApplication([])
 
-    def test_delay_and_immediate_service_wait(self) -> None:
-        trigger = TriggerEvent("manual", "sally", "manual", {})
-        delay = TaskDefinition("delay", "core.delay", "Delay", {"seconds": 0})
+    def test_wait_and_immediate_service_wait(self) -> None:
+        trigger = TriggerEvent("manual", "test", "manual", {})
+        delay = TaskDefinition(
+            "wait",
+            "core.wait",
+            "Wait",
+            {"duration": "0", "unit": "seconds"},
+        )
         wait = TaskDefinition("wait", "core.wait_for_service", "Wait", {"service": "obs", "timeout_seconds": 1})
-        self.assertTrue(DelayTask().execute(delay, trigger).succeeded)
+        self.assertTrue(WaitTask().execute(delay, trigger).succeeded)
         self.assertTrue(WaitForServiceTask(lambda name: name == "obs").execute(wait, trigger).succeeded)
 
     def test_random_delay_uses_a_duration_inside_the_configured_range(self) -> None:
@@ -281,7 +449,7 @@ class CoreTaskTests(unittest.TestCase):
 
         result = RandomDelayTask(rng=rng, wait=waited.append).execute(
             task,
-            TriggerEvent("manual", "sally", "manual", {}),
+            TriggerEvent("manual", "test", "manual", {}),
         )
 
         self.assertTrue(result.succeeded)
@@ -300,8 +468,8 @@ class CoreTaskTests(unittest.TestCase):
             "core.show_notification",
             "Notification",
             {
-                "title": "Sally alert for {user}",
-                "message": "{user} redeemed {reward}",
+                "title": "Streamhouse alert for {user.display_name}",
+                "message": "{user.display_name} redeemed {event.reward}",
                 "icon": "warning",
                 "duration_seconds": 8,
             },
@@ -310,7 +478,7 @@ class CoreTaskTests(unittest.TestCase):
             "reward",
             "twitch",
             "channel_points",
-            {"user": "Viewer", "reward": "Hydrate"},
+            {"user.display_name": "Viewer", "event.reward": "Hydrate"},
         )
 
         result = DesktopNotificationTask(notifier=notify).execute(task, trigger)
@@ -320,7 +488,7 @@ class CoreTaskTests(unittest.TestCase):
             notifications,
             [
                 (
-                    "Sally alert for Viewer",
+                    "Streamhouse alert for Viewer",
                     "Viewer redeemed Hydrate",
                     "warning",
                     8000,
@@ -377,7 +545,7 @@ class CoreTaskTests(unittest.TestCase):
                 outputs.append(output)
                 return output
 
-            trigger = TriggerEvent("manual", "sally", "manual", {})
+            trigger = TriggerEvent("manual", "test", "manual", {})
             task = TaskDefinition(
                 "audio",
                 "core.play_audio",
@@ -402,7 +570,7 @@ class CoreTaskTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "sound.txt"
             path.write_text("fake", encoding="utf-8")
-            trigger = TriggerEvent("manual", "sally", "manual", {})
+            trigger = TriggerEvent("manual", "test", "manual", {})
             task = TaskDefinition(
                 "audio",
                 "core.play_audio",

@@ -9,7 +9,7 @@ from products.hub.twitch.live import TwitchHelixClient
 
 
 @dataclass(frozen=True, slots=True)
-class CompanionRefreshResult:
+class ChannelSnapshotResult:
     request_id: int
     snapshot: dict
     chatters: tuple[dict, ...] = ()
@@ -21,12 +21,12 @@ class CompanionRefreshResult:
     followers: tuple[dict, ...] = ()
 
 
-class CompanionRefreshSignals(QObject):
+class ChannelSnapshotSignals(QObject):
     completed = Signal(object)
     failed = Signal(int, str)
 
 
-class CompanionRefreshWorker(QRunnable):
+class ChannelSnapshotWorker(QRunnable):
     def __init__(
         self,
         request_id: int,
@@ -41,13 +41,13 @@ class CompanionRefreshWorker(QRunnable):
         self.broadcaster_id = broadcaster_id
         self.token = token
         self.fetch_followers = fetch_followers
-        self.signals = CompanionRefreshSignals()
+        self.signals = ChannelSnapshotSignals()
 
     @Slot()
     def run(self) -> None:
         try:
             scopes = set(self.token.scopes)
-            snapshot = self.helix.get_companion_snapshot(
+            snapshot = self.helix.get_channel_snapshot(
                 self.broadcaster_id,
                 self.token,
             )
@@ -102,7 +102,7 @@ class CompanionRefreshWorker(QRunnable):
                     except Exception as error:
                         warnings.append(f"viewer roles: {error}")
             self.signals.completed.emit(
-                CompanionRefreshResult(
+                ChannelSnapshotResult(
                     request_id=self.request_id,
                     snapshot=snapshot,
                     chatters=chatters,

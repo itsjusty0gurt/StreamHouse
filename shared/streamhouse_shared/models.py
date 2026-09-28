@@ -33,10 +33,10 @@ class ResponseMessage:
     memory_summary: str = ""
     memories: tuple[str, ...] = ()
     conversation_continuation: bool = False
-    previous_sally_reply: str = ""
+    previous_ai_reply: str = ""
     response_expected: bool = False
-    directed_at_sally: bool = False
-    reply_to_sally: bool = False
+    directed_at_ai: bool = False
+    reply_to_ai: bool = False
     third_person_reference: bool = False
     addressed_to_other: bool = False
 

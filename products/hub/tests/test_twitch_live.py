@@ -1,6 +1,7 @@
 import json
 import os
 import unittest
+from datetime import datetime, timezone
 from unittest.mock import Mock, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -8,6 +9,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtWidgets import QApplication
 
 from products.hub.twitch.auth import TwitchToken
+from products.hub.twitch.automation_triggers import CHANNEL_POINT_REDEMPTION_EVENT_TYPE
 from products.hub.twitch.live import TwitchEventSubSocket, TwitchHelixClient
 from products.hub.twitch.models import TwitchEventTransport
 from products.hub.twitch.simulator import create_chat_notification
@@ -28,6 +30,78 @@ class _JsonResponse:
 
 
 class TwitchHelixClientTests(unittest.TestCase):
+    @patch("products.hub.twitch.live.urlopen")
+    def test_followed_streams_paginate_deduplicate_and_keep_only_live(
+        self, open_url
+    ) -> None:
+        open_url.side_effect = (
+            _JsonResponse(
+                {
+                    "data": [
+                        {"user_id": "one", "type": "live", "viewer_count": 10},
+                        {"user_id": "offline", "type": "", "viewer_count": 0},
+                    ],
+                    "pagination": {"cursor": "next-page"},
+                }
+            ),
+            _JsonResponse(
+                {
+                    "data": [
+                        {"user_id": "one", "type": "live", "viewer_count": 11},
+                        {"user_id": "two", "type": "live", "viewer_count": 5},
+                    ],
+                    "pagination": {},
+                }
+            ),
+        )
+        token = TwitchToken(
+            "access", "refresh", 999, ["user:read:follows"], user_id="channel-1"
+        )
+
+        results = TwitchHelixClient().get_followed_streams("channel-1", token)
+
+        self.assertEqual(
+            [(item["user_id"], item["viewer_count"]) for item in results],
+            [("one", 11), ("two", 5)],
+        )
+        urls = [call.args[0].full_url for call in open_url.call_args_list]
+        self.assertIn("streams/followed", urls[0])
+        self.assertIn("user_id=channel-1", urls[0])
+        self.assertIn("first=100", urls[0])
+        self.assertIn("after=next-page", urls[1])
+
+    def test_chat_subscriptions_include_moderation_sync_events(self) -> None:
+        client = TwitchHelixClient()
+        client._create_subscription = Mock()
+        token = TwitchToken("access", "refresh", 999, ["user:read:chat"])
+
+        client.create_chat_subscriptions(
+            "session-1",
+            "channel-1",
+            "bot-1",
+            token,
+        )
+
+        calls = {
+            call.args[0]: (call.args[1], call.args[2])
+            for call in client._create_subscription.call_args_list
+        }
+        for event_type in (
+            "channel.chat.message_delete",
+            "channel.chat.clear_user_messages",
+            "channel.chat.clear",
+        ):
+            self.assertEqual(
+                calls[event_type],
+                (
+                    "1",
+                    {
+                        "broadcaster_user_id": "channel-1",
+                        "user_id": "bot-1",
+                    },
+                ),
+            )
+
     @patch("products.hub.twitch.live.urlopen")
     def test_user_stream_channel_and_follow_queries_use_helix_contract(
         self, open_url
@@ -84,7 +158,7 @@ class TwitchHelixClientTests(unittest.TestCase):
         )
 
     @patch("products.hub.twitch.live.urlopen")
-    def test_companion_snapshot_includes_official_ad_schedule_fields(
+    def test_channel_snapshot_includes_official_ad_schedule_fields(
         self, open_url
     ) -> None:
         schedule = {
@@ -102,7 +176,7 @@ class TwitchHelixClientTests(unittest.TestCase):
                     "data": [
                         {
                             "game_name": "Science & Technology",
-                            "title": "Building Sally",
+                            "title": "Building Streamhouse",
                         }
                     ]
                 }
@@ -113,7 +187,7 @@ class TwitchHelixClientTests(unittest.TestCase):
             "access", "refresh", 999, ["channel:read:ads"]
         )
 
-        snapshot = TwitchHelixClient().get_companion_snapshot(
+        snapshot = TwitchHelixClient().get_channel_snapshot(
             "channel-1", token
         )
 
@@ -172,6 +246,85 @@ class TwitchHelixClientTests(unittest.TestCase):
         self.assertIn("message_id=message-1", request.full_url)
         self.assertNotIn("duration_seconds", request.full_url)
 
+    @patch("products.hub.twitch.live.urlopen")
+    def test_chat_settings_clear_and_announcement_use_helix_contracts(
+        self, open_url
+    ) -> None:
+        open_url.side_effect = (
+            _JsonResponse({"data": [{"slow_mode": True}]}),
+            _JsonResponse({}),
+            _JsonResponse({}),
+        )
+        token = TwitchToken("access", "refresh", 999, [])
+        client = TwitchHelixClient()
+
+        client.update_chat_settings(
+            "channel-1",
+            "moderator-1",
+            {"slow_mode": True, "slow_mode_wait_time": 15},
+            token,
+        )
+        client.delete_chat_message("channel-1", "moderator-1", "", token)
+        client.send_chat_announcement(
+            "channel-1", "moderator-1", "Stream starts now!", token
+        )
+
+        settings = open_url.call_args_list[0].args[0]
+        self.assertEqual(settings.method, "PATCH")
+        self.assertIn("chat/settings", settings.full_url)
+        self.assertEqual(
+            json.loads(settings.data.decode()),
+            {"slow_mode": True, "slow_mode_wait_time": 15},
+        )
+        clear = open_url.call_args_list[1].args[0]
+        self.assertEqual(clear.method, "DELETE")
+        self.assertIn("moderation/chat", clear.full_url)
+        self.assertNotIn("message_id", clear.full_url)
+        announcement = open_url.call_args_list[2].args[0]
+        self.assertEqual(announcement.method, "POST")
+        self.assertIn("chat/announcements", announcement.full_url)
+        self.assertEqual(
+            json.loads(announcement.data.decode()),
+            {"message": "Stream starts now!"},
+        )
+
+    @patch("products.hub.twitch.live.urlopen")
+    def test_role_and_raid_actions_use_current_helix_contracts(self, open_url) -> None:
+        open_url.side_effect = (
+            _JsonResponse({}),
+            _JsonResponse({}),
+            _JsonResponse({"data": [{"created_at": "2026-09-25T00:00:00Z"}]}),
+            _JsonResponse({}),
+        )
+        token = TwitchToken("access", "refresh", 999, [])
+        client = TwitchHelixClient()
+
+        client.update_channel_role(
+            "channel-1", "viewer-1", "moderator", True, token
+        )
+        client.update_channel_role("channel-1", "viewer-1", "vip", False, token)
+        created_at = client.start_raid("channel-1", "target-1", token)
+        client.cancel_raid("channel-1", token)
+
+        self.assertEqual(
+            created_at,
+            datetime(2026, 9, 25, tzinfo=timezone.utc),
+        )
+
+        add_mod = open_url.call_args_list[0].args[0]
+        self.assertEqual(add_mod.method, "POST")
+        self.assertIn("moderation/moderators", add_mod.full_url)
+        remove_vip = open_url.call_args_list[1].args[0]
+        self.assertEqual(remove_vip.method, "DELETE")
+        self.assertIn("channels/vips", remove_vip.full_url)
+        start_raid = open_url.call_args_list[2].args[0]
+        self.assertEqual(start_raid.method, "POST")
+        self.assertIn("from_broadcaster_id=channel-1", start_raid.full_url)
+        self.assertIn("to_broadcaster_id=target-1", start_raid.full_url)
+        cancel_raid = open_url.call_args_list[3].args[0]
+        self.assertEqual(cancel_raid.method, "DELETE")
+        self.assertIn("broadcaster_id=channel-1", cancel_raid.full_url)
+
     def test_activity_subscriptions_include_stream_state(self) -> None:
         client = TwitchHelixClient()
         client._create_subscription = Mock()
@@ -190,6 +343,45 @@ class TwitchHelixClientTests(unittest.TestCase):
         }
         self.assertIn("stream.online", event_types)
         self.assertIn("stream.offline", event_types)
+
+    def test_activity_subscriptions_include_both_raid_directions(self) -> None:
+        client = TwitchHelixClient()
+        client._create_subscription = Mock()
+        token = TwitchToken("access", "refresh", 999, [])
+
+        client.create_activity_subscriptions(
+            "session-1",
+            "channel-1",
+            "moderator-1",
+            token,
+        )
+
+        raid_conditions = [
+            call.args[2]
+            for call in client._create_subscription.call_args_list
+            if call.args[0] == "channel.raid"
+        ]
+        self.assertEqual(
+            raid_conditions,
+            [
+                {"to_broadcaster_user_id": "channel-1"},
+                {"from_broadcaster_user_id": "channel-1"},
+            ],
+        )
+
+    def test_ads_scope_enables_ad_break_begin_eventsub(self) -> None:
+        client = TwitchHelixClient()
+        client._create_subscription = Mock()
+        token = TwitchToken("access", "refresh", 999, ["channel:read:ads"])
+
+        client.create_activity_subscriptions(
+            "session-1", "channel-1", "channel-1", token
+        )
+
+        event_types = {
+            call.args[0] for call in client._create_subscription.call_args_list
+        }
+        self.assertIn("channel.ad_break.begin", event_types)
 
     @patch("products.hub.twitch.live.urlopen")
     def test_custom_reward_crud_uses_helix_contract(self, open_url) -> None:
@@ -246,6 +438,25 @@ class TwitchHelixClientTests(unittest.TestCase):
             "channel.channel_points_custom_reward_redemption.add",
             event_types,
         )
+
+    def test_read_redemptions_scope_creates_one_broadcaster_reward_subscription(self) -> None:
+        client = TwitchHelixClient()
+        client._create_subscription = Mock()
+        token = TwitchToken(
+            "access", "refresh", 999, ["channel:read:redemptions"]
+        )
+
+        client.create_activity_subscriptions(
+            "session-1", "channel-1", "bot-1", token
+        )
+
+        calls = [
+            call for call in client._create_subscription.call_args_list
+            if call.args[0] == CHANNEL_POINT_REDEMPTION_EVENT_TYPE
+        ]
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0].args[1], "1")
+        self.assertEqual(calls[0].args[2], {"broadcaster_user_id": "channel-1"})
 
     @patch("products.hub.twitch.live.urlopen")
     def test_redemption_status_uses_official_patch_contract(self, open_url) -> None:

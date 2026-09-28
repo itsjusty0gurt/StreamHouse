@@ -5,7 +5,12 @@ from dataclasses import asdict
 from pathlib import Path
 from threading import RLock
 
-from shared.streamhouse_runtime.json_store import atomic_write_json, load_json_with_backup
+from shared.streamhouse_runtime.json_store import (
+    UnsupportedJsonSchemaError,
+    atomic_write_json,
+    json_store_exists,
+    load_validated_json,
+)
 from shared.streamhouse_runtime.paths import user_data_root
 from products.hub.soundboard.models import SoundboardButton, SoundboardPage
 
@@ -24,26 +29,37 @@ class SoundboardStore:
 
     def load(self) -> list[SoundboardPage]:
         with self._lock:
-            if not self.path.exists():
+            if not json_store_exists(self.path):
                 self.pages = [SoundboardPage.create("Sounds")]
                 return deepcopy(self.pages)
-            payload = load_json_with_backup(self.path)
-            if not isinstance(payload, dict):
-                raise ValueError("Soundboard data must contain a JSON object.")
-            version = int(payload.get("version", 1))
-            if version > self.VERSION:
-                raise ValueError("Soundboard data is newer than this app.")
-            values = payload.get("pages", [])
-            if not isinstance(values, list):
-                raise ValueError("Soundboard data must contain a page list.")
-            pages = [
-                SoundboardPage.from_dict(value)
-                for value in values
-                if isinstance(value, dict)
-            ]
-            self._validate(pages)
+            pages = load_validated_json(self.path, self._parse_payload)
             self.pages = pages or [SoundboardPage.create("Sounds")]
             return deepcopy(self.pages)
+
+    def _parse_payload(self, payload: object) -> list[SoundboardPage]:
+        if not isinstance(payload, dict):
+            raise ValueError("Soundboard data must contain a JSON object.")
+        version = payload.get("version")
+        if type(version) is not int or version != self.VERSION:
+            raise UnsupportedJsonSchemaError(
+                f"Unsupported soundboard version {version}; expected {self.VERSION}."
+            )
+        values = payload.get("pages", [])
+        if not isinstance(values, list):
+            raise ValueError("Soundboard data must contain a page list.")
+        if any(not isinstance(value, dict) for value in values):
+            raise ValueError("Every soundboard page must be a JSON object.")
+        for value in values:
+            buttons = value.get("buttons", [])
+            if not isinstance(buttons, list) or any(
+                not isinstance(button, dict) for button in buttons
+            ):
+                raise ValueError(
+                    "Every soundboard page must contain a button list of JSON objects."
+                )
+        pages = [SoundboardPage.from_dict(value) for value in values]
+        self._validate(pages)
+        return pages
 
     def save(self) -> None:
         with self._lock:
@@ -195,6 +211,8 @@ class SoundboardStore:
         page_ids: set[str] = set()
         button_ids: set[str] = set()
         for page in pages:
+            if not page.page_id:
+                raise ValueError("Soundboard pages require stable IDs.")
             page.name = cls._clean_name(page.name, "Page name")
             if page.page_id in page_ids:
                 raise ValueError("Soundboard page IDs must be unique.")
@@ -202,6 +220,8 @@ class SoundboardStore:
             if len(page.buttons) > cls.MAX_BUTTONS_PER_PAGE:
                 raise ValueError("A soundboard page contains more than 9 sounds.")
             for button in page.buttons:
+                if not button.button_id:
+                    raise ValueError("Soundboard buttons require stable IDs.")
                 button.label = cls._clean_name(button.label, "Button label")
                 if button.button_id in button_ids:
                     raise ValueError("Soundboard button IDs must be unique.")

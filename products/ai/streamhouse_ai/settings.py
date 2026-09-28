@@ -39,8 +39,10 @@ class StreamhouseAISettings:
 
 
 class StreamhouseAISettingsStore:
+    VERSION = 2
+
     def __init__(self, path: Path | None = None) -> None:
-        self.path = path or user_data_root() / "companion" / "settings.json"
+        self.path = path or user_data_root() / "ai" / "settings.json"
 
     def load(self) -> StreamhouseAISettings:
         if not self.path.exists():
@@ -48,9 +50,14 @@ class StreamhouseAISettingsStore:
         payload = load_json_with_backup(self.path)
         if not isinstance(payload, dict):
             raise ValueError("Streamhouse AI settings must contain an object.")
+        if int(payload.get("_version", 0)) != self.VERSION:
+            raise ValueError(
+                "Streamhouse AI settings use a discarded pre-alpha schema and "
+                "must be reset."
+            )
         return StreamhouseAISettings.from_dict(payload)
 
     def save(self, settings: StreamhouseAISettings) -> None:
         payload = settings.to_dict()
-        payload["_version"] = 1
+        payload["_version"] = self.VERSION
         atomic_write_json(self.path, payload)

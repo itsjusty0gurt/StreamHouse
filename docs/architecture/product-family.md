@@ -15,9 +15,12 @@ but only dependencies explicitly documented here are required.
 character in prompts, replies, commands, and viewer-facing features; Sally is
 not the name of the complete Streamhouse ecosystem.
 
-The implementation, packages, executables, and local protocol now use
-Streamhouse product names. The GitHub repository remains `SallyAIBot`; changing
-that external repository identifier is outside the application rebrand.
+The implementation, packages, executables, local protocol, and GitHub
+repository (`itsjusty0gurt/StreamHouse`) use Streamhouse product names. Active
+internal generic infrastructure no longer uses SallyBot-era names. The hosted
+relay retains a narrowly isolated external compatibility contract until the
+deployment runbook's removal gates are met. All other current Sally names refer
+to the AI personality/character or another deliberately Sally-specific concept.
 
 ## Product status
 
@@ -55,9 +58,20 @@ capabilities and is not a claim that every feature is implemented:
 Hub must work independently. It must not require Streamhouse Studio,
 Streamhouse AI, Streamhouse Avatar, or Streamhouse Deck.
 
+Hub Alpha 0.1 contains no AI inference runtime, never automatically launches
+Streamhouse AI or calls model providers, and supplies no local Sally replies
+when AI is unavailable. Optional response generation requires the separately
+running Streamhouse AI product through the verified external integration.
+
 Hub variables use provider-owned dotted namespaces such as `stream.*`,
-`chat.*`, `counter.*`, `obs.*`, and `custom.*`. They are Hub automation
-infrastructure; Streamhouse AI does not read Hub's variable or counter files.
+`chat.*`, contextual `command.*` and `keyword.*`, global/contextual `ads.*`,
+the four scoped `counter.<stable_id>.*` definitions, `obs.*`, and `custom.*`.
+Routine-scoped outputs use `automation.*`. `VariableRegistry`
+and typed output definitions are Hub's sole metadata and resolution contract;
+the pre-alpha flat catalog, parser, validation, and compatibility aliases have
+been removed. Private development routines using them must be reset. These
+are Hub automation infrastructure, and Streamhouse AI does not read Hub's
+variable or counter files.
 
 Implementation mapping:
 
@@ -79,7 +93,7 @@ The intended future structure of Hub's **Your Channel** workspace is:
 - Engagement
   - Polls
   - Predictions
-- Raids
+- Raid (implemented as the live-followed-channel finder)
 - Moderation
 - Soundboard
 - Commands
@@ -127,14 +141,17 @@ routine/task architecture. Potential future task types are:
 These task types are planned and are not currently registered with a task
 provider.
 
-Planned raid controls and events must distinguish:
+Raid controls and events distinguish:
 
 - **Raid Initiated**: Hub successfully starts the Twitch raid countdown.
 - **Outgoing Raid Sent**: Twitch confirms that the outgoing raid occurred.
 - **Incoming Raid**: another broadcaster raids the channel.
 
-The incoming-raid trigger is currently implemented. Outgoing raid controls and
-the two outgoing events are planned.
+Incoming Raid and Outgoing Raid Sent observation are implemented through the
+two official `channel.raid` conditions. Outgoing raid controls are implemented
+through the shared Twitch raid service used by Chat slash commands and **Your
+Channel > Raid**. A separate Raid Initiated Automation event remains planned;
+Twitch exposes no separate raid-completed EventSub event.
 
 Stream Health may summarize:
 
@@ -206,7 +223,9 @@ Streamhouse AI owns:
 Streamhouse AI remains a separately installable application. It does not own
 Twitch sockets, OBS control, automation execution, or final permission to
 perform stream actions. Live Twitch and automation actions continue to pass
-through Streamhouse Hub.
+through Streamhouse Hub. Hub Alpha 0.1 does not expose a permanent AI workspace
+or AI settings section; any future Hub AI surface must be introduced
+intentionally and may be conditional on Streamhouse AI availability.
 
 Implementation mapping:
 

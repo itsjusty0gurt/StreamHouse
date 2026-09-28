@@ -2,8 +2,10 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from products.hub.core.settings import AppSettings, SettingsStore
+from shared.streamhouse_runtime.json_store import JsonStoreCorruptionError
 
 
 class SettingsStoreTests(unittest.TestCase):
@@ -30,8 +32,9 @@ class SettingsStoreTests(unittest.TestCase):
             twitch_chat_font_family="Consolas",
             twitch_chat_font_size=13,
             twitch_last_ad_duration=90,
+            automatic_backups_enabled=False,
             local_ai_enabled=True,
-            ai_companion_endpoint="http://localhost:8765",
+            streamhouse_ai_endpoint="http://localhost:8765",
             local_ai_endpoint="http://localhost:11434",
             local_ai_model="qwen3:14b",
             ai_viewer_memory_enabled=True,
@@ -42,7 +45,6 @@ class SettingsStoreTests(unittest.TestCase):
             ai_memory_promo_enabled=False,
             ai_memory_promo_interval_messages=250,
             ai_response_decisions_enabled=False,
-            ai_auto_send_replies=True,
             ai_response_max_age_seconds=25,
             ai_response_min_interval_seconds=12,
             ai_conversation_followup_seconds=240,
@@ -67,6 +69,7 @@ class SettingsStoreTests(unittest.TestCase):
         self.settings_path.write_text(
             json.dumps(
                 {
+                    "_version": SettingsStore.VERSION,
                     "startup_page": "Unknown",
                     "log_level": "NOISY",
                     "ui_log_limit": 99_999,
@@ -75,8 +78,9 @@ class SettingsStoreTests(unittest.TestCase):
                     "twitch_chat_font_family": "",
                     "twitch_chat_font_size": 100,
                     "twitch_last_ad_duration": 45,
+                    "automatic_backups_enabled": "yes",
                     "local_ai_enabled": "yes",
-                    "ai_companion_endpoint": "not-a-url",
+                    "streamhouse_ai_endpoint": "not-a-url",
                     "local_ai_endpoint": "not-a-url",
                     "local_ai_model": "",
                     "ai_viewer_memory_enabled": "yes",
@@ -87,7 +91,6 @@ class SettingsStoreTests(unittest.TestCase):
                     "ai_memory_promo_enabled": "yes",
                     "ai_memory_promo_interval_messages": 5000,
                     "ai_response_decisions_enabled": "yes",
-                    "ai_auto_send_replies": "yes",
                     "ai_response_max_age_seconds": 500,
                     "ai_response_min_interval_seconds": 0,
                     "ai_conversation_followup_seconds": 5000,
@@ -115,9 +118,10 @@ class SettingsStoreTests(unittest.TestCase):
         self.assertTrue(settings.twitch_chat_show_timestamps)
         self.assertEqual(settings.twitch_chat_font_family, "Segoe UI")
         self.assertEqual(settings.twitch_chat_font_size, 24)
-        self.assertEqual(settings.twitch_last_ad_duration, 30)
+        self.assertEqual(settings.twitch_last_ad_duration, 180)
+        self.assertTrue(settings.automatic_backups_enabled)
         self.assertTrue(settings.local_ai_enabled)
-        self.assertEqual(settings.ai_companion_endpoint, "http://127.0.0.1:8765")
+        self.assertEqual(settings.streamhouse_ai_endpoint, "http://127.0.0.1:8765")
         self.assertEqual(settings.local_ai_endpoint, "http://127.0.0.1:11434")
         self.assertEqual(settings.local_ai_model, "qwen3:14b")
         self.assertFalse(settings.ai_viewer_memory_enabled)
@@ -128,7 +132,6 @@ class SettingsStoreTests(unittest.TestCase):
         self.assertTrue(settings.ai_memory_promo_enabled)
         self.assertEqual(settings.ai_memory_promo_interval_messages, 1000)
         self.assertTrue(settings.ai_response_decisions_enabled)
-        self.assertTrue(settings.ai_auto_send_replies)
         self.assertEqual(settings.ai_response_max_age_seconds, 60)
         self.assertEqual(settings.ai_response_min_interval_seconds, 3)
         self.assertEqual(settings.ai_conversation_followup_seconds, 600)
@@ -157,19 +160,164 @@ class SettingsStoreTests(unittest.TestCase):
         self.assertTrue(settings.ai_allow_mild_profanity)
         self.assertTrue(settings.ai_allow_strong_profanity)
 
+    def test_removed_ai_startup_page_defaults_to_dashboard(self) -> None:
+        settings = AppSettings.from_dict({"startup_page": "AI"})
+
+        self.assertEqual(settings.startup_page, "Dashboard")
+        self.assertNotIn("AI", AppSettings.STARTUP_PAGES)
+
     def test_non_object_json_is_rejected(self) -> None:
         self.settings_path.write_text("[]", encoding="utf-8")
 
         with self.assertRaises(ValueError):
             self.store.load()
 
-    def test_legacy_memories_startup_page_migrates_to_ai(self) -> None:
+    def test_discarded_pre_alpha_schema_is_rejected(self) -> None:
         self.settings_path.write_text(
-            json.dumps({"startup_page": "Memories"}),
+            json.dumps(
+                {
+                    "_version": 2,
+                    "startup_page": "Memories",
+                    "ai_auto_send_replies": True,
+                }
+            ),
             encoding="utf-8",
         )
 
-        self.assertEqual(self.store.load().startup_page, "AI")
+        with self.assertRaisesRegex(ValueError, "discarded pre-alpha schema"):
+            self.store.load()
+
+    def test_startup_replaces_obsolete_schema_with_current_defaults(self) -> None:
+        self.settings_path.write_text(
+            json.dumps({"_version": 3, "startup_page": "Logs"}),
+            encoding="utf-8",
+        )
+
+        self.assertEqual(self.store.load_for_startup(), AppSettings())
+        self.assertEqual(self.store.load(), AppSettings())
+        for path in (
+            self.settings_path,
+            self.settings_path.with_suffix(".json.bak"),
+        ):
+            self.assertEqual(
+                json.loads(path.read_text(encoding="utf-8"))["_version"],
+                SettingsStore.VERSION,
+            )
+
+    def test_startup_recovers_current_backup_instead_of_obsolete_live(self) -> None:
+        expected = AppSettings(startup_page="Logs", log_level="WARNING")
+        self.store.save(expected)
+        current = self.settings_path.read_bytes()
+        backup = self.settings_path.with_suffix(".json.bak")
+        backup.write_bytes(current)
+        self.settings_path.write_text(
+            json.dumps({"_version": 3, "startup_page": "Dashboard"}),
+            encoding="utf-8",
+        )
+
+        self.assertEqual(self.store.load_for_startup(), expected)
+        self.assertEqual(self.settings_path.read_bytes(), current)
+        self.assertEqual(backup.read_bytes(), current)
+
+    def test_startup_does_not_resurrect_obsolete_backup(self) -> None:
+        obsolete = json.dumps({"_version": 3, "startup_page": "Logs"})
+        self.settings_path.write_text(obsolete, encoding="utf-8")
+        backup = self.settings_path.with_suffix(".json.bak")
+        backup.write_text(obsolete, encoding="utf-8")
+
+        self.assertEqual(self.store.load_for_startup(), AppSettings())
+
+        self.assertEqual(self.store.load(), AppSettings())
+        self.assertEqual(
+            json.loads(backup.read_text(encoding="utf-8"))["_version"],
+            SettingsStore.VERSION,
+        )
+
+    def test_startup_preserves_current_corruption_recovery(self) -> None:
+        expected = AppSettings(startup_page="Logs")
+        self.store.save(expected)
+        self.store.save(expected)
+        self.settings_path.write_text("{not json", encoding="utf-8")
+
+        self.assertEqual(self.store.load_for_startup(), expected)
+        self.assertEqual(self.store.load(), expected)
+        self.assertTrue((self.settings_path.parent / "corrupt").is_dir())
+
+    def test_corrupt_live_with_obsolete_backup_fails_explicitly(self) -> None:
+        self.settings_path.write_text("{not json", encoding="utf-8")
+        self.settings_path.with_suffix(".json.bak").write_text(
+            json.dumps({"_version": 3}), encoding="utf-8"
+        )
+
+        with self.assertRaises(JsonStoreCorruptionError):
+            self.store.load_for_startup()
+
+        self.assertFalse(self.settings_path.exists())
+        self.assertTrue((self.settings_path.parent / "corrupt").is_dir())
+
+    def test_missing_live_recovers_current_backup(self) -> None:
+        expected = AppSettings(log_level="WARNING")
+        self.store.save(expected)
+        backup = self.settings_path.with_suffix(".json.bak")
+        backup.write_bytes(self.settings_path.read_bytes())
+        self.settings_path.unlink()
+
+        self.assertEqual(self.store.load_for_startup(), expected)
+        self.assertEqual(self.store.load(), expected)
+
+    def test_obsolete_reset_publication_failure_is_not_silenced(self) -> None:
+        obsolete = json.dumps({"_version": 3, "startup_page": "Logs"})
+        self.settings_path.write_text(obsolete, encoding="utf-8")
+
+        with patch(
+            "products.hub.core.settings.atomic_write_json",
+            side_effect=OSError("disk full"),
+        ):
+            with self.assertRaisesRegex(OSError, "disk full"):
+                self.store.load_for_startup()
+
+        self.assertEqual(self.settings_path.read_text(encoding="utf-8"), obsolete)
+
+    def test_startup_repairs_obsolete_recovery_after_interrupted_reset(self) -> None:
+        obsolete = json.dumps({"_version": 3, "startup_page": "Logs"})
+        self.settings_path.write_text(obsolete, encoding="utf-8")
+
+        with patch(
+            "products.hub.core.settings.atomic_write_bytes",
+            side_effect=OSError("power lost before recovery refresh"),
+        ):
+            with self.assertRaisesRegex(OSError, "power lost"):
+                self.store.load_for_startup()
+
+        self.assertEqual(
+            json.loads(self.settings_path.read_text(encoding="utf-8"))["_version"],
+            SettingsStore.VERSION,
+        )
+        self.assertEqual(
+            json.loads(
+                self.settings_path.with_suffix(".json.bak").read_text(
+                    encoding="utf-8"
+                )
+            )["_version"],
+            3,
+        )
+
+        self.assertEqual(self.store.load_for_startup(), AppSettings())
+        self.assertEqual(
+            json.loads(
+                self.settings_path.with_suffix(".json.bak").read_text(
+                    encoding="utf-8"
+                )
+            )["_version"],
+            SettingsStore.VERSION,
+        )
+
+    def test_current_settings_do_not_serialize_removed_auto_send_field(self) -> None:
+        self.store.save(AppSettings())
+
+        payload = json.loads(self.settings_path.read_text(encoding="utf-8"))
+        self.assertEqual(payload["_version"], SettingsStore.VERSION)
+        self.assertNotIn("ai_auto_send_replies", payload)
 
 
 if __name__ == "__main__":

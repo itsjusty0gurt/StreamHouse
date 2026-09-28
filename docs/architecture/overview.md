@@ -2,7 +2,7 @@
 
 > Canonical implementation map for maintainers and coding agents.
 >
-> Last verified: 2026-07-31 against version `0.1.0`.
+> Last verified: 2026-09-01 against version `0.1.0`.
 > Update this file when a change moves ownership, adds a persisted format,
 > changes an inter-process contract, or introduces a new service/trigger/task.
 
@@ -21,6 +21,8 @@ Read only the sections relevant to the task:
 This file describes the code that exists. The focused documents under `docs/`
 provide product behavior and policy detail:
 
+- `docs/architecture/development-policy.md` (authoritative pre-alpha engineering
+  and compatibility rules)
 - `docs/architecture/product-family.md` (canonical product-facing names)
 - `docs/hub/twitch.md`
 - `docs/ai/local-ai.md`
@@ -32,6 +34,11 @@ Product-facing branding is defined in the
 [Streamhouse product-family reference](product-family.md). This implementation
 map uses the current code, executable, protocol, window-title, and storage
 identifiers.
+
+Streamhouse has not reached its first external Alpha. A transitional path
+described in this implementation map is not automatically an Alpha support
+requirement; apply `development-policy.md` when deciding whether to migrate or
+remove it.
 
 ## System at a glance
 
@@ -51,6 +58,15 @@ require it. Streamhouse Studio, Streamhouse Deck, and Streamhouse Avatar are
 future products and have no implemented application, entry point, or package in
 this repository.
 
+Hub Alpha contains no inference engine, does not launch Streamhouse AI or a
+model provider, and never generates a local Sally fallback reply. Chat addressed
+to Sally is silent when the external AI lifecycle is not READY; a failed AI
+request is logged without producing a replacement Twitch reply. The neutral
+HTTP client, presence/lifecycle verification, protocol DTOs, and reply delivery
+checks remain. Only a separately running AI process generates response text;
+its absence is normal for Hub. Shared response policy supplies addressing and
+duplicate checks, not personality text or a fallback responder.
+
 ```mermaid
 flowchart LR
     Twitch["Twitch Helix + EventSub"] --> Hub["Streamhouse Hub"]
@@ -58,6 +74,7 @@ flowchart LR
     Hub --> Automation["AutomationService"]
     Automation --> Tasks["Task providers"]
     Hub <--> LocalPreview["Local soundboard preview"]
+    TouchPortal["Touch Portal plugin"] -->|"versioned loopback routine API"| Hub
     Extension["Twitch Extension"] --> Relay["Hosted relay"]
     Hub -->|"outbound HTTPS polling"| Relay
     StreamhouseAI["Streamhouse AI"] -->|"Windows presence message"| Hub
@@ -77,7 +94,8 @@ flowchart LR
 - **Task definition**: persisted configuration for one step in a routine.
 - **Task provider**: executable handler implementation registered for a task
   type in `TaskRegistry`.
-- **Queue**: optional serialized execution policy assigned to routines.
+- **Queue**: serialized execution policy assigned to every routine. The
+  system-owned Default Queue is used when no custom queue is selected.
 - **Event bus event**: in-process notification sent through `core.events.Events`;
   it is not the same thing as a persisted automation trigger.
 
@@ -122,9 +140,10 @@ Dependency direction is enforced by ownership and package audits:
 - Hub may import `shared.*`, but never `products.ai.engine` or the AI server.
 - AI may import `shared.*`, but never `products.hub`.
 - Shared code imports neither product.
-- Shared Qt presentation components live in `shared/streamhouse_ui/`; both
-  desktop products install its frameless title bar while retaining independent
-  navigation, pages, window-state persistence, and product behavior.
+- Shared Qt presentation components live in `shared/streamhouse_ui/`. Hub uses
+  the native Windows frame (including native snap/maximize); AI uses the shared
+  frameless title bar. Navigation, pages and window-state persistence remain
+  product-owned.
 - The lightweight Hub AI client and remote-store adapters live in
   `products/hub/streamhouse_hub/`; the protocol DTOs live in
   `shared/streamhouse_shared/`.
@@ -133,12 +152,18 @@ Dependency direction is enforced by ownership and package audits:
 
 ### Streamhouse Hub
 
-`products/hub/hub_main.py` performs legacy data migration, configures logging,
-and calls `products.hub.streamhouse_hub.app.run()`.
+`products/hub/hub_main.py` resolves the writable data root and acquires its
+exclusive `HubInstanceLock` before creating diagnostics, logging, stores, or any
+other writable Hub service. It then creates the Hub-owned `DiagnosticsService`,
+which pre-creates fault capture before establishing the process session marker,
+configures the matching per-session log, installs Python exception hooks, and calls
+`products.hub.streamhouse_hub.app.run()`. A duplicate launch creates only the
+minimal Qt notice needed to report that Hub is already running, then exits without
+normal writable composition.
 
 `products/hub/streamhouse_hub/app.py`:
 
-1. Creates `QApplication` and application metadata.
+1. Creates `QApplication`, application metadata, and Qt message capture.
 2. Creates separate broadcaster and optional bot `TwitchAuthService` objects.
 3. Creates `TwitchService`.
 4. Constructs `products.hub.ui.main_window.MainWindow`, the current composition
@@ -146,7 +171,8 @@ and calls `products.hub.streamhouse_hub.app.run()`.
 5. Shows the window, restores both Twitch identities, fires Core startup, then
    schedules optional OBS and soundboard-relay auto-connect.
 6. Runs the Qt event loop.
-7. Clears the global event bus and shuts down logging after the window closes.
+7. Clears the global event bus, marks a zero-exit session clean, and shuts down
+   diagnostics/logging after the window closes.
 
 `MainWindow.__init__` creates or receives injectable instances of:
 
@@ -159,7 +185,8 @@ and calls `products.hub.streamhouse_hub.app.run()`.
 - chatter, activity, and stream-session stores
 - training/test-report remote proxies
 - `TaskRegistry` and `AutomationService`
-- release, backup, health, window-state, and settings helpers
+- the loopback-only local integration controller/server
+- diagnostics, release/backup, health, window-state, and settings helpers
 
 The constructor loads recoverable stores independently. A corrupt optional
 store should log a warning and fall back to an empty/default state rather than
@@ -169,6 +196,68 @@ Core `application.started` fires after the Qt loop begins. Core
 `application.closing` fires before service teardown. Shutdown must stop timers,
 unsubscribe event handlers, close Twitch/OBS, stop soundboard threads/servers,
 save state, and only then let `products/hub/streamhouse_hub/app.py` clear the event bus.
+
+The optional local integration listener starts after primary-instance ownership
+and MainWindow composition. `products.hub.integrations.local_api` exposes only
+enabled routine presentation metadata and run-by-stable-ID requests on
+`127.0.0.1`. Requests cross a queued Qt boundary before `AutomationService`
+submits them through normal queue ownership. External clients never read stores
+or execute task providers directly. The listener stops before automation and
+service teardown; a rejected duplicate Hub process never creates one. See
+`docs/hub/local-integrations.md` for the experimental protocol boundary.
+
+### Hub tester support and crash diagnostics
+
+`products/hub/core/diagnostics.py` owns one random session ID for the active Hub
+process, an active-session marker, exception/crash reporting, safe runtime-state
+providers, Diagnostic Summary rendering, and Support Bundle creation. A stale
+marker whose process is no longer running means only that the prior session did
+not shut down normally; the UI does not claim that every such incident was a
+software crash. A marker belonging to a live process is not reported as an
+abnormal shutdown. Exclusive instance ownership is established before this marker
+is read or written, so a rejected duplicate cannot overwrite the primary marker,
+mark the primary session clean, or create a false abnormal-shutdown incident.
+
+`Logger` writes `latest.log` plus a uniquely named per-session Hub log and keeps
+the latest ten Hub session logs. Diagnostics pre-creates and durably flushes a
+session-correlated fault record immediately after exclusive-instance ownership,
+before the active marker, normal logging, or writable composition. Its file
+descriptor remains open for Python `faulthandler` through the process lifetime;
+low-volume checkpoints record diagnostics initialization, MainWindow creation,
+startup completion, and shutdown start without user content. Clean shutdown
+removes this active record. A later launch retains and annotates the exact stale
+session record with the honest abnormal-termination classification.
+
+Python main-thread, worker-thread, and unraisable exceptions create concise
+sanitized crash reports and mark the fault record as having captured an
+in-process exception. Qt warnings and errors enter the normal log. On Python
+3.13, `faulthandler` covers its supported fatal signals and installs a Windows
+exception handler, so supported access violations or native aborts may append
+Python stacks to the held fault descriptor. Qt/C-extension failures outside that
+coverage may still leave only the pre-flushed record and last checkpoint.
+`os._exit`, Windows `TerminateProcess`/Task Manager termination, and power loss
+cannot run an in-process exception hook or cleanup; the next launch therefore
+reports that the session ended abnormally and that no in-process exception was
+captured rather than claiming a software crash. The latest five crash reports
+and completed abnormal fault records are retained. This is not a Windows
+minidump facility and cannot capture every native failure.
+
+Support Bundles contain diagnostic-severity excerpts from the current/previous
+session logs, the exact previous abnormal session's fault record when present,
+latest relevant crash information, a human-readable summary, and
+structured safe application/system/state diagnostics. General informational log
+lines are excluded so the archive cannot become an activity or chat transcript.
+All copied text passes through defensive credential and local-home-path
+redaction. Providers expose connection states, display geometry,
+counts, and schema versions—not routine messages, Channel Information content,
+raw EventSub payloads, Twitch chat text, tokens, passwords, or configuration
+archives. Bundles are created locally, never uploaded automatically, and the
+Report a Bug action opens the existing Streamhouse GitHub issue tracker.
+
+Support/diagnostics and backup/restore are separate feature domains. Support
+Bundles are not backups and never include backup archives; backups do not gain
+logs or crash reports. The backup controller owns only data protection and
+restore, while `DiagnosticsService` owns shareable troubleshooting artifacts.
 
 ### Streamhouse AI
 
@@ -193,7 +282,7 @@ on a worker. A zero port is the disconnect notification.
 Hub owns one `AIConnectionLifecycle` shared by its AI workers and remote-store
 facades. It starts `DISCONNECTED`; a valid presence message moves it to
 `VERIFYING`, and only a successful health and protocol check moves it to
-`READY`. Only `READY` permits companion requests. Disconnect notifications and
+`READY`. Only `READY` permits Streamhouse AI requests. Disconnect notifications and
 localhost transport failures increment the lifecycle generation, clear queued
 AI work, and make in-flight results stale. Hub waits for another presence
 announcement instead of retrying a saved endpoint.
@@ -216,6 +305,8 @@ but does not emit another signed-in transition or restart chat/EventSub.
 - chat rendering, chatters, activity, ads, analytics, channel points
 - commands, routines, triggers, tasks, queues, and variable state
 - viewer consent, deletion, daily-context policy, and approved viewer records
+- stable-ID user management, observed Twitch status, groups, bot classification,
+  and first/last seen presentation through the Users workspace
 - soundboard configuration and local routine execution
 - deciding whether a draft may actually be sent
 
@@ -240,17 +331,18 @@ but does not emit another signed-in transition or restart chat/EventSub.
 Twitch transport, OBS, or `products/ai/engine/`.
 
 `shared/streamhouse_runtime/` contains infrastructure that both executable
-entry points require before product composition: data-root migration, logging,
-atomic JSON helpers, QSettings migration, and the release version. It must not
+entry points require before product composition: data-root selection, logging,
+atomic JSON helpers, QSettings creation, and the release version. It must not
 import either product package.
 
 ### Important current compromise
 
-Streamhouse Hub contains the AI remote/control pages
-and coordinates RAM queues, recent chat, consent, and send policy. Heavy model
-code lives only in Streamhouse AI. The Hub
-PyInstaller command explicitly excludes `products.ai.engine` and
-`products.ai.streamhouse_ai`.
+Streamhouse Hub retains the lightweight AI client, presence lifecycle, remote
+store adapters, and internal hooks for RAM queues, recent chat, consent, and
+send policy. Hub Alpha 0.1 does not expose an AI navigation workspace or AI
+settings surface. Heavy model code and user-facing AI product configuration
+live only in Streamhouse AI. The Hub PyInstaller command explicitly excludes
+`products.ai.engine` and `products.ai.streamhouse_ai`.
 
 When moving an AI feature, separate:
 
@@ -269,13 +361,35 @@ When moving an AI feature, separate:
 - each listener exception is logged and isolated;
 - `emit()` calls subscribers on the emitting thread.
 
-Because callbacks are synchronous, a bus subscriber must not perform slow
-network/model work directly. It also must not mutate Qt widgets if the event may
-originate on a non-UI thread.
+`Events.emit()` invokes every subscriber synchronously on the **emitting
+thread**. The bus does not switch to Qt's UI thread. Handlers should therefore
+remain fast, and isolating/logging one subscriber's exception does not make
+cross-thread widget access safe.
 
-`ui.twitch_bridge.TwitchQtBridge` is the main thread boundary for Twitch:
-bus callbacks emit Qt signals, and `MainWindow` slots update widgets on the Qt
-thread.
+A raw bus subscriber may mutate a Qt widget only when its event is guaranteed
+to originate on the Qt UI thread. Any event that may originate from Twitch,
+OBS, soundboard, HTTP, AI, filesystem, subprocess, or another worker must cross
+an owning subsystem bridge or queued Qt Signal/Slot boundary first:
+
+```text
+background/domain event
+        -> subsystem Qt bridge or queued signal
+        -> Qt UI-thread slot
+        -> widget mutation
+```
+
+`ui.twitch_bridge.TwitchEventBridge` is the Twitch-specific implementation of
+that boundary. It is not a universal bridge for OBS, soundboard, AI, or future
+services; each subsystem must use its own Qt-safe result path.
+
+Qt worker lifetime is explicit: a page retains each active `QRunnable` and its
+signal source until completion, signal sources that may outlive a page are not
+QObject children of that page, and late results are ignored once shutdown
+starts. Retained worker references are released only after completion or after
+the owning pool confirms it has fully drained. Deferred callbacks use a live
+QObject as their `QTimer.singleShot` context so Qt cancels them when that owner
+is destroyed. These rules prevent Python wrappers from calling Qt objects after
+their C++ lifetime has ended.
 
 Important event families:
 
@@ -283,7 +397,7 @@ Important event families:
 | --- | --- | --- |
 | `twitch_auth_changed`, `twitch_bot_auth_changed` | `TwitchAuthService` | Twitch bridge / connection UI |
 | `twitch_status_changed` | `TwitchService` | status bar, health, connection UI |
-| `twitch_message_received` | `TwitchService` | chat, command dispatcher, AI queue, memories, first-message triggers |
+| `twitch_message_received` | `TwitchService` | chat, command and Keyword/Phrase dispatchers, AI queue, memories, first-message triggers |
 | `twitch_event_received` | `TwitchService` | raw EventSub diagnostics |
 | `twitch_event`, `twitch_event.<type>` | `TwitchService` | activity feed, sessions, Twitch automation |
 | `obs_status_changed` | `ObsWebSocketService` | connection UI |
@@ -306,18 +420,24 @@ Important event families:
 - `RoutineExecutionResult`
 - `AutomationExecutionResult`
 
-`TriggerEvent.context` is a string-to-string mapping. Service adapters normalize
-external payloads before automation sees them. Task templates use
-`{lowercase_name}` variables.
+`TriggerEvent.context` is a string-to-string internal mapping. Service adapters
+normalize external payloads before automation sees them. User-facing templates
+accept only canonical dotted placeholders registered through the modern
+Variables architecture, such as `{user.display_name}`, `{command.data}`, or
+`{automation.random_line}`.
 
 A routine stores a primary `trigger_id` plus `additional_trigger_ids`. Trigger
 stores own trigger-specific metadata; `RoutineStore` owns task order, routine
-groups, enable state, queue assignment, and trigger-ID links.
+groups, enable state, queue assignment, and trigger-ID links. `TaskDefinition`
+also owns structured child lists for `core.if`: `then_tasks` and `else_tasks`.
+These are tasks in the same routine execution, not references to other
+routines.
 
 ### Shared routine store
 
-`TwitchCommandTriggerStore` creates the canonical `RoutineStore`. Twitch event,
-Core, and OBS trigger stores receive that same object/path. Do not instantiate
+`TwitchCommandTriggerStore` creates the canonical `RoutineStore`. Twitch event
+(including Hub-derived Ads and chat triggers), Core, and OBS trigger stores
+receive that same object/path. Do not instantiate
 an unrelated routine store for a new trigger provider inside `MainWindow`;
 doing so would split the automation graph.
 
@@ -354,14 +474,82 @@ sequenceDiagram
 `AutomationService`:
 
 - merges global/session values into a fresh context per routine;
+- refreshes registry-backed values before each task so a later task observes
+  domain changes made by an earlier task;
 - emits normalized lifecycle events;
-- runs enabled tasks in order;
-- stops on failed tasks or a logic `break`;
+- runs enabled tasks in order, recursively using the same task executor for a
+  selected structured branch;
+- stops on failed tasks or the explicit `end_routine` control action;
+- distinguishes cooperative user cancellation from task failure and success;
 - blocks recursive routine loops;
 - limits nested routines to ten levels;
 - supports manual routine/task tests through the same execution path.
 
 A routine with no enabled/executed tasks is not considered successful.
+
+`TaskRegistry` owns typed `TaskMetadata` for every visible built-in task as well
+as its executable handler. Metadata supplies the user-facing label, concise and
+detailed help, input guidance, Variable-capable fields, requirements, notes,
+examples, and category. The top-level **Wiki** renders and searches that
+metadata under Tasks as a compact built-in reference. Input formats, choices, and
+bounds come from the existing task-editor schema. Output-capable tasks derive
+their exact placeholders from the typed output-definition architecture rather
+than a second output catalog. Internal or test-only handlers may omit visible
+metadata, while registry coverage tests prevent user-facing built-ins from
+shipping without descriptions and help text. Registration rejects visible task
+metadata unless both `short_description` and `help_text` are non-empty; hidden
+internal/test task metadata is the only exception. Adding a user-facing task
+therefore includes its Wiki documentation as part of defining the task,
+not as an optional follow-up.
+
+Visible task metadata also owns the concise `card_summary_formatter` used by the
+routine authoring view. The formatter receives persisted task configuration and
+an optional display-name resolver for stable references such as routine and
+Counter IDs. Registration rejects visible metadata that does not provide this
+presentation contract unless it explicitly declares that no configuration
+summary is required. The page must not grow a second task-ID formatting catalog.
+
+The Tasks frame follows the Activity Feed's compact card language without
+reusing its event widget: stable category colors appear as narrow left accent
+strips, while category text remains visible for accessibility. Normal actions
+are dense one-line cards with an elided configuration summary. Structured
+control flow is rendered as a container: **If** owns and previews its Then and
+optional Else task lists recursively, and each child retains its own category
+card. The selected branch executes inline, shares the current trigger context,
+`automation.*` outputs, queue identity, and cancellation token, then returns to
+the next task after If. Child failure or cancellation propagates through the
+normal task failure semantics. The real **End Routine** action remains a normal
+compact task rather than a visual `End If` sentinel.
+
+The grouped routine tree uses the same card language as compact list rows. A
+routine row shows only its elided name and queue on one line; its surrounding
+tree supplies group organization, while trigger and task details remain in the
+routine editor. Selection, disabled, and attention states are visual/card
+states rather than extra descriptive rows.
+
+Tasks, routines, attached triggers, and queues share one compact Automation
+card language: dense spacing, elided text with full tooltips, category accents,
+and consistent selection, disabled, and warning states. Their content remains
+purpose-specific. Tasks show an action and concise configuration; routines show
+their name and queue; triggers show a human trigger title and firing condition;
+queues show identity plus only Default, paused, active, or pending state when it
+is meaningful. Cards never expose persisted IDs or serialized configuration.
+
+`core.end_routine` returns the explicit `end_routine` control action. This is a
+successful early completion, not a task failure or cooperative cancellation.
+The action propagates out of structured containers such as If until the current
+routine executor consumes it. A called child routine is a boundary: End Routine
+skips that child's remaining tasks, then Run Routine (or another task that calls
+a routine) returns successfully and the parent continues. It never ends the
+entire root execution, clears waiting queue items, pauses a queue, or undoes
+completed actions.
+
+`core.if` compares literal values or canonical Variables. Text comparisons may
+ignore case; numeric comparisons parse exact finite decimals rather than binary
+floating-point values. Empty and non-empty checks are unary. Only the selected
+branch executes, an empty branch is valid, and If does not provide jump, label,
+or `goto` behavior. The editor owns child add/edit/delete/reorder controls and
+supports nested If tasks directly.
 
 Counter tasks use this same pipeline. A command, EventSub subscription, OBS
 event, Core event, or manual routine execution can invoke any routine that
@@ -370,16 +558,68 @@ engine or call Twitch directly.
 
 ### Queues
 
-Routines may reference an `AutomationQueueDefinition`. Queue policy supports:
+Every routine references an `AutomationQueueDefinition`. The system-owned
+**Default Queue** has the stable ID `streamhouse.default.queue`, is created and
+persisted automatically, cannot be renamed or deleted, and uses the same queue
+manager as every custom queue. New, imported, command-managed, Keyword/Phrase,
+Ads, and other trigger routines select it automatically unless the user chooses
+a custom queue. The routine editor therefore presents Default Queue as the
+beginner default rather than offering a direct-execution/no-queue mode.
+
+Queue policy supports:
 
 - pause/resume;
+- stopping the current routine while preserving later pending items;
+- stopping a queue by cancelling its current routine and clearing its pending items;
 - maximum pending length;
 - duplicate `allow`, `ignore`, or `replace`;
 - delay between completed items.
 
 Pending/current queue items are runtime-only. Queue definitions persist.
+Deleting a custom queue reassigns its routines to Default Queue; loading an
+empty or dangling pre-alpha assignment normalizes it to the same stable ID.
+Submission and claiming are one thread-safe operation so Qt-triggered routines
+and network-backed Chat Command workers preserve one-at-a-time queue behavior.
+Nested routines remain part of their parent execution and do not enqueue a
+second item. Each claimed root item owns one runtime-only cooperative
+cancellation token shared by its nested routines and active cancellable task.
+Cancellation never crosses queue boundaries. **Stop Current Routine** cancels
+that execution chain and leaves later items queued; **Stop Queue** also removes
+all waiting items. Completed side effects are not rolled back, and cleared
+items that never started do not create run-history entries. Cancelled routines
+are recorded as **Cancelled**, not completed or internally failed. An
+intentional End Routine result is recorded separately as **Completed Early**;
+the queue proceeds normally and retains its waiting entries.
 `AutomationService.process_queues()` is called periodically on the Qt thread so
 Qt-based tasks remain thread-safe.
+
+Core **Timer** is an ordinary Automation trigger. One Qt-owned scheduler tracks
+all enabled timer definitions without sleeps or a thread per timer. Exact mode
+starts a fresh configured interval after each firing. Random mode samples a new
+delay within the configured range after every firing. Independent minimum and
+maximum units support milliseconds, seconds, minutes, and hours. Positive
+decimal values normalize exactly to whole milliseconds; the 100 ms safety floor
+prevents runaway queue production. Each firing publishes through
+`AutomationService`, so the routine's configured queue—including Default Queue
+fallback—owns ordering, duplicates, accumulation, cancellation, and history.
+Editing, disabling, re-enabling, or deleting a trigger replaces or cancels its
+runtime schedule; shutdown cancels every timer. Only configuration persists:
+Hub startup begins fresh intervals, does not catch up downtime, and never emits
+a burst of missed runs.
+
+Run History is a bounded, runtime-only view of executions that actually
+started; merely accepting an item into a queue does not create a completed-run
+entry. `RoutineExecutionResult` retains root timing, queue/trigger metadata,
+ordered task results, selected structured branches and their child task results,
+intentional early-completion control actions, and nested routine results for the
+details window. It
+also captures a small allowlisted snapshot of meaningful dotted trigger
+metadata and `automation.*` outputs at execution time. Twitch message content
+is excluded, including `chat.message`, `command.data`, Keyword/Phrase message
+slices, Channel Point viewer input, and resubscription message text.
+Credential-like names and unrelated global registry state are excluded. The details window reads
+only that snapshot—it must never substitute current live Variable values for
+historical ones. Run History is not persisted across Hub restarts.
 
 ### Variables
 
@@ -390,56 +630,178 @@ Qt-based tasks remain thread-safe.
 - **routine** variables: context-only, shared with nested routines during one
   execution.
 
-`products/hub/automation/variable_registry.py` is the canonical typed lookup
-layer above those execution scopes. `VariableDefinition` records the dotted
-name, display name, description, type, source, category, availability, default,
-and whether the owning provider supports writes. Providers are registered by
-`MainWindow`; duplicate canonical names are rejected. Current providers expose:
+`products/hub/automation/variable_registry.py` is the authoritative metadata,
+resolution, placeholder, alias, and write-routing layer for modern Hub
+variables. Canonical names use `namespace.name` or deeper dotted scopes such as
+`counter.<stable_id>.user.stream`. `VariableDefinition` records the canonical
+name, display name, description, type, source, category, availability, required
+context keys, a provider-owned human-readable context label, optional default
+and preview values, alias status, and whether the owning provider supports
+writes. Valid types are `text`, `integer`, `number`,
+`boolean`, and ISO-8601 `datetime`. Providers are registered by `MainWindow`;
+malformed names, duplicate names, provider collisions, alias collisions, and
+alias loops are rejected. Reserved built-in namespaces currently include
+`stream`, `user`, `chat`, `command`, `keyword`, `event`, `counter`, `obs`,
+`hub`, `custom`, `automation`, `ads`, `channel_points`, `subscription`, `raid`,
+`soundboard`, `target`,
+`channel`, `socials`, and `serverinfo`.
+Current providers expose:
 
 - cached Twitch stream values: `stream.title`, `stream.category`,
   `stream.viewer_count`, and `stream.game_id`;
 - contextual `user.*` and `chat.*` values from the current trigger;
-- stable counter totals as `counter.<counter_id>`;
+- contextual Chat Command values `command.name`, `command.data`,
+  `command.target`, and `command.uses`, where data is the trimmed raw text
+  following the recognized command;
+- contextual Keyword/Phrase values `keyword.message`, `keyword.match`,
+  `keyword.before`, and `keyword.after`;
+- cached and calculated Twitch ad state as `ads.*`, plus contextual
+  `ads.requester.*` values when an Ads Started event supplies them;
+- contextual Channel Point Redemption data as `channel_points.*`, including
+  stable reward/redemption IDs, title, cost, prompt, optional viewer input,
+  status, and redemption time;
+- contextual subscription/resub/gift data as `subscription.*`, including
+  normalized tier, gift/Prime/anonymous state, month counts, message text, and
+  gift totals when Twitch supplies them;
+- contextual incoming/outgoing raid data as `raid.*`, including direction,
+  source, target, and viewer count;
+- automatically available Hub-owned Channel Information as `channel.schedule`,
+  `channel.rules`, `socials.<service>`, and `serverinfo.details`;
+- configured counter scopes as `counter.<counter_id>.total`, `.stream`,
+  `.user.total`, and `.user.stream`;
 - the observed OBS program scene as `obs.current_scene`;
 - Hub uptime and Twitch/OBS connection booleans as `hub.*`;
 - persisted/session custom values as `custom.<name>`.
 
-Global providers resolve without an event. Contextual providers report
-unavailable when their required trigger values are absent; they never invent a
-global viewer or message. Registry text rendering uses `{namespace.name}`.
-Unavailable values retain the original placeholder by default and emit a
-debug diagnostic; callers may explicitly supply a fallback. This avoids both
-crashes and silently plausible output.
+Availability/lifetime is metadata, not a sample-value inference:
+
+- **Global** definitions may resolve whenever their provider has valid state.
+  A provider can still report one unavailable while disconnected or before a
+  cached value has been observed.
+- **Contextual** definitions require trigger/event data. `user.*`, `chat.*`,
+  `command.*`, `keyword.*`, `ads.requester.*`, `channel_points.*`,
+  `subscription.*`, `raid.*`, and
+  `counter.<id>.user.total` and `.user.stream` never
+  invent a viewer, message, requester, or fallback value.
+- **Temporary** definitions describe task/action outputs that exist only in the
+  current routine execution after their producing task has run. They are not
+  registered as permanent global variables. Nested routines intentionally
+  share their parent's routine context; sibling executions do not.
+
+Registry text rendering accepts only canonical dotted `{variable.name}`
+placeholders. Unavailable values retain the original placeholder by default and
+registry resolution emits a debug diagnostic; callers may explicitly supply a
+fallback. Definition preview/sample values are documentation metadata only:
+authoring tables, pickers, and message previews never present them as current
+runtime values.
 
 Provider writes are opt-in. `custom.*` writes use `CustomVariableStore`, and a
-writable `counter.*` channel total uses `CounterService.set_value()`. Twitch and
-OBS state remains read-only; the variable layer is not a backdoor around their
-service actions.
+writable `counter.<id>.total` value uses `CounterService.set_value()` for the
+existing channel lifetime total. The other counter scopes are read-only;
+especially, a registry write does not carry a safe viewer identity. Twitch,
+chat, OBS, and Hub runtime state remain read-only; the variable layer is not a
+backdoor around their service actions.
 
-The Automation **Variables** tab provides search/source filtering, metadata,
-copy actions, and custom-variable creation/edit/delete. Custom records persist
+Counter variable names always use the immutable counter ID, never the editable
+display label. The four canonical mappings are `counter.<id>.total` for channel
+lifetime, `.stream` for the current Twitch stream, `.user.total` for the
+triggering user's lifetime value, and `.user.stream` for that user's current-
+stream value. User scopes resolve only from the triggering viewer's stable
+Twitch user ID. Without that context they remain discoverable but explicitly
+unavailable and never substitute the channel value, invent zero, or create a
+viewer entry. All four definitions remain discoverable; a scope disabled in
+Counter Setup reports **Counter scope is not enabled**. Stream scopes use the
+existing Twitch stream identity and are unavailable while no stream is active.
+There is no ambiguous `counter.<id>` definition or compatibility alias. Integer
+and Decimal definitions retain their configured numeric behavior.
+
+The Automation **Variables** tab is a definition reference as well as a live
+value view. It always lists registry definitions, including contextual
+`command.*`, `keyword.*`, `ads.requester.*`, `channel_points.*`,
+`subscription.*`, `raid.*`,
+viewer/chat/user, and OBS event definitions when no matching routine is
+running. **Current Value** and
+**Status** distinguish a known definition from a value that is presently
+available; the page never substitutes preview data for a live value. Compact
+Context and Lifetime columns use provider metadata such as **Chat Command
+routine**, **Keyword / Phrase routine**, **Ads Started**, **Viewer context**,
+and **Routine**. Search covers canonical name, display name, description,
+source, category, and context label. Source filtering, copy actions, and
+custom-variable creation/edit/delete remain available. Generic canonical
+aliases may be hidden from normal browsing, but no pre-alpha compatibility
+aliases are registered.
+Custom records persist
 in `automation/variables.json` using atomic replacement and now include `text`,
 `integer`, `number`, `boolean`, or ISO-8601 `datetime` metadata plus an optional
-description. The reusable picker in `products/hub/ui/variable_picker.py` is
-also available from templated task editors.
+description. The reusable picker in `products/hub/ui/variable_picker.py` uses
+the same registry metadata, supports source/category/search filtering, and is
+also available from templated task editors. Contextual definitions remain
+discoverable when unavailable and state their required context.
 
-Legacy flat automation outputs remain supported. A variable named
-`random_line` is still referenced as `{random_line}`. New shared/domain values
-use dotted canonical names, and custom `game_mode` is displayed as
-`{custom.game_mode}`. This compatibility avoids breaking existing routines.
+The flat variable catalog and flat placeholder path have been removed. Domain
+values use their provider namespace, stored values use `custom.<name>`, and
+routine-scoped task outputs use `automation.<name>`. Typed output definitions in
+`products/hub/automation/variable_outputs.py` describe each output's name,
+type, source task, lifetime, description, and preview without globally
+registering temporary values. Same-name temporary outputs retain deterministic
+task-order overwrite behavior. Counter tasks do not manufacture outputs: later
+tasks read the refreshed canonical `counter.<id>.*` provider value.
 
-Generated outputs are discoverable through
-`CustomVariableStore.generated_names()`. Add every new output-producing task
-there so command validation, editor previews, and template help recognize it.
+The Variables page also derives read-only configured-output references from
+the current `RoutineStore` using the same
+`generated_output_definitions()` metadata as task editors. A reference shows
+the canonical `automation.<name>`, producing task, routine, and the task number
+after which it can exist. These references refresh after routine/task changes
+and disappear when the producer is removed. They are not registered as global
+variables, do not alter runtime resolution, and never imply a current value.
+The task editor's Variable Picker remains the enforcement point for task-order
+visibility: only outputs from earlier tasks are offered. Inside an If branch,
+earlier children are visible to later children. After the If, configured outputs
+from either branch are discoverable because either may be selected at runtime;
+only outputs actually produced by the selected branch receive a runtime value.
+
+`ChannelInformationVariableProvider` reads the same thread-safe configuration
+store used by **Your Channel > Channel Information**. All eight `socials.*`
+definitions, `channel.schedule`, `channel.rules`, and `serverinfo.details`
+always exist; unconfigured fields resolve to empty text. There are no exposure
+flags. Social text/Include controls are UI-only drafts until that row's
+**Update** action. `TwitchCommandTriggerStore.commit_social` stages changes
+using the normal managed-template factories, then `ChannelInformationStore.save`
+persists the configuration and prepared command/routine files before publication.
+Ordinary write failures restore previously written files and backups without
+publishing the draft. Cross-file power-loss recovery is not provided.
+The page refreshes command/routine/Variable views only after success.
+**Include in !socials** controls composition, not Variable availability or the
+per-social command. Existing `!discord`/`!youtube` defaults are activated by
+non-empty committed links; `!socials` requires at least one included non-empty
+link. Clearing required setup disables the managed default while preserving
+identity; custom commands are untouched. Schedule/Rules/Server Information use
+their existing separate Save workflow, also with committed-only resolution.
+Automation reads this Hub-owned state through Variables rather than Get tasks.
+
+Output-producing task editors store a validated leaf ID such as `random_line`
+and show its canonical placeholder, `{automation.random_line}`, beside the
+field. A flat `{random_line}` placeholder is invalid. The task editor and
+Variable Picker expose only outputs produced by earlier tasks in the selected
+routine; an output does not exist before its producer succeeds. Successful
+outputs remain in that execution's mutable routine context for all later tasks
+and nested routines, then disappear with the execution. They do not enter the
+registry's global provider catalog, persist to disk, or leak into sibling or
+later executions.
 
 Variable precedence when preparing a trigger is:
 
-1. persisted/session custom variables;
-2. source trigger context (wins on name collision);
-3. task-created values as the routine executes.
+1. raw source-event fields enter the provider as internal context;
+2. registry providers publish canonical contextual, global, and custom values;
+3. typed `automation.*` outputs are added as tasks execute.
 
-Built-in flat names in `products/hub/automation/variables.py` and all non-
-`custom` namespaces are reserved from custom creation.
+Custom creation is constrained to `custom.*`; its namespace cannot collide with
+provider-owned definitions. Pre-alpha custom-variable schema versions before
+version 3 are intentionally rejected for reset rather than migrated. Twitch
+authentication storage is independent and was not changed by this cleanup.
+
+`VariableRegistry`, its providers, and typed output definitions are now the only
+Variables metadata, validation, preview, resolution, and domain-write path.
 
 ### Task providers
 
@@ -447,32 +809,75 @@ Handlers are registered in `MainWindow` with one stable lowercase task type.
 
 | Provider | Files | Current capability groups |
 | --- | --- | --- |
-| Core | `products/hub/automation/core_tasks.py`, `products/hub/automation/value_tasks.py` | applications, delays, service waits, paths/URLs, notifications, audio, Python scripts, duration formatting, conditional text selection |
+| Core | `products/hub/automation/core_tasks.py`, `products/hub/automation/value_tasks.py` | applications, interruptible Wait/random delays, service waits, paths/URLs, notifications, audio, Python scripts, duration formatting, conditional text selection |
 | Variables | `products/hub/automation/variable_tasks.py` | create/delete/adjust/toggle variables, nested routines |
-| Logic | `products/hub/automation/logic_tasks.py` | break, input, random number/choice, if/else, switch, while |
+| Logic | `products/hub/automation/logic_tasks.py` | End Routine, input, random number/choice, structured If, switch, while |
 | Files | `products/hub/automation/file_tasks.py` | read text/random/specific lines, write, existence, line count |
 | Control | `products/hub/automation/control_tasks.py` | enable/disable routines/tasks, pause/clear queues |
-| Twitch | `products/hub/twitch/tasks.py` | chat/pinned chat, ads, moderation, redemption results, user/stream/channel/follow lookups, enabled-command lists, Hub-owned Channel Information fields and social-message building |
-| Counters | `products/hub/counters/tasks.py` | transactional update/get/set/reset/leaderboard tasks; routine-scoped generated values are prefixed by the stable counter ID or an explicit output prefix |
+| Twitch | `products/hub/twitch/tasks.py` | chat/pinned chat, ads, moderation, redemption results, user/stream/follow lookups, enabled-command lists, and social-message building |
+| Counters | `products/hub/counters/tasks.py` | four mutation tasks: Increase, Decrease, Set, and Reset; amounts/values accept numeric literals or modern Variables |
 | OBS | `products/hub/obs_service/tasks.py` | scenes, sources, inputs, filters, media, outputs, hotkeys, raw request |
 
-Counter definitions and values remain Hub implementation. `CounterService`
-uses the real stream ID cached by the Twitch companion refresh; it never
-creates a process-lifetime or offline stand-in stream. Each named counter has
+Counter definitions and values remain Hub implementation. A definition has an
+immutable ID, editable display labels, Integer or Decimal numeric type,
+configured reset/start value, minimum, and display precision. Decimal values
+use exact decimal arithmetic and persist as decimal strings; display rounding
+never changes the stored value. Optional singular/plural display units (for
+example `cup`/`cups`, `L`, or `points`) are presentation-only; canonical
+Variable values stay numeric. Renaming a counter does not change its storage
+file or canonical Variables. Counter storage is pre-alpha schema version 2;
+older private-development counter files are reset rather than migrated.
+
+`CounterService` owns every mutation from the setup page, task providers, and
+registry-routed shared writes. It uses the real stream ID cached by the Twitch
+channel snapshot refresh and never creates a process-lifetime or offline
+stand-in stream. Viewer operations use the triggering viewer's stable Twitch
+user ID and fail with `missing_viewer` when it is absent. Each named counter has
 an independent read-modify-write lock and atomic JSON replacement, so selected
 scopes commit as one task transaction without serializing unrelated counters.
-Fresh stores remain absent/empty until explicit counter creation. Value-task
-results use structured statuses (`success`, `partial_success`,
-`skipped_known_bot`, `missing_counter`, `disabled_counter`, `missing_viewer`,
-`stream_unavailable`, `invalid_configuration`, `invalid_value`,
-`minimum_reached`, or `persistence_failed`). Reads also expose viewer rank;
-offline multi-scope updates and resets commit valid lifetime scopes while
-reporting skipped stream scopes.
+Fresh stores remain absent/empty until explicit counter creation. Operations
+return structured statuses (`success`, `partial_success`, `skipped_known_bot`,
+`missing_counter`, `disabled_counter`, `missing_viewer`, `stream_unavailable`,
+`invalid_configuration`, `invalid_value`, `minimum_reached`, or
+`persistence_failed`).
+
+Automation exposes a single **Counter** category with **Increase**,
+**Decrease**, **Set**, and **Reset**. Each task selects one tracked value;
+shared is the beginner default, while viewer/current-broadcast choices remain
+available when the definition tracks them. Increase/Decrease default to `1`.
+Their Amount fields and Set's Value field accept an exact numeric literal or a
+single resolvable modern placeholder such as `{command.data}`,
+`{custom.some_number}`, or `{counter.other.total}`. Invalid, unavailable, or
+non-numeric input fails the task without writing Counter state. Reset restores
+the definition's configured reset value. Counter tasks do not own triggers or
+outputs: triggers supply context, tasks mutate through `CounterService`, and
+later tasks read the registry provider.
+
+A Chat Command strips the recognized command and exposes the remaining raw
+text, with separator whitespace trimmed, as `command.data`. For example,
+`!counterset 4.5` can drive Counter -> Set with `{command.data}`, and
+`!coffee 0.5` can drive Counter -> Increase. No Counter-specific command logic
+or numbered argument Variables exist.
 
 The Counters management page is presented inside Hub's Twitch workspace. This
 is a navigation ownership choice only: definitions, named value files,
 transactional updates, and automation providers remain in
 `products/hub/counters/`.
+
+The Users workspace reads viewer identity, groups, bot classification, observed
+Twitch roles, and first/last seen from the chatter-history store. Stable Twitch
+user ID is authoritative; a changed login or display name does not create a new
+record. Twitch role values remain Unknown until chat badges or a complete
+channel snapshot confirms them. The workspace reuses the chat moderation menu
+and edits only `viewer_total` and `viewer_stream_total` through `CounterService`;
+it does not own a parallel user, moderation, or counter store. Selected-viewer
+writes capture immutable counter, user, scope, exact-value, and confirmed-stream
+identity before worker dispatch. Completion returns through a queued Qt signal;
+only a still-matching selection is repainted, and completed workers are released.
+
+A future Set-task option to ask for a value when a manual/button/hotkey routine
+runs is intentionally deferred. Alpha does not introduce a generic runtime
+prompt framework for this use case.
 
 ### Twitch chat timeline
 
@@ -487,14 +892,23 @@ recent-message lookup and message deletion state.
 single Chromium surface rather than allocating one Qt widget per message.
 Normal messages remain compact and borderless. Special entries alone receive
 an accent/background. DOM rows are pruned with model history; new content
-scrolls only when the viewer was already near the bottom. The view emits the
-selected structured entry, while reply/copy/user details and moderation are
-coordinated by `MainWindow`. Twitch calls continue through
-`TwitchService.moderate_user()` and its Helix client.
+scrolls only when the viewer was already near the bottom. Scrolling upward
+pauses following and counts pending entries behind a compact Jump to latest
+control; manually returning to the bottom resumes following. Moderation
+removals preserve that reading state, while a full clear resets it. The view
+emits the selected structured entry, while reply/copy/user details and
+moderation are coordinated by `MainWindow`.
 
-Python-script tasks expose trigger context through `STREAMHOUSE_*` environment
-variables. Temporary `SALLY_*` aliases are also emitted so existing trusted
-local scripts continue to work; new scripts must use Streamhouse names.
+`products/hub/twitch/slash_commands.py` owns the read-only metadata and parser
+for API-backed chat slash actions. The chat input uses that registry for local
+completion, while Wiki uses it for reference content. Selection prepares text
+but never executes it. Explicit submission runs on a worker and routes through
+`TwitchService` to the same moderation and Mod/VIP role paths used by the
+Chatters/Users context menu, plus chat settings, clear, raids, and announcements.
+Unknown slash text is not sent blindly to Twitch.
+
+Python-script tasks expose trigger context only through `STREAMHOUSE_*`
+environment variables.
 
 Adding a task requires more than a handler. See **Adding an automation task**.
 
@@ -502,17 +916,68 @@ Adding a task requires more than a handler. See **Adding an automation task**.
 
 | Provider | Store | Persisted file | Examples |
 | --- | --- | --- | --- |
-| Twitch commands | `TwitchCommandTriggerStore` | `twitch/commands.json` | `!command`, aliases, permissions, cooldowns, editable default provenance and removed-default tombstones |
-| Twitch activity | `TwitchEventTriggerStore` | `twitch/event_triggers.json` | follow, sub, gift, cheer, raid, reward, online/offline |
+| Twitch commands | `TwitchCommandTriggerStore` | `twitch/commands.json` | configured `!command` triggers, aliases, permissions, cooldowns, statistics, and default-template provenance |
+| Twitch activity | `TwitchEventTriggerStore` | `twitch/event_triggers.json` | follow, sub/resub/gift, cheer, incoming/outgoing raid, reward, online/offline |
+| Twitch Channel Point Redemption | same as above | same | one broadcaster EventSub subscription, local matching by stable reward ID or Any Custom Reward |
 | Twitch first message | same as above | same | once per viewer per stream with offline grace reset |
+| Twitch Keyword / Phrase | same as above | same | Contains/Exact/Starts With/Ends With chat matching with case and whole-word controls |
+| Twitch Ads | same as above | same | 5/3/2/1-minute warnings, EventSub-backed Ads Started, Hub-calculated Ads Ended |
 | Core | `CoreTriggerStore` | `automation/core_triggers.json` | application started/closing |
+| Core Timer | `CoreTriggerStore` + `AutomationTimerScheduler` | `automation/core_triggers.json` | exact intervals or a newly sampled random interval range |
 | OBS | `ObsTriggerStore` | `obs/triggers.json` | connection, scene, source, audio, media, output changes |
 | Soundboard | button record in `SoundboardStore` | `twitch/soundboard.json` | local preview or Extension button |
 
 The first-message trigger is synthesized from accepted chat messages, not a
-native EventSub subscription. It ignores broadcaster/bot messages, tracks
-viewer identity per trigger, resets on a new stream ID, and preserves state
-through brief offline periods according to `reset_minutes`.
+native EventSub subscription. It ignores broadcaster/bot messages, tracks the
+stable Twitch viewer ID per trigger, resets on a new stream ID, and preserves
+current-stream state through Hub restarts and brief offline periods according
+to `reset_minutes`. An incoming raid starts the shared, configurable First
+Message suppression window (enabled with a three-minute default); viewers who
+chat during it are marked seen without publishing First Message triggers, while
+commands and Keyword/Phrase remain active. A newer incoming raid restarts the
+window, same-stream restart preserves its remaining time, and a new stream
+clears it. Twitch supplies no raid-viewer roster, so suppression is deliberately
+global. `twitch/first_message_state.json` is bounded trigger bookkeeping for the
+current stream, not historical viewer analytics, and suppressed messages do not
+create Run History executions.
+
+`TwitchEventTriggerStore` schema v4 owns both trigger definitions and the shared
+First Message raid-suppression settings. An obsolete pre-Alpha trigger file is
+discarded during startup, its stable IDs are removed from routine links, and a
+clean v4 live/recovery pair is written before automatic Backup runs; the runtime
+loader and Backup do not accept the obsolete schema. Routine Backup projections
+retain the shared First Message settings alongside selected Twitch triggers.
+
+Keyword/Phrase is a separate chat concept from Chat Command. Its trigger
+context is fresh for one routine execution, keeps normal `user.*`/`chat.*`
+data, and never manufactures `command.*`. Ads warnings are deduplicated per
+scheduled timestamp and reset when Twitch moves the schedule. Ads Ended is an
+estimated Hub event derived from the EventSub start time plus duration because
+Twitch does not publish a public ad-break-end EventSub event.
+
+Subscribe Automation represents a direct paid or Prime subscription and
+therefore excludes `channel.subscribe` events whose official `is_gift` field is
+true. Gift Subscription owns the one aggregate gifting execution and exposes
+its count; gifted-recipient subscribe events may still update Activity and
+subscriber/user state without publishing Subscribe routine triggers.
+
+Built-in Chat Command definitions remain code-owned. The self-contained
+`!uptime`, `!followage`, `!accountage`, `!title`, `!game`, and `!commands`
+definitions materialize enabled managed routines when the command store loads,
+so a clean Hub can use them without a configuration step. Setup-dependent
+defaults remain unconfigured templates; committing social or Channel
+Information setup can create/enable those defaults without visiting Commands,
+and clearing setup disables them. Materialized defaults and custom commands use
+normal managed Automation routines in the shared **Commands** group by default. Group
+placement is user-owned organization, independent of trigger type: attaching a
+command to an existing routine preserves its group, and command edits,
+reconciliation, reload, and managed default/social synchronization never move a
+routine back to **Commands**. Managed command ownership covers trigger/routine
+identity and setup synchronization, not group ownership. The group is created
+on demand and removed under the existing empty-group cleanup rules.
+`twitch/commands.json` therefore stores materialized defaults and custom commands, while
+`automation/routines.json` remains authoritative for their routines and group
+placement.
 
 ## Twitch subsystem
 
@@ -557,6 +1022,19 @@ Accepted chat becomes `TwitchMessage`; non-chat notifications become
 `TwitchEvent`. Raw diagnostic records remain separate from the human activity
 feed.
 
+The in-memory live Chat timeline retains Twitch message and user IDs so chat
+moderation notifications can remove one message, one user's visible messages,
+or the whole visible timeline authoritatively. This does not delete persistent
+Activity or chatter/user records. Moderation notifications reach widgets only
+through the Twitch Qt bridge's queued signal boundary.
+
+Stream online/offline notifications update the operational live state and Ads
+controls immediately; snapshot requests predating that transition are ignored.
+Periodic channel snapshots continue to detect already-live channels and supply
+viewer counts and ad schedules. `AdsService` normalizes both observed Helix Unix
+seconds and documented/EventSub RFC3339 timestamps to UTC. Its cached preroll
+time is shown as compact text on Chat, not as a progress bar.
+
 ### Message handling in MainWindow
 
 An accepted non-bot chat message can feed several independent consumers:
@@ -564,7 +1042,7 @@ An accepted non-bot chat message can feed several independent consumers:
 1. Twitch chat rendering;
 2. chatter/session counters;
 3. custom command dispatch;
-4. first-message automation;
+4. Keyword/Phrase and first-message automation;
 5. RAM recent-chat context;
 6. AI reply decision queue;
 7. opt-in memory buffer/training capture.
@@ -597,11 +1075,18 @@ Connection intent and current socket state are separate:
 - an intentional disconnect does not reconnect.
 
 OBS event handlers cache useful live state such as input mute. Task variable
-resolution may query live OBS state when a template requests `{muted}` or other
-live values; do not assume every value is present in the original trigger.
+resolution may query live OBS state when a template requests `{obs.muted}` or
+other canonical OBS values; do not assume every value is present in the
+original trigger.
 
-Qt WebSocket callbacks already arrive in Qt context. Preserve asynchronous
-request IDs and callbacks rather than blocking the UI waiting for OBS.
+Qt WebSocket callbacks already arrive in Qt context. Automation OBS tasks use
+the service's completion-aware request boundary: worker callers marshal sends
+to the socket's Qt thread, while Qt-thread callers use a bounded nested event
+loop so Hub remains responsive. A task continues only after OBS acknowledges
+the request; rejection, timeout, disconnect, and shutdown become normal task
+failures. Source visibility confirms both scene-item lookup and the final state
+change. The acknowledgement is the ordering boundary; tasks do not wait for a
+separate OBS state-change event.
 
 ## Streamhouse AI subsystem
 
@@ -612,11 +1097,9 @@ request IDs and callbacks rather than blocking the UI waiting for OBS.
 `StreamhouseAIClient` is synchronous by design and must be used only in worker
 threads. Every request includes `X-Streamhouse-Protocol`.
 
-`PROTOCOL_VERSION` is `2`. New clients emit only
-`X-Streamhouse-Protocol`. The v2 server temporarily accepts the legacy
-`X-Sally-Protocol` header with version 1 because the route payloads are still
-compatible; unsupported versions receive a clear HTTP 409 mismatch response.
-The `/v1/...` routes remain product-neutral.
+`PROTOCOL_VERSION` is `3`. Clients and the server use only
+`X-Streamhouse-Protocol`; missing or unsupported versions receive a clear HTTP
+409 mismatch response. The `/v1/...` routes remain product-neutral.
 
 Current routes:
 
@@ -768,26 +1251,60 @@ Primary left navigation:
 
 - Dashboard
 - Your Channel
-- AI
 - Automation
+- Wiki
 - Connections
 - Logs
 - Settings
+
+The Hub Dashboard is a standalone lightweight landing page owned by
+`products/hub/ui/dashboard_page.py`. It shows the authoritative Hub version and
+build kind, compact Twitch/OBS connection summaries sourced from the existing
+services, navigation to Connections, and the configured project/issue-tracker
+links. It does not duplicate connection controls or depend on Streamhouse AI;
+Alpha 0.1 has no in-app update checker.
+Its Help & About area and the Logs header expose the same Create Support Bundle,
+Copy Diagnostic Summary, and Report a Bug flows. An abnormal-shutdown notice on
+Dashboard offers those actions without blocking startup.
 
 Your Channel top tabs:
 
 - Chat
 - Analytics
-- Soundboard
+- Raid
 - Commands
+- Channel Information
 - Channel Points
+- Counters
+- User
 
 These are the tabs currently implemented. The planned Hub workspace—including
-Stream Info, Engagement, Raids, and Moderation—is documented in
+Stream Info, Engagement, and Moderation—is documented in
 [`product-family.md`](product-family.md) and must not be read as current UI.
 
-AI in Hub is a remote/control workspace. Streamhouse AI has its own left
-navigation:
+The runtime-only **Raid** tab is owned by `products/hub/ui/raid_page.py`. It
+loads the signed-in broadcaster's live followed channels through Twitch's
+paginated Get Followed Streams API on a Qt worker, then locally searches and
+sorts responsive cards. Thumbnail requests are asynchronous and optional. Raid
+buttons reuse the same stable-ID `TwitchService.start_raid()` path as `/raid`
+after confirmation. A compact session-only message composer reuses normal
+broadcaster chat sending. After Twitch accepts a start request, the page uses
+the authoritative `created_at` response to present the pending 90-second
+countdown, disables other targets, and offers Helix cancellation. Matching
+outgoing `channel.raid` events clear the active state immediately. Twitch
+executes the raid automatically when the countdown expires; Hub exposes no
+forced-completion action. The candidate list, message, and active raid state are
+never persisted.
+
+Hub Alpha 0.1 does not expose the Soundboard page while Twitch Extension
+approval is pending. Its store, local server, relay client, Automation
+integration, and Twitch Extension code remain implemented, and the isolated
+external relay compatibility contract below remains intentional. The page can
+be composed again after approval without rebuilding the subsystem.
+
+Hub Alpha 0.1 has no visible AI workspace or settings section. The lightweight
+Hub-to-AI protocol infrastructure remains available internally, while
+Streamhouse AI owns its own user interface and left navigation:
 
 - Dashboard
 - Memories
@@ -797,8 +1314,21 @@ navigation:
 - Personality
 - Settings
 
-Automation has Routines, Queues, Task Library, and Run History. The selected
+Automation has Routines, Queues, Variables, and Run History. The selected
 routine editor contains Triggers, Tasks, Settings, and History.
+
+The built-in Wiki is a read-only local reference browser owned by
+`products/hub/core/wiki_reference.py` and presented by
+`products/hub/ui/wiki_page.py`. Tasks derive from `TaskRegistry` metadata and
+the existing task-editor input schemas; Triggers derive from the registered
+Core/Twitch/OBS trigger catalogs; Variables list only canonical
+`VariableRegistry` definitions, including contextual definitions even when no
+routine is running; Counter scopes and built-in Commands derive from their
+current domain constants/definitions. Small Getting Started, control-flow,
+service, and recipe articles provide explanatory prose that has no equivalent
+runtime registry. The Wiki never mutates operational state or owns persistence.
+The Variables page remains the live value inspector and Automation remains the
+routine authoring workspace.
 
 ### Designer versus dynamic UI
 
@@ -807,12 +1337,35 @@ routine editor contains Triggers, Tasks, Settings, and History.
 - `products/hub/ui/main_window.py` replaces/builds substantial dynamic areas after
   `setupUi()`.
 - large feature widgets live in focused modules such as
-  `products/hub/ui/automation_page.py`, `products/hub/ui/soundboard_page.py`, and
+  `products/hub/ui/dashboard_page.py`, `products/hub/ui/automation_page.py`,
+  `products/hub/ui/wiki_page.py`,
+  `products/hub/ui/soundboard_page.py`, and
   `products/hub/ui/channel_points_page.py`.
 
-Prefer a focused widget/module for new substantial pages. `MainWindow` is
-already a large composition/orchestration class; avoid putting reusable domain
-logic or network protocol code in it.
+`MainWindow` is the Hub composition root and shell coordinator. It may
+instantiate components, inject dependencies, connect signals/slots, register
+pages, and perform small application-shell orchestration. It should not become
+the implementation owner of a new feature domain.
+
+Visible top-level Hub workspaces and substantial workspace tabs use the small
+reusable `products.hub.ui.page_header.PageHeader` for consistent title,
+optional description, and page-level action alignment. Feature-specific
+toolbars and selection actions remain owned by their focused page rather than
+being forced into the shared heading.
+
+Substantial features should generally follow the existing ownership shape:
+
+```text
+domain service/store
+        -> controller or worker when needed
+        -> focused page/panel/widget
+        -> MainWindow composition and wiring only
+```
+
+This is a cohesion rule, not a requirement to create a file for every trivial
+control. Reusable domain rules, API calls, persistence, timers, and substantial
+feature UI should not accumulate in `main_window.py` merely because it is the
+composition root.
 
 ### Responsive layout
 
@@ -822,91 +1375,283 @@ logic or network protocol code in it.
 - five-percent hysteresis prevents resize flicker;
 - manual landscape and portrait overrides are persisted;
 - portrait uses top navigation and rearranges splitters/panels;
+- the Twitch Chat workspace keeps Chat beside a vertically stacked
+  Chatters/Activity side column in both orientations, with Chat receiving the
+  larger initial share;
 - adjustable splitter and table-column state should remain user-controlled.
 
 New pages must remain usable in both orientations and should use scroll areas
 when controls would otherwise be crushed.
 
+### Hub window geometry on Windows
+
+`products/hub/core/window_state.py` retains Qt `QSettings` geometry/state
+storage. Valid saved normal geometry is preserved; oversized, partially hidden
+or disconnected-display geometry is clamped to an available display's work
+area, choosing the largest overlap or the primary screen when fully offscreen.
+
+`products/hub/core/window_geometry.py` owns normal-window screen-fit correction.
+`MainWindow` installs its `WindowGeometryController` after restoring settings.
+The controller follows `QWindow.screenChanged` and the current screen's work
+area/DPI notifications, and checks again on show or return from maximized.
+It uses `availableGeometry`, including taskbar reservations, and fits the whole
+frame while applying client geometry atomically. It never expands the window,
+rescales fonts, changes layout settings or repeatedly subtracts frame borders.
+Same-screen user moves/resizes are not continuously overridden.
+
+All correction runs on the Qt UI thread. A single queued, coalesced check lets
+Qt finish updating native frame metrics; there is no monitor polling.
+`MainWindow.nativeEvent` observes only `WM_ENTERSIZEMOVE` / `WM_EXITSIZEMOVE`
+for geometry purposes, deferring a pending screen correction until the native
+drag ends. These notifications are still passed to Qt. There are no custom
+hit-test, maximize, work-area or `WM_DPICHANGED` implementations. Coordinates
+and frame margins remain Qt logical units, including on mixed-DPI monitors.
+Maximized, minimized and fullscreen geometry stays under Qt/Windows control;
+restoring to normal schedules a fit on the destination display.
+
+Focused regression tests are in `test_window_geometry.py`, `test_window_state.py`
+and `test_main_window.py`. Packaged acceptance still requires an actual
+ultrawide-to-1080p drag, repeated returns without growth/shrinkage, mixed scaling,
+native maximize/restore, and close/reopen on the destination display. The
+existing minimum usable layout size is unchanged; work areas smaller than that
+minimum are not a substitute for a separate small-screen content-layout task.
+
 ## Threading and UI safety
 
 Use these rules:
 
-1. Qt widgets are mutated only on the Qt/main thread.
-2. Slow Helix, localhost HTTP, filesystem batches, and model work run in
-   workers or dedicated service threads.
-3. Worker results return through Qt signals.
-4. The global event bus is synchronous and does not switch threads.
+1. Qt widgets are UI-thread-only.
+2. `Events.emit()` is synchronous on the emitting thread; use a subsystem Qt
+   bridge or queued Signal/Slot boundary before a worker event touches widgets.
+3. Potentially blocking HTTP/network calls, Helix or blocking OBS operations,
+   filesystem batches, subprocess waits, model/inference work, long CPU work,
+   and waits/sleeps must not run on the Qt UI thread.
+4. Route slow work through the owning service, existing worker, or dedicated
+   thread; return results through Qt signals or another explicitly Qt-safe state
+   update.
 5. `ThreadingHTTPServer` request handlers must not touch Qt widgets directly.
-6. Soundboard server and relay threads communicate through Qt signals.
-7. Automation execution currently occurs on the Qt thread because several task
-   handlers use Qt APIs; do not move it wholesale to a Python thread without
-   separating Qt-dependent handlers.
-8. Twitch command routines containing Helix information tasks run through the
+   Soundboard server/relay and AI/Twitch workers already use Qt signal
+   boundaries; preserve those patterns.
+6. Automation execution currently occurs mainly on the Qt thread because some
+   task handlers use Qt APIs. Any handler executed there must not perform
+   blocking I/O. Network-capable tasks require an existing asynchronous
+   service/worker path.
+7. Twitch command routines containing Helix information tasks run through the
    single-worker `CommandExecutionWorker`; completion and UI updates return by
    Qt signal. Other automation remains on the Qt thread because its task set may
    include Qt-affine providers.
-9. Avoid blocking waits. Core delay tasks use a nested Qt event loop so the UI
-   continues processing events.
+8. A future background Automation executor requires explicit affinity metadata
+   and a UI-thread dispatch path for Qt-dependent handlers; do not move the
+   executor wholesale to a Python thread.
+9. Avoid blocking waits. **Core → Wait** accepts literal or Variable-backed
+   durations in milliseconds, seconds, or minutes and uses an interruptible
+   nested Qt event loop. It pauses only the current routine while the UI and
+   other eligible queues continue processing; Hub shutdown cancels active waits.
+   User cancellation of a running queue item uses the same cooperative wake-up
+   path. OBS response waits also register with the current routine token, remove
+   their pending callback when cancelled, and return through normal cancelled
+   task/routine lifecycle events.
 
 ## Persistence and secrets
 
-`core.paths.user_data_root()` resolves:
+`shared.streamhouse_runtime.paths.user_data_root()` currently resolves:
 
 1. `STREAMHOUSE_DATA_DIR` when set (tests/smoke isolation);
-2. legacy `SALLY_DATA_DIR` as a temporary fallback, with a deprecation warning;
-3. `%LOCALAPPDATA%\Streamhouse`;
-4. a temporary `Streamhouse` directory if app data is unwritable.
+2. `%LOCALAPPDATA%\Streamhouse`;
+3. a temporary `Streamhouse` directory if app data is unwritable.
 
-Both entry points call `migrate_legacy_user_data()` before loading settings or
-credentials. With the normal default root, it recursively copies every missing
-file from `%LOCALAPPDATA%\SallyAI` into `%LOCALAPPDATA%\Streamhouse`. Existing
-destination files are never overwritten, the legacy tree is never deleted,
-DPAPI files are copied opaquely, and interrupted migrations are safe to retry.
-Explicit data-directory overrides skip automatic copying from the real user
-profile so tests and smoke runs remain isolated.
+Sally-era data roots and environment aliases are not read or migrated. Private
+pre-alpha data may be reset. Twitch token storage remains under the current
+Streamhouse root and uses the current-user DPAPI contract described below.
 
-Qt application metadata now uses organization `Streamhouse` with application
-names `Streamhouse Hub` and `Streamhouse AI`. `core.qt_settings` copies missing
-values from the legacy `Sally AI`/`Sally Bot` and
-`Sally AI`/`Sally AI Companion` QSettings stores without overwriting new state.
-This preserves geometry, dock, splitter, and related UI preferences.
+Qt application metadata and QSettings use organization `Streamhouse` with
+application names `Streamhouse Hub` and `Streamhouse AI`. Sally-era QSettings
+stores are not copied. Current window-state keys use product/domain names.
 
-JSON stores use `atomic_write_json()` and `load_json_with_backup()`: write to a
-temporary file, keep an adjacent `.bak`, then replace atomically.
+JSON stores use the shared `atomic_write_json()` / `load_validated_json()`
+boundary. A save is fully serialized to a uniquely named same-directory temp
+file, flushed and fsynced, parsed again, and only then installed with
+`os.replace`; the adjacent `.bak` is itself prepared through a flushed temp
+file before replacement. On Windows, replacement is atomic when the underlying
+filesystem honors `os.replace`, but antivirus locks, permissions, and disk-full
+errors can still make the operation fail. Those failures are surfaced, the
+previous live file remains authoritative, and uncommitted temp files are
+cleaned rather than promoted.
 
-Routine exports use `streamhouse.automation.routine` and the
+Current-schema stores parse and validate a complete candidate before publishing
+it to in-memory state. If the live file is malformed or structurally invalid,
+the loader tries the independently validated `.bak`. The bad file is moved to a
+timestamped `corrupt/` sibling directory, never silently rewritten; a valid
+backup is restored as the live copy. If neither copy validates, startup may use
+an empty in-memory feature state so Hub can open, but the evidence remains
+quarantined and the error is logged. An exact unsupported pre-Alpha schema uses
+`UnsupportedJsonSchemaError` and follows the disposable-development-data reset
+policy instead; unsupported schema and current-schema corruption are not the
+same condition. Stale temp files never outrank a valid live file.
+A missing live file with a validated `.bak` is recovered from that backup; an
+uncommitted temp file is never treated as the committed candidate.
+
+Twitch tokens, OBS passwords, and the Hub relay key are stored separately from
+normal JSON configuration and encrypted with current-user Windows DPAPI
+(`CRYPTPROTECT_UI_FORBIDDEN`, without machine scope). They use the same fsynced
+same-directory byte-replacement primitive without exposing plaintext. Older
+machine-scoped private-development values remain DPAPI-readable and are
+rewritten at current-user scope when their owning service next saves them.
+Chatter/session dirty flags are cleared only after a successful save. Shutdown
+attempts both stores independently; a failure keeps the diagnostics active
+marker so the next launch reports that the prior session did not complete a
+fully clean shutdown.
+
+Current pre-alpha stores require their exact current schema and direct
+developers to reset discarded private-development data. This includes Hub/AI
+settings, routines, queues, custom Variables, Channel Information, Counters,
+commands, Core/Twitch/OBS triggers, soundboard and relay configuration,
+activity, chatter, and stream sessions. Their loaders retain current-schema
+validation and same-schema backup recovery, but do not silently migrate
+unversioned or obsolete private-development formats.
+
+Hub Settings startup has a deliberate pre-Alpha initialization boundary around
+the strict v4 loader. A current live file loads without rewriting. An obsolete
+live file first recovers a validated current `.bak` when one exists; otherwise
+the obsolete portable preferences are discarded and authoritative v4 defaults
+are atomically published to both live and recovery files. Missing live data is
+created as v4. Current-schema corruption still follows quarantine and validated
+same-schema recovery, and an unrecoverable or failed reset aborts startup rather
+than leaving current in-memory defaults beside obsolete durable data. Window
+geometry, protected credentials, and other independently owned stores are not
+part of this reset.
+
+Commands, durable Custom Variables, and Channel Information use the same strict
+runtime/startup separation for their current schemas (v6, v3, and v3). Ordinary
+loads accept only the current schema. Startup restores a validated current
+recovery copy when available; otherwise an obsolete pre-Alpha live/recovery pair
+is discarded and a current durable store is atomically published before normal
+Hub composition continues. Missing stores are also initialized durably. Current
+schema corruption retains the shared quarantine and same-schema recovery rules,
+and publication failure aborts startup instead of substituting memory-only
+defaults. Resetting obsolete Commands rebuilds only current self-contained
+built-ins, resetting Custom Variables discards durable `custom.*` values, and
+resetting Channel Information discards its committed social/schedule/rules/server
+content. No tolerant legacy loader or Backup exception is provided.
+
+Ordinary store writes are atomic per file, not transactional across the entire
+data root. Channel Information plus managed-command updates and selective
+Backup/Restore have explicit staged rollback. Trigger/routine and other
+multi-store service operations use ordered writes and compensating rollback,
+but a process or power failure between separate file replacements can still
+leave references for startup reconciliation to repair. This is an unavoidable
+remaining file-store boundary, not a claim of database-level transactions.
+
+Hub permits only one writable process to own a resolved Hub data root. On Windows,
+`HubInstanceLock` uses an OS-backed named mutex whose identity is a SHA-256
+fingerprint of the canonical data-root path; the path and user content are not
+stored in the mutex name. Windows releases ownership when the process terminates,
+including forced termination, and an abandoned mutex is safely reclaimable by the
+next launch. Non-Windows development uses `QLockFile` with process-death stale-lock
+recovery and no age-based stealing. Distinct explicitly configured data roots have
+distinct ownership identities.
+
+Ownership begins before diagnostics/session markers and writable composition. It
+remains held while the window is hidden in the tray and throughout service/store
+teardown, diagnostics clean shutdown, and log flushing; it is released only as the
+application process exits that path. Atomic persistence protects the integrity of
+each file replacement, while exclusive instance ownership prevents concurrent
+valid snapshots from causing lost updates. Neither protection substitutes for the
+other.
+
+Routine exports use `streamhouse.automation.routine` schema v2 and the
 `.streamhouse-routine.json` extension. Task clipboard payloads use
-`streamhouse.automation.task`. Imports temporarily accept the corresponding
-legacy `sally.automation.*` identifiers and `.sally-routine.json` files.
+`streamhouse.automation.task` schema v2. Both formats recursively preserve If
+branch tasks and regenerate task IDs on import/paste. No pre-rebrand import
+identifiers or filename formats are accepted.
 
 ### Main files
 
 | Relative path | Owner | Notes |
 | --- | --- | --- |
-| `config/settings.json` | Hub | `AppSettings`, validated/defaulted |
-| `companion/settings.json` | Streamhouse AI | model, endpoint, personality/language; relative path retained during root migration |
-| `automation/routines.json` | Hub | groups, routines, ordered tasks, trigger links |
-| `automation/core_triggers.json` | Hub | application lifecycle bindings |
-| `automation/queues.json` | Hub | queue definitions; pending items are not persisted |
-| `automation/variables.json` | Hub | global values only; session/routine are volatile |
-| `twitch/commands.json` | Hub | commands, permissions, aliases, cooldowns, stats, default IDs, removed-default tombstones |
-| `twitch/channel-information.json` | Hub | versioned social links, social inclusion choices, schedule, rules, and server information used by commands and automation tasks |
-| `counters/index.json` | Hub | versioned custom-counter definitions and lightweight tracking metadata |
-| `counters/<counter_id>.json` | Hub | one atomic value document per custom counter; shared/current-stream and Twitch-user-ID keyed values |
-| `twitch/event_triggers.json` | Hub | Twitch event/first-message trigger definitions |
-| `twitch/soundboard.json` | Hub | pages, buttons, routine IDs |
-| `twitch/soundboard-relay.json` | Hub | non-secret relay URL/channel/autoconnect |
-| `obs/connection.json` | Hub | non-secret OBS host/port/autoconnect |
-| `obs/triggers.json` | Hub | OBS trigger definitions |
-| `memory/twitch_chatters.json` | Hub | consent-aware profiles, roles, timelines, memories |
-| `memory/twitch_activity.json` | Hub | bounded activity feed history |
-| `memory/stream_sessions.json` | Hub | active/completed session analytics |
-| `training/examples.json` | Streamhouse AI | consent-based classifier examples |
-| `diagnostics/ai_test_report.json` | Streamhouse AI | AI outcomes/latency metadata |
-| `logs/` | each process | rotating application logs |
-| `backups/` | Hub | allowlisted local data archives |
+| `config/settings.json` | Hub | schema v4 `AppSettings`, validated/defaulted; includes the portable automatic-backup preference and no obsolete auto-send toggle field |
+| `ai/settings.json` | Streamhouse AI | schema v2 model, endpoint, personality/language |
+| `automation/routines.json` | Hub | schema v5 groups, routines, ordered tasks including recursive If branches, trigger links, and queue IDs |
+| `automation/core_triggers.json` | Hub | schema v2 application lifecycle and fixed/random Timer bindings; runtime deadlines are not persisted |
+| `automation/queues.json` | Hub | schema v1 Default Queue/custom definitions; pending items are volatile |
+| `automation/variables.json` | Hub | schema v3 global values; session/routine values are volatile |
+| `twitch/commands.json` | Hub | schema v6 configured commands and template provenance; templates stay in code |
+| `twitch/channel-information.json` | Hub | pre-alpha schema v3 committed social links/inclusion, schedule, rules, and server information; automatic Variables with no exposure flags; older development schemas reset |
+| `counters/index.json` | Hub | pre-alpha schema v2 definitions: stable ID, labels, scopes, numeric type, reset/minimum, and display precision |
+| `counters/<counter_id>.json` | Hub | schema v2 atomic values stored as exact decimal strings; shared/current-stream and Twitch-user-ID keyed values |
+| `twitch/event_triggers.json` | Hub | schema v4 EventSub, stable-ID Channel Point Redemption, shared First Message raid-suppression settings, first-message, Keyword/Phrase, and Ads triggers |
+| `twitch/first_message_state.json` | Hub | schema v2 current-stream First Message viewer IDs, offline-grace timestamp, and active raid-suppression expiry; obsolete/malformed pre-alpha state resets |
+| `twitch/soundboard.json` | Hub | schema v1 pages, buttons, routine IDs |
+| `twitch/soundboard-relay.json` | Hub | v1 non-secret relay URL/channel/autoconnect |
+| `obs/connection.json` | Hub | v1 non-secret OBS host/port/autoconnect |
+| `obs/triggers.json` | Hub | schema v1 OBS trigger definitions |
+| `memory/twitch_chatters.json` | Hub | schema v8 management-only stable-Twitch-ID profiles, observed Twitch status, first/last seen, aggregate participation counts, and Hub-owned local groups; no message or memory content |
+| `memory/twitch_activity.json` | Hub | schema v2 bounded activity feed history with stable Twitch user references where applicable |
+| `memory/stream_sessions.json` | Hub | schema v1 active/completed session analytics, including current incomplete-session recovery |
+| `training/examples.json` | Streamhouse AI | v1 consent-based classifier examples |
+| `diagnostics/ai_test_report.json` | Streamhouse AI | v1 AI outcomes/latency metadata |
+| `diagnostics/active-session.json` | Hub diagnostics | v1 volatile process/session marker; removed only after clean shutdown and never treated as user configuration |
+| OS mutex / `runtime/hub-instance.lock` | Hub startup | runtime-only data-root ownership; Windows uses the mutex and non-Windows development uses the lock-file fallback; excluded from Backup/Support data contracts |
+| `logs/` | each process | `latest.log` plus rotating per-session logs; Hub retains ten session logs |
+| `crashes/` | Hub diagnostics | latest five sanitized Python crash reports and completed abnormal per-session fault records, plus the active pre-created fault record |
+| `support/` | Hub diagnostics | user-created sanitized Support Bundles; not automatically rotated or backed up |
+| `backups/manual/` | Hub backup/restore | user-created `.streamhousebackup` archives; never rotated automatically |
+| `backups/automatic/` | Hub backup/restore | changed-data daily archives; latest five retained |
+| `backups/safety/` | Hub backup/restore | private pre-restore rollback artifacts; separate from Support Bundles |
 
 Window geometry/state uses Qt `QSettings`, not the JSON stores.
+
+### Alpha 0.1 data-contract baseline
+
+Alpha 0.1 becomes the first external compatibility baseline when it is released.
+Backward compatibility protects user data by upgrading an old persisted component
+into the current architecture; it does not preserve the old runtime architecture.
+Each feature service loads one exact current schema. Future old-schema and old-backup
+support belongs at an isolated import/migration boundary that validates the source,
+creates a safety backup, transforms stable identities and references, validates the
+current result, and saves only the current schema. Feature services must not gain
+dual reads, dual writes, historical branches, or obsolete Variable aliases.
+
+Durable references use authoritative identities rather than labels or positions:
+
+| Relationship | Durable identity and missing-target behavior |
+| --- | --- |
+| Routine, group, and nested task structure | Stable routine/group/task IDs; task and group order are explicit arrays. Group placement is organization only. |
+| Routine → Trigger | Stable trigger IDs. Core, Twitch, OBS, and command stores validate the reciprocal routine link; broken links are unavailable/corrupt state, never rebound by label. |
+| Routine → Queue | Stable queue ID. The permanent `streamhouse.default.queue` is the intentional fallback for a missing custom queue. |
+| Task → nested Routine | Stable routine ID. A missing target produces a controlled task failure; it is never resolved by routine name. |
+| Command → managed Routine | Stable trigger and routine IDs. Command names and aliases are normalized for matching, while group and queue placement remain user-owned. |
+| Soundboard button → Routine | Stable button/page/routine IDs. Missing routines remain unavailable and are never rebound by button label. |
+| Counter values → viewer/stream | Stable Twitch user ID and authoritative Twitch stream ID. Display/login metadata is presentation only. |
+
+Counter definitions and values use exact decimal strings and the four current scopes:
+`channel_total`, `stream_total`, `viewer_total`, and `viewer_stream_total`.
+Variable exposure is canonical dotted naming only: durable `custom.*`, contextual
+`command.*`, `keyword.*`, and `user.*`, root-execution `automation.*`, and the four
+scoped `counter.<id>.*` definitions. Runtime aliases are not registered, and
+session/routine/task-output context is not persisted.
+
+Data portability is explicit. Routines and dependencies, commands, Counter
+definitions/values, durable custom Variables, Channel Information, Users management
+metadata, the portable settings allowlist, and non-secret OBS connection settings
+are eligible for selective Backup. Qt window/monitor state and local filesystem
+placement are machine-specific. Twitch/OBS/relay credentials are secrets in
+current-user DPAPI stores. Connection health, pending queues, Timer deadlines, live
+chat, and routine context are runtime/derived state. OBS scene/source names are
+external OBS references, not Streamhouse object identities; a missing name remains a
+controlled external dependency rather than being rebound heuristically.
+
+The versioned Backup manifest is the migration seam for portable archives: it records
+the format, component schemas, dependency closure, and integrity hashes before the
+restore planner produces current-schema staged writes. A future backup importer must
+transform an older component before this current-schema planning/validation path.
+No current feature store is permitted to load an old Backup schema directly.
+
+The schemas, migration boundaries, and single-writer startup protection are
+suitable for the first external baseline. Atomic replacement protects file
+integrity and the data-root instance lock prevents two Hub processes from writing
+different valid snapshots concurrently. Alpha 0.1 may therefore be declared the
+first external data-contract compatibility baseline when it is released.
 
 ### Secret files
 
@@ -917,35 +1662,115 @@ Window geometry/state uses Qt `QSettings`, not the JSON stores.
 | `obs/password.dat` | OBS WebSocket password |
 | `twitch/soundboard-relay-key.dat` | private relay key |
 
-Secrets use Windows DPAPI through `core.secret_store`/token stores. Never place
-them in JSON, backups, diagnostics, logs, test fixtures containing real values,
-Extension assets, or Git.
+Secrets use current-user Windows DPAPI through `core.secret_store`/token stores.
+Normal configuration contains only non-secret connection metadata. Never place
+credentials in JSON, backups, diagnostics, logs, test fixtures containing real
+values, Extension assets, or Git. OBS and relay password/key controls use Qt's
+password echo mode; Twitch tokens have no value-display UI.
 
-### Backup caveat
+### Selective Backup and Restore
 
-`BackupManager.FILES` is an explicit allowlist. A new persistent file is not
-automatically backed up. Decide deliberately whether it belongs in backups,
-legacy migration, restore, diagnostics, and viewer-deletion scrubbing.
+`BackupManager` owns data protection independently of `DiagnosticsService`.
+Its versioned `.streamhousebackup` archive contains a manifest with the Hub
+version/build, timestamp, backup classification, product-level components,
+current authoritative component schemas, dependencies, and SHA-256 integrity
+checks. Support Bundles never contain backups, and backups never contain logs,
+crash reports, Support Bundles, diagnostic state, or Streamhouse AI data.
 
-At this snapshot, the backup allowlist covers core settings, primary Twitch
-history/commands/triggers/routines, Core triggers, and OBS config/triggers. It
-does not automatically include every newer queue, variable, soundboard,
-Streamhouse AI, training, or test-report file. Treat that as an explicit product
-decision or follow-up when changing data safety.
+The eligible components are Routines & Dependencies, Commands, Counter
+Definitions, Counter Values, durable `custom.*` Variables, Channel Information,
+optional Users/Chatter management metadata, portable Hub Settings, and safe OBS
+connection configuration. Twitch/OBS/relay credentials, window geometry, and
+other machine-specific or hidden-product state are ineligible. User backup
+records use the same chatter schema v8 management-field
+allowlist; message text, memories/evidence, private notes, and timeline content
+are never archived. Counter Values remain exact decimal strings and keyed by
+stable Twitch user IDs. Restore receives the same confirmed active Twitch stream
+ID used by `CounterService` callers. When it matches the backup stream ID, the
+backup channel/viewer stream totals are applicable and restore. When it differs,
+the existing channel slot and restored viewers' slots that are already keyed to
+the active stream are retained while backup lifetime totals still replace
+lifetime state. With no confirmed
+active stream, restored stream slots are cleared to the Counter reset value and
+no Twitch stream ID is fabricated. Counter schema v2 has only one stream slot per
+channel/viewer and does not retain historical per-stream rows, so an inapplicable
+backup stream value is discarded rather than reclassified as current.
+
+Routines are structural units: nested tasks remain embedded, and backup follows
+stable Run Routine, trigger, queue, Counter, and referenced `custom.*` Variable
+dependencies. Commands similarly carry the managed routine/trigger dependency
+closure when Routines are not otherwise selected. A broken dependency stops
+backup creation rather than producing an orphaned archive. Tasks are not an
+independent backup component.
+
+Alpha restore uses component replacement semantics, while dependency objects
+required by restored routines are installed without discarding unrelated queue,
+Variable, or Counter definitions. The archive is fully parsed, checksummed,
+schema-checked, converted into a current-schema restore plan, and validated in a
+staging directory before any live file changes. This import-plan boundary is the
+future migration seam: future backup schemas must be transformed there before
+current stores receive them, rather than adding legacy loaders to feature
+stores. A safety backup is mandatory before commit. Commit uses per-file atomic
+replacement plus original-byte rollback across the planned write/delete set;
+this is transaction-like but not a filesystem-wide atomic primitive.
+
+Manual backups are never rotated. Automatic Recommended backups are enabled by
+default, created at most daily only when eligible content changed, and retain
+five archives. Safety backups are separately classified and are not Support
+Bundles. Backup archive I/O runs in a Qt worker; MainWindow owns only dialogs,
+progress/action state, and post-restore store refresh/restart guidance. Any new
+durable store must make an explicit component, privacy, dependency, schema,
+restore, and viewer-deletion decision rather than being picked up by filename.
+
+Eligibility is enforced through explicit component projections rather than
+directory copying. Every generated and restored component is also walked for
+credential keys, authorization headers, URL user-info, and secret query or
+fragment parameters; unsafe content stops the operation instead of being
+silently packaged or redacted. “Everything Eligible” therefore still excludes
+Twitch broadcaster/bot token files, the OBS password, the Hub relay key, hosted
+relay/server credentials, provider credentials, logs, and diagnostics.
 
 ## Security and privacy invariants
 
 - Local Streamhouse AI and preview servers bind only to `127.0.0.1`.
 - Hosted relay traffic must use HTTPS except explicit localhost development.
-- OAuth, OBS, relay, and Extension secrets are never logged.
-- Chat content is intentionally absent from ordinary application logs.
-- General raw chat history is not persisted.
-- AI memory is opt-in and master-disabled by default.
+- OAuth, OBS, relay, and Extension secrets are never logged. The shared logger
+  defensively redacts labeled credentials, authorization headers, modern/legacy
+  relay key headers, URL user-info, and secret query/fragment parameters before
+  records reach normal handlers. Owning auth/transport boundaries also sanitize
+  user-visible failure details; Support Bundle sanitization remains an
+  independent final defense over copied diagnostics.
+- Hosted relay server keys/database settings remain extension-process
+  environment configuration. Hub reads only the relay base override and stores
+  its per-channel relay key with DPAPI. Relay base URLs cannot embed user-info,
+  query parameters, or fragments.
+- Twitch chat content is transient: it may be used by the live view, command
+  and Keyword/Phrase parsing, moderation, First Message, and the active root
+  routine context, including nested routines. It is discarded after that
+  runtime ownership ends and is omitted from completed Run History snapshots.
+- Hub never durably stores Twitch chat/message history. Chatter schema v8 is an
+  exact management-only projection; Activity persists normalized non-chat
+  events only; no raw EventSub chat payload store exists. Live chat and raw
+  EventSub diagnostics are bounded in-memory views that start empty after a
+  restart.
+- Ordinary logs never receive chat bodies. Crash reports do not dump live chat,
+  EventSub payloads, or routine context. Support diagnostics defensively omit
+  message/payload/context fields and include diagnostic-severity log excerpts
+  only. Backup presets—including Everything Eligible—exclude logs, crashes,
+  Support Bundles, Run History, and any message-bearing chatter fields.
+- The optional AI integration is master-disabled. Any Hub-side message or AI
+  working buffers are volatile; durable memory, training examples, and test
+  reports are owned by the separate Streamhouse AI product and are never Hub
+  chatter-store or Support/Backup content.
 - Training capture is separately opt-in and disabled by default.
 - Model output cannot directly approve memories or bypass Hub send policy.
 - Broadcaster and bot identities remain separate.
 - Viewer deletion includes backup scrubbing where covered.
 - Diagnostic export includes sanitized warnings and non-secret health/settings.
+- Hub has no OpenAI, Ollama, or other model-provider credential owner. Its
+  optional AI boundary is the neutral versioned localhost transport; provider
+  credentials, if ever needed, belong solely to the separate Streamhouse AI
+  product and are not Hub settings, diagnostics, or backup components.
 - External payloads and imported routines are bounded and validated.
 - Python-script tasks are explicitly trusted local code and run out of process.
 
@@ -962,6 +1787,11 @@ python -m venv .venv
 
 Runtime dependency is currently pinned to PySide6. PyInstaller is a separate
 build dependency.
+
+Hub's packaged UI uses Qt Widgets and Qt WebEngine. It does not import the
+Python Qt Quick or Qt QML APIs, so the Hub build excludes `PySide6.QtQuick` and
+`PySide6.QtQml`. This also keeps PyInstaller from collecting unused QML content;
+the Chromium-backed Twitch chat remains owned by Qt WebEngine.
 
 ### Tests
 
@@ -1027,13 +1857,20 @@ Inspect and update:
 2. provider label/type catalog;
 3. registration in `MainWindow`;
 4. schema and task menu in `products/hub/ui/automation_page.py`;
-5. template rendering and live-variable resolution if applicable;
-6. `CustomVariableStore.generated_names()` if it creates outputs;
-7. import/export validation in `products/hub/automation/transfer.py` if needed;
-8. focused execution, editor, and integration tests.
+5. complete visible `TaskMetadata` in the built-in task catalog, including a
+   short description and detailed help plus relevant input guidance,
+   requirements, notes, examples, and a concise task-card summary formatter;
+6. template rendering and live-variable resolution if applicable;
+7. `generated_output_definitions()` if it creates outputs;
+8. import/export validation in `products/hub/automation/transfer.py` if needed;
+9. focused execution, editor, registry-coverage, and integration tests.
 
 Never add a UI menu item without a registered handler, or a handler without an
 editor schema unless it is intentionally internal.
+
+Output-producing tasks must publish typed `automation.<name>` definitions.
+Keep runtime values root-routine scoped and expose an output only to later tasks
+and nested routines after its producer; do not add a flat output catalog.
 
 ### Adding an automation trigger
 
@@ -1045,9 +1882,12 @@ Inspect and update:
 4. event wiring in `MainWindow`;
 5. import/export mapping;
 6. live and simulated paths;
-7. persistence-version migration and tests.
+7. current-schema persistence tests, plus a migration only when intentionally
+   required by `development-policy.md`.
 
 Link the existing shared `RoutineStore`.
+If the trigger can originate outside the Qt thread, route any UI response
+through a queued signal boundary rather than subscribing a widget directly.
 
 ### Changing Twitch
 
@@ -1063,6 +1903,9 @@ Route by concern:
 - health/scopes: `products/hub/twitch/health.py`
 
 Verify both broadcaster-only and separate-bot configurations.
+Keep broadcaster authorization distinct from bot chat authorization. Twitch API
+and EventSub behavior belongs to the service; UI reads service state and invokes
+service/worker actions rather than owning request construction or socket state.
 
 ### Changing AI or memory
 
@@ -1071,8 +1914,10 @@ Ask which side owns the change:
 - deterministic eligibility/consent/send policy: Hub/shared;
 - DTO or protocol: shared + client + server, possibly version bump;
 - prompt/provider/extraction: Streamhouse AI `products/ai/engine/`;
-- UI-only AI controls: Hub remote page or Streamhouse AI page, depending ownership;
-- persistent AI data: Streamhouse AI store plus remote proxy if Hub displays it.
+- UI-only AI controls: Streamhouse AI page; a future Hub surface, if any, must
+  be introduced intentionally and may be conditional on AI availability;
+- persistent AI data: Streamhouse AI store plus a lightweight Hub remote proxy
+  only where an internal integration needs it.
 
 Test Streamhouse AI absent, Streamhouse AI present, protocol mismatch, timeout, stale
 result, and explicit memory disable.
@@ -1081,23 +1926,30 @@ result, and explicit memory disable.
 
 For each persisted schema:
 
-1. increment the store version only when required;
-2. accept older versions and migrate without changing stable IDs;
-3. reject newer unknown versions;
-4. write atomically;
-5. use a temporary path in tests;
-6. decide backup, migration, diagnostics, deletion, and secret handling;
-7. add corrupt/round-trip/migration tests.
+1. identify whether the change is before or after the first external Alpha;
+2. before Alpha, prefer the clean intended schema and reset disposable
+   development data instead of building substantial compatibility machinery;
+3. at/after Alpha, version saved-data changes and consider migration, rollback,
+   breaking-change, and compatibility implications explicitly;
+4. reject newer unknown versions where versioned stores require it;
+5. write atomically and use a temporary path in tests;
+6. decide backup, diagnostics, deletion, privacy, and secret handling; and
+7. test the current schema plus only migrations intentionally supported under
+   `development-policy.md`.
 
 ### Changing UI
 
 - edit `products/hub/ui/mainwindow.ui` then regenerate
   `products/hub/ui/generated/ui_mainwindow.py` for
   Designer-owned controls;
-- use focused widgets for substantial dynamic features;
+- establish domain/service/store ownership before adding a substantial UI;
+- use a focused page, panel, or widget for substantial feature UI and keep
+  `MainWindow` to composition, dependency injection, and signal wiring;
 - test both portrait and landscape;
 - preserve adjustable splitter/table state;
-- use Qt signals to cross worker threads;
+- identify the emitting thread of every bus event and use queued Qt signals to
+  cross worker threads;
+- never perform potentially blocking work on the UI thread;
 - avoid launching a visible application during unattended/headless work.
 
 ### Changing the Streamhouse AI API
@@ -1126,15 +1978,15 @@ Keep public config free of local paths and routine internals.
   New reusable domain logic should move into services/stores rather than making
   it larger.
 - The event bus is global and synchronous. It is simple but has no typed schema,
-  replay, priority, or async scheduling.
+  replay, priority, async scheduling, or automatic Qt-thread marshalling.
 - Automation tasks run in the UI process, and some intentionally use Qt APIs.
-  A future background executor needs explicit task affinity.
+  Blocking-I/O risk must be managed handler by handler; a future background
+  executor needs explicit task affinity and UI dispatch.
 - Trigger providers use separate persisted stores linked by IDs. Cross-file
   updates are validated but are not transactional across multiple files.
 - Streamhouse AI HTTP has no authentication because it is loopback-only.
 - The hosted relay uses SQLite and in-memory rate-limit state; horizontal
   scaling would need shared storage and stronger operational controls.
-- Backup coverage is allowlist-based and currently lags some newer data stores.
 - UI layout is partly Designer-generated and partly dynamic, making structural
   changes span multiple files.
 - Version remains `0.1.0`; persisted store versions and Streamhouse AI protocol
@@ -1143,15 +1995,10 @@ Keep public config free of local paths and routine internals.
   so Hub cannot reliably suppress the unban action or show moderation history.
   Moderation API requests are service-owned, but the current coordinator call
   is synchronous and should move to a focused worker before adding bulk tools.
-- `Companion` remains in several internal Twitch snapshot/health identifiers.
-  In that context it means the stream-companion refresh, not the Sally
-  character. `SALLY_*` environment aliases, old QSettings application names,
-  the legacy Hub window title, and the historical `companion/settings.json`
-  path are intentionally retained for data/script migration compatibility.
-- The registry intentionally exposes only already-cached Twitch and OBS state.
+- The registry intentionally exposes only already-cached Twitch/Ads and OBS
+  state; providers do not perform network requests while resolving Variables.
   Follow/subscription profile state, OBS recording/profile/scene-collection
-  values, mathematical expressions, and bulk migration of every legacy flat
-  task output are deferred provider work.
+  values, and mathematical expressions are deferred provider work.
 
 ## Non-goals and future extension points
 

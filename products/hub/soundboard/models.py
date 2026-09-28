@@ -19,7 +19,7 @@ class SoundboardButton:
     @classmethod
     def from_dict(cls, values: Mapping[str, Any]) -> SoundboardButton:
         return cls(
-            button_id=str(values.get("button_id", "")) or uuid4().hex,
+            button_id=str(values.get("button_id", "")),
             label=str(values.get("label", "")).strip(),
             routine_id=str(values.get("routine_id", "")).strip(),
             enabled=bool(values.get("enabled", True)),
@@ -40,7 +40,7 @@ class SoundboardPage:
     def from_dict(cls, values: Mapping[str, Any]) -> SoundboardPage:
         raw_buttons = values.get("buttons", [])
         return cls(
-            page_id=str(values.get("page_id", "")) or uuid4().hex,
+            page_id=str(values.get("page_id", "")),
             name=str(values.get("name", "")).strip(),
             buttons=[
                 SoundboardButton.from_dict(button)

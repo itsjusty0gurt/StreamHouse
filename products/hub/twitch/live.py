@@ -13,7 +13,7 @@ from PySide6.QtCore import QObject, QTimer, QUrl
 from PySide6.QtNetwork import QAbstractSocket
 from PySide6.QtWebSockets import QWebSocket
 
-from products.hub.config.twitch import TWITCH_CLIENT_ID
+from products.hub.config.twitch import TWITCH_CLIENT_ID, TWITCH_REDEMPTION_SCOPES
 from products.hub.twitch.auth import TwitchToken
 from products.hub.twitch.models import (
     TwitchEvent,
@@ -34,6 +34,7 @@ class TwitchHelixClient:
     GLOBAL_BADGES_URL = "https://api.twitch.tv/helix/chat/badges/global"
     CHANNEL_BADGES_URL = "https://api.twitch.tv/helix/chat/badges"
     STREAMS_URL = "https://api.twitch.tv/helix/streams"
+    FOLLOWED_STREAMS_URL = "https://api.twitch.tv/helix/streams/followed"
     CHANNELS_URL = "https://api.twitch.tv/helix/channels"
     SEARCH_CATEGORIES_URL = "https://api.twitch.tv/helix/search/categories"
     FOLLOWERS_URL = "https://api.twitch.tv/helix/channels/followers"
@@ -46,6 +47,9 @@ class TwitchHelixClient:
     COMMERCIAL_URL = "https://api.twitch.tv/helix/channels/commercial"
     BANS_URL = "https://api.twitch.tv/helix/moderation/bans"
     DELETE_CHAT_URL = "https://api.twitch.tv/helix/moderation/chat"
+    CHAT_SETTINGS_URL = "https://api.twitch.tv/helix/chat/settings"
+    ANNOUNCEMENTS_URL = "https://api.twitch.tv/helix/chat/announcements"
+    RAIDS_URL = "https://api.twitch.tv/helix/raids"
     CUSTOM_REWARDS_URL = (
         "https://api.twitch.tv/helix/channel_points/custom_rewards"
     )
@@ -160,6 +164,26 @@ class TwitchHelixClient:
             return None
         return values[0] if isinstance(values[0], dict) else None
 
+    def get_followed_streams(
+        self,
+        user_id: str,
+        token: TwitchToken,
+    ) -> list[dict[str, Any]]:
+        """Return only followed broadcasters that Twitch currently reports live."""
+
+        url = (
+            f"{self.FOLLOWED_STREAMS_URL}?"
+            f"{urlencode({'user_id': user_id, 'first': 100})}"
+        )
+        records = self._get_paginated(url, token)
+        unique: dict[str, dict[str, Any]] = {}
+        for record in records:
+            user_id_value = str(record.get("user_id", "")).strip()
+            is_live = str(record.get("type", "")).casefold() == "live"
+            if user_id_value and is_live:
+                unique[user_id_value] = record
+        return list(unique.values())
+
     def get_channel_information(
         self, broadcaster_id: str, token: TwitchToken
     ) -> dict[str, Any] | None:
@@ -235,9 +259,13 @@ class TwitchHelixClient:
                 activity_specs.append((event_type, "1", {"broadcaster_user_id": broadcaster_user_id}))
         if "bits:read" in scopes:
             activity_specs.append(("channel.cheer", "1", {"broadcaster_user_id": broadcaster_user_id}))
-        if scopes.intersection(
-            {"channel:read:redemptions", "channel:manage:redemptions"}
-        ):
+        if "channel:read:ads" in scopes:
+            activity_specs.append((
+                "channel.ad_break.begin",
+                "1",
+                {"broadcaster_user_id": broadcaster_user_id},
+            ))
+        if scopes.intersection(TWITCH_REDEMPTION_SCOPES):
             activity_specs.append((
                 "channel.channel_points_custom_reward_redemption.add",
                 "1",
@@ -257,11 +285,18 @@ class TwitchHelixClient:
                 ),
             )
         )
-        activity_specs.append(
+        activity_specs.extend(
             (
-                "channel.raid",
-                "1",
-                {"to_broadcaster_user_id": broadcaster_user_id},
+                (
+                    "channel.raid",
+                    "1",
+                    {"to_broadcaster_user_id": broadcaster_user_id},
+                ),
+                (
+                    "channel.raid",
+                    "1",
+                    {"from_broadcaster_user_id": broadcaster_user_id},
+                ),
             )
         )
         warnings = []
@@ -408,9 +443,120 @@ class TwitchHelixClient:
         message_id: str,
         token: TwitchToken,
     ) -> None:
-        url = f"{self.DELETE_CHAT_URL}?{urlencode({'broadcaster_id': broadcaster_id, 'moderator_id': moderator_id, 'message_id': message_id})}"
+        parameters = {
+            "broadcaster_id": broadcaster_id,
+            "moderator_id": moderator_id,
+        }
+        if message_id:
+            parameters["message_id"] = message_id
+        url = f"{self.DELETE_CHAT_URL}?{urlencode(parameters)}"
         with urlopen(
             Request(url, headers=self._headers(token), method="DELETE"),
+            timeout=15,
+        ):
+            pass
+
+    def update_chat_settings(
+        self,
+        broadcaster_id: str,
+        moderator_id: str,
+        settings: dict[str, Any],
+        token: TwitchToken,
+    ) -> None:
+        url = f"{self.CHAT_SETTINGS_URL}?{urlencode({'broadcaster_id': broadcaster_id, 'moderator_id': moderator_id})}"
+        headers = self._headers(token)
+        headers["Content-Type"] = "application/json"
+        self._read_json(
+            Request(
+                url,
+                data=json.dumps(settings).encode("utf-8"),
+                headers=headers,
+                method="PATCH",
+            )
+        )
+
+    def update_channel_role(
+        self,
+        broadcaster_id: str,
+        user_id: str,
+        role: str,
+        add: bool,
+        token: TwitchToken,
+    ) -> None:
+        if role == "moderator":
+            base_url = self.MODERATORS_URL
+        elif role == "vip":
+            base_url = self.VIPS_URL
+        else:
+            raise ValueError("Unsupported Twitch channel role.")
+        url = f"{base_url}?{urlencode({'broadcaster_id': broadcaster_id, 'user_id': user_id})}"
+        method = "POST" if add else "DELETE"
+        with urlopen(
+            Request(
+                url,
+                data=b"" if add else None,
+                headers=self._headers(token),
+                method=method,
+            ),
+            timeout=15,
+        ):
+            pass
+
+    def start_raid(
+        self,
+        broadcaster_id: str,
+        target_broadcaster_id: str,
+        token: TwitchToken,
+    ) -> datetime:
+        query = urlencode(
+            {
+                "from_broadcaster_id": broadcaster_id,
+                "to_broadcaster_id": target_broadcaster_id,
+            }
+        )
+        url = f"{self.RAIDS_URL}?{query}"
+        payload = self._read_json(
+            Request(url, data=b"", headers=self._headers(token), method="POST")
+        )
+        records = payload.get("data", [])
+        if (
+            not isinstance(records, list)
+            or not records
+            or not isinstance(records[0], dict)
+        ):
+            raise ValueError("Twitch returned an invalid raid response.")
+        raw_created_at = str(records[0].get("created_at", "")).strip()
+        try:
+            created_at = datetime.fromisoformat(
+                raw_created_at.replace("Z", "+00:00")
+            )
+        except ValueError as error:
+            raise ValueError("Twitch returned an invalid raid start time.") from error
+        if created_at.tzinfo is None:
+            created_at = created_at.replace(tzinfo=timezone.utc)
+        return created_at.astimezone(timezone.utc)
+
+    def cancel_raid(self, broadcaster_id: str, token: TwitchToken) -> None:
+        url = f"{self.RAIDS_URL}?{urlencode({'broadcaster_id': broadcaster_id})}"
+        with urlopen(
+            Request(url, headers=self._headers(token), method="DELETE"),
+            timeout=15,
+        ):
+            pass
+
+    def send_chat_announcement(
+        self,
+        broadcaster_id: str,
+        moderator_id: str,
+        message: str,
+        token: TwitchToken,
+    ) -> None:
+        url = f"{self.ANNOUNCEMENTS_URL}?{urlencode({'broadcaster_id': broadcaster_id, 'moderator_id': moderator_id})}"
+        headers = self._headers(token)
+        headers["Content-Type"] = "application/json"
+        body = json.dumps({"message": message[:500]}).encode("utf-8")
+        with urlopen(
+            Request(url, data=body, headers=headers, method="POST"),
             timeout=15,
         ):
             pass
@@ -485,7 +631,7 @@ class TwitchHelixClient:
         with urlopen(request, timeout=15):
             pass
 
-    def get_companion_snapshot(self, broadcaster_id: str, token: TwitchToken) -> dict:
+    def get_channel_snapshot(self, broadcaster_id: str, token: TwitchToken) -> dict:
         headers = self._headers(token)
         stream_payload = self._read_json(Request(
             f"{self.STREAMS_URL}?{urlencode({'user_id': broadcaster_id})}", headers=headers
@@ -583,13 +729,58 @@ class TwitchHelixClient:
         body = json.dumps({"broadcaster_id": broadcaster_id, "length": length}).encode()
         headers = self._headers(token)
         headers["Content-Type"] = "application/json"
-        payload = self._read_json(Request(self.COMMERCIAL_URL, data=body, headers=headers, method="POST"))
-        return (payload.get("data") or [{}])[0]
+        try:
+            payload = self._read_json(
+                Request(
+                    self.COMMERCIAL_URL,
+                    data=body,
+                    headers=headers,
+                    method="POST",
+                )
+            )
+        except HTTPError as error:
+            self._raise_ads_api_error("start the commercial", error)
+        return self._ads_result(payload, "commercial")
 
     def snooze_ad(self, broadcaster_id: str, token: TwitchToken) -> dict:
         url = f"{self.SNOOZE_AD_URL}?{urlencode({'broadcaster_id': broadcaster_id})}"
-        payload = self._read_json(Request(url, data=b"", headers=self._headers(token), method="POST"))
-        return (payload.get("data") or [{}])[0]
+        try:
+            payload = self._read_json(
+                Request(
+                    url,
+                    data=b"",
+                    headers=self._headers(token),
+                    method="POST",
+                )
+            )
+        except HTTPError as error:
+            self._raise_ads_api_error("snooze the next ad", error)
+        return self._ads_result(payload, "ad action")
+
+    @staticmethod
+    def _ads_result(payload: dict[str, Any], action: str) -> dict[str, Any]:
+        values = payload.get("data")
+        if (
+            not isinstance(values, list)
+            or not values
+            or not isinstance(values[0], dict)
+        ):
+            raise ValueError(f"Twitch returned no result for the {action}.")
+        return values[0]
+
+    @staticmethod
+    def _raise_ads_api_error(action: str, error: HTTPError) -> None:
+        detail = ""
+        try:
+            payload = json.loads(error.read().decode("utf-8", errors="replace"))
+            if isinstance(payload, dict):
+                detail = str(payload.get("message") or "").strip()
+        except (OSError, json.JSONDecodeError):
+            pass
+        raise ValueError(
+            f"Twitch could not {action} (HTTP {error.code})"
+            + (f": {detail}" if detail else ".")
+        ) from error
 
     def get_custom_rewards(
         self,
@@ -786,7 +977,7 @@ class TwitchEventSubSocket(QObject):
                 self._reconnect_transfer = True
                 self._intentional_close = True
                 self.socket.close()
-                QTimer.singleShot(0, lambda: self.open(reconnect_url))
+                QTimer.singleShot(0, self, lambda: self.open(reconnect_url))
             return
 
         if message_type == "revocation":
@@ -867,7 +1058,7 @@ class TwitchEventSubSocket(QObject):
 
     def _disconnected(self) -> None:
         if not self._intentional_close:
-            QTimer.singleShot(2000, self._reopen_if_needed)
+            QTimer.singleShot(2000, self, self._reopen_if_needed)
 
     def _reopen_if_needed(self) -> None:
         if not self._intentional_close:

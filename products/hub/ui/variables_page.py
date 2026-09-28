@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QApplication,
@@ -20,8 +22,31 @@ from PySide6.QtWidgets import (
 )
 
 from products.hub.automation.custom_variables import CustomVariableStore
-from products.hub.automation.variable_registry import VariableDataType, VariableRegistry
+from products.hub.automation.routines import RoutineStore
+from products.hub.automation.variable_outputs import (
+    ConfiguredOutputReference,
+    configured_output_references,
+)
+from products.hub.automation.variable_registry import (
+    VariableDataType,
+    VariableRegistry,
+    VariableSnapshot,
+)
 from products.hub.ui.variable_picker import VariablePickerDialog
+from products.hub.ui.page_header import PageHeader
+
+
+@dataclass(frozen=True, slots=True)
+class VariablePageEntry:
+    key: str
+    snapshot: VariableSnapshot
+    output_reference: ConfiguredOutputReference | None = None
+
+    @property
+    def context_label(self) -> str:
+        if self.output_reference is not None:
+            return self.output_reference.routine_name
+        return self.snapshot.definition.context_label or "—"
 
 
 class CustomVariableDialog(QDialog):
@@ -80,12 +105,21 @@ class VariablesPage(QWidget):
         self,
         registry: VariableRegistry,
         store: CustomVariableStore,
+        routine_store: RoutineStore | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self.registry = registry
         self.store = store
+        self.routine_store = routine_store
+        self._entries_by_key: dict[str, VariablePageEntry] = {}
         layout = QVBoxLayout(self)
+        self.page_header = PageHeader(
+            "Variables",
+            "Browse placeholders and values currently available to Automation.",
+            self,
+        )
+        layout.addWidget(self.page_header)
         toolbar = QHBoxLayout()
         self.search_edit = QLineEdit()
         self.search_edit.setPlaceholderText("Search variables...")
@@ -94,14 +128,23 @@ class VariablesPage(QWidget):
         self.edit_button = QPushButton("Edit")
         self.delete_button = QPushButton("Delete")
         self.picker_button = QPushButton("{x} Variable Picker")
+        self.page_header.add_action(self.picker_button)
+        self.page_header.add_action(self.new_button)
         toolbar.addWidget(self.search_edit, 1)
         toolbar.addWidget(self.source_combo)
-        toolbar.addWidget(self.picker_button)
-        toolbar.addWidget(self.new_button)
         layout.addLayout(toolbar)
-        self.table = QTableWidget(0, 5)
+        self.table = QTableWidget(0, 8)
         self.table.setHorizontalHeaderLabels(
-            ("Name", "Value", "Source", "Type", "Access")
+            (
+                "Placeholders",
+                "Current Value",
+                "Source",
+                "Type",
+                "Status",
+                "Context",
+                "Lifetime",
+                "Access",
+            )
         )
         self.table.horizontalHeader().setStretchLastSection(True)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
@@ -112,9 +155,7 @@ class VariablesPage(QWidget):
         self.details_label.setWordWrap(True)
         actions = QHBoxLayout()
         self.copy_placeholder_button = QPushButton("Copy Placeholder")
-        self.copy_name_button = QPushButton("Copy Name")
         actions.addWidget(self.copy_placeholder_button)
-        actions.addWidget(self.copy_name_button)
         actions.addWidget(self.edit_button)
         actions.addWidget(self.delete_button)
         actions.addStretch()
@@ -124,7 +165,6 @@ class VariablesPage(QWidget):
         self.source_combo.currentIndexChanged.connect(self.refresh)
         self.table.itemSelectionChanged.connect(self._selection_changed)
         self.copy_placeholder_button.clicked.connect(self._copy_placeholder)
-        self.copy_name_button.clicked.connect(self._copy_name)
         self.new_button.clicked.connect(self._create)
         self.edit_button.clicked.connect(self._edit)
         self.delete_button.clicked.connect(self._delete)
@@ -132,8 +172,11 @@ class VariablesPage(QWidget):
         self.refresh()
 
     def refresh(self) -> None:
+        entries = self._entries()
         current_source = str(self.source_combo.currentData() or "")
-        sources = sorted({item.source for item in self.registry.definitions()})
+        sources = sorted(
+            {entry.snapshot.definition.source for entry in entries}
+        )
         self.source_combo.blockSignals(True)
         self.source_combo.clear()
         self.source_combo.addItem("All sources", "")
@@ -141,49 +184,140 @@ class VariablesPage(QWidget):
             self.source_combo.addItem(source, source)
         self.source_combo.setCurrentIndex(max(0, self.source_combo.findData(current_source)))
         self.source_combo.blockSignals(False)
-        selected = self.selected_name()
+        selected = self.selected_key()
         needle = self.search_edit.text().strip().casefold()
         source = str(self.source_combo.currentData() or "")
         self.table.setRowCount(0)
-        for snapshot in self.registry.snapshots():
+        self._entries_by_key = {entry.key: entry for entry in entries}
+        for entry in entries:
+            snapshot = entry.snapshot
             definition = snapshot.definition
-            if needle and needle not in (
-                f"{definition.name} {definition.display_name} {definition.description}"
-            ).casefold():
+            reference = entry.output_reference
+            searchable = " ".join(
+                (
+                    definition.name,
+                    definition.display_name,
+                    definition.description,
+                    definition.source,
+                    definition.category,
+                    definition.context_label,
+                    reference.routine_name if reference else "",
+                    reference.task_name if reference else "",
+                )
+            ).casefold()
+            if needle and needle not in searchable:
                 continue
             if source and definition.source != source:
                 continue
             row = self.table.rowCount()
             self.table.insertRow(row)
-            item = QTableWidgetItem(definition.name)
-            item.setData(Qt.ItemDataRole.UserRole, definition.name)
+            item = QTableWidgetItem(f"{{{definition.name}}}")
+            item.setData(Qt.ItemDataRole.UserRole, entry.key)
             self.table.setItem(row, 0, item)
-            self.table.setItem(row, 1, QTableWidgetItem(snapshot.display_value))
+            self.table.setItem(
+                row,
+                1,
+                QTableWidgetItem(
+                    snapshot.display_value
+                    if snapshot.available
+                    else "Not currently available"
+                ),
+            )
             self.table.setItem(row, 2, QTableWidgetItem(definition.source))
             self.table.setItem(row, 3, QTableWidgetItem(definition.data_type.value.title()))
-            self.table.setItem(row, 4, QTableWidgetItem("Read/write" if definition.writable else "Read-only"))
-            if definition.name == selected:
+            self.table.setItem(
+                row,
+                4,
+                QTableWidgetItem(
+                    "Available"
+                    if snapshot.available
+                    else snapshot.detail or "Not currently available"
+                ),
+            )
+            self.table.setItem(row, 5, QTableWidgetItem(entry.context_label))
+            self.table.setItem(
+                row, 6, QTableWidgetItem(definition.lifetime_label)
+            )
+            self.table.setItem(
+                row,
+                7,
+                QTableWidgetItem(
+                    "Read/write" if definition.writable else "Read-only"
+                ),
+            )
+            if entry.key == selected:
                 self.table.selectRow(row)
         if self.table.rowCount() and self.table.currentRow() < 0:
             self.table.selectRow(0)
 
-    def selected_name(self) -> str:
+    def _entries(self) -> tuple[VariablePageEntry, ...]:
+        entries = [
+            VariablePageEntry(f"registry:{snapshot.definition.name}", snapshot)
+            for snapshot in self.registry.snapshots()
+        ]
+        if self.routine_store is not None:
+            for reference in configured_output_references(
+                self.routine_store.routines
+            ):
+                entries.append(
+                    VariablePageEntry(
+                        (
+                            f"routine:{reference.routine_id}:"
+                            f"{reference.task_id}:{reference.definition.name}"
+                        ),
+                        VariableSnapshot(
+                            reference.definition,
+                            None,
+                            False,
+                            "Available only after its producing task runs.",
+                        ),
+                        reference,
+                    )
+                )
+        return tuple(entries)
+
+    def selected_key(self) -> str:
         row = self.table.currentRow()
         item = self.table.item(row, 0) if row >= 0 else None
         return str(item.data(Qt.ItemDataRole.UserRole) or "") if item else ""
 
+    def selected_name(self) -> str:
+        entry = self._entries_by_key.get(self.selected_key())
+        return entry.snapshot.definition.name if entry is not None else ""
+
     def _selection_changed(self) -> None:
-        snapshot = self.registry.resolve(self.selected_name())
-        if snapshot is None:
+        entry = self._entries_by_key.get(self.selected_key())
+        if entry is None:
+            self.details_label.setText("Select a variable to view its description.")
             return
+        snapshot = entry.snapshot
         definition = snapshot.definition
-        self.details_label.setText(
-            f"{definition.description or 'No description.'}\n"
-            f"{definition.availability.value.title()} - "
-            f"{'Read/write' if definition.writable else 'Read-only'}"
-        )
+        details = [
+            definition.description or "No description.",
+            f"Context: {entry.context_label}",
+            f"Lifetime: {definition.lifetime_label}",
+            f"Current value: {'Available' if snapshot.available else 'Not currently available'}",
+        ]
+        if not snapshot.available and snapshot.detail:
+            details.append(f"Status: {snapshot.detail}")
+        reference = entry.output_reference
+        if reference is not None:
+            details.extend(
+                (
+                    f"Generated by: {reference.task_name}",
+                    f"Routine: {reference.routine_name}",
+                    f"Available: After task {reference.task_number}",
+                )
+            )
+            if not reference.routine_enabled or not reference.task_enabled:
+                details.append("Configured producer is currently disabled.")
+        elif definition.context_label and not snapshot.available:
+            details.append(f"Requires: {definition.context_label}")
+        self.details_label.setText("\n".join(details))
         custom = definition.name.startswith("custom.")
-        self.edit_button.setEnabled(custom or definition.writable)
+        self.edit_button.setEnabled(
+            reference is None and (custom or definition.writable)
+        )
         self.delete_button.setEnabled(custom)
 
     def _create(self) -> None:
@@ -192,7 +326,7 @@ class VariablesPage(QWidget):
             return
         name, value, data_type, description = dialog.values()
         try:
-            bare = self.store.validate_custom_name(name)
+            bare = self.store.validate_custom_name(f"custom.{name}")
             if self.store.scope_of(bare):
                 raise ValueError(f'Custom variable "custom.{bare}" already exists.')
             self.store.set("global", bare, value, data_type=data_type, description=description)
@@ -255,11 +389,6 @@ class VariablesPage(QWidget):
         name = self.selected_name()
         if name:
             QApplication.clipboard().setText(f"{{{name}}}")
-
-    def _copy_name(self) -> None:
-        name = self.selected_name()
-        if name:
-            QApplication.clipboard().setText(name)
 
     def _open_picker(self) -> None:
         VariablePickerDialog(self.registry, parent=self).exec()

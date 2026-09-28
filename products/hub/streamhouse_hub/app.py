@@ -7,6 +7,7 @@ from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication
 
 from products.hub.core.events import Events
+from products.hub.core.diagnostics import DiagnosticsService
 from shared.streamhouse_runtime.logger import Logger
 from products.hub.twitch.service import TwitchService
 from products.hub.twitch.auth import TwitchAuthService
@@ -17,7 +18,6 @@ from products.hub.core.resources import resource_path
 from shared.streamhouse_runtime.paths import smoke_test_enabled
 from shared.streamhouse_runtime.qt_settings import (
     HUB_APPLICATION_NAME,
-    LEGACY_HUB_APPLICATION_NAME,
     ORGANIZATION_NAME,
     streamhouse_qsettings,
 )
@@ -86,7 +86,7 @@ def configure_application(application: QApplication) -> None:
     )
 
 
-def run() -> None:
+def run(diagnostics: DiagnosticsService | None = None) -> None:
     """Create and run the Streamhouse Hub desktop application."""
 
     Logger.timer_start("Application startup")
@@ -98,6 +98,8 @@ def run() -> None:
 
     application = QApplication(sys.argv)
     configure_application(application)
+    if diagnostics is not None:
+        diagnostics.install_qt_message_handler()
 
     register_events()
 
@@ -117,31 +119,27 @@ def run() -> None:
         auth=twitch_auth,
         bot_auth=twitch_bot_auth,
     )
-    window_settings, migrated_qt_values = streamhouse_qsettings(
-        HUB_APPLICATION_NAME,
-        LEGACY_HUB_APPLICATION_NAME,
-    )
-    if migrated_qt_values:
-        Logger.info(
-            f"Migrated {migrated_qt_values} Hub UI preference(s).",
-            source="DATA",
-        )
+    window_settings = streamhouse_qsettings(HUB_APPLICATION_NAME)
     window = MainWindow(
         twitch_service=twitch_service,
         twitch_auth=twitch_auth,
         twitch_bot_auth=twitch_bot_auth,
         window_state_store=WindowStateStore(window_settings),
+        diagnostics_service=diagnostics,
     )
+    if diagnostics is not None:
+        diagnostics.checkpoint("MainWindow created")
     window.show()
     twitch_auth.restore()
     twitch_bot_auth.restore()
-    QTimer.singleShot(0, window.fire_application_started_trigger)
-    QTimer.singleShot(250, window.auto_connect_obs)
-    QTimer.singleShot(350, window.auto_connect_soundboard_relay)
+    QTimer.singleShot(0, window, window.fire_application_started_trigger)
+    QTimer.singleShot(0, window, window.start_local_integration)
+    QTimer.singleShot(250, window, window.auto_connect_obs)
+    QTimer.singleShot(350, window, window.auto_connect_soundboard_relay)
 
     if smoke_test_enabled():
-        QTimer.singleShot(750, window.close)
-        QTimer.singleShot(900, application.quit)
+        QTimer.singleShot(750, window, window.close)
+        QTimer.singleShot(900, application, application.quit)
 
     Logger.info(
         "Main window displayed.",
@@ -157,6 +155,8 @@ def run() -> None:
         "Qt event loop started.",
         source="UI",
     )
+    if diagnostics is not None:
+        diagnostics.checkpoint("startup complete")
 
     exit_code = application.exec()
 
@@ -165,6 +165,8 @@ def run() -> None:
         source="UI",
     )
 
+    if diagnostics is not None:
+        diagnostics.checkpoint("shutdown started")
     shutdown_application()
     Logger.info("Streamhouse Hub shut down.", source="APP")
 
@@ -177,5 +179,10 @@ def run() -> None:
             source="APP",
         )
 
+    if diagnostics is not None:
+        if exit_code == 0 and window.persistence_shutdown_ok:
+            diagnostics.clean_shutdown()
+        else:
+            diagnostics.uninstall_hooks()
     Logger.shutdown()
     sys.exit(exit_code)

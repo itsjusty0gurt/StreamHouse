@@ -8,9 +8,19 @@ from datetime import datetime
 from pathlib import Path
 from time import perf_counter
 from typing import ClassVar
+from uuid import uuid4
 
 from shared.streamhouse_runtime.version import VERSION
 from shared.streamhouse_runtime.paths import user_data_root
+from shared.streamhouse_runtime.redaction import redact_secret_text
+
+
+def format_traceback_locations(exception_traceback) -> str:
+    """Render traceback locations without source lines or runtime values."""
+    return "".join(
+        f'  File "{frame.filename}", line {frame.lineno}, in {frame.name}\n'
+        for frame in traceback.extract_tb(exception_traceback)
+    )
 
 
 class DefaultLogFieldsFilter(logging.Filter):
@@ -103,7 +113,7 @@ class StreamhouseFormatter(logging.Formatter):
         )
 
         try:
-            formatted_message = super().format(record)
+            formatted_message = redact_secret_text(super().format(record))
         finally:
             record.source = original_source
 
@@ -134,37 +144,61 @@ class Logger:
 
     _logger: ClassVar[logging.Logger | None] = None
     _timers: ClassVar[dict[str, float]] = {}
+    _session_id: ClassVar[str] = ""
+    _session_log_path: ClassVar[Path | None] = None
+    _product_name: ClassVar[str] = "Streamhouse"
 
     @classmethod
     def setup(
         cls,
         level: int = logging.DEBUG,
         clear_latest: bool = True,
+        *,
+        session_id: str = "",
+        product_name: str = "Streamhouse",
+        log_directory: Path | None = None,
+        retained_sessions: int = 10,
     ) -> None:
         """
-        Configure console logging, latest.log, and the daily log file.
+        Configure console logging, latest.log, and one retained session log.
         """
 
         if cls._logger is not None:
             return
 
-        logs_directory = user_data_root() / "logs"
-        archive_directory = logs_directory / "archive"
+        logs_directory = log_directory or user_data_root() / "logs"
 
         logs_directory.mkdir(
             parents=True,
             exist_ok=True,
         )
 
-        archive_directory.mkdir(
-            parents=True,
-            exist_ok=True,
-        )
-
         latest_log_path = logs_directory / "latest.log"
-
-        current_date = datetime.now().strftime("%Y-%m-%d")
-        daily_log_path = logs_directory / f"{current_date}.log"
+        cls._session_id = session_id.strip() or uuid4().hex
+        cls._product_name = product_name.strip() or "Streamhouse"
+        safe_product = "".join(
+            character for character in product_name if character.isalnum() or character in "-_"
+        ) or "Streamhouse"
+        stamp = datetime.now().strftime("%Y-%m-%d-%H%M%S")
+        session_log_path = logs_directory / (
+            f"{safe_product}-{stamp}-{cls._session_id[:8]}.log"
+        )
+        cls._session_log_path = session_log_path
+        existing_sessions = sorted(
+            (
+                path
+                for path in logs_directory.glob(f"{safe_product}-*.log")
+                if path != session_log_path
+            ),
+            key=lambda path: path.stat().st_mtime,
+            reverse=True,
+        )
+        previous_to_keep = max(int(retained_sessions) - 1, 0)
+        for obsolete in existing_sessions[previous_to_keep:]:
+            try:
+                obsolete.unlink()
+            except OSError:
+                pass
 
         logger = logging.getLogger("Streamhouse")
         logger.setLevel(level)
@@ -214,22 +248,40 @@ class Logger:
         latest_handler.setFormatter(file_formatter)
         latest_handler.addFilter(default_fields_filter)
 
-        daily_handler = logging.FileHandler(
-            filename=daily_log_path,
-            mode="a",
+        session_handler = logging.FileHandler(
+            filename=session_log_path,
+            mode="w",
             encoding="utf-8",
         )
-        daily_handler.setLevel(level)
-        daily_handler.setFormatter(file_formatter)
-        daily_handler.addFilter(default_fields_filter)
+        session_handler.setLevel(level)
+        session_handler.setFormatter(file_formatter)
+        session_handler.addFilter(default_fields_filter)
 
         logger.addHandler(console_handler)
         logger.addHandler(latest_handler)
-        logger.addHandler(daily_handler)
+        logger.addHandler(session_handler)
 
         cls._logger = logger
 
         cls._write_startup_banner()
+
+    @classmethod
+    def session_id(cls) -> str:
+        return cls._session_id
+
+    @classmethod
+    def session_log_path(cls) -> Path | None:
+        return cls._session_log_path
+
+    @classmethod
+    def flush(cls) -> None:
+        if cls._logger is None:
+            return
+        for handler in tuple(cls._logger.handlers):
+            try:
+                handler.flush()
+            except OSError:
+                pass
 
     @classmethod
     def _ensure_setup(cls) -> logging.Logger:
@@ -257,6 +309,7 @@ class Logger:
             finally:
                 cls._logger.removeHandler(handler)
         cls._logger = None
+        cls._session_log_path = None
 
     @classmethod
     def _clean_source(cls, source: str) -> str:
@@ -283,7 +336,7 @@ class Logger:
 
         logger.log(
             level,
-            message,
+            redact_secret_text(message),
             extra={
                 "source": cls._clean_source(source),
             },
@@ -357,16 +410,23 @@ class Logger:
         source: str = "GENERAL",
     ) -> None:
         """
-        Log the current exception and its full traceback.
+        Log traceback locations without persisting an arbitrary exception value.
 
         Call this from inside an except block.
         """
 
+        exception_type, _exception_value, exception_traceback = sys.exc_info()
+        type_name = (
+            exception_type.__name__
+            if exception_type is not None
+            else "UnknownError"
+        )
+        frames = format_traceback_locations(exception_traceback)
+
         cls._log(
             logging.ERROR,
-            message,
+            f"{message}\n{frames}{type_name}: <exception message omitted for privacy>",
             source,
-            exc_info=True,
         )
 
     @classmethod
@@ -489,11 +549,13 @@ class Logger:
 
         banner = (
             f"\n{separator}\n"
-            " Streamhouse\n"
+            f" {cls._product_name}\n"
             "\n"
             f" Version : {VERSION}\n"
+            f" Session : {cls._session_id or 'Unavailable'}\n"
             f" Python  : {platform.python_version()}\n"
             f" Platform: {platform.system()} {platform.release()}\n"
+            f" Mode    : {'Packaged' if getattr(sys, 'frozen', False) else 'Development'}\n"
             f" Started : {datetime.now():%Y-%m-%d %H:%M:%S}\n"
             f"{separator}"
         )

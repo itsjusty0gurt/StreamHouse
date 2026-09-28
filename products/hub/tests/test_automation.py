@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 import json
 import tempfile
 import unittest
@@ -13,9 +14,13 @@ from products.hub.automation.models import (
 )
 from products.hub.automation.routines import RoutineStore
 from products.hub.automation.service import AutomationService
-from products.hub.automation.tasks import TaskRegistry
+from products.hub.automation.task_catalog import BUILTIN_TASK_METADATA
+from products.hub.automation.tasks import TaskMetadata, TaskRegistry
+from products.hub.automation.core_tasks import CORE_TASK_LABELS
+from products.hub.counters.tasks import COUNTER_TASK_LABELS
+from products.hub.obs_service.tasks import OBS_TASK_LABELS
 from products.hub.core.events import Events
-from products.hub.twitch.tasks import SendTwitchChatMessageTask
+from products.hub.twitch.tasks import SendTwitchChatMessageTask, TWITCH_TASK_LABELS
 
 
 class ExampleTask:
@@ -119,6 +124,76 @@ class AutomationServiceTests(unittest.TestCase):
             result.routine_results[0].task_results[0].detail,
         )
 
+    def test_builtin_visible_tasks_have_complete_reference_metadata(self) -> None:
+        registry = TaskRegistry(BUILTIN_TASK_METADATA)
+        expected = set().union(
+            TWITCH_TASK_LABELS,
+            COUNTER_TASK_LABELS,
+            CORE_TASK_LABELS,
+            OBS_TASK_LABELS,
+        )
+
+        self.assertEqual(
+            {metadata.task_type for metadata in registry.visible_metadata()},
+            expected,
+        )
+        self.assertEqual(registry.missing_descriptions(), ())
+        self.assertEqual(registry.missing_help(), ())
+        self.assertEqual(len(registry.visible_metadata()), 68)
+        self.assertIsNone(registry.metadata("twitch.get_channel_information"))
+
+        wait = registry.metadata("core.wait")
+        assert wait is not None
+        self.assertIn("without freezing", wait.help_text)
+        self.assertEqual(wait.variable_inputs, ("duration",))
+        self.assertIn("How long", wait.input_description("duration"))
+
+        obs = registry.metadata("obs.set_scene_item_enabled")
+        assert obs is not None
+        self.assertIn("OBS connection", obs.requirements[0])
+        self.assertTrue(obs.examples)
+
+    def test_registry_rejects_incomplete_visible_help_metadata(self) -> None:
+        registry = TaskRegistry()
+        cases = (
+            (
+                TaskMetadata(
+                    task_type="test.missing_description",
+                    label="Missing description",
+                    short_description="",
+                    help_text="Detailed help is present.",
+                    category="Tests",
+                ),
+                "short description",
+            ),
+            (
+                TaskMetadata(
+                    task_type="test.missing_help",
+                    label="Missing help",
+                    short_description="A short description is present.",
+                    help_text="",
+                    category="Tests",
+                ),
+                "detailed help",
+            ),
+        )
+        for metadata, expected in cases:
+            with self.subTest(task_type=metadata.task_type):
+                with self.assertRaisesRegex(ValueError, expected):
+                    registry.register_metadata(metadata)
+
+        internal = TaskMetadata(
+            task_type="test.internal",
+            label="Internal task",
+            short_description="",
+            help_text="",
+            category="Tests",
+            visible=False,
+        )
+        registry.register_metadata(internal)
+        self.assertIs(registry.metadata("test.internal"), internal)
+        self.assertNotIn(internal, registry.visible_metadata())
+
     def test_manual_run_executes_one_selected_routine(self) -> None:
         handler = ExampleTask()
         self.registry.register(handler)
@@ -139,6 +214,79 @@ class AutomationServiceTests(unittest.TestCase):
         self.assertEqual(handler.calls[0][1].service, "streamhouse")
         self.assertEqual(handler.calls[0][1].context["user"], "Tester")
         self.assertGreaterEqual(result.routine_results[0].task_results[0].duration_ms, 0)
+
+    def test_run_result_excludes_message_content_from_historical_context(self) -> None:
+        handler = ExampleTask()
+        self.registry.register(handler)
+        routine = self.store.add("History snapshot")
+        self.store.add_task(
+            routine.routine_id,
+            task_type=handler.task_type,
+            name="Capture",
+        )
+        supplied = {
+            "user.id": "viewer-1",
+            "command.data": "coffee 0.5",
+            "chat.message": "complete viewer message",
+            "keyword.message": "message containing coffee",
+            "keyword.match": "coffee",
+            "keyword.before": "message containing",
+            "keyword.after": "",
+            "event.input": "private redemption input",
+            "subscription.message": "private resub message",
+            "subscription.is_prime": "true",
+            "raid.direction": "outgoing",
+            "automation.result": "done",
+            "custom.private_note": "not historical context",
+            "event.oauth_token": "do-not-record",
+            "password": "do-not-record",
+        }
+
+        result = AutomationService(self.store, self.registry).run_routine(
+            routine.routine_id,
+            supplied,
+        ).routine_results[0]
+        snapshot = dict(result.context_values)
+        supplied["command.data"] = "changed later"
+
+        self.assertTrue(result.started_at)
+        self.assertTrue(result.finished_at)
+        self.assertGreaterEqual(result.duration_ms, 0)
+        self.assertEqual(snapshot["user.id"], "viewer-1")
+        self.assertNotIn("command.data", snapshot)
+        self.assertNotIn("chat.message", snapshot)
+        self.assertNotIn("keyword.message", snapshot)
+        self.assertNotIn("keyword.match", snapshot)
+        self.assertNotIn("keyword.before", snapshot)
+        self.assertNotIn("keyword.after", snapshot)
+        self.assertNotIn("event.input", snapshot)
+        self.assertNotIn("subscription.message", snapshot)
+        self.assertEqual(snapshot["subscription.is_prime"], "true")
+        self.assertEqual(snapshot["raid.direction"], "outgoing")
+        self.assertEqual(snapshot["automation.result"], "done")
+        self.assertNotIn("custom.private_note", snapshot)
+        self.assertNotIn("event.oauth_token", snapshot)
+        self.assertNotIn("password", snapshot)
+
+    def test_task_test_result_captures_failure_and_trigger_summary(self) -> None:
+        handler = ExampleTask(succeeded=False)
+        self.registry.register(handler)
+        routine = self.store.add("Failed task test")
+        task = self.store.add_task(
+            routine.routine_id,
+            task_type=handler.task_type,
+            name="Fail",
+        )
+
+        result = AutomationService(self.store, self.registry).run_task(
+            routine.routine_id,
+            task.task_id,
+            {"keyword.message": "Coffee please"},
+        ).routine_results[0]
+
+        self.assertFalse(result.succeeded)
+        self.assertEqual(result.trigger_type, "task_test")
+        self.assertNotIn("keyword.message", dict(result.context_values))
 
     def test_single_task_run_does_not_execute_other_routine_tasks(self) -> None:
         handler = ExampleTask()
@@ -345,7 +493,7 @@ class AutomationServiceTests(unittest.TestCase):
 
         self.assertEqual(self.store.get_group(group.group_id).name, "Original")
 
-    def test_version_one_routine_file_migrates_without_losing_tasks(self) -> None:
+    def test_discarded_pre_alpha_routine_schema_is_rejected(self) -> None:
         self.store.path.write_text(
             json.dumps(
                 {
@@ -370,13 +518,129 @@ class AutomationServiceTests(unittest.TestCase):
             encoding="utf-8",
         )
 
-        self.store.load()
+        with self.assertRaisesRegex(ValueError, "discarded pre-alpha schema"):
+            self.store.load()
 
-        saved = json.loads(self.store.path.read_text(encoding="utf-8"))
-        self.assertEqual(saved["version"], 4)
-        self.assertEqual(saved["groups"], [])
-        self.assertEqual(saved["routines"][0]["routine_id"], "legacy-routine")
-        self.assertEqual(saved["routines"][0]["tasks"][0]["task_id"], "legacy-task")
+    def test_nested_if_round_trips_in_current_routine_schema(self) -> None:
+        routine = self.store.add("Nested")
+        condition = self.store.add_task(
+            routine.routine_id,
+            task_type="core.if",
+            name="If command data",
+            config={"left": "{command.data}", "operator": "equals", "right": "yes"},
+            then_tasks=[
+                TaskDefinition("then-task", "test.example", "Then task", {"value": 1})
+            ],
+            else_tasks=[
+                TaskDefinition("else-task", "test.example", "Else task", {"value": 2})
+            ],
+        )
+
+        payload = json.loads(self.store.path.read_text(encoding="utf-8"))
+        reloaded = RoutineStore(self.store.path)
+        reloaded.load()
+        saved = reloaded.get(routine.routine_id).tasks[0]
+
+        self.assertEqual(payload["version"], 5)
+        self.assertEqual(saved.task_id, condition.task_id)
+        self.assertEqual(saved.then_tasks[0].task_id, "then-task")
+        self.assertEqual(saved.else_tasks[0].config, {"value": 2})
+
+        reloaded.update_task(
+            routine.routine_id,
+            condition.task_id,
+            then_tasks=[
+                TaskDefinition("second", "test.example", "Second"),
+                TaskDefinition("first", "test.example", "First"),
+            ],
+        )
+        final_store = RoutineStore(self.store.path)
+        final_store.load()
+        self.assertEqual(
+            [task.task_id for task in final_store.get(routine.routine_id).tasks[0].then_tasks],
+            ["second", "first"],
+        )
+
+    def test_previous_routine_schema_is_rejected_without_compatibility(self) -> None:
+        self.store.path.write_text(
+            json.dumps({"version": 4, "groups": [], "routines": []}),
+            encoding="utf-8",
+        )
+
+        with self.assertRaisesRegex(ValueError, "discarded pre-alpha schema"):
+            self.store.load()
+
+    def test_current_schema_never_invents_missing_persisted_identity(self) -> None:
+        group = self.store.add_group("Alerts")
+        routine = self.store.add("Nested", group_id=group.group_id)
+        self.store.add_task(
+            routine.routine_id,
+            task_type="core.if",
+            name="If",
+            config={"left": "1", "operator": "equals", "right": "1"},
+            then_tasks=[TaskDefinition("child-id", "test.example", "Child")],
+        )
+        original = json.loads(self.store.path.read_text(encoding="utf-8"))
+
+        mutations = {
+            "group": lambda payload: payload["groups"][0].pop("group_id"),
+            "routine": lambda payload: payload["routines"][0].pop("routine_id"),
+            "task": lambda payload: payload["routines"][0]["tasks"][0].pop("task_id"),
+            "nested task": lambda payload: payload["routines"][0]["tasks"][0]["then_tasks"][0].pop("task_id"),
+        }
+        for label, mutate in mutations.items():
+            with self.subTest(label=label):
+                payload = deepcopy(original)
+                mutate(payload)
+                with self.assertRaisesRegex(ValueError, "stable ID"):
+                    RoutineStore(self.store.path)._parse_payload(payload)
+
+    def test_current_schema_rejects_malformed_task_structure_without_dropping_it(self) -> None:
+        routine = self.store.add("Structured")
+        self.store.add_task(
+            routine.routine_id,
+            task_type="test.example",
+            name="Task",
+            config={"value": 1},
+        )
+        original = json.loads(self.store.path.read_text(encoding="utf-8"))
+
+        mutations = {
+            "task collection": lambda payload: payload["routines"][0].__setitem__("tasks", {}),
+            "task entry": lambda payload: payload["routines"][0].__setitem__("tasks", ["bad"]),
+            "task config": lambda payload: payload["routines"][0]["tasks"][0].__setitem__("config", []),
+            "nested collection": lambda payload: payload["routines"][0]["tasks"][0].__setitem__("then_tasks", {}),
+        }
+        for label, mutate in mutations.items():
+            with self.subTest(label=label):
+                payload = deepcopy(original)
+                mutate(payload)
+                with self.assertRaises(ValueError):
+                    RoutineStore(self.store.path)._parse_payload(payload)
+
+    def test_duplicate_if_regenerates_every_nested_task_id(self) -> None:
+        routine = self.store.add("Duplicate nested")
+        condition = self.store.add_task(
+            routine.routine_id,
+            task_type="core.if",
+            name="If",
+            config={"left": "1", "operator": "equals", "right": "1"},
+            then_tasks=[
+                TaskDefinition(
+                    "nested-if",
+                    "core.if",
+                    "Nested If",
+                    {"left": "2", "operator": "equals", "right": "2"},
+                    then_tasks=[TaskDefinition("leaf", "test.example", "Leaf")],
+                )
+            ],
+        )
+
+        copied = self.store.duplicate_task(routine.routine_id, condition.task_id)
+
+        self.assertNotEqual(copied.task_id, condition.task_id)
+        self.assertNotEqual(copied.then_tasks[0].task_id, "nested-if")
+        self.assertNotEqual(copied.then_tasks[0].then_tasks[0].task_id, "leaf")
 
 
 class SendTwitchChatMessageTaskTests(unittest.TestCase):
@@ -388,7 +652,7 @@ class SendTwitchChatMessageTaskTests(unittest.TestCase):
             task_id="task-1",
             task_type=handler.task_type,
             name="Send response",
-            config={"message": "Hello {user} in {channel}", "as_bot": True},
+            config={"message": "Hello {user.display_name} in {stream.channel}", "as_bot": True},
         )
 
         result = handler.execute(
@@ -397,13 +661,13 @@ class SendTwitchChatMessageTaskTests(unittest.TestCase):
                 trigger_id="trigger-1",
                 service="twitch",
                 trigger_type="command",
-                context={"user": "Viewer", "channel": "sally"},
+                context={"user.display_name": "Viewer", "stream.channel": "streamhouse"},
             ),
         )
 
         self.assertTrue(result.succeeded)
         twitch_service.send_message.assert_called_once_with(
-            "Hello Viewer in sally",
+            "Hello Viewer in streamhouse",
             as_bot=True,
         )
 

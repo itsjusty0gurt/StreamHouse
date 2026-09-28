@@ -33,6 +33,7 @@ from products.hub.config.twitch_extension import TWITCH_EXTENSION_CLIENT_ID
 from products.hub.soundboard.models import SoundboardButton, SoundboardPage
 from products.hub.soundboard.server import SoundboardLocalServer
 from products.hub.soundboard.store import SoundboardStore
+from products.hub.ui.page_header import PageHeader
 from products.hub.soundboard.relay import (
     SoundboardRelayClient,
     SoundboardRelayConfig,
@@ -76,14 +77,13 @@ class SoundboardPageWidget(QWidget):
         content_layout = QVBoxLayout(self.scroll_content)
         self.scroll_area.setWidget(self.scroll_content)
         root.addWidget(self.scroll_area)
-        header = QHBoxLayout()
-        introduction = QLabel(
+        self.page_header = PageHeader(
+            "Soundboard",
             "Build the soundboard viewers will see. Each sound runs an automation "
-            "routine, so it can play audio and perform other Hub tasks."
+            "routine, so it can play audio and perform other Hub tasks.",
+            self.scroll_content,
         )
-        introduction.setWordWrap(True)
-        header.addWidget(introduction, 1)
-        content_layout.addLayout(header)
+        content_layout.addWidget(self.page_header)
 
         self.editor_area = QWidget(self.scroll_content)
         self.editor_grid = QGridLayout(self.editor_area)

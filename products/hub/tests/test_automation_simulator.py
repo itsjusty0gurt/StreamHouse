@@ -29,14 +29,14 @@ class TwitchCommandSimulatorTests(unittest.TestCase):
     def test_simulates_rendered_chat_without_recording_command_use(self) -> None:
         command = self.commands.add(
             "status",
-            "Mic is {muted}; playing {game}; hi {user}.",
+            "Mic is {obs.muted}; playing {stream.category}; hi {user.display_name}.",
             global_cooldown_seconds=0,
             user_cooldown_seconds=0,
         )
         simulator = TwitchCommandSimulator(
             self.commands,
             self.routines,
-            live_context={"game": "Science & Technology", "muted": "Not Muted"},
+            live_context={"stream.category": "Science & Technology", "obs.muted": "false"},
         )
 
         result = simulator.simulate("!status", username="Yogurt")
@@ -47,7 +47,7 @@ class TwitchCommandSimulatorTests(unittest.TestCase):
         self.assertEqual(len(result.sent_messages), 1)
         self.assertEqual(
             result.sent_messages[0].message,
-            "Mic is Not Muted; playing Science & Technology; hi Yogurt.",
+            "Mic is false; playing Science & Technology; hi Yogurt.",
         )
         self.assertTrue(result.sent_messages[0].as_bot)
         self.assertFalse(result.missing_variables)
@@ -63,12 +63,12 @@ class TwitchCommandSimulatorTests(unittest.TestCase):
             command.routine_id,
             task_type="core.open_target",
             name="Open Twitch",
-            config={"target": "https://twitch.tv/{channel}"},
+            config={"target": "https://twitch.tv/{stream.channel}"},
         )
         simulator = TwitchCommandSimulator(
             self.commands,
             self.routines,
-            live_context={"channel": "itsjusty0gurt"},
+            live_context={"stream.channel": "itsjusty0gurt"},
         )
 
         result = simulator.simulate("!open")
@@ -99,7 +99,7 @@ class TwitchCommandSimulatorTests(unittest.TestCase):
     def test_reports_missing_variables(self) -> None:
         self.commands.add(
             "status",
-            "Playing {game} with mic {muted}.",
+            "Playing {stream.category} with mic {obs.muted}.",
             global_cooldown_seconds=0,
             user_cooldown_seconds=0,
         )
@@ -108,8 +108,9 @@ class TwitchCommandSimulatorTests(unittest.TestCase):
         result = simulator.simulate("!status")
 
         self.assertEqual(result.outcome, TwitchCommandTriggerOutcome.READY.value)
-        self.assertEqual(result.missing_variables, ("game", "muted"))
-        self.assertEqual(result.sent_messages[0].message, "Playing -- with mic --.")
+        self.assertEqual(result.missing_variables, ("obs.muted", "stream.category"))
+        self.assertFalse(result.sent_messages)
+        self.assertFalse(result.task_results[0].succeeded)
 
 
 if __name__ == "__main__":

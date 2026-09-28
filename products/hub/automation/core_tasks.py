@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import random
 import shlex
@@ -8,6 +9,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from threading import RLock
 from typing import Callable, Mapping
 
 from PySide6.QtCore import (
@@ -21,8 +23,9 @@ from PySide6.QtGui import QDesktopServices
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtWidgets import QApplication, QStyle, QSystemTrayIcon
 
+from products.hub.automation.cancellation import current_cancellation
 from products.hub.automation.models import TaskDefinition, TaskExecutionResult, TriggerEvent
-from products.hub.automation.variables import render_preview
+from products.hub.automation.variable_registry import render_placeholders
 from products.hub.automation.variable_tasks import VARIABLE_TASK_LABELS
 from products.hub.automation.logic_tasks import LOGIC_TASK_LABELS
 from products.hub.automation.file_tasks import FILE_TASK_LABELS
@@ -33,7 +36,7 @@ from products.hub.automation.value_tasks import VALUE_TASK_LABELS
 CORE_TASK_LABELS = {
     "core.launch_application": "Core — Launch application",
     "core.close_application": "Core — Close application",
-    "core.delay": "Core — Wait / delay",
+    "core.wait": "Core — Wait",
     "core.random_delay": "Core — Wait a random duration",
     "core.wait_for_service": "Core — Wait for service",
     "core.open_target": "Core — Open file, folder, or URL",
@@ -106,19 +109,95 @@ class CloseApplicationTask:
         return _result(task, completed.returncode == 0, detail or f"Closed {process_name}.")
 
 
-class DelayTask:
-    task_type = "core.delay"
+class WaitTask:
+    task_type = "core.wait"
+    _UNIT_SECONDS = {
+        "milliseconds": 0.001,
+        "seconds": 1.0,
+        "minutes": 60.0,
+    }
+    _MAX_SECONDS = 86_400.0
+
+    def __init__(self, wait: Callable[[int], bool] | None = None) -> None:
+        self._wait_override = wait
+        self._active_loops: set[QEventLoop] = set()
+        self._lock = RLock()
+        self._stopping = False
 
     def execute(self, task: TaskDefinition, trigger: TriggerEvent) -> TaskExecutionResult:
-        seconds = max(0.0, min(float(task.config.get("seconds", 1.0)), 86_400.0))
-        self._wait(seconds)
-        return _result(task, True, f"Waited {seconds:g} seconds.")
+        try:
+            raw_duration = render_placeholders(
+                str(task.config.get("duration", "1")),
+                trigger.context,
+                strip_values=True,
+            ).strip()
+            if not raw_duration:
+                raise ValueError("Enter a wait duration.")
+            duration = float(raw_duration)
+            if not math.isfinite(duration):
+                raise ValueError("Wait duration must be a finite number.")
+            if duration < 0:
+                raise ValueError("Wait duration cannot be negative.")
+            unit = str(task.config.get("unit", "seconds")).strip().casefold()
+            multiplier = self._UNIT_SECONDS.get(unit)
+            if multiplier is None:
+                raise ValueError("Choose Milliseconds, Seconds, or Minutes.")
+            seconds = duration * multiplier
+            if seconds > self._MAX_SECONDS:
+                raise ValueError("Wait duration cannot exceed 24 hours.")
+            milliseconds = round(seconds * 1000)
+            completed = (
+                self._wait_override(milliseconds)
+                if self._wait_override is not None
+                else self._wait_interruptibly(milliseconds)
+            )
+            if completed is False:
+                return _result(task, False, "Wait was cancelled.")
+            return _result(task, True, f"Waited {duration:g} {unit}.")
+        except (TypeError, ValueError) as error:
+            return _result(task, False, str(error))
 
-    @staticmethod
-    def _wait(seconds: float) -> None:
+    def _wait_interruptibly(self, milliseconds: int) -> bool:
+        if milliseconds <= 0:
+            return True
+        cancellation = current_cancellation()
+        if cancellation is not None and cancellation.cancelled:
+            return False
         loop = QEventLoop()
-        QTimer.singleShot(round(seconds * 1000), loop.quit)
-        loop.exec()
+        timer = QTimer()
+        timer.setSingleShot(True)
+        timer.timeout.connect(loop.quit)
+        remove_cancellation_callback = (
+            cancellation.add_callback(lambda _reason: loop.quit())
+            if cancellation is not None
+            else lambda: None
+        )
+        with self._lock:
+            if self._stopping or (
+                cancellation is not None and cancellation.cancelled
+            ):
+                remove_cancellation_callback()
+                return False
+            self._active_loops.add(loop)
+        try:
+            timer.start(milliseconds)
+            loop.exec()
+            return not timer.isActive() and not (
+                cancellation is not None and cancellation.cancelled
+            )
+        finally:
+            timer.stop()
+            remove_cancellation_callback()
+            with self._lock:
+                self._active_loops.discard(loop)
+
+    def cancel_all(self) -> None:
+        """Interrupt active waits so shutdown is not held by their timers."""
+        with self._lock:
+            self._stopping = True
+            loops = tuple(self._active_loops)
+        for loop in loops:
+            loop.quit()
 
 
 class RandomDelayTask:
@@ -126,7 +205,13 @@ class RandomDelayTask:
 
     def __init__(self, rng: random.Random | None = None, wait=None) -> None:
         self._rng = rng or random.Random()
-        self._wait = wait or DelayTask._wait
+        self._wait = wait or self._wait_seconds
+
+    @staticmethod
+    def _wait_seconds(seconds: float) -> None:
+        loop = QEventLoop()
+        QTimer.singleShot(round(seconds * 1000), loop.quit)
+        loop.exec()
 
     def execute(self, task: TaskDefinition, trigger: TriggerEvent) -> TaskExecutionResult:
         try:
@@ -202,11 +287,11 @@ class DesktopNotificationTask:
 
     def execute(self, task: TaskDefinition, trigger: TriggerEvent) -> TaskExecutionResult:
         try:
-            title = render_preview(
+            title = render_placeholders(
                 str(task.config.get("title", "Streamhouse Hub")),
                 trigger.context,
             ).strip()
-            message = render_preview(
+            message = render_placeholders(
                 str(task.config.get("message", "")),
                 trigger.context,
             ).strip()
@@ -285,6 +370,7 @@ class PlayAudioTask:
         self._player_factory = player_factory
         self._audio_output_factory = audio_output_factory
         self._active_players: list[tuple[object, object]] = []
+        self._active_players_lock = RLock()
 
     def execute(self, task: TaskDefinition, trigger: TriggerEvent) -> TaskExecutionResult:
         try:
@@ -310,7 +396,7 @@ class PlayAudioTask:
                 True,
                 f"Started audio: {audio_file.name} at {volume_percent}%.",
             )
-        except (OSError, TypeError, ValueError) as error:
+        except (OSError, RuntimeError, TypeError, ValueError) as error:
             return _result(task, False, str(error))
 
     @classmethod
@@ -330,11 +416,13 @@ class PlayAudioTask:
 
     def _play_background(self, player, audio_output) -> None:
         entry = (player, audio_output)
-        self._active_players.append(entry)
+        with self._active_players_lock:
+            self._active_players.append(entry)
 
         def forget(*_args) -> None:
-            if entry in self._active_players:
-                self._active_players.remove(entry)
+            with self._active_players_lock:
+                if entry in self._active_players:
+                    self._active_players.remove(entry)
 
         player.playbackStateChanged.connect(
             lambda state: (
@@ -348,9 +436,11 @@ class PlayAudioTask:
 
     def stop_all(self) -> None:
         """Stop any background audio started by this task instance."""
-        for player, _audio_output in tuple(self._active_players):
+        with self._active_players_lock:
+            active_players = tuple(self._active_players)
+            self._active_players.clear()
+        for player, _audio_output in active_players:
             player.stop()
-        self._active_players.clear()
 
     def _play_and_wait(
         self,
@@ -369,36 +459,107 @@ class PlayAudioTask:
         )
         timed_out = False
         failed = False
+        completed = False
+        cancelled = False
+        cancellation_reason = "Audio playback was cancelled."
+        failure_detail = "Audio playback failed."
+        done = False
+        entry = (player, audio_output)
+        with self._active_players_lock:
+            self._active_players.append(entry)
 
         def finish() -> None:
+            nonlocal done
+            done = True
             if loop.isRunning():
                 loop.quit()
 
         def timeout() -> None:
             nonlocal timed_out
             timed_out = True
-            player.stop()
             finish()
 
-        def fail(*_args) -> None:
-            nonlocal failed
+        def fail(*args) -> None:
+            nonlocal failed, failure_detail
             failed = True
+            supplied_detail = next(
+                (
+                    str(value).strip()
+                    for value in reversed(args)
+                    if isinstance(value, str) and str(value).strip()
+                ),
+                "",
+            )
+            error_string = getattr(player, "errorString", lambda: "")()
+            failure_detail = supplied_detail or str(error_string).strip() or failure_detail
             finish()
+
+        def media_status_changed(status) -> None:
+            nonlocal completed
+            if status == QMediaPlayer.MediaStatus.EndOfMedia:
+                completed = True
+                finish()
+            elif status == QMediaPlayer.MediaStatus.InvalidMedia:
+                fail("The audio file could not be played.")
+
+        media_status_signal = getattr(player, "mediaStatusChanged", None)
+        if media_status_signal is not None:
+            media_status_signal.connect(media_status_changed)
+
+        def stopped() -> None:
+            nonlocal completed
+            if done:
+                return
+            if media_status_signal is None:
+                # Test/fallback players without media status can only report
+                # completion through the stopped-state signal.
+                completed = True
+                finish()
+                return
+            status = getattr(player, "mediaStatus", lambda: None)()
+            if status == QMediaPlayer.MediaStatus.EndOfMedia:
+                media_status_changed(status)
+            else:
+                fail("Audio playback stopped before the file finished.")
 
         player.playbackStateChanged.connect(
             lambda state: (
-                finish()
+                QTimer.singleShot(0, stopped)
                 if state == QMediaPlayer.PlaybackState.StoppedState
                 else None
             )
         )
         player.errorOccurred.connect(fail)
         timer.timeout.connect(timeout)
-        timer.start(round(timeout_seconds * 1000))
-        player.play()
-        _keep_alive = (player, audio_output)
-        loop.exec()
-        timer.stop()
+        cancellation = current_cancellation()
+
+        def cancel(reason: str) -> None:
+            nonlocal cancelled, cancellation_reason
+            cancelled = True
+            cancellation_reason = str(reason).strip() or cancellation_reason
+            finish()
+
+        remove_cancellation_callback = (
+            cancellation.add_callback(cancel)
+            if cancellation is not None
+            else lambda: None
+        )
+        try:
+            if not cancelled:
+                timer.start(round(timeout_seconds * 1000))
+                player.play()
+                if not done:
+                    loop.exec()
+        finally:
+            timer.stop()
+            remove_cancellation_callback()
+            with self._active_players_lock:
+                if entry in self._active_players:
+                    self._active_players.remove(entry)
+        if timed_out or failed or cancelled:
+            player.stop()
+        if cancelled:
+            return _result(task, False, cancellation_reason)
         if timed_out:
             return _result(
                 task,
@@ -406,7 +567,9 @@ class PlayAudioTask:
                 f"Audio timed out after {timeout_seconds:g} seconds.",
             )
         if failed:
-            return _result(task, False, "Audio playback failed.")
+            return _result(task, False, failure_detail)
+        if not completed:
+            return _result(task, False, "Audio playback ended without completion.")
         return _result(
             task,
             True,
@@ -522,9 +685,6 @@ class PythonScriptTask:
             ),
         }
         environment.update(generated)
-        # Temporary aliases preserve existing trusted local scripts.
-        for name, value in generated.items():
-            environment["SALLY_" + name.removeprefix("STREAMHOUSE_")] = value
         for key, value in context.items():
             safe_key = "".join(
                 character if character.isalnum() else "_"
@@ -532,7 +692,6 @@ class PythonScriptTask:
             ).strip("_")
             if safe_key:
                 environment[f"STREAMHOUSE_{safe_key}"] = value
-                environment[f"SALLY_{safe_key}"] = value
         return environment
 
     @classmethod
@@ -644,12 +803,9 @@ class PythonScriptTask:
 
     @staticmethod
     def _render(template: str, context: Mapping[str, str]) -> str:
-        from products.hub.automation.variables import TEMPLATE_PATTERN
+        from products.hub.automation.variable_registry import render_placeholders
 
-        return TEMPLATE_PATTERN.sub(
-            lambda match: str(context.get(match.group(1), "")),
-            template,
-        )
+        return render_placeholders(template, context)
 
     @staticmethod
     def _strip_matching_quotes(value: str) -> str:

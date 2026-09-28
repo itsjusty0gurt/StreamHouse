@@ -1,3 +1,4 @@
+import io
 import logging
 import unittest
 from unittest.mock import Mock, patch
@@ -5,9 +6,14 @@ from unittest.mock import Mock, patch
 from products.hub.core.events import Events
 from shared.streamhouse_runtime.logger import Logger
 from products.hub.twitch.auth import TwitchToken
-from products.hub.twitch.models import TwitchEventTransport
+from products.hub.twitch.models import TwitchEventTransport, TwitchMessage
+from datetime import datetime, timezone
 from products.hub.twitch.service import TwitchConnectionState, TwitchService
 from products.hub.twitch.simulator import create_eventsub_notification
+from products.hub.twitch.slash_commands import (
+    TwitchSlashRequest,
+    parse_twitch_slash_request,
+)
 
 
 class TwitchServiceTests(unittest.TestCase):
@@ -54,7 +60,7 @@ class TwitchServiceTests(unittest.TestCase):
             expires_at=999,
             scopes=["user:read:chat"],
             user_id="bot-1",
-            login="sallybot",
+            login="testbot",
         )
         auth = Mock(token=token)
         helix = Mock()
@@ -106,7 +112,7 @@ class TwitchServiceTests(unittest.TestCase):
             999,
             ["user:read:chat", "user:write:chat", "user:bot"],
             user_id="bot-1",
-            login="sallybot",
+            login="testbot",
         )
         helix = Mock()
         helix.get_user.return_value = {"id": "channel-1"}
@@ -121,7 +127,7 @@ class TwitchServiceTests(unittest.TestCase):
             self.assertTrue(service.connect("streamer"))
             service._receive_live_welcome("session-1")
             service._receive_activity_welcome("activity-session-1")
-            self.assertTrue(service.send_message("Hello from Sally"))
+            self.assertTrue(service.send_message("Hello from the bot"))
 
             helix.create_chat_subscriptions.assert_called_once_with(
                 "session-1", "channel-1", "bot-1", bot
@@ -134,7 +140,7 @@ class TwitchServiceTests(unittest.TestCase):
             )
             self.assertEqual(socket_type.return_value.open.call_count, 2)
             helix.send_chat_message.assert_called_once_with(
-                "channel-1", "bot-1", "Hello from Sally", bot
+                "channel-1", "bot-1", "Hello from the bot", bot
             )
             self.assertTrue(
                 service.send_message("Hello from streamer", as_bot=False)
@@ -151,6 +157,71 @@ class TwitchServiceTests(unittest.TestCase):
         finally:
             service.disconnect()
 
+    @patch("products.hub.twitch.service.TwitchEventSubSocket")
+    def test_welcome_keeps_identity_selected_when_socket_opened(
+        self, socket_type: Mock
+    ) -> None:
+        broadcaster = TwitchToken(
+            "broadcaster-access",
+            "refresh",
+            999,
+            ["user:read:chat", "channel:read:ads"],
+            user_id="channel-1",
+            login="streamer",
+        )
+        bot = TwitchToken(
+            "bot-access",
+            "refresh",
+            999,
+            ["user:read:chat", "user:bot"],
+            user_id="bot-1",
+            login="testbot",
+        )
+        bot_auth = Mock(token=None)
+        helix = Mock()
+        helix.get_user.return_value = {"id": "channel-1"}
+        helix.get_badge_urls.return_value = {}
+        service = TwitchService(
+            auth=Mock(token=broadcaster),
+            bot_auth=bot_auth,
+            helix=helix,
+        )
+
+        try:
+            self.assertTrue(service.connect("streamer"))
+            bot_auth.token = bot  # Bot restore finishes before Twitch welcomes.
+            service._receive_live_welcome("session-1")
+
+            helix.create_chat_subscriptions.assert_called_once_with(
+                "session-1", "channel-1", "channel-1", broadcaster
+            )
+            helix.create_activity_subscriptions.assert_called_once_with(
+                "session-1", "channel-1", "channel-1", broadcaster
+            )
+            self.assertEqual(socket_type.return_value.open.call_count, 1)
+        finally:
+            service.disconnect()
+
+    def test_ads_actions_require_broadcaster_ads_scopes(self) -> None:
+        token = TwitchToken(
+            "access",
+            "refresh",
+            999,
+            [],
+            user_id="channel-1",
+            login="streamer",
+        )
+        helix = Mock()
+        service = TwitchService(auth=Mock(token=token), helix=helix)
+        service.broadcaster_user_id = "channel-1"
+
+        with self.assertRaisesRegex(ValueError, "channel:edit:commercial"):
+            service.run_commercial(60)
+        with self.assertRaisesRegex(ValueError, "channel:manage:ads"):
+            service.snooze_next_ad()
+        helix.start_commercial.assert_not_called()
+        helix.snooze_ad.assert_not_called()
+
     def test_same_account_cannot_fill_broadcaster_and_bot_slots(self) -> None:
         token = TwitchToken(
             "access",
@@ -158,7 +229,7 @@ class TwitchServiceTests(unittest.TestCase):
             999,
             ["user:read:chat", "user:write:chat"],
             user_id="same-1",
-            login="sallybot",
+            login="testbot",
         )
         helix = Mock()
         helix.get_user.return_value = {"id": "same-1"}
@@ -173,7 +244,7 @@ class TwitchServiceTests(unittest.TestCase):
             lambda message: errors.append(message),
         )
 
-        self.assertFalse(service.connect("sallybot"))
+        self.assertFalse(service.connect("testbot"))
         self.assertIn("same Twitch account", errors[0])
 
     def test_chat_moderation_notification_emits_notice(self) -> None:
@@ -187,6 +258,7 @@ class TwitchServiceTests(unittest.TestCase):
             "channel.chat.message_delete",
             {
                 "event": {
+                    "target_user_id": "viewer-1",
                     "target_user_login": "viewer",
                     "message_id": "message-1",
                 }
@@ -196,6 +268,28 @@ class TwitchServiceTests(unittest.TestCase):
         self.assertEqual(len(notices), 1)
         self.assertEqual(notices[0].kind, "delete")
         self.assertEqual(notices[0].target_message_id, "message-1")
+        self.assertEqual(notices[0].target_user_id, "viewer-1")
+
+    def test_clear_user_notice_preserves_stable_target_identity(self) -> None:
+        notices = []
+        Events.subscribe(
+            "twitch_notice_received",
+            lambda notice: notices.append(notice),
+        )
+
+        self.service._receive_notification(
+            "channel.chat.clear_user_messages",
+            {
+                "event": {
+                    "target_user_id": "viewer-1",
+                    "target_user_login": "Viewer",
+                }
+            },
+        )
+
+        self.assertEqual(len(notices), 1)
+        self.assertEqual(notices[0].kind, "clear_user")
+        self.assertEqual(notices[0].target_user_id, "viewer-1")
 
     def test_moderation_actions_use_signed_in_identity(self) -> None:
         token = TwitchToken(
@@ -224,6 +318,200 @@ class TwitchServiceTests(unittest.TestCase):
             reason="spam",
         )
 
+    def test_slash_actions_reuse_authoritative_twitch_service_paths(self) -> None:
+        token = TwitchToken(
+            "access",
+            "refresh",
+            999,
+            [
+                "moderator:manage:banned_users",
+                "moderator:manage:chat_messages",
+                "moderator:manage:chat_settings",
+                "moderator:manage:announcements",
+                "channel:manage:moderators",
+                "channel:manage:vips",
+                "channel:manage:raids",
+            ],
+            user_id="channel-1",
+            login="streamer",
+        )
+        helix = Mock()
+        helix.get_user.return_value = {"id": "viewer-1"}
+        helix.start_raid.return_value = datetime(
+            2026, 9, 25, tzinfo=timezone.utc
+        )
+        service = TwitchService(auth=Mock(token=token), helix=helix)
+        service.broadcaster_user_id = "channel-1"
+
+        self.assertEqual(
+            service.execute_slash_action(parse_twitch_slash_request("/slow 15")),
+            (True, "chat"),
+        )
+        helix.update_chat_settings.assert_called_once_with(
+            "channel-1",
+            "channel-1",
+            {"slow_mode": True, "slow_mode_wait_time": 15},
+            token,
+        )
+        service.execute_slash_action(parse_twitch_slash_request("/mod viewer"))
+        helix.update_channel_role.assert_called_once_with(
+            "channel-1", "viewer-1", "moderator", True, token
+        )
+        service.execute_slash_action(parse_twitch_slash_request("/vip viewer"))
+        helix.update_channel_role.assert_called_with(
+            "channel-1", "viewer-1", "vip", True, token
+        )
+        service.execute_slash_action(parse_twitch_slash_request("/clear"))
+        helix.delete_chat_message.assert_called_once_with(
+            "channel-1", "channel-1", "", token
+        )
+        service.execute_slash_action(parse_twitch_slash_request("/raid viewer"))
+        helix.start_raid.assert_called_once_with("channel-1", "viewer-1", token)
+        service.execute_slash_action(parse_twitch_slash_request("/unraid"))
+        helix.cancel_raid.assert_called_once_with("channel-1", token)
+        service.execute_slash_action(
+            parse_twitch_slash_request("/announce Stream starts now!")
+        )
+        helix.send_chat_announcement.assert_called_once_with(
+            "channel-1", "channel-1", "Stream starts now!", token
+        )
+
+    def test_users_role_action_uses_stable_id_without_lookup(self) -> None:
+        token = TwitchToken(
+            "access",
+            "refresh",
+            999,
+            ["channel:manage:vips"],
+            user_id="channel-1",
+            login="streamer",
+        )
+        helix = Mock()
+        service = TwitchService(auth=Mock(token=token), helix=helix)
+        service.broadcaster_user_id = "channel-1"
+        request = TwitchSlashRequest(
+            action="vip",
+            user_reference="Viewer",
+            user_id="stable-viewer-id",
+        )
+
+        self.assertEqual(service.execute_slash_action(request), (True, "Viewer"))
+        helix.get_user.assert_not_called()
+        helix.update_channel_role.assert_called_once_with(
+            "channel-1", "stable-viewer-id", "vip", True, token
+        )
+
+    def test_followed_live_channels_use_signed_in_user_and_required_scope(self) -> None:
+        token = TwitchToken(
+            "access",
+            "refresh",
+            999,
+            ["user:read:follows"],
+            user_id="channel-1",
+        )
+        helix = Mock()
+        helix.get_followed_streams.return_value = [
+            {"user_id": "viewer-1", "type": "live"}
+        ]
+        service = TwitchService(auth=Mock(token=token), helix=helix)
+
+        self.assertEqual(
+            service.get_followed_live_channels(),
+            [{"user_id": "viewer-1", "type": "live"}],
+        )
+        helix.get_followed_streams.assert_called_once_with("channel-1", token)
+
+        token.scopes.clear()
+        with self.assertRaisesRegex(PermissionError, "Additional Twitch permission"):
+            service.get_followed_live_channels()
+
+    def test_all_chat_mode_slash_actions_use_chat_settings_service(self) -> None:
+        token = TwitchToken(
+            "access",
+            "refresh",
+            999,
+            ["moderator:manage:chat_settings"],
+            user_id="moderator-1",
+        )
+        helix = Mock()
+        service = TwitchService(auth=Mock(token=token), helix=helix)
+        service.broadcaster_user_id = "channel-1"
+        cases = (
+            ("/slow 15", {"slow_mode": True, "slow_mode_wait_time": 15}),
+            ("/slowoff", {"slow_mode": False}),
+            (
+                "/followers 2h",
+                {"follower_mode": True, "follower_mode_duration": 120},
+            ),
+            ("/followersoff", {"follower_mode": False}),
+            ("/subscribers", {"subscriber_mode": True}),
+            ("/subscribersoff", {"subscriber_mode": False}),
+            ("/emoteonly", {"emote_mode": True}),
+            ("/emoteonlyoff", {"emote_mode": False}),
+            ("/uniquechat", {"unique_chat_mode": True}),
+            ("/uniquechatoff", {"unique_chat_mode": False}),
+        )
+
+        for source, expected in cases:
+            with self.subTest(source=source):
+                helix.update_chat_settings.reset_mock()
+                self.assertEqual(
+                    service.execute_slash_action(
+                        parse_twitch_slash_request(source)
+                    ),
+                    (True, "chat"),
+                )
+                helix.update_chat_settings.assert_called_once_with(
+                    "channel-1", "moderator-1", expected, token
+                )
+
+    def test_all_role_slash_actions_use_shared_role_service(self) -> None:
+        token = TwitchToken(
+            "access",
+            "refresh",
+            999,
+            ["channel:manage:moderators", "channel:manage:vips"],
+            user_id="channel-1",
+        )
+        helix = Mock()
+        helix.get_user.return_value = {"id": "viewer-1"}
+        service = TwitchService(auth=Mock(token=token), helix=helix)
+        service.broadcaster_user_id = "channel-1"
+        cases = (
+            ("/mod viewer", "moderator", True),
+            ("/unmod viewer", "moderator", False),
+            ("/vip viewer", "vip", True),
+            ("/unvip viewer", "vip", False),
+        )
+
+        for source, role, enabled in cases:
+            with self.subTest(source=source):
+                helix.update_channel_role.reset_mock()
+                self.assertEqual(
+                    service.execute_slash_action(
+                        parse_twitch_slash_request(source)
+                    ),
+                    (True, "viewer"),
+                )
+                helix.update_channel_role.assert_called_once_with(
+                    "channel-1", "viewer-1", role, enabled, token
+                )
+
+    def test_slash_permission_failure_is_distinct_from_network_failure(self) -> None:
+        token = TwitchToken(
+            "access", "refresh", 999, [], user_id="channel-1", login="streamer"
+        )
+        helix = Mock()
+        service = TwitchService(auth=Mock(token=token), helix=helix)
+        service.broadcaster_user_id = "channel-1"
+
+        with self.assertRaisesRegex(
+            PermissionError, "moderator:manage:announcements"
+        ):
+            service.execute_slash_action(
+                parse_twitch_slash_request("/announce Hello")
+            )
+        helix.send_chat_announcement.assert_not_called()
+
     def test_pinned_message_uses_bot_sender_and_broadcaster_moderator(self) -> None:
         broadcaster = TwitchToken(
             "broadcaster-access",
@@ -239,7 +527,7 @@ class TwitchServiceTests(unittest.TestCase):
             999,
             ["user:write:chat"],
             user_id="bot-1",
-            login="sallybot",
+            login="testbot",
         )
         helix = Mock()
         helix.send_chat_message.return_value = "message-1"
@@ -268,7 +556,7 @@ class TwitchServiceTests(unittest.TestCase):
             broadcaster,
         )
 
-    def test_custom_rewards_mark_only_sally_owned_rewards_manageable(self) -> None:
+    def test_custom_rewards_mark_only_hub_managed_rewards_manageable(self) -> None:
         token = TwitchToken(
             "access",
             "refresh",
@@ -279,10 +567,10 @@ class TwitchServiceTests(unittest.TestCase):
         helix = Mock()
         helix.get_custom_rewards.side_effect = (
             [
-                {"id": "sally-1", "title": "Hydrate", "cost": 500},
+                {"id": "hub-1", "title": "Hydrate", "cost": 500},
                 {"id": "other-1", "title": "Stretch", "cost": 750},
             ],
-            [{"id": "sally-1", "title": "Hydrate", "cost": 500}],
+            [{"id": "hub-1", "title": "Hydrate", "cost": 500}],
         )
         service = TwitchService(auth=Mock(token=token), helix=helix)
 
@@ -294,6 +582,30 @@ class TwitchServiceTests(unittest.TestCase):
         helix.get_custom_rewards.assert_any_call(
             "channel-1", token, only_manageable=True
         )
+
+    def test_custom_reward_discovery_accepts_read_scope_and_includes_all(self) -> None:
+        token = TwitchToken(
+            "access", "refresh", 999, ["channel:read:redemptions"], user_id="channel-1"
+        )
+        helix = Mock()
+        helix.get_custom_rewards.return_value = [
+            {"id": "other-1", "title": "External reward", "cost": 750}
+        ]
+        service = TwitchService(auth=Mock(token=token), helix=helix)
+
+        rewards = service.get_custom_rewards_for_discovery()
+
+        self.assertEqual([(item.id, item.title) for item in rewards], [("other-1", "External reward")])
+        helix.get_custom_rewards.assert_called_once_with(
+            "channel-1", token, only_manageable=False
+        )
+
+    def test_custom_reward_discovery_explains_missing_scope(self) -> None:
+        token = TwitchToken("access", "refresh", 999, [], user_id="channel-1")
+        service = TwitchService(auth=Mock(token=token), helix=Mock())
+
+        with self.assertRaisesRegex(ValueError, "channel:read:redemptions"):
+            service.get_custom_rewards_for_discovery()
 
     def test_pin_failure_does_not_resend_successful_notice(self) -> None:
         broadcaster = TwitchToken(
@@ -354,6 +666,24 @@ class TwitchServiceTests(unittest.TestCase):
         self.assertIsNotNone(messages[0].received_at.tzinfo)
         self.assertTrue(messages[0].message_id)
         self.assertEqual(messages[0].fragments[0].text, "Hi!")
+
+    def test_received_chat_content_is_not_written_to_logs(self) -> None:
+        output = io.StringIO()
+        handler = logging.StreamHandler(output)
+        Logger._logger.addHandler(handler)
+        try:
+            self.service._receive_chat_message(
+                TwitchMessage(
+                    username="Viewer",
+                    text="private viewer log sentinel",
+                    received_at=datetime.now(timezone.utc),
+                    message_id="message-1",
+                    user_id="viewer-1",
+                )
+            )
+        finally:
+            Logger._logger.removeHandler(handler)
+        self.assertNotIn("private viewer log sentinel", output.getvalue())
 
     def test_invalid_operations_emit_errors(self) -> None:
         errors: list[str] = []
