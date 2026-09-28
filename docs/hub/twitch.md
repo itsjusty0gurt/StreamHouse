@@ -465,12 +465,11 @@ Incoming and outgoing `channel.raid` observation are implemented. Outgoing
 raid controls are implemented through the shared service used by `/raid` and
 **Your Channel > Raid**. The Raid page keeps its prepared message and active
 90-second countdown in memory only. Message sending reuses normal broadcaster
-chat sending; cancellation reuses Helix Cancel Raid. Twitch does not expose a
-public Raid Now endpoint, so Hub never simulates that action: the raid completes
-when the countdown expires or Twitch's own Raid Now control is used. An outgoing
-`channel.raid` event clears matching active UI state as soon as Twitch confirms
-the raid. A separate Raid Initiated Automation event remains planned; there is
-no separate public Twitch raid-completed event.
+chat sending; cancellation reuses Helix Cancel Raid. Twitch executes the raid
+automatically when the countdown expires, and Hub exposes no forced-completion
+action. An outgoing `channel.raid` event clears matching active UI state as soon
+as Twitch confirms the raid. A separate Raid Initiated Automation event remains
+planned; there is no separate public Twitch raid-completed event.
 
 ### Stream Health and Moderation
 

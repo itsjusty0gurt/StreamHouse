@@ -25,10 +25,7 @@ from products.hub.twitch.automation_triggers import (
 )
 from products.hub.twitch.default_commands import default_command_definitions
 from products.hub.twitch.slash_commands import TWITCH_SLASH_COMMANDS
-from products.hub.twitch.raid_contract import (
-    RAID_COUNTDOWN_SECONDS,
-    RAID_NOW_API_SUPPORTED,
-)
+from products.hub.twitch.raid_contract import RAID_COUNTDOWN_SECONDS
 
 
 WIKI_CATEGORIES = (
@@ -607,16 +604,6 @@ def _getting_started_entries() -> tuple[WikiEntry, ...]:
 
 
 def _twitch_entries() -> tuple[WikiEntry, ...]:
-    raid_now_reference = (
-        "Raid Now is available through Twitch's public API."
-        if RAID_NOW_API_SUPPORTED
-        else (
-            "Twitch does not expose Raid Now through its public API, so Hub "
-            "does not simulate it. The raid sends automatically when the "
-            "countdown finishes, or Twitch's own Raid Now control can "
-            "complete it sooner."
-        )
-    )
     return (
         WikiEntry(
             "twitch:capabilities",
@@ -694,13 +681,8 @@ def _twitch_entries() -> tuple[WikiEntry, ...]:
                     (
                         "Refresh asks Twitch for the followed channels that are live now; Hub does not save the results.",
                         f"Raid asks for confirmation, then starts Twitch's {RAID_COUNTDOWN_SECONDS}-second pending raid countdown. The active target is marked and other Raid actions remain unavailable until it completes or is cancelled.",
+                        "Twitch automatically executes the raid when the countdown ends.",
                         "Cancel Raid uses Twitch's real cancellation API and returns the page to normal target selection only after Twitch accepts the cancellation.",
-                    ),
-                ),
-                WikiSection(
-                    "Raid Now",
-                    (
-                        raid_now_reference,
                         "An outgoing Channel Raid event clears the active state immediately when Twitch confirms completion.",
                     ),
                 ),
@@ -721,7 +703,6 @@ def _twitch_entries() -> tuple[WikiEntry, ...]:
                 "raid message",
                 "countdown",
                 "cancel raid",
-                "raid now",
             ),
         ),
     )

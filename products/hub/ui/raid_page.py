@@ -36,10 +36,7 @@ from PySide6.QtWidgets import (
 
 from products.hub.core.events import Events
 from products.hub.twitch.models import TwitchEvent
-from products.hub.twitch.raid_contract import (
-    RAID_COUNTDOWN_SECONDS,
-    RAID_NOW_API_SUPPORTED,
-)
+from products.hub.twitch.raid_contract import RAID_COUNTDOWN_SECONDS
 from products.hub.ui.automation_task_cards import ElidingLabel
 from products.hub.ui.page_header import PageHeader
 from shared.streamhouse_shared.responsive import responsive_grid_columns
@@ -468,19 +465,25 @@ class RaidPage(QWidget):
         self.countdown_label.setStyleSheet(
             f"color:{RAID_SECONDARY_TEXT_COLOR};"
         )
+        self.countdown_note_label = QLabel(
+            "Raid will start automatically when the countdown ends.",
+            self.active_raid_frame,
+        )
+        self.countdown_note_label.setWordWrap(True)
+        self.countdown_note_label.setSizePolicy(
+            QSizePolicy.Policy.Ignored,
+            QSizePolicy.Policy.Preferred,
+        )
+        self.countdown_note_label.setStyleSheet(
+            f"color:{RAID_SECONDARY_TEXT_COLOR};"
+        )
         active_text.addWidget(self.active_raid_label)
         active_text.addWidget(self.countdown_label)
-        self.raid_now_button = QPushButton("Raid Now", self.active_raid_frame)
-        self.raid_now_button.setEnabled(RAID_NOW_API_SUPPORTED)
-        self.raid_now_button.setToolTip(
-            "Twitch does not expose Raid Now through its public API. "
-            "The raid sends automatically when the countdown finishes."
-        )
+        active_text.addWidget(self.countdown_note_label)
         self.cancel_raid_button = QPushButton(
             "Cancel Raid", self.active_raid_frame
         )
         active_layout.addLayout(active_text, 1)
-        active_layout.addWidget(self.raid_now_button)
         active_layout.addWidget(self.cancel_raid_button)
         self.active_raid_frame.hide()
         root.addWidget(self.active_raid_frame)

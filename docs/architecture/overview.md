@@ -1292,8 +1292,9 @@ broadcaster chat sending. After Twitch accepts a start request, the page uses
 the authoritative `created_at` response to present the pending 90-second
 countdown, disables other targets, and offers Helix cancellation. Matching
 outgoing `channel.raid` events clear the active state immediately. Twitch
-exposes no public Raid Now endpoint, so Hub does not simulate one. The candidate
-list, message, and active raid state are never persisted.
+executes the raid automatically when the countdown expires; Hub exposes no
+forced-completion action. The candidate list, message, and active raid state are
+never persisted.
 
 Hub Alpha 0.1 does not expose the Soundboard page while Twitch Extension
 approval is pending. Its store, local server, relay client, Automation

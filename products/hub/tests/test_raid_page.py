@@ -252,7 +252,11 @@ class RaidPageTests(unittest.TestCase):
         )
         self.assertIsNotNone(self.page._active_raid)
         self.assertEqual(self.page.countdown_label.text(), "Starting in 01:30")
-        self.assertFalse(self.page.raid_now_button.isEnabled())
+        self.assertEqual(
+            self.page.countdown_note_label.text(),
+            "Raid will start automatically when the countdown ends.",
+        )
+        self.assertFalse(hasattr(self.page, "raid_now_button"))
         self.assertEqual(QThread.currentThread(), self.page.thread())
 
     def test_raid_failure_restores_button_and_reports_error(self) -> None:

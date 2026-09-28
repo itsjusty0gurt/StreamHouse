@@ -136,7 +136,8 @@ def test_raid_page_reference_documents_runtime_finder_and_permissions() -> None:
     assert "never sends the message automatically" in text
     assert "90-second" in text
     assert "cancel raid" in text
-    assert "does not expose raid now" in text
+    assert "twitch automatically executes the raid" in text
+    assert "raid now" not in text
     assert "outgoing channel raid event" in text
 
 
