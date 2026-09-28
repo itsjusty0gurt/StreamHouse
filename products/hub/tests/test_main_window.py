@@ -2217,6 +2217,21 @@ class MainWindowTests(unittest.TestCase):
         )
         self.assertTrue(self.window.wiki_button.isChecked())
 
+    def test_wiki_navigation_search_and_selection_stress_keeps_one_page(self) -> None:
+        page = self.window.wiki_page
+        for iteration in range(30):
+            self.window.show_dashboard()
+            self.window.show_wiki()
+            page.search_edit.setText("command.data" if iteration % 2 else "raid")
+            self.assertTrue(page.select_entry("variable:command.data"))
+            self.window.show_automation()
+            self.window.show_wiki()
+            self.assertIs(self.window.wiki_page, page)
+            self.application.processEvents()
+
+        self.assertIs(self.window.ui.mainStack.currentWidget(), page)
+        self.assertTrue(self.window.wiki_button.isChecked())
+
     def test_wiki_replaces_task_library_and_searches_reference_content(self) -> None:
         page = self.window.wiki_page
         self.assertEqual(

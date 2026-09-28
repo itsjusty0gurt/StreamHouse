@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from html import escape
 
-from PySide6.QtCore import Qt, Slot
+from PySide6.QtCore import QSignalBlocker, Qt, Slot
 from PySide6.QtGui import QResizeEvent
 from PySide6.QtWidgets import (
     QApplication,
@@ -159,21 +159,41 @@ class WikiPage(QWidget):
         )
 
     def select_entry(self, entry_id: str) -> bool:
-        for index in range(self.entry_list.count()):
-            item = self.entry_list.item(index)
-            if item.data(Qt.ItemDataRole.UserRole) == entry_id:
-                self.entry_list.setCurrentItem(item)
-                return True
+        row = self._entry_row(entry_id)
+        if row >= 0:
+            self.entry_list.setCurrentRow(row)
+            return True
         entry = self._entries_by_id.get(entry_id)
         if entry is None:
             return False
         self.search_edit.clear()
-        matches = self.category_list.findItems(
-            entry.category, Qt.MatchFlag.MatchExactly
-        )
-        if matches:
-            self.category_list.setCurrentItem(matches[0])
-        return self.select_entry(entry_id)
+        category_row = self._category_row(entry.category)
+        if category_row >= 0:
+            self.category_list.setCurrentRow(category_row)
+        row = self._entry_row(entry_id)
+        if row < 0:
+            return False
+        self.entry_list.setCurrentRow(row)
+        return True
+
+    def _entry_id_at(self, row: int) -> str:
+        item = self.entry_list.item(row)
+        if item is None:
+            return ""
+        return str(item.data(Qt.ItemDataRole.UserRole) or "")
+
+    def _entry_row(self, entry_id: str) -> int:
+        for row in range(self.entry_list.count()):
+            if self._entry_id_at(row) == entry_id:
+                return row
+        return -1
+
+    def _category_row(self, category: str) -> int:
+        for row in range(self.category_list.count()):
+            item = self.category_list.item(row)
+            if item is not None and item.text() == category:
+                return row
+        return -1
 
     @Slot(str)
     def _category_changed(self, _category: str) -> None:
@@ -182,34 +202,44 @@ class WikiPage(QWidget):
 
     @Slot()
     def _refresh_entries(self) -> None:
-        selected = self.entry_list.currentItem()
-        selected_id = (
-            str(selected.data(Qt.ItemDataRole.UserRole)) if selected else ""
-        )
+        selected_id = self._entry_id_at(self.entry_list.currentRow())
         query = self.search_edit.text().strip()
         category = self.category_list.currentItem()
         category_name = category.text() if category is not None else WIKI_CATEGORIES[0]
         entries = self.matching_entries(query)
         if not query:
             entries = tuple(entry for entry in entries if entry.category == category_name)
-        self.entry_list.blockSignals(True)
-        self.entry_list.clear()
-        selected_row = -1
-        for entry in entries:
-            item = QListWidgetItem(entry.title)
+
+        blocker = QSignalBlocker(self.entry_list)
+        for target_row, entry in enumerate(entries):
+            current_row = self._entry_row(entry.entry_id)
+            if current_row < 0:
+                item = QListWidgetItem()
+                self.entry_list.insertItem(target_row, item)
+            elif current_row != target_row:
+                item = self.entry_list.takeItem(current_row)
+                self.entry_list.insertItem(target_row, item)
+            else:
+                item = self.entry_list.item(target_row)
+            item.setText(entry.title)
             item.setData(Qt.ItemDataRole.UserRole, entry.entry_id)
             item.setToolTip(entry.summary)
-            self.entry_list.addItem(item)
-            if entry.entry_id == selected_id:
-                selected_row = self.entry_list.count() - 1
-        self.entry_list.blockSignals(False)
+
+        while self.entry_list.count() > len(entries):
+            removed = self.entry_list.takeItem(self.entry_list.count() - 1)
+            del removed
+
+        selected_row = self._entry_row(selected_id)
+        if selected_row < 0 and entries:
+            selected_row = 0
+        self.entry_list.setCurrentRow(selected_row)
+        del blocker
+
         self.result_label.setText(
             f"Search results ({len(entries)})" if query else f"{category_name} ({len(entries)})"
         )
         if selected_row >= 0:
-            self.entry_list.setCurrentRow(selected_row)
-        elif entries:
-            self.entry_list.setCurrentRow(0)
+            self._show_entry(entries[selected_row])
         else:
             self._show_entry(None)
 
