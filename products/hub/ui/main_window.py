@@ -827,6 +827,7 @@ class MainWindow(QMainWindow):
         self.dashboard_page.copy_diagnostics_requested.connect(
             self._copy_diagnostic_summary
         )
+        self.dashboard_page.wiki_requested.connect(self.show_wiki)
         self.ui.dashboardLayout.addWidget(self.dashboard_page, 1)
         old_chat_output = self.ui.twitchChatOutput
         self.ui.twitchChatOutput = TwitchChatView(self.ui.twitchChatTab)

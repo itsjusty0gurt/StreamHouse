@@ -2206,6 +2206,17 @@ class MainWindowTests(unittest.TestCase):
         opened = open_url.call_args.args[0].toString()
         self.assertIn("github.com/itsjusty0gurt/StreamHouse/issues/new", opened)
 
+    def test_dashboard_alpha_notes_view_wiki_uses_main_navigation(self) -> None:
+        self.window.show_dashboard()
+
+        self.window.dashboard_page.alpha_wiki_button.click()
+
+        self.assertIs(
+            self.window.ui.mainStack.currentWidget(),
+            self.window.wiki_page,
+        )
+        self.assertTrue(self.window.wiki_button.isChecked())
+
     def test_wiki_replaces_task_library_and_searches_reference_content(self) -> None:
         page = self.window.wiki_page
         self.assertEqual(

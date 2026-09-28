@@ -98,6 +98,36 @@ class DashboardPageTests(unittest.TestCase):
         self.assertTrue(page.attention_frame.isHidden())
         self.assertEqual(requests, [True])
 
+    def test_alpha_notes_are_compact_and_route_existing_actions(self) -> None:
+        opened: list[str] = []
+        wiki_requests: list[bool] = []
+        page = DashboardPage(
+            issue_tracker_url="https://example.test/project/issues",
+            url_opener=lambda url: opened.append(url.toString()),
+        )
+        page.wiki_requested.connect(lambda: wiki_requests.append(True))
+
+        title = page.findChild(QLabel, "dashboardAlphaNotesTitle")
+        self.assertIsNotNone(title)
+        self.assertEqual(title.text(), "Alpha 0.1 Notes")
+        notes = page.alpha_notes_label.text()
+        self.assertIn("Touch Portal integration is local-only", notes)
+        self.assertIn("currently supports Run Routine", notes)
+        self.assertIn("Twitch's countdown", notes)
+        self.assertIn("Cancel Raid", notes)
+        self.assertIn("does not provide a public Raid Now API", notes)
+        self.assertIn("later Alpha versions", notes)
+
+        page.alpha_wiki_button.click()
+        page.alpha_report_bug_button.click()
+
+        self.assertEqual(wiki_requests, [True])
+        self.assertEqual(len(opened), 1)
+        self.assertTrue(opened[0].startswith("https://example.test/project/issues/new"))
+        self.assertIn("Bug", opened[0])
+        page.resize(420, 620)
+        self.assertLessEqual(page.minimumSizeHint().width(), 420)
+
     def test_help_buttons_use_configured_project_and_issue_urls(self) -> None:
         opened: list[str] = []
         page = DashboardPage(
@@ -121,6 +151,7 @@ class DashboardPageTests(unittest.TestCase):
         page = DashboardPage(project_url="", issue_tracker_url="")
 
         self.assertTrue(page.report_bug_button.isHidden())
+        self.assertTrue(page.alpha_report_bug_button.isHidden())
         self.assertTrue(page.feedback_button.isHidden())
         self.assertTrue(page.project_button.isHidden())
         self.assertFalse(page.about_button.isHidden())

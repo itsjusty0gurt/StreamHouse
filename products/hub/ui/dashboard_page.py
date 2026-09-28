@@ -136,6 +136,7 @@ class DashboardPage(QWidget):
     connections_requested = Signal()
     create_support_requested = Signal()
     copy_diagnostics_requested = Signal()
+    wiki_requested = Signal()
 
     _STATUS_COLORS = {
         DashboardStatus.CONNECTED: "#37c98b",
@@ -193,6 +194,7 @@ class DashboardPage(QWidget):
         layout.addWidget(self._build_branding(content))
         layout.addWidget(self._build_connection_summary(content))
         layout.addWidget(self._build_attention_area(content))
+        layout.addWidget(self._build_alpha_notes(content))
         layout.addWidget(self._build_help(content))
         layout.addStretch()
         self._refresh_attention()
@@ -330,6 +332,54 @@ class DashboardPage(QWidget):
         layout.addWidget(self.attention_label, 1)
         layout.addWidget(attention_button)
         return self.attention_frame
+
+    def _build_alpha_notes(self, parent: QWidget) -> QWidget:
+        panel = QFrame(parent)
+        panel.setObjectName("dashboardAlphaNotes")
+        panel.setStyleSheet(
+            "QFrame#dashboardAlphaNotes {"
+            "background:#242427; border:1px solid #3c3c42; border-radius:6px;"
+            "}"
+            "QFrame#dashboardAlphaNotes QLabel {"
+            "border:none; background:transparent;"
+            "}"
+        )
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(12, 10, 12, 10)
+        layout.setSpacing(6)
+
+        title = QLabel("Alpha 0.1 Notes", panel)
+        title.setObjectName("dashboardAlphaNotesTitle")
+        title.setStyleSheet("font-weight:700; color:#d8d8df;")
+        self.alpha_notes_label = QLabel(
+            "• Touch Portal integration is local-only and currently supports "
+            "Run Routine.\n"
+            "• Twitch raids start after Twitch's countdown; Hub supports "
+            "Cancel Raid, but Twitch does not provide a public Raid Now API.\n"
+            "• Some advanced features are intentionally planned for later "
+            "Alpha versions.",
+            panel,
+        )
+        self.alpha_notes_label.setObjectName("dashboardAlphaNotesText")
+        self.alpha_notes_label.setWordWrap(True)
+        self.alpha_notes_label.setStyleSheet("color:#b8b8c2;")
+
+        actions = QHBoxLayout()
+        self.alpha_wiki_button = QPushButton("View Wiki", panel)
+        self.alpha_report_bug_button = QPushButton("Report a Bug", panel)
+        self.alpha_wiki_button.clicked.connect(self.wiki_requested.emit)
+        self.alpha_report_bug_button.clicked.connect(
+            lambda: self._open_issue("[Bug] ")
+        )
+        self.alpha_report_bug_button.setVisible(bool(self.issue_tracker_url))
+        actions.addWidget(self.alpha_wiki_button)
+        actions.addWidget(self.alpha_report_bug_button)
+        actions.addStretch()
+
+        layout.addWidget(title)
+        layout.addWidget(self.alpha_notes_label)
+        layout.addLayout(actions)
+        return panel
 
     def _build_help(self, parent: QWidget) -> QWidget:
         group = QGroupBox("Help & About", parent)
