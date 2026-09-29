@@ -129,6 +129,7 @@ class SendTwitchChatMessageTask:
 TWITCH_TASK_LABELS = {
     SendTwitchChatMessageTask.task_type: "Twitch — Send chat message",
     "twitch.resolve_user": "Twitch — Resolve user",
+    "twitch.shoutout_user": "Twitch — Shoutout User",
     "twitch.get_stream_information": "Twitch — Get stream information",
     "twitch.get_follow_relationship": "Twitch — Get follow relationship",
     "twitch.build_command_list": "Twitch — Build command list",
@@ -480,6 +481,12 @@ class TwitchAutomationTask:
                 raise ValueError("Enter a Twitch category name.")
             selected = self.service.update_stream_category(category)
             return f'Changed the Twitch stream category to "{selected}".'
+        if self.task_type == "twitch.shoutout_user":
+            target = render("target")
+            if not target:
+                raise ValueError("Enter a Twitch user to shout out.")
+            self.service.send_shoutout(target)
+            return "Sent Twitch shoutout."
         if self.task_type == "twitch.moderate_user":
             action = str(config.get("action", "timeout"))
             user_id = self.service.resolve_user_id(render("user", "{user.id}"))

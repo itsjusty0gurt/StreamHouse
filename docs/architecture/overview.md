@@ -814,7 +814,7 @@ Handlers are registered in `MainWindow` with one stable lowercase task type.
 | Logic | `products/hub/automation/logic_tasks.py` | End Routine, input, random number/choice, structured If, switch, while |
 | Files | `products/hub/automation/file_tasks.py` | read text/random/specific lines, write, existence, line count |
 | Control | `products/hub/automation/control_tasks.py` | enable/disable routines/tasks, pause/clear queues |
-| Twitch | `products/hub/twitch/tasks.py` | chat/pinned chat, ads, moderation, redemption results, user/stream/follow lookups, enabled-command lists, and social-message building |
+| Twitch | `products/hub/twitch/tasks.py` | chat/pinned chat, shoutouts, ads, moderation, redemption results, user/stream/follow lookups, enabled-command lists, and social-message building |
 | Counters | `products/hub/counters/tasks.py` | four mutation tasks: Increase, Decrease, Set, and Reset; amounts/values accept numeric literals or modern Variables |
 | OBS | `products/hub/obs_service/tasks.py` | scenes, sources, inputs, filters, media, outputs, hotkeys, raw request |
 
@@ -904,7 +904,9 @@ for API-backed chat slash actions. The chat input uses that registry for local
 completion, while Wiki uses it for reference content. Selection prepares text
 but never executes it. Explicit submission runs on a worker and routes through
 `TwitchService` to the same moderation and Mod/VIP role paths used by the
-Chatters/Users context menu, plus chat settings, clear, raids, and announcements.
+Chatters/Users context menu, plus chat settings, clear, raids, announcements, and
+shoutouts. The Shoutout User task and `/shoutout` share the same
+`TwitchService.send_shoutout()` user-resolution and Helix action boundary.
 Unknown slash text is not sent blindly to Twitch.
 
 Python-script tasks expose trigger context only through `STREAMHOUSE_*`

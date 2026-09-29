@@ -1,7 +1,9 @@
 import json
 import os
 import unittest
+from io import BytesIO
 from datetime import datetime, timezone
+from urllib.error import HTTPError
 from unittest.mock import Mock, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -287,6 +289,41 @@ class TwitchHelixClientTests(unittest.TestCase):
             json.loads(announcement.data.decode()),
             {"message": "Stream starts now!"},
         )
+
+    @patch("products.hub.twitch.live.urlopen")
+    def test_shoutout_uses_current_helix_contract(self, open_url) -> None:
+        open_url.return_value = _JsonResponse({})
+        token = TwitchToken("access", "refresh", 999, [])
+
+        TwitchHelixClient().send_shoutout(
+            "channel-1", "target-2", "moderator-3", token
+        )
+
+        request = open_url.call_args.args[0]
+        self.assertEqual(request.method, "POST")
+        self.assertEqual(request.data, b"")
+        self.assertIn("chat/shoutouts", request.full_url)
+        self.assertIn("from_broadcaster_id=channel-1", request.full_url)
+        self.assertIn("to_broadcaster_id=target-2", request.full_url)
+        self.assertIn("moderator_id=moderator-3", request.full_url)
+
+    @patch("products.hub.twitch.live.urlopen")
+    def test_shoutout_cooldown_error_keeps_twitch_detail(self, open_url) -> None:
+        open_url.side_effect = HTTPError(
+            "https://api.twitch.tv/helix/chat/shoutouts",
+            429,
+            "Too Many Requests",
+            {},
+            BytesIO(json.dumps({"message": "The broadcaster is on cooldown."}).encode()),
+        )
+        token = TwitchToken("access", "refresh", 999, [])
+
+        with self.assertRaisesRegex(
+            ValueError, "HTTP 429.*broadcaster is on cooldown"
+        ):
+            TwitchHelixClient().send_shoutout(
+                "channel-1", "target-2", "moderator-3", token
+            )
 
     @patch("products.hub.twitch.live.urlopen")
     def test_role_and_raid_actions_use_current_helix_contracts(self, open_url) -> None:

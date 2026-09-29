@@ -111,6 +111,24 @@ def test_twitch_slash_reference_is_derived_from_command_registry() -> None:
             for line in supported
         )
     assert "chatters/users context menu" in entry.search_text()
+    assert "/shoutout <user>" in entry.search_text()
+    assert "moderator:manage:shoutouts" in entry.search_text()
+
+
+def test_shoutout_task_reference_is_derived_from_task_metadata() -> None:
+    tasks, variables = _reference_sources()
+    entry = next(
+        item
+        for item in build_wiki_entries(tasks, variables)
+        if item.entry_id == "task:twitch.shoutout_user"
+    )
+    text = entry.search_text()
+
+    assert "real twitch shoutout" in text
+    assert "{command.data}" in text
+    assert "{user.name}" in text
+    assert "{user.id}" in text
+    assert "twitch controls shoutout cooldowns" in text
 
 
 def test_raid_page_reference_documents_runtime_finder_and_permissions() -> None:

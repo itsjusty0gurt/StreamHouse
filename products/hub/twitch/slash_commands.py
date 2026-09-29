@@ -110,6 +110,10 @@ TWITCH_SLASH_COMMANDS = (
         "announce", "/announce <message>", "Send a chat announcement",
         "moderator:manage:announcements",
     ),
+    TwitchSlashCommand(
+        "shoutout", "/shoutout <user>", "Send a Twitch shoutout",
+        "moderator:manage:shoutouts", True,
+    ),
 )
 
 TWITCH_SLASH_COMMANDS_BY_NAME = {
@@ -152,7 +156,9 @@ def parse_twitch_slash_request(text: str) -> TwitchSlashRequest:
     command = slash_command(action)
     arguments = argument_text.strip() if separator else ""
 
-    if action in {"ban", "unban", "mod", "unmod", "vip", "unvip", "raid"}:
+    if action in {
+        "ban", "unban", "mod", "unmod", "vip", "unvip", "raid", "shoutout",
+    }:
         user_reference, user_separator, remainder = arguments.partition(" ")
         user_reference = user_reference.lstrip("@").strip()
         if not user_reference:

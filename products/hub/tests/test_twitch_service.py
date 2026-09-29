@@ -328,6 +328,7 @@ class TwitchServiceTests(unittest.TestCase):
                 "moderator:manage:chat_messages",
                 "moderator:manage:chat_settings",
                 "moderator:manage:announcements",
+                "moderator:manage:shoutouts",
                 "channel:manage:moderators",
                 "channel:manage:vips",
                 "channel:manage:raids",
@@ -375,6 +376,73 @@ class TwitchServiceTests(unittest.TestCase):
         helix.send_chat_announcement.assert_called_once_with(
             "channel-1", "channel-1", "Stream starts now!", token
         )
+        service.execute_slash_action(
+            parse_twitch_slash_request("/shoutout @viewer")
+        )
+        helix.send_shoutout.assert_called_once_with(
+            "channel-1", "viewer-1", "channel-1", token
+        )
+
+    def test_shoutout_service_resolves_login_and_uses_stable_id_directly(self) -> None:
+        token = TwitchToken(
+            "access",
+            "refresh",
+            999,
+            ["moderator:manage:shoutouts"],
+            user_id="moderator-1",
+        )
+        helix = Mock()
+        helix.get_user.return_value = {"id": "viewer-1"}
+        service = TwitchService(auth=Mock(token=token), helix=helix)
+        service.broadcaster_user_id = "channel-1"
+
+        self.assertEqual(service.send_shoutout("  @Viewer  "), "viewer-1")
+        helix.get_user.assert_called_once_with("Viewer", token)
+        helix.send_shoutout.assert_called_once_with(
+            "channel-1", "viewer-1", "moderator-1", token
+        )
+
+        helix.reset_mock()
+        self.assertEqual(service.send_shoutout("12345"), "12345")
+        helix.get_user.assert_not_called()
+        helix.send_shoutout.assert_called_once_with(
+            "channel-1", "12345", "moderator-1", token
+        )
+
+    def test_shoutout_requires_auth_scope_and_preserves_api_failures(self) -> None:
+        token = TwitchToken(
+            "access", "refresh", 999, [], user_id="moderator-1"
+        )
+        helix = Mock()
+        service = TwitchService(auth=Mock(token=token), helix=helix)
+        service.broadcaster_user_id = "channel-1"
+
+        with self.assertRaisesRegex(
+            PermissionError, "moderator:manage:shoutouts"
+        ):
+            service.send_shoutout("viewer")
+        helix.send_shoutout.assert_not_called()
+
+        token.scopes.append("moderator:manage:shoutouts")
+        helix.get_user.return_value = {"id": "viewer-1"}
+        helix.send_shoutout.side_effect = ValueError(
+            "Twitch could not send the shoutout (HTTP 429): cooldown"
+        )
+        with self.assertRaisesRegex(ValueError, "HTTP 429.*cooldown"):
+            service.send_shoutout("viewer")
+
+        helix.send_shoutout.side_effect = OSError("network unavailable")
+        with self.assertRaisesRegex(OSError, "network unavailable"):
+            service.send_shoutout("viewer")
+
+        helix.send_shoutout.reset_mock(side_effect=True)
+        helix.get_user.side_effect = ValueError('Twitch user "missing" was not found.')
+        with self.assertRaisesRegex(ValueError, "was not found"):
+            service.send_shoutout("missing")
+
+        disconnected = TwitchService(auth=Mock(token=None), helix=Mock())
+        with self.assertRaisesRegex(PermissionError, "Connect your Twitch account"):
+            disconnected.send_shoutout("viewer")
 
     def test_users_role_action_uses_stable_id_without_lookup(self) -> None:
         token = TwitchToken(

@@ -1164,6 +1164,9 @@ class TaskEditorDialog(QDialog):
         "twitch.resolve_user": (
             {"key": "reference", "label": "User ID or login", "kind": "text", "default": "{command.target}", "required": True, "placeholder": "{command.target}, {user.id}, @username, or a Twitch ID"},
         ),
+        "twitch.shoutout_user": (
+            {"key": "target", "label": "Target User", "kind": "text", "default": "{command.data}", "required": True, "placeholder": "Twitch login, user ID, or Variable"},
+        ),
         "twitch.get_stream_information": (),
         "twitch.get_follow_relationship": (
             {"key": "user_id", "label": "Target user ID", "kind": "text", "default": "{automation.target_user_id}", "required": True},

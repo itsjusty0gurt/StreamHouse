@@ -736,6 +736,18 @@ class TwitchService:
             return False
         return True
 
+    def send_shoutout(self, target_reference: str) -> str:
+        """Resolve a Twitch user and send one real Helix shoutout."""
+        token = self.require_scope("moderator:manage:shoutouts")
+        target_user_id = self.resolve_user_id(target_reference)
+        self.helix.send_shoutout(
+            self.broadcaster_user_id,
+            target_user_id,
+            token.user_id,
+            token,
+        )
+        return target_user_id
+
     def execute_slash_action(
         self,
         request: TwitchSlashRequest,
@@ -748,7 +760,7 @@ class TwitchService:
         )
         user_id = ""
         target = request.user_reference
-        if command.requires_user:
+        if command.requires_user and request.action != "shoutout":
             user_id = request.user_id
             if not user_id:
                 user = self.resolve_user(request.user_reference)
@@ -805,6 +817,9 @@ class TwitchService:
         elif request.action == "announce":
             success = self.send_announcement(request.message)
             target = "chat"
+        elif request.action == "shoutout":
+            self.send_shoutout(request.user_reference)
+            success = True
         else:
             raise ValueError("Unsupported Twitch slash action.")
         return success, target

@@ -139,7 +139,12 @@ class AutomationServiceTests(unittest.TestCase):
         )
         self.assertEqual(registry.missing_descriptions(), ())
         self.assertEqual(registry.missing_help(), ())
-        self.assertEqual(len(registry.visible_metadata()), 68)
+        self.assertEqual(len(registry.visible_metadata()), 69)
+
+        shoutout = registry.metadata("twitch.shoutout_user")
+        assert shoutout is not None
+        self.assertEqual(shoutout.variable_inputs, ("target",))
+        self.assertIn("cooldowns", " ".join(shoutout.notes).casefold())
         self.assertIsNone(registry.metadata("twitch.get_channel_information"))
 
         wait = registry.metadata("core.wait")

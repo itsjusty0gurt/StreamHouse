@@ -665,6 +665,20 @@ class TaskEditorTests(unittest.TestCase):
             dialog.variable_preview_label.text(),
         )
 
+    def test_shoutout_target_is_a_normal_variable_capable_text_field(self) -> None:
+        dialog = TaskEditorDialog(
+            "twitch.shoutout_user",
+            variable_registry=self.variables(),
+        )
+        target = dialog.field_widgets["twitch.shoutout_user"]["target"]
+
+        self.assertIsInstance(target, QLineEdit)
+        self.assertEqual(target.text(), "{command.data}")
+        self.assertEqual(
+            TaskEditorDialog.TEMPLATED_FIELDS["twitch.shoutout_user"],
+            ("target",),
+        )
+
     def test_twitch_information_outputs_have_friendly_insertable_labels(self) -> None:
         dialog = TaskEditorDialog(
             "twitch.send_chat_message",

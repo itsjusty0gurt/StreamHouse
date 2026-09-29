@@ -49,6 +49,7 @@ class TwitchHelixClient:
     DELETE_CHAT_URL = "https://api.twitch.tv/helix/moderation/chat"
     CHAT_SETTINGS_URL = "https://api.twitch.tv/helix/chat/settings"
     ANNOUNCEMENTS_URL = "https://api.twitch.tv/helix/chat/announcements"
+    SHOUTOUTS_URL = "https://api.twitch.tv/helix/chat/shoutouts"
     RAIDS_URL = "https://api.twitch.tv/helix/raids"
     CUSTOM_REWARDS_URL = (
         "https://api.twitch.tv/helix/channel_points/custom_rewards"
@@ -560,6 +561,50 @@ class TwitchHelixClient:
             timeout=15,
         ):
             pass
+
+    def send_shoutout(
+        self,
+        broadcaster_id: str,
+        target_broadcaster_id: str,
+        moderator_id: str,
+        token: TwitchToken,
+    ) -> None:
+        query = urlencode(
+            {
+                "from_broadcaster_id": broadcaster_id,
+                "to_broadcaster_id": target_broadcaster_id,
+                "moderator_id": moderator_id,
+            }
+        )
+        try:
+            with urlopen(
+                Request(
+                    f"{self.SHOUTOUTS_URL}?{query}",
+                    data=b"",
+                    headers=self._headers(token),
+                    method="POST",
+                ),
+                timeout=15,
+            ):
+                pass
+        except HTTPError as error:
+            self._raise_shoutout_api_error(error)
+
+    @staticmethod
+    def _raise_shoutout_api_error(error: HTTPError) -> None:
+        detail = ""
+        try:
+            payload = json.loads(error.read().decode("utf-8", errors="replace"))
+            if isinstance(payload, dict):
+                detail = str(payload.get("message") or "").strip()
+        except (OSError, json.JSONDecodeError):
+            pass
+        if error.code == 429 and not detail:
+            detail = "Twitch shoutout cooldown is still active"
+        raise ValueError(
+            f"Twitch could not send the shoutout (HTTP {error.code})"
+            + (f": {detail}" if detail else ".")
+        ) from error
 
     def get_badge_urls(
         self,

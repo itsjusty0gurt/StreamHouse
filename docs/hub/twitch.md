@@ -20,6 +20,10 @@ dependencies are defined in the
   `channel:read:ads`, `channel:manage:ads`, and
   `channel:edit:commercial`. Missing Ads scopes are presented as an actionable
   broadcaster reauthorization requirement, not as a bot-login problem.
+- Shoutouts use Twitch's real `POST /helix/chat/shoutouts` action through one
+  shared service path for the **Shoutout User** task and `/shoutout`. The
+  broadcaster permission set includes `moderator:manage:shoutouts`; Twitch
+  remains authoritative for cooldowns and target eligibility.
 - The broadcaster grants `channel:bot`. The bot login requests
   `user:read:chat`, `user:write:chat`, and `user:bot`.
 - Existing tokens survive application and EventSub disconnects. Only explicit
@@ -62,8 +66,9 @@ chatter/user, or other historical records. EventSub-originated UI changes cross
 the queued Twitch Qt bridge before the widget is touched.
 
 The Chat input derives local autocomplete from the API-backed slash-command
-registry, including moderation, chat modes, Mod/VIP management, raids, and
-announcements. Known-user suggestions come from Hub's local user records.
+registry, including moderation, chat modes, Mod/VIP management, raids,
+announcements, and shoutouts. Known-user suggestions come from Hub's local user
+records.
 Completion only prepares the command; explicit submission and the normal
 confirmation remain required. Sent-message Up/Down history is bounded and
 session-only. The live timeline follows while near the bottom, pauses when the

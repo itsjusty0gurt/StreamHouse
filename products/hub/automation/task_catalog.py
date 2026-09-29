@@ -34,6 +34,9 @@ _SHORT_DESCRIPTIONS = {
         "Finds a Twitch account from a user ID, login, or Variable. The account "
         "details become routine-scoped automation.* outputs for later tasks."
     ),
+    "twitch.shoutout_user": (
+        "Sends a real Twitch shoutout to a user ID, login, or resolved Variable."
+    ),
     "twitch.get_stream_information": (
         "Retrieves the channel's current Twitch stream details. The results become "
         "routine-scoped automation.* outputs for later tasks."
@@ -254,6 +257,7 @@ VARIABLE_INPUT_FIELDS: dict[str, tuple[str, ...]] = {
     "twitch.moderate_user": ("user", "reason", "message_id"),
     "twitch.update_redemption": ("reward_id", "redemption_id"),
     "twitch.resolve_user": ("reference",),
+    "twitch.shoutout_user": ("target",),
     "twitch.get_follow_relationship": ("user_id",),
     "core.create_global_variable": ("value",),
     "core.create_session_variable": ("value",),
@@ -347,6 +351,9 @@ _INPUT_HELP: dict[str, dict[str, str]] = {
     },
     "twitch.resolve_user": {
         "reference": "A Twitch user ID, login, @login, or Variable containing one.",
+    },
+    "twitch.shoutout_user": {
+        "target": "A Twitch user ID, login, @login, or any Variable that resolves to one.",
     },
     "twitch.moderate_user": {
         "user": "The stable Twitch user ID or login to moderate.",
@@ -458,6 +465,10 @@ _INPUT_HELP: dict[str, dict[str, str]] = {
 
 
 _NOTES = {
+    "twitch.shoutout_user": (
+        "Requires the Twitch shoutout permission.",
+        "Twitch controls shoutout cooldowns and target eligibility.",
+    ),
     "twitch.send_pinned_message": ("Pinned messages may not be available for every channel.",),
     "twitch.run_commercial": ("Twitch cooldowns and channel eligibility still apply.",),
     "twitch.snooze_ad": ("The task fails if no snooze is currently available.",),
@@ -490,6 +501,9 @@ _NOTES = {
 
 
 _EXAMPLES = {
+    "twitch.shoutout_user": (
+        "Shout out {command.data}, {user.name}, or {user.id}.",
+    ),
     "twitch.send_chat_message": ("Send: Thanks for the follow, {user.display_name}!",),
     "twitch.resolve_user": ("Resolve {command.data}, then use {automation.target_user_id} in a later task.",),
     "twitch.build_social_links_message": ("Build the included links, then send {automation.social_links_message} to chat.",),

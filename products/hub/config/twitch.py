@@ -12,6 +12,7 @@ TWITCH_SCOPES = (
     "moderator:manage:chat_messages",
     "moderator:manage:chat_settings",
     "moderator:manage:announcements",
+    "moderator:manage:shoutouts",
     "channel:manage:moderators",
     "channel:manage:vips",
     "channel:manage:raids",

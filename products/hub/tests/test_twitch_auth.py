@@ -6,6 +6,7 @@ from pathlib import Path
 from urllib.error import HTTPError
 from unittest.mock import Mock, call, patch
 
+from products.hub.config.twitch import TWITCH_SCOPES
 from products.hub.twitch.auth import TwitchAuthService, TwitchAuthState, TwitchToken
 from products.hub.twitch.token_store import TwitchTokenStore
 from products.hub.core.secret_store import SecretStore
@@ -63,6 +64,9 @@ class TwitchTokenStoreTests(unittest.TestCase):
 
 
 class TwitchAuthServiceTests(unittest.TestCase):
+    def test_broadcaster_permissions_include_shoutout_management(self) -> None:
+        self.assertIn("moderator:manage:shoutouts", TWITCH_SCOPES)
+
     @staticmethod
     def _device_error(reason: str, description: str = "") -> HTTPError:
         payload = {"status": 400, "message": reason}

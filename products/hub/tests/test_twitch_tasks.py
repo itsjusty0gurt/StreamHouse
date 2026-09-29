@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 import tempfile
 from pathlib import Path
+from unittest.mock import Mock
 
 from products.hub.automation.models import TaskDefinition, TriggerEvent
 from products.hub.automation.tasks import TaskRegistry
@@ -41,6 +42,10 @@ class FakeTwitchService:
     def update_stream_category(self, category):
         self.calls.append(("category", category))
         return category
+
+    def send_shoutout(self, target):
+        self.calls.append(("shoutout", target))
+        return "42"
 
     def resolve_user_id(self, reference):
         self.calls.append(("resolve", reference))
@@ -175,6 +180,47 @@ class TwitchTaskTests(unittest.TestCase):
 
         self.assertIn(("title", "Playing Portal 2 with Viewer"), self.service.calls)
         self.assertIn(("category", "Portal 2"), self.service.calls)
+
+    def test_shoutout_task_accepts_literal_and_generic_variable_targets(self) -> None:
+        self.trigger.context.update(
+            {
+                "command.data": "  @SomeStreamer  ",
+                "user.name": "TriggerViewer",
+                "automation.some_output": "ResolvedViewer",
+                "custom.some_value": "CustomViewer",
+            }
+        )
+        for template, expected in (
+            ("literalviewer", "literalviewer"),
+            ("{command.data}", "@SomeStreamer"),
+            ("{user.name}", "TriggerViewer"),
+            ("{user.id}", "42"),
+            ("{automation.some_output}", "ResolvedViewer"),
+            ("{custom.some_value}", "CustomViewer"),
+        ):
+            with self.subTest(template=template):
+                self.assertTrue(
+                    self.execute("twitch.shoutout_user", {"target": template})
+                )
+                self.assertEqual(self.service.calls[-1], ("shoutout", expected))
+
+    def test_shoutout_task_reports_empty_and_api_failures(self) -> None:
+        empty = TaskDefinition(
+            "empty", "twitch.shoutout_user", "Shoutout", {"target": "  "}
+        )
+        result = self.registry.execute(empty, self.trigger)
+        self.assertFalse(result.succeeded)
+        self.assertIn("Enter a Twitch user", result.detail)
+
+        self.service.send_shoutout = Mock(
+            side_effect=ValueError("Twitch could not send the shoutout: cooldown")
+        )
+        failed = TaskDefinition(
+            "failed", "twitch.shoutout_user", "Shoutout", {"target": "viewer"}
+        )
+        result = self.registry.execute(failed, self.trigger)
+        self.assertFalse(result.succeeded)
+        self.assertIn("cooldown", result.detail)
 
     def test_social_links_message_uses_selected_channel_information(self) -> None:
         information = ChannelInformation(schedule="Friday at 8 PM")

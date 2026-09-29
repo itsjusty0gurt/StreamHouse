@@ -48,7 +48,7 @@ class TwitchChatInputTests(unittest.TestCase):
     def test_slash_opens_and_filters_supported_api_actions(self) -> None:
         self._type("/")
         self.assertTrue(self.controller.helper_visible)
-        self.assertEqual(self.controller.suggestions.count(), 21)
+        self.assertEqual(self.controller.suggestions.count(), 22)
 
         self._type("/BA")
         self.assertEqual(self.controller.suggestions.count(), 1)
@@ -61,6 +61,7 @@ class TwitchChatInputTests(unittest.TestCase):
                 "followers", "followersoff", "subscribers", "subscribersoff",
                 "emoteonly", "emoteonlyoff", "uniquechat", "uniquechatoff",
                 "mod", "unmod", "vip", "unvip", "raid", "unraid", "announce",
+                "shoutout",
             },
         )
         self.assertNotIn("color", advertised)
@@ -157,6 +158,7 @@ class TwitchSlashRequestTests(unittest.TestCase):
             ("/raid channel", "raid", "channel", None, "", ""),
             ("/unraid", "unraid", "", None, "", ""),
             ("/announce Stream starts now!", "announce", "", None, "", "Stream starts now!"),
+            ("/shoutout @SomeUser", "shoutout", "SomeUser", None, "", ""),
         )
         for text, action, user, duration, reason, message in cases:
             with self.subTest(text=text):
@@ -183,6 +185,7 @@ class TwitchSlashRequestTests(unittest.TestCase):
             "/slow 2h",
             "/followers 30s",
             "/announce",
+            "/shoutout",
             "/clear extra",
         ):
             with self.assertRaises(ValueError):
