@@ -73,6 +73,32 @@ def test_fixed_timer_fires_repeats_and_starts_fresh() -> None:
         harness.close()
 
 
+def test_runtime_status_is_immutable_authoritative_deadline_projection() -> None:
+    harness = TimerHarness()
+    try:
+        routine = harness.routines.add("Promo")
+        trigger = harness.store.add_timer(
+            routine.routine_id,
+            timer_mode="fixed",
+            timer_minimum="10",
+            timer_minimum_unit="seconds",
+        )
+
+        status = harness.scheduler.status(trigger.trigger_id)
+        assert status.enabled
+        assert status.running
+        assert status.scheduled
+        assert status.next_fire_deadline == 10
+        assert status.remaining_seconds == 10
+
+        harness.now = 3.25
+        later = harness.scheduler.status(trigger.trigger_id)
+        assert later.next_fire_deadline == status.next_fire_deadline
+        assert later.remaining_seconds == 6.75
+    finally:
+        harness.close()
+
+
 def test_random_timer_resamples_after_every_firing() -> None:
     harness = TimerHarness([30_000, 60_000, 45_000])
     try:

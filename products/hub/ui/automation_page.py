@@ -60,7 +60,7 @@ from products.hub.automation.core_triggers import (
     CoreAutomationTrigger,
     CoreTriggerStore,
 )
-from products.hub.automation.routines import RoutineStore
+from products.hub.automation.routines import RoutineDefinition, RoutineStore
 from products.hub.automation.service import AutomationService
 from products.hub.automation.tasks import TaskRegistry
 from products.hub.automation.task_catalog import VARIABLE_INPUT_FIELDS
@@ -4099,13 +4099,17 @@ class AutomationPage(QWidget):
         return existing.group_id if existing else self.routine_store.add_group(clean).group_id
 
     def _new_routine(self) -> None:
+        self.create_routine()
+
+    def create_routine(self) -> RoutineDefinition | None:
+        """Run the existing Routine creation flow for another management view."""
         dialog = NewRoutineDialog(
             self.routine_store,
             self,
             self.event_trigger_store,
         )
         if dialog.exec() != QDialog.DialogCode.Accepted:
-            return
+            return None
         values = dialog.values()
         try:
             group_id = self._resolve_group(
@@ -4165,8 +4169,9 @@ class AutomationPage(QWidget):
                     )
         except (OSError, TypeError, ValueError) as error:
             self._error("Could Not Create Routine", error)
-            return
+            return None
         self.select_routine(routine.routine_id)
+        return routine
 
     def _new_group(self) -> None:
         name, accepted = QInputDialog.getText(self, "New Group", "Group name")

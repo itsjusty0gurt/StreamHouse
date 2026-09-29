@@ -21,6 +21,18 @@ class ScheduledTimer:
     fingerprint: tuple[str, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class TimerRuntimeStatus:
+    """Immutable presentation-safe status for one persisted Timer trigger."""
+
+    trigger_id: str
+    enabled: bool
+    running: bool
+    scheduled: bool
+    next_fire_deadline: float | None
+    remaining_seconds: float | None
+
+
 class AutomationTimerScheduler(QObject):
     """One Qt scheduler for every persisted Automation Timer trigger."""
 
@@ -132,10 +144,28 @@ class AutomationTimerScheduler(QObject):
         self.fired(event, description)
 
     def next_delay_seconds(self, trigger_id: str) -> float | None:
+        return self.status(trigger_id).remaining_seconds
+
+    def status(self, trigger_id: str) -> TimerRuntimeStatus:
+        """Return read-only runtime state without exposing scheduler internals."""
         schedule = self.schedules.get(trigger_id)
-        if schedule is None:
-            return None
-        return max(schedule.deadline - self.clock(), 0.0)
+        trigger = self.store.get(trigger_id)
+        deadline = schedule.deadline if schedule is not None else None
+        remaining = (
+            max(deadline - self.clock(), 0.0) if deadline is not None else None
+        )
+        return TimerRuntimeStatus(
+            trigger_id=trigger_id,
+            enabled=bool(
+                trigger is not None
+                and trigger.enabled
+                and trigger.event_type == "timer"
+            ),
+            running=self.running,
+            scheduled=schedule is not None,
+            next_fire_deadline=deadline,
+            remaining_seconds=remaining,
+        )
 
     def _schedule(self, trigger: CoreAutomationTrigger, now: float) -> None:
         minimum, maximum = self.store.timer_bounds_milliseconds(trigger)

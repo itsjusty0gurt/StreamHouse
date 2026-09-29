@@ -605,7 +605,10 @@ fallback—owns ordering, duplicates, accumulation, cancellation, and history.
 Editing, disabling, re-enabling, or deleting a trigger replaces or cancels its
 runtime schedule; shutdown cancels every timer. Only configuration persists:
 Hub startup begins fresh intervals, does not catch up downtime, and never emits
-a burst of missed runs.
+a burst of missed runs. The first-class Timers page is a management/status
+projection over this same store and scheduler. It reads immutable runtime
+deadline status for live countdowns and never owns scheduling or another
+persistence format.
 
 Run History is a bounded, runtime-only view of executions that actually
 started; merely accepting an item into a queue does not create a completed-run

@@ -2176,6 +2176,7 @@ class MainWindowTests(unittest.TestCase):
             self.window.ui.dashboardPage,
             self.window.ui.twitchPage,
             self.window.automation_page,
+            self.window.timers_page,
             self.window.connections_page,
             self.window.ui.logsPage,
             self.window.settings_container,
@@ -2193,6 +2194,7 @@ class MainWindowTests(unittest.TestCase):
             self.window.automation_page.page_header.title_label.text(),
             "Automation",
         )
+        self.assertEqual(self.window.timers_page.header.title_label.text(), "Timers")
         self.assertEqual(
             self.window.connections_page_header.title_label.text(),
             "Connections",
@@ -2230,6 +2232,7 @@ class MainWindowTests(unittest.TestCase):
                 "Dashboard",
                 "Your Channel",
                 "Automation",
+                "Timers",
                 "Wiki",
                 "Connections",
                 "Logs",

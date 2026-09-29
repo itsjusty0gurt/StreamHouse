@@ -75,6 +75,7 @@ from products.hub.automation.variable_providers import (
 from products.hub.automation.variable_registry import VariableRegistry
 from products.hub.automation.core_triggers import CoreTriggerStore
 from products.hub.automation.timer_scheduler import AutomationTimerScheduler
+from products.hub.ui.timers_page import TimersPage
 from products.hub.automation.core_tasks import (
     CloseApplicationTask,
     DesktopNotificationTask,
@@ -848,6 +849,7 @@ class MainWindow(QMainWindow):
         self._build_ai_connection_runtime()
         self._build_ai_page()
         self._build_automation_page()
+        self._build_timers_page()
         self._build_wiki_page()
         self._build_counters_page()
         self._build_release_tools()
@@ -865,6 +867,7 @@ class MainWindow(QMainWindow):
             self.ui.dashboardButton,
             self.ui.twitchButton,
             self.automation_button,
+            self.timers_button,
             self.wiki_button,
             self.connections_button,
             self.ui.logsButton,
@@ -948,6 +951,7 @@ class MainWindow(QMainWindow):
         self.ui.dashboardButton.clicked.connect(self.show_dashboard)
         self.ui.twitchButton.clicked.connect(self.show_twitch)
         self.automation_button.clicked.connect(self.show_automation)
+        self.timers_button.clicked.connect(self.show_timers)
         self.wiki_button.clicked.connect(self.show_wiki)
         self.connections_button.clicked.connect(self.show_connections)
         self.ui.logsButton.clicked.connect(self.show_logs)
@@ -2772,13 +2776,28 @@ class MainWindow(QMainWindow):
     def _build_wiki_page(self) -> None:
         self.wiki_button = QPushButton("Wiki")
         self.wiki_button.setCheckable(True)
-        self.ui.verticalLayout.insertWidget(4, self.wiki_button)
+        self.ui.verticalLayout.insertWidget(5, self.wiki_button)
         self.wiki_page = WikiPage(
             self.task_registry,
             self.variable_registry,
             self,
         )
         self.ui.mainStack.addWidget(self.wiki_page)
+
+    def _build_timers_page(self) -> None:
+        self.timers_button = QPushButton("Timers")
+        self.timers_button.setCheckable(True)
+        self.ui.verticalLayout.insertWidget(4, self.timers_button)
+        self.timers_page = TimersPage(
+            self.twitch_command_trigger_store.routine_store,
+            self.core_trigger_store,
+            self.automation_timer_scheduler,
+            create_routine=self.automation_page.create_routine,
+            parent=self,
+        )
+        self.timers_page.open_routine_requested.connect(self._open_timer_routine)
+        self.timers_page.timers_changed.connect(self.automation_page.refresh)
+        self.ui.mainStack.addWidget(self.timers_page)
 
     def _build_counters_page(self) -> None:
         self.counters_page = CountersPage(
@@ -6234,6 +6253,7 @@ class MainWindow(QMainWindow):
             "Dashboard": self.show_dashboard,
             "Twitch": self.show_twitch,
             "Automation": self.show_automation,
+            "Timers": self.show_timers,
             "Counters": self.show_counters,
             "Logs": self.show_logs,
             "Settings": self.show_settings,
@@ -6255,6 +6275,19 @@ class MainWindow(QMainWindow):
         self.automation_page.refresh()
         self.ui.mainStack.setCurrentWidget(self.automation_page)
         self.automation_button.setChecked(True)
+
+    @Slot()
+    def show_timers(self) -> None:
+        self.timers_page.refresh()
+        self.ui.mainStack.setCurrentWidget(self.timers_page)
+        self.timers_button.setChecked(True)
+
+    @Slot(str)
+    def _open_timer_routine(self, routine_id: str) -> None:
+        if not routine_id:
+            return
+        self.show_automation()
+        self.automation_page.select_routine(routine_id)
 
     @Slot()
     def show_wiki(self) -> None:
@@ -8429,6 +8462,7 @@ class MainWindow(QMainWindow):
         self.local_integration.shutdown()
         self.chat_user_page.shutdown()
         self.raid_page.shutdown()
+        self.timers_page.shutdown()
         self.automation_timer_scheduler.shutdown()
         self.automation_queue_manager.cancel_all_current(
             "Hub is shutting down."

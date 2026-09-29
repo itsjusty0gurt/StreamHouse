@@ -329,6 +329,14 @@ def _trigger_entry(
                 ),
             ),
             WikiSection(
+                "Timers page",
+                (
+                    "The Timers page lists every Timer trigger and its live next-run status, recurring state, and linked routine.",
+                    "Create a Timer there for an existing or new routine, or continue adding Timer triggers from the Routines page.",
+                    "Both pages edit the same Timer trigger; enable, disable, edit, and delete changes apply immediately to its normal routine queue.",
+                ),
+            ),
+            WikiSection(
                 "Examples",
                 (
                     f"{TIMER_MODES['fixed']}: 10 Minutes — runs every 10 minutes.",
