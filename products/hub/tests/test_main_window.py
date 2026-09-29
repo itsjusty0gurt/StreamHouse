@@ -2527,6 +2527,68 @@ class MainWindowTests(unittest.TestCase):
         self.assertFalse(self.window.delete_twitch_command_button.isEnabled())
         self.assertFalse(self.window.reset_twitch_command_button.isEnabled())
 
+    def test_command_creation_action_lives_in_management_controls(self) -> None:
+        command_buttons = [
+            button
+            for button in self.window.channel_tabs.findChildren(QPushButton)
+            if button.text() == "+ Command"
+        ]
+
+        self.assertEqual(command_buttons, [self.window.add_twitch_command_button])
+        self.assertIs(
+            self.window.add_twitch_command_button.parentWidget(),
+            self.window.twitch_command_management_actions,
+        )
+        self.assertTrue(self.window.twitch_commands_header.action_widget.isHidden())
+        self.assertEqual(
+            self.window.twitch_commands_header.action_widget.findChildren(
+                QPushButton
+            ),
+            [],
+        )
+
+        with patch(
+            "products.hub.ui.main_window.TwitchCommandDialog"
+        ) as dialog_type:
+            dialog_type.return_value.exec.return_value = QDialog.DialogCode.Rejected
+            self.window.add_twitch_command_button.click()
+        dialog_type.assert_called_once_with(self.window)
+
+    def test_moved_command_remains_managed_by_stable_routine_id_in_ui(self) -> None:
+        command = self.twitch_command_trigger_store.add("hello", "Hello chat")
+        routine_store = self.twitch_command_trigger_store.routine_store
+        original = routine_store.get(command.routine_id)
+        self.assertEqual(
+            routine_store.get_group(original.group_id).name,
+            "Commands",
+        )
+        destination = routine_store.add_group("Community")
+        self.window.automation_page._move_routine_to_group(
+            command.routine_id,
+            destination.group_id,
+        )
+
+        self.window._refresh_twitch_commands(command.trigger_id)
+        selected = self.window._selected_twitch_command()
+        moved = routine_store.get(command.routine_id)
+
+        self.assertIsNotNone(selected)
+        self.assertEqual(selected.trigger_id, command.trigger_id)
+        self.assertEqual(selected.routine_id, command.routine_id)
+        self.assertEqual(moved.group_id, destination.group_id)
+        self.assertEqual(len(self.twitch_command_trigger_store.triggers), 7)
+        self.assertEqual(len(routine_store.routines), 7)
+
+        reloaded = TwitchCommandTriggerStore(
+            self.twitch_command_trigger_store.path,
+            RoutineStore(routine_store.path),
+        )
+        reloaded.load()
+        reloaded_command = reloaded.get(command.trigger_id)
+        reloaded_routine = reloaded.routine_store.get(command.routine_id)
+        self.assertEqual(reloaded_command.routine_id, command.routine_id)
+        self.assertEqual(reloaded_routine.group_id, destination.group_id)
+
     def test_self_contained_default_is_ready_then_supports_reset(self) -> None:
         self.window._refresh_twitch_commands()
         self.assertEqual(

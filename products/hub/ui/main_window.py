@@ -2287,6 +2287,7 @@ class MainWindow(QMainWindow):
             "it does not invoke Streamhouse AI reasoning.",
             page,
         )
+        self.twitch_commands_header = command_header
         layout.addWidget(command_header)
         section_help = QLabel(
             "DEFAULT COMMANDS appear first in their stable built-in order. "
@@ -2328,8 +2329,12 @@ class MainWindow(QMainWindow):
         for column, width in enumerate((75, 150, 220, 110, 125, 125, 70, 90)):
             self.twitch_commands_table.setColumnWidth(column, width)
         layout.addWidget(self.twitch_commands_table, 1)
-        actions = QHBoxLayout()
-        self.add_twitch_command_button = QPushButton("Add Command")
+        management_actions = QWidget(page)
+        management_actions.setObjectName("twitchCommandManagementActions")
+        self.twitch_command_management_actions = management_actions
+        actions = QHBoxLayout(management_actions)
+        actions.setContentsMargins(0, 0, 0, 0)
+        self.add_twitch_command_button = QPushButton("+ Command")
         self.edit_twitch_command_button = QPushButton("Edit Selected")
         self.toggle_twitch_command_button = QPushButton("Disable Selected")
         self.delete_twitch_command_button = QPushButton("Delete Selected")
@@ -2338,7 +2343,7 @@ class MainWindow(QMainWindow):
         self.configure_channel_information_button = QPushButton(
             "Configure Channel Information"
         )
-        command_header.add_action(self.add_twitch_command_button)
+        actions.addWidget(self.add_twitch_command_button)
         actions.addWidget(self.edit_twitch_command_button)
         actions.addWidget(self.toggle_twitch_command_button)
         actions.addWidget(self.delete_twitch_command_button)
@@ -2346,7 +2351,7 @@ class MainWindow(QMainWindow):
         actions.addWidget(self.reset_twitch_command_button)
         actions.addWidget(self.configure_channel_information_button)
         actions.addStretch()
-        layout.addLayout(actions)
+        layout.addWidget(management_actions)
         preview = QHBoxLayout()
         self.twitch_command_preview_edit = QLineEdit()
         self.twitch_command_preview_edit.setPlaceholderText(
