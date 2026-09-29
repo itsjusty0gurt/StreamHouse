@@ -952,6 +952,7 @@ class MainWindow(QMainWindow):
         self.connections_button.clicked.connect(self.show_connections)
         self.ui.logsButton.clicked.connect(self.show_logs)
         self.ui.settingsButton.clicked.connect(self.show_settings)
+        self.ui.mainStack.currentChanged.connect(self._main_workspace_changed)
         self.ui.testInfoButton.clicked.connect(self.test_info_log)
         self.ui.testWarningButton.clicked.connect(self.test_warning_log)
         self.ui.testErrorButton.clicked.connect(self.test_error_log)
@@ -2455,6 +2456,14 @@ class MainWindow(QMainWindow):
         if page is self.channel_points_page:
             self.channel_points_page.activate()
         elif page is self.raid_page:
+            self.raid_page.activate()
+
+    @Slot(int)
+    def _main_workspace_changed(self, index: int) -> None:
+        if (
+            self.ui.mainStack.widget(index) is self.ui.twitchPage
+            and self.channel_tabs.currentWidget() is self.raid_page
+        ):
             self.raid_page.activate()
 
     @Slot(str, str, dict)

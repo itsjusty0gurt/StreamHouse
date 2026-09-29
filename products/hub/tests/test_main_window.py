@@ -2300,6 +2300,31 @@ class MainWindowTests(unittest.TestCase):
             "Raid",
         )
 
+    def test_returning_to_twitch_refreshes_selected_raid_tab(self) -> None:
+        self.window.twitch_auth.token = TwitchToken(
+            "access",
+            "refresh",
+            9999999999,
+            ["user:read:follows", "channel:manage:raids"],
+            user_id="channel-1",
+        )
+        self.window.twitch_service.broadcaster_user_id = "channel-1"
+        self.window.raid_page.load_pool.start = Mock()
+        self.window.show_twitch()
+
+        self.window.channel_tabs.setCurrentWidget(self.window.raid_page)
+        first_worker = self.window.raid_page.load_pool.start.call_args.args[0]
+        self.window.raid_page._load_completed(
+            first_worker,
+            self.window.raid_page._generation,
+            [],
+        )
+        self.window.show_dashboard()
+
+        self.window.show_twitch()
+
+        self.assertEqual(self.window.raid_page.load_pool.start.call_count, 2)
+
     def test_support_actions_share_diagnostics_service_and_existing_tracker(self) -> None:
         with patch.object(
             QMessageBox,

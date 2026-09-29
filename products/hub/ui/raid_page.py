@@ -382,7 +382,6 @@ class RaidPage(QWidget):
         self.auth = auth
         self._clock = clock or (lambda: datetime.now(timezone.utc))
         self._generation = 0
-        self._requested_once = False
         self._loading = False
         self._shutting_down = False
         self._columns = 0
@@ -548,14 +547,12 @@ class RaidPage(QWidget):
         self._show_state("Open Raid to load followed channels that are live.")
 
     def activate(self) -> None:
-        if not self._requested_once:
-            self.refresh()
+        self.refresh()
 
     @Slot()
     def refresh(self) -> None:
         if self._loading or self._shutting_down:
             return
-        self._requested_once = True
         token = self.auth.token if self.auth is not None else None
         if token is None or not token.user_id:
             self._show_state("Connect Twitch to find channels to raid.")
@@ -570,10 +567,10 @@ class RaidPage(QWidget):
         self._loading = True
         self.refresh_button.setEnabled(False)
         self.search_edit.setEnabled(False)
-        self._candidates = ()
-        self._visible_candidates = ()
-        self._replace_cards()
-        self._show_state("Loading followed channels that are live…")
+        if self._candidates:
+            self._set_status("Refreshing followed channels that are live…")
+        else:
+            self._show_state("Loading followed channels that are live…")
         worker = RaidCandidatesWorker(self.service, self._generation)
         self._load_workers.add(worker)
         worker.signals.completed.connect(self._load_completed)
@@ -615,12 +612,16 @@ class RaidPage(QWidget):
             return
         self._finish_loading()
         if kind == "permission":
-            self._show_state(
+            message = (
                 "Additional Twitch permission is required to view followed "
                 "live channels."
             )
         else:
-            self._show_state("Couldn’t load live channels. Try again.")
+            message = "Couldn’t load live channels. Try again."
+        if self._candidates:
+            self._set_status(message)
+        else:
+            self._show_state(message)
 
     def _finish_loading(self) -> None:
         self._loading = False

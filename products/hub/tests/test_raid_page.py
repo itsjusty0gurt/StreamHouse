@@ -165,6 +165,69 @@ class RaidPageTests(unittest.TestCase):
         self.assertIsInstance(worker, RaidCandidatesWorker)
         self.assertIn("Loading", self.page.status_label.text())
 
+    def test_activation_refreshes_each_time_but_not_while_in_flight(self) -> None:
+        self.page.load_pool.start = Mock()
+
+        self.page.activate()
+        self.page.activate()
+
+        self.page.load_pool.start.assert_called_once()
+        worker = self.page.load_pool.start.call_args.args[0]
+        self.page._load_completed(worker, self.page._generation, [_stream()])
+
+        self.page.activate()
+
+        self.assertEqual(self.page.load_pool.start.call_count, 2)
+
+    def test_refresh_preserves_active_raid_message_and_cards_while_loading(self) -> None:
+        self._apply([_stream(), _stream("viewer-2", name="Second Channel")])
+        active = self.page._candidates[0]
+        self.page._set_active_raid(active, self.now)
+        self.page.raid_message_edit.setText("Raid time!")
+        cards = dict(self.page._cards)
+        self.page.load_pool.start = Mock()
+
+        self.page.refresh()
+
+        self.assertEqual(self.page._cards, cards)
+        self.assertIs(self.page._active_raid.candidate, active)
+        self.assertTrue(self.page.countdown_timer.isActive())
+        self.assertEqual(self.page.raid_message_edit.text(), "Raid time!")
+        self.assertTrue(
+            self.page._cards[active.user_id].property("activeRaidTarget")
+        )
+        self.assertIn("Refreshing", self.page.status_label.text())
+
+        worker = self.page.load_pool.start.call_args.args[0]
+        self.page._load_completed(
+            worker,
+            self.page._generation,
+            [_stream(), _stream("viewer-2", name="Second Channel")],
+        )
+
+        self.assertEqual(self.page.raid_message_edit.text(), "Raid time!")
+        self.assertIs(self.page._active_raid.candidate, active)
+        self.assertTrue(
+            self.page._cards[active.user_id].property("activeRaidTarget")
+        )
+
+    def test_manual_refresh_uses_same_guarded_refresh_path(self) -> None:
+        self.page.load_pool.start = Mock()
+
+        self.page.refresh_button.click()
+        self.page.refresh_button.click()
+
+        self.page.load_pool.start.assert_called_once()
+
+    def test_resize_and_repaint_do_not_trigger_refresh(self) -> None:
+        with patch.object(self.page, "refresh") as refresh:
+            self.page.show()
+            self.page.resize(800, 700)
+            self.page.repaint()
+            self.application.processEvents()
+
+        refresh.assert_not_called()
+
     def test_real_fetch_runs_off_ui_thread_and_completes_on_page(self) -> None:
         worker_threads = []
 
