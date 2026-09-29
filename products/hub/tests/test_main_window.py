@@ -2094,7 +2094,9 @@ class MainWindowTests(unittest.TestCase):
         )
         self.window._refresh_twitch_commands(command.trigger_id)
 
-        self.window.open_twitch_command_routine_button.click()
+        tree = self.window.automation_page.routine_tree
+        with patch.object(tree, "scrollToItem", wraps=tree.scrollToItem) as scroll:
+            self.window.open_twitch_command_routine_button.click()
 
         self.assertIs(
             self.window.ui.mainStack.currentWidget(),
@@ -2107,6 +2109,97 @@ class MainWindowTests(unittest.TestCase):
         self.assertEqual(
             self.window.automation_page.routine_title_label.text(),
             "Command !socials",
+        )
+        self.assertEqual(
+            str(scroll.call_args.args[0].data(0, Qt.ItemDataRole.UserRole)),
+            command.routine_id,
+        )
+
+    def test_timer_open_routine_uses_shared_navigation_and_scrolls_target(
+        self,
+    ) -> None:
+        store = self.twitch_command_trigger_store.routine_store
+        routine = store.add("Timer target")
+        trigger = self.window.core_trigger_store.add_timer(
+            routine.routine_id,
+            timer_mode="fixed",
+            timer_minimum="10",
+            timer_minimum_unit="minutes",
+        )
+        self.application.processEvents()
+        card = self.window.timers_page.cards[trigger.trigger_id]
+        tree = self.window.automation_page.routine_tree
+
+        with patch.object(tree, "scrollToItem", wraps=tree.scrollToItem) as scroll:
+            card.open_button.click()
+
+        self.assertIs(
+            self.window.ui.mainStack.currentWidget(),
+            self.window.automation_page,
+        )
+        self.assertEqual(
+            self.window.automation_page._selected_routine_id,
+            routine.routine_id,
+        )
+        self.assertEqual(
+            str(scroll.call_args.args[0].data(0, Qt.ItemDataRole.UserRole)),
+            routine.routine_id,
+        )
+
+    def test_open_routine_expands_only_target_group_by_stable_id(self) -> None:
+        store = self.twitch_command_trigger_store.routine_store
+        target_group = store.add_group("Target Group")
+        other_group = store.add_group("Other Group")
+        target = store.add("Duplicate", group_id=target_group.group_id)
+        other = store.add("Duplicate", group_id=other_group.group_id)
+        page = self.window.automation_page
+        page.refresh()
+        self._routine_group_item(target_group.group_id).setExpanded(False)
+        self._routine_group_item(other_group.group_id).setExpanded(False)
+
+        self.assertTrue(self.window.open_routine(target.routine_id))
+
+        self.assertEqual(page._selected_routine_id, target.routine_id)
+        self.assertNotEqual(page._selected_routine_id, other.routine_id)
+        self.assertTrue(
+            self._routine_group_item(target_group.group_id).isExpanded()
+        )
+        self.assertFalse(
+            self._routine_group_item(other_group.group_id).isExpanded()
+        )
+
+        store.update(
+            target.routine_id,
+            name="Renamed Duplicate",
+            group_id=other_group.group_id,
+        )
+        page.refresh()
+        self._routine_group_item(other_group.group_id).setExpanded(False)
+        self.assertTrue(self.window.open_routine(target.routine_id))
+        self.assertEqual(page._selected_routine_id, target.routine_id)
+        self.assertTrue(self._routine_group_item(other_group.group_id).isExpanded())
+
+    def test_open_routine_missing_stable_id_does_not_change_selection(self) -> None:
+        store = self.twitch_command_trigger_store.routine_store
+        selected = store.add("Keep selected")
+        deleted = store.add("Delete me")
+        self.window.open_routine(selected.routine_id)
+        store.delete(deleted.routine_id)
+        self.window.show_dashboard()
+
+        self.assertFalse(self.window.open_routine(deleted.routine_id))
+
+        self.assertIs(
+            self.window.ui.mainStack.currentWidget(),
+            self.window.ui.dashboardPage,
+        )
+        self.assertEqual(
+            self.window.automation_page._selected_routine_id,
+            selected.routine_id,
+        )
+        self.assertIn(
+            "no longer available",
+            self.window.statusBar().currentMessage(),
         )
 
     def test_memories_page_searches_and_shows_viewer_profile(self) -> None:

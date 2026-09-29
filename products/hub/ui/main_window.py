@@ -2725,8 +2725,7 @@ class MainWindow(QMainWindow):
         command = self._selected_twitch_command()
         if command is None:
             return
-        self.show_automation()
-        self.automation_page.select_routine(command.routine_id)
+        self.open_routine(command.routine_id)
 
     def _reset_twitch_command(self) -> None:
         command = self._selected_twitch_command()
@@ -2795,7 +2794,7 @@ class MainWindow(QMainWindow):
             create_routine=self.automation_page.create_routine,
             parent=self,
         )
-        self.timers_page.open_routine_requested.connect(self._open_timer_routine)
+        self.timers_page.open_routine_requested.connect(self.open_routine)
         self.timers_page.timers_changed.connect(self.automation_page.refresh)
         self.ui.mainStack.addWidget(self.timers_page)
 
@@ -6283,11 +6282,20 @@ class MainWindow(QMainWindow):
         self.timers_button.setChecked(True)
 
     @Slot(str)
-    def _open_timer_routine(self, routine_id: str) -> None:
-        if not routine_id:
-            return
-        self.show_automation()
-        self.automation_page.select_routine(routine_id)
+    def open_routine(self, routine_id: str) -> bool:
+        """Open one exact Automation Routine by its stable identity."""
+        if (
+            not routine_id
+            or self.automation_page.routine_store.get(routine_id) is None
+        ):
+            self.statusBar().showMessage(
+                "That routine is no longer available.",
+                5_000,
+            )
+            return False
+        self.ui.mainStack.setCurrentWidget(self.automation_page)
+        self.automation_button.setChecked(True)
+        return self.automation_page.select_routine(routine_id, reveal=True)
 
     @Slot()
     def show_wiki(self) -> None:

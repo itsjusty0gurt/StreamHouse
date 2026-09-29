@@ -3576,11 +3576,42 @@ class AutomationPage(QWidget):
             group_id = str(item.data(0, Qt.ItemDataRole.UserRole) or "")
             self._group_expansion_state[group_id] = item.isExpanded()
 
-    def select_routine(self, routine_id: str) -> None:
+    def select_routine(self, routine_id: str, *, reveal: bool = False) -> bool:
+        routine = self.routine_store.get(routine_id)
+        if routine is None:
+            return False
         self.tabs.setCurrentIndex(0)
         self.search_edit.clear()
+        if reveal:
+            self._group_expansion_state[routine.group_id] = True
         self._selected_routine_id = routine_id
         self.refresh(routine_id)
+        item = self._routine_item_for_id(routine_id)
+        if item is None:
+            return False
+        self.routine_tree.setCurrentItem(item)
+        if reveal:
+            group_item = item.parent()
+            if group_item is not None:
+                group_item.setExpanded(True)
+            self.routine_tree.scrollToItem(
+                item,
+                QAbstractItemView.ScrollHint.PositionAtCenter,
+            )
+        return True
+
+    def _routine_item_for_id(self, routine_id: str) -> QTreeWidgetItem | None:
+        for group_index in range(self.routine_tree.topLevelItemCount()):
+            group_item = self.routine_tree.topLevelItem(group_index)
+            for routine_index in range(group_item.childCount()):
+                item = group_item.child(routine_index)
+                if (
+                    item.data(0, self.KIND_ROLE) == "routine"
+                    and str(item.data(0, Qt.ItemDataRole.UserRole) or "")
+                    == routine_id
+                ):
+                    return item
+        return None
 
     def _routine_selected(
         self,
