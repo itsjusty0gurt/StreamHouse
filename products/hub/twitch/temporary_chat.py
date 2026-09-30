@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from enum import StrEnum
 
 from PySide6.QtCore import QByteArray, QObject, QUrl, Signal, Slot
 from PySide6.QtNetwork import (
@@ -14,6 +15,14 @@ from products.hub.twitch.auth import TwitchToken
 from products.hub.twitch.live import TwitchEventSubSocket
 from products.hub.twitch.models import TwitchMessage
 from shared.streamhouse_runtime.logger import Logger
+
+
+class TemporaryChatState(StrEnum):
+    CONNECTING = "connecting"
+    CONNECTED = "connected"
+    RECONNECTING = "reconnecting"
+    UNAVAILABLE = "unavailable"
+    DISCONNECTED = "disconnected"
 
 
 class TemporaryTwitchChatSession(QObject):
@@ -40,6 +49,7 @@ class TemporaryTwitchChatSession(QObject):
         self.token = token
         self._closed = False
         self._started = False
+        self._state = TemporaryChatState.DISCONNECTED
         self._subscription_reply: QNetworkReply | None = None
         self._network = network or QNetworkAccessManager(self)
         self._socket = socket_factory(
@@ -57,19 +67,27 @@ class TemporaryTwitchChatSession(QObject):
     def closed(self) -> bool:
         return self._closed
 
+    @property
+    def state(self) -> TemporaryChatState:
+        return self._state
+
+    def _set_state(self, state: TemporaryChatState) -> None:
+        if state == self._state:
+            return
+        self._state = state
+        self.state_changed.emit(state.value)
+
     def start(self) -> None:
         if self._started or self._closed:
             return
         if not self.target_user_id or not self.token.user_id:
-            self.state_changed.emit("Target chat is unavailable.")
+            self._set_state(TemporaryChatState.UNAVAILABLE)
             return
         if "user:read:chat" not in set(self.token.scopes):
-            self.state_changed.emit(
-                "Reconnect Twitch with chat permission to view target chat."
-            )
+            self._set_state(TemporaryChatState.UNAVAILABLE)
             return
         self._started = True
-        self.state_changed.emit("Connecting to target chat…")
+        self._set_state(TemporaryChatState.CONNECTING)
         self._socket.open()
 
     @Slot(str)
@@ -127,13 +145,13 @@ class TemporaryTwitchChatSession(QObject):
         )
         reply.deleteLater()
         if success:
-            self.state_changed.emit("Target chat connected — read-only in V1.")
+            self._set_state(TemporaryChatState.CONNECTED)
             return
         Logger.warning(
             "Raid Landing target chat subscription failed.",
             source="TWITCH",
         )
-        self.state_changed.emit("Target chat couldn’t connect.")
+        self._set_state(TemporaryChatState.UNAVAILABLE)
         self._socket.close()
 
     @Slot(object)
@@ -157,7 +175,7 @@ class TemporaryTwitchChatSession(QObject):
 
     def _revoked(self, _status: str) -> None:
         if not self._closed:
-            self.state_changed.emit("Target chat permission was revoked.")
+            self._set_state(TemporaryChatState.UNAVAILABLE)
 
     def _socket_error(self, _message: str) -> None:
         if not self._closed:
@@ -165,7 +183,7 @@ class TemporaryTwitchChatSession(QObject):
                 "Raid Landing target chat connection failed.",
                 source="TWITCH",
             )
-            self.state_changed.emit("Target chat connection was lost.")
+            self._set_state(TemporaryChatState.RECONNECTING)
 
     def close(self) -> None:
         if self._closed:
@@ -176,4 +194,4 @@ class TemporaryTwitchChatSession(QObject):
         if reply is not None and reply.isRunning():
             reply.abort()
         self._socket.close()
-        self.state_changed.emit("Target chat closed.")
+        self._set_state(TemporaryChatState.DISCONNECTED)

@@ -158,6 +158,10 @@ def test_raid_page_reference_documents_runtime_finder_and_permissions() -> None:
     assert "twitch automatically executes the raid" in text
     assert "raid now" not in text
     assert "outgoing channel raid event" in text
+    assert "retry chat" in text
+    assert "copy channel link" in text
+    assert "read-only target chat" in text
+    assert "open on twitch" in text
 
 
 def test_wiki_search_is_local_case_insensitive_and_does_not_mutate_sources() -> None:

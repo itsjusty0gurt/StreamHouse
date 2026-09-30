@@ -14,7 +14,10 @@ from PySide6.QtWidgets import QApplication
 from products.hub.core.events import Events
 from products.hub.twitch.auth import TwitchToken
 from products.hub.twitch.models import TwitchMessage
-from products.hub.twitch.temporary_chat import TemporaryTwitchChatSession
+from products.hub.twitch.temporary_chat import (
+    TemporaryChatState,
+    TemporaryTwitchChatSession,
+)
 
 
 class _FakeSocket:
@@ -121,7 +124,8 @@ class TemporaryTwitchChatSessionTests(unittest.TestCase):
             {"method": "websocket", "session_id": "temporary-session"},
         )
         network.reply.complete()
-        self.assertIn("read-only", states[-1])
+        self.assertEqual(states[-1], TemporaryChatState.CONNECTED.value)
+        self.assertEqual(session.state, TemporaryChatState.CONNECTED)
 
     def test_only_target_messages_are_exposed_and_never_emitted_globally(self) -> None:
         session, _network = self._session()
@@ -163,6 +167,7 @@ class TemporaryTwitchChatSessionTests(unittest.TestCase):
         self.assertTrue(session.closed)
         self.assertTrue(network.reply.aborted)
         self.assertEqual(session._socket.close_count, 1)
+        self.assertEqual(session.state, TemporaryChatState.DISCONNECTED)
 
     def test_missing_chat_scope_never_opens_socket(self) -> None:
         session, network = self._session(scopes=[])
@@ -173,7 +178,20 @@ class TemporaryTwitchChatSessionTests(unittest.TestCase):
 
         self.assertEqual(session._socket.open_count, 0)
         self.assertEqual(network.requests, [])
-        self.assertIn("permission", states[-1])
+        self.assertEqual(states[-1], TemporaryChatState.UNAVAILABLE.value)
+
+    def test_socket_error_reports_reconnecting_until_new_subscription_connects(self) -> None:
+        session, network = self._session()
+        states = []
+        session.state_changed.connect(states.append)
+        session.start()
+
+        session._socket.callbacks["on_error"]("network")
+        self.assertEqual(states[-1], TemporaryChatState.RECONNECTING.value)
+
+        session._socket.callbacks["on_welcome"]("replacement-session")
+        network.reply.complete()
+        self.assertEqual(states[-1], TemporaryChatState.CONNECTED.value)
 
 
 if __name__ == "__main__":

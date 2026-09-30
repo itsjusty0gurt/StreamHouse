@@ -707,6 +707,7 @@ def _twitch_entries() -> tuple[WikiEntry, ...]:
                         "After Twitch confirms the outgoing raid, Raid Landing opens a separate local companion window for the target channel. Starting or cancelling a raid does not open it.",
                         "The window keeps a temporary, read-only target chat separate from your main Hub chat. Closing it releases that temporary chat session and does not affect the raid or your main Twitch connection.",
                         "Use Open on Twitch for video and viewing. V1 intentionally has no embedded video or Streamhouse-hosted cloud dependency.",
+                        "Retry Chat reconnects a failed target-chat session. Copy Channel Link copies the target's Twitch URL.",
                         "Always on Top keeps the companion visible; Close dismisses it. A later confirmed raid replaces an existing landing window.",
                     ),
                 ),

@@ -5,6 +5,7 @@ from typing import Callable
 from PySide6.QtCore import QUrl, Qt, Signal, Slot
 from PySide6.QtGui import QCloseEvent, QDesktopServices, QFont
 from PySide6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QFrame,
     QHBoxLayout,
@@ -16,6 +17,7 @@ from PySide6.QtWidgets import (
 )
 
 from products.hub.twitch.models import TwitchMessage
+from products.hub.twitch.temporary_chat import TemporaryChatState
 from products.hub.ui.automation_task_cards import ElidingLabel
 from products.hub.ui.structured_twitch_chat_view import TwitchChatView
 
@@ -38,8 +40,12 @@ class RaidLandingWindow(QWidget):
         self.candidate = candidate
         self.service = service
         self._url_opener = url_opener
+        self._chat_session_factory = (
+            chat_session_factory or service.create_temporary_chat_session
+        )
         self._closed = False
         self._chat_session = None
+        self._chat_attempt_in_progress = False
         self.setObjectName("raidLandingWindow")
         self.setWindowTitle(f"Raid Landing — {candidate.display_name}")
         self.resize(640, 760)
@@ -80,18 +86,47 @@ class RaidLandingWindow(QWidget):
 
         self.always_on_top_checkbox = QCheckBox("Always on Top", header)
         self.open_twitch_button = QPushButton("Open on Twitch", header)
+        self.copy_link_button = QPushButton("Copy Channel Link", header)
         self.close_button = QPushButton("Close", header)
         title_row.addWidget(self.always_on_top_checkbox)
-        title_row.addWidget(self.open_twitch_button)
-        title_row.addWidget(self.close_button)
         header_layout.addLayout(title_row)
 
-        self.category_label = ElidingLabel(candidate.category, header)
+        metadata_available = bool(
+            candidate.category.strip() or candidate.title.strip()
+        )
+        self.channel_state_label = QLabel(
+            (
+                "Live on Twitch"
+                if metadata_available
+                else "Channel information unavailable."
+            ),
+            header,
+        )
+        self.channel_state_label.setStyleSheet(
+            "color:#bf94ff; font-weight:600;"
+            if metadata_available
+            else "color:#adadb8;"
+        )
+        self.category_label = ElidingLabel(
+            candidate.category or "No category",
+            header,
+        )
         self.category_label.setStyleSheet("color:palette(highlight);")
-        self.stream_title_label = ElidingLabel(candidate.title, header)
+        self.stream_title_label = ElidingLabel(
+            candidate.title or "Title unavailable",
+            header,
+        )
         self.stream_title_label.setStyleSheet("color:#adadb8;")
+        header_layout.addWidget(self.channel_state_label)
         header_layout.addWidget(self.category_label)
         header_layout.addWidget(self.stream_title_label)
+
+        action_row = QHBoxLayout()
+        action_row.addWidget(self.open_twitch_button)
+        action_row.addWidget(self.copy_link_button)
+        action_row.addStretch(1)
+        action_row.addWidget(self.close_button)
+        header_layout.addLayout(action_row)
         root.addWidget(header)
 
         chat_header = QHBoxLayout()
@@ -99,7 +134,7 @@ class RaidLandingWindow(QWidget):
         chat_font = QFont(chat_label.font())
         chat_font.setBold(True)
         chat_label.setFont(chat_font)
-        self.chat_status_label = QLabel("Connecting to target chat…", self)
+        self.chat_status_label = QLabel("Connecting…", self)
         self.chat_status_label.setAlignment(
             Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
         )
@@ -110,10 +145,14 @@ class RaidLandingWindow(QWidget):
         self.chat_status_label.setStyleSheet("color:#adadb8;")
         chat_header.addWidget(chat_label)
         chat_header.addWidget(self.chat_status_label, 1)
+        self.retry_chat_button = QPushButton("Retry Chat", self)
+        self.retry_chat_button.hide()
+        chat_header.addWidget(self.retry_chat_button)
         root.addLayout(chat_header)
 
         self.chat_view = TwitchChatView(self, history_limit=500)
         self.chat_view.setObjectName("raidLandingChat")
+        self._set_empty_chat_message("Waiting for chat…")
         root.addWidget(self.chat_view, 1)
 
         self.video_note_label = QLabel(
@@ -127,17 +166,40 @@ class RaidLandingWindow(QWidget):
 
         self.always_on_top_checkbox.toggled.connect(self._set_always_on_top)
         self.open_twitch_button.clicked.connect(self._open_on_twitch)
+        self.copy_link_button.clicked.connect(self._copy_channel_link)
+        self.retry_chat_button.clicked.connect(self._retry_chat)
         self.close_button.clicked.connect(self.close)
 
-        factory = chat_session_factory or service.create_temporary_chat_session
-        try:
-            self._chat_session = factory(candidate.user_id, self)
-        except (PermissionError, ValueError) as error:
-            self.chat_status_label.setText(str(error))
+        has_login = bool(candidate.login.strip())
+        self.open_twitch_button.setEnabled(has_login)
+        self.copy_link_button.setEnabled(has_login)
+        if has_login:
+            self.open_twitch_button.setToolTip("Open this channel on Twitch.")
+            self.copy_link_button.setToolTip("Copy this channel's Twitch link.")
         else:
-            self._chat_session.message_received.connect(self._receive_message)
-            self._chat_session.state_changed.connect(self._set_chat_status)
-            self._chat_session.start()
+            unavailable = "The target channel login is unavailable."
+            self.open_twitch_button.setToolTip(unavailable)
+            self.copy_link_button.setToolTip(unavailable)
+
+        self._start_chat_session()
+
+    def _start_chat_session(self) -> None:
+        if self._closed or self._chat_attempt_in_progress:
+            return
+        self._chat_attempt_in_progress = True
+        self.retry_chat_button.setEnabled(False)
+        self.retry_chat_button.hide()
+        self._set_chat_state(TemporaryChatState.CONNECTING.value)
+        try:
+            session = self._chat_session_factory(self.candidate.user_id, self)
+        except (PermissionError, ValueError):
+            self._chat_attempt_in_progress = False
+            self._set_chat_state(TemporaryChatState.UNAVAILABLE.value)
+        else:
+            self._chat_session = session
+            session.message_received.connect(self._receive_message)
+            session.state_changed.connect(self._set_chat_state)
+            session.start()
 
     @Slot(object)
     def _receive_message(self, message: object) -> None:
@@ -150,17 +212,80 @@ class RaidLandingWindow(QWidget):
         )
 
     @Slot(str)
-    def _set_chat_status(self, status: str) -> None:
-        if not self._closed:
-            self.chat_status_label.setText(status)
+    def _set_chat_state(self, state: str) -> None:
+        if self._closed:
+            return
+        labels = {
+            TemporaryChatState.CONNECTING.value: "Connecting…",
+            TemporaryChatState.CONNECTED.value: "Connected",
+            TemporaryChatState.RECONNECTING.value: "Reconnecting…",
+            TemporaryChatState.UNAVAILABLE.value: "Chat unavailable",
+            TemporaryChatState.DISCONNECTED.value: "Disconnected",
+        }
+        self.chat_status_label.setText(labels.get(state, "Chat unavailable"))
+        self._chat_attempt_in_progress = state in {
+            TemporaryChatState.CONNECTING.value,
+            TemporaryChatState.RECONNECTING.value,
+        }
+        retryable = state in {
+            TemporaryChatState.UNAVAILABLE.value,
+            TemporaryChatState.DISCONNECTED.value,
+        }
+        self.retry_chat_button.setVisible(retryable)
+        self.retry_chat_button.setEnabled(retryable)
+        if not self.chat_view.history.entries:
+            if state == TemporaryChatState.CONNECTED.value:
+                self._set_empty_chat_message(
+                    "No messages yet.<br>Waiting for chat…"
+                )
+            elif state == TemporaryChatState.UNAVAILABLE.value:
+                self._set_empty_chat_message("Chat is temporarily unavailable.")
+            elif state == TemporaryChatState.DISCONNECTED.value:
+                self._set_empty_chat_message("Chat disconnected.")
+            else:
+                self._set_empty_chat_message(
+                    labels.get(state, "Waiting for chat…")
+                )
+
+    def _set_empty_chat_message(self, message: str) -> None:
+        self.chat_view.setHtml(
+            "<div style='color:#adadb8;padding:18px;text-align:center;'>"
+            f"{message}</div>"
+        )
+
+    @Slot()
+    def _retry_chat(self) -> None:
+        if self._closed or self._chat_attempt_in_progress:
+            return
+        previous = self._chat_session
+        self._chat_session = None
+        if previous is not None:
+            try:
+                previous.message_received.disconnect(self._receive_message)
+                previous.state_changed.disconnect(self._set_chat_state)
+            except (RuntimeError, TypeError):
+                pass
+            previous.close()
+            previous.deleteLater()
+        self._start_chat_session()
 
     @Slot()
     def _open_on_twitch(self) -> None:
-        if self._closed:
+        url = self._channel_url()
+        if self._closed or url is None:
             return
-        self._url_opener(
-            QUrl(f"https://www.twitch.tv/{self.candidate.login}")
-        )
+        self._url_opener(url)
+
+    @Slot()
+    def _copy_channel_link(self) -> None:
+        url = self._channel_url()
+        if self._closed or url is None:
+            return
+        QApplication.clipboard().setText(url.toString())
+
+    def _channel_url(self) -> QUrl | None:
+        login = self.candidate.login.strip()
+        return QUrl(f"https://www.twitch.tv/{login}") if login else None
 
     @Slot(bool)
     def _set_always_on_top(self, enabled: bool) -> None:
@@ -182,7 +307,7 @@ class RaidLandingWindow(QWidget):
         if session is not None:
             try:
                 session.message_received.disconnect(self._receive_message)
-                session.state_changed.disconnect(self._set_chat_status)
+                session.state_changed.disconnect(self._set_chat_state)
             except (RuntimeError, TypeError):
                 pass
             session.close()
