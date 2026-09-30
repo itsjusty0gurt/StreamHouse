@@ -476,6 +476,17 @@ action. An outgoing `channel.raid` event clears matching active UI state as soon
 as Twitch confirms the raid. A separate Raid Initiated Automation event remains
 planned; there is no separate public Twitch raid-completed event.
 
+Raid Landing V1 is an optional, session-only local companion window. The option
+is off by default and opens only when the outgoing `channel.raid` EventSub event
+matches the active target; starting, counting down, or cancelling a raid never
+opens it. The landing owns a separate temporary `channel.chat.message` EventSub
+socket for the target channel and renders that bounded, read-only chat in memory.
+It never switches, clears, reconnects, or republishes messages through the main
+broadcaster chat path. Closing or replacing the landing closes its socket and
+releases the temporary subscription. The user's browser opens the target login
+on Twitch for video. There is no embedded player, Streamhouse-hosted origin,
+persistence, Backup component, or additional OAuth scope.
+
 ### Stream Health and Moderation
 
 Stream Health remains separate from Moderation. Stream Health may summarize

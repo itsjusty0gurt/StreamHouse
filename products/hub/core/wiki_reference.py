@@ -700,6 +700,16 @@ def _twitch_entries() -> tuple[WikiEntry, ...]:
                         "Connect the Main / Broadcaster Account and grant followed-channel read and raid-management permissions.",
                     ),
                 ),
+                WikiSection(
+                    "Raid Landing",
+                    (
+                        "Open Raid Landing after raid is an optional session-only setting and is off by default.",
+                        "After Twitch confirms the outgoing raid, Raid Landing opens a separate local companion window for the target channel. Starting or cancelling a raid does not open it.",
+                        "The window keeps a temporary, read-only target chat separate from your main Hub chat. Closing it releases that temporary chat session and does not affect the raid or your main Twitch connection.",
+                        "Use Open on Twitch for video and viewing. V1 intentionally has no embedded video or Streamhouse-hosted cloud dependency.",
+                        "Always on Top keeps the companion visible; Close dismisses it. A later confirmed raid replaces an existing landing window.",
+                    ),
+                ),
             ),
             (
                 "raid",
@@ -711,6 +721,10 @@ def _twitch_entries() -> tuple[WikiEntry, ...]:
                 "raid message",
                 "countdown",
                 "cancel raid",
+                "raid landing",
+                "open on twitch",
+                "always on top",
+                "target chat",
             ),
         ),
     )

@@ -20,6 +20,7 @@ from PySide6.QtGui import QPixmap, QResizeEvent
 from PySide6.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkRequest
 from PySide6.QtWidgets import (
     QApplication,
+    QCheckBox,
     QComboBox,
     QFrame,
     QGridLayout,
@@ -39,6 +40,7 @@ from products.hub.twitch.models import TwitchEvent
 from products.hub.twitch.raid_contract import RAID_COUNTDOWN_SECONDS
 from products.hub.ui.automation_task_cards import ElidingLabel
 from products.hub.ui.page_header import PageHeader
+from products.hub.ui.raid_landing_window import RaidLandingWindow
 from shared.streamhouse_shared.responsive import responsive_grid_columns
 from shared.streamhouse_runtime.logger import Logger
 
@@ -376,11 +378,13 @@ class RaidPage(QWidget):
         parent: QWidget | None = None,
         *,
         clock: Callable[[], datetime] | None = None,
+        landing_window_factory=RaidLandingWindow,
     ) -> None:
         super().__init__(parent)
         self.service = service
         self.auth = auth
         self._clock = clock or (lambda: datetime.now(timezone.utc))
+        self._landing_window_factory = landing_window_factory
         self._generation = 0
         self._loading = False
         self._shutting_down = False
@@ -389,6 +393,7 @@ class RaidPage(QWidget):
         self._visible_candidates: tuple[RaidCandidate, ...] = ()
         self._cards: dict[str, RaidChannelCard] = {}
         self._active_raid: ActiveRaid | None = None
+        self._landing_window: RaidLandingWindow | None = None
         self._load_workers: set[RaidCandidatesWorker] = set()
         self._raid_workers: set[RaidActionWorker] = set()
         self._cancel_workers: set[RaidCancelWorker] = set()
@@ -442,6 +447,20 @@ class RaidPage(QWidget):
         message_layout.addWidget(self.copy_message_button)
         message_layout.addWidget(self.send_message_button)
         root.addWidget(self.raid_message_frame)
+
+        self.open_raid_landing_checkbox = QCheckBox(
+            "Open Raid Landing after raid",
+            self,
+        )
+        self.open_raid_landing_checkbox.setObjectName(
+            "openRaidLandingAfterRaid"
+        )
+        self.open_raid_landing_checkbox.setToolTip(
+            "After Twitch confirms the outgoing raid, open a local companion "
+            "window with the target chat."
+        )
+        self.open_raid_landing_checkbox.setChecked(False)
+        root.addWidget(self.open_raid_landing_checkbox)
 
         self.active_raid_frame = QFrame(self)
         self.active_raid_frame.setObjectName("activeRaidPanel")
@@ -979,9 +998,41 @@ class RaidPage(QWidget):
             from_id == self.service.broadcaster_user_id
             and to_id == active.candidate.user_id
         ):
+            candidate = active.candidate
             self._clear_active_raid(
-                f"Raid sent to {active.candidate.display_name}."
+                f"Raid sent to {candidate.display_name}."
             )
+            if self.open_raid_landing_checkbox.isChecked():
+                self._open_raid_landing(candidate)
+
+    def _open_raid_landing(self, candidate: RaidCandidate) -> None:
+        if self._shutting_down:
+            return
+        previous = self._landing_window
+        if previous is not None:
+            self._landing_window = None
+            previous.shutdown()
+            previous.close()
+            previous.deleteLater()
+        landing = self._landing_window_factory(
+            candidate,
+            self.service,
+            self.window(),
+        )
+        self._landing_window = landing
+        landing.dismissed.connect(self._landing_dismissed)
+        landing.show()
+        landing.raise_()
+        landing.activateWindow()
+        Logger.info("Raid Landing opened.", source="TWITCH")
+
+    @Slot(object)
+    def _landing_dismissed(self, landing: object) -> None:
+        if landing is not self._landing_window:
+            return
+        self._landing_window = None
+        landing.deleteLater()
+        Logger.info("Raid Landing closed.", source="TWITCH")
 
     def _set_status(self, message: str) -> None:
         self.status_label.setText(message)
@@ -1017,6 +1068,12 @@ class RaidPage(QWidget):
         )
         self.countdown_timer.stop()
         self._active_raid = None
+        landing = self._landing_window
+        self._landing_window = None
+        if landing is not None:
+            landing.shutdown()
+            landing.close()
+            landing.deleteLater()
         self._cancel_thumbnails()
         self.load_pool.clear()
         self.raid_pool.clear()

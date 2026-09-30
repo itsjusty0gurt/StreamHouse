@@ -368,6 +368,24 @@ class TwitchService:
             return self.bot_auth.token
         return self.auth.token if self.auth is not None else None
 
+    def create_temporary_chat_session(
+        self,
+        target_user_id: str,
+        parent=None,
+    ):
+        """Create a runtime-only chat session without changing main chat."""
+
+        token = self._chat_token()
+        if token is None or not token.user_id:
+            raise PermissionError("Connect Twitch to view target chat.")
+        from products.hub.twitch.temporary_chat import TemporaryTwitchChatSession
+
+        return TemporaryTwitchChatSession(
+            target_user_id,
+            token,
+            parent,
+        )
+
     def badge_url(self, set_id: str, badge_id: str) -> str:
         return self.badge_urls.get((set_id, badge_id), "")
 

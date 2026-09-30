@@ -52,6 +52,33 @@ class TwitchServiceTests(unittest.TestCase):
             ],
         )
 
+    @patch(
+        "products.hub.twitch.temporary_chat.TemporaryTwitchChatSession"
+    )
+    def test_temporary_chat_uses_chat_identity_without_mutating_main_session(
+        self,
+        session_type: Mock,
+    ) -> None:
+        token = TwitchToken(
+            access_token="access",
+            refresh_token="refresh",
+            expires_at=999,
+            scopes=["user:read:chat"],
+            user_id="chat-user",
+        )
+        live_socket = object()
+        service = TwitchService(auth=Mock(token=token), helix=Mock())
+        service.channel = "main_channel"
+        service.live_socket = live_socket
+        parent = Mock()
+
+        created = service.create_temporary_chat_session("target-user", parent)
+
+        self.assertIs(created, session_type.return_value)
+        session_type.assert_called_once_with("target-user", token, parent)
+        self.assertEqual(service.channel, "main_channel")
+        self.assertIs(service.live_socket, live_socket)
+
     @patch("products.hub.twitch.service.TwitchEventSubSocket")
     def test_authenticated_connect_uses_live_eventsub(self, socket_type: Mock) -> None:
         token = TwitchToken(

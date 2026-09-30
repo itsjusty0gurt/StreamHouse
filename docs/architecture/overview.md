@@ -58,6 +58,10 @@ require it. Streamhouse Studio, Streamhouse Deck, and Streamhouse Avatar are
 future products and have no implemented application, entry point, or package in
 this repository.
 
+Hub remains standalone and local wherever practical. Normal Hub features do not
+require Streamhouse-hosted cloud infrastructure; the public Twitch Soundboard
+relay is the intentional remote-service exception.
+
 Hub Alpha contains no inference engine, does not launch Streamhouse AI or a
 model provider, and never generates a local Sally fallback reply. Chat addressed
 to Sally is silent when the external AI lifecycle is not READY; a failed AI
@@ -1299,7 +1303,13 @@ countdown, disables other targets, and offers Helix cancellation. Matching
 outgoing `channel.raid` events clear the active state immediately. Twitch
 executes the raid automatically when the countdown expires; Hub exposes no
 forced-completion action. The candidate list, message, and active raid state are
-never persisted.
+never persisted. An optional, default-off **Raid Landing** opens only after the
+matching outgoing raid EventSub confirmation. It is a local runtime-owned
+companion window with target identity, a separate temporary EventSub chat
+socket, Always on Top, and Open on Twitch. The target chat is read-only in V1,
+never enters the main chat event path, and closes with the window. Main Hub chat
+identity and connection are unchanged. Video opens in the user's browser; Hub
+does not depend on a hosted Streamhouse embed origin or persist landing state.
 
 Hub Alpha 0.1 does not expose the Soundboard page while Twitch Extension
 approval is pending. Its store, local server, relay client, Automation

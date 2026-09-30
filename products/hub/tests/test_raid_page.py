@@ -5,9 +5,9 @@ from unittest.mock import Mock, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QThread
+from PySide6.QtCore import QThread, Signal
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QMessageBox
+from PySide6.QtWidgets import QApplication, QMessageBox, QWidget
 
 from products.hub.twitch.auth import TwitchToken
 from products.hub.twitch.models import TwitchEvent, TwitchEventTransport
@@ -48,6 +48,23 @@ def _stream(
     }
 
 
+class _FakeLandingWindow(QWidget):
+    dismissed = Signal(object)
+
+    def __init__(self, candidate, service, parent=None) -> None:
+        super().__init__(parent)
+        self.candidate = candidate
+        self.service = service
+        self.shutdown_count = 0
+
+    def shutdown(self) -> None:
+        self.shutdown_count += 1
+
+    def closeEvent(self, event) -> None:  # noqa: N802
+        event.accept()
+        self.dismissed.emit(self)
+
+
 class RaidPageTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -84,6 +101,24 @@ class RaidPageTests(unittest.TestCase):
         self.page._load_workers.add(worker)
         self.page._load_completed(worker, self.page._generation, values)
         self.application.processEvents()
+
+    def _outgoing_raid_event(self, target_id: str = "viewer-1") -> TwitchEvent:
+        return TwitchEvent(
+            subscription_type="channel.raid",
+            version="1",
+            received_at=self.now,
+            message_id=f"raid-{target_id}",
+            broadcaster_user_id="channel-1",
+            broadcaster_user_login="streamer",
+            broadcaster_user_name="Streamer",
+            transport=TwitchEventTransport.WEBSOCKET,
+            payload={
+                "event": {
+                    "from_broadcaster_user_id": "channel-1",
+                    "to_broadcaster_user_id": target_id,
+                }
+            },
+        )
 
     def test_candidate_uses_live_stream_metadata_and_excludes_offline(self) -> None:
         stream = _stream()
@@ -320,6 +355,7 @@ class RaidPageTests(unittest.TestCase):
             "Raid will start automatically when the countdown ends.",
         )
         self.assertFalse(hasattr(self.page, "raid_now_button"))
+        self.assertIsNone(self.page._landing_window)
         self.assertEqual(QThread.currentThread(), self.page.thread())
 
     def test_raid_failure_restores_button_and_reports_error(self) -> None:
@@ -429,6 +465,7 @@ class RaidPageTests(unittest.TestCase):
         self.assertIsNone(self.page._active_raid)
         self.assertEqual(self.page.status_label.text(), "Raid cancelled.")
         self.assertTrue(self.page._cards["viewer-1"].raid_button.isEnabled())
+        self.assertIsNone(self.page._landing_window)
 
     def test_cancel_failure_preserves_active_state(self) -> None:
         self._apply([_stream()])
@@ -445,30 +482,96 @@ class RaidPageTests(unittest.TestCase):
     def test_outgoing_raid_event_clears_matching_active_target(self) -> None:
         self._apply([_stream()])
         self.page._set_active_raid(self.page._candidates[0], self.now)
-        event = TwitchEvent(
-            subscription_type="channel.raid",
-            version="1",
-            received_at=self.now,
-            message_id="raid-1",
-            broadcaster_user_id="channel-1",
-            broadcaster_user_login="streamer",
-            broadcaster_user_name="Streamer",
-            transport=TwitchEventTransport.WEBSOCKET,
-            payload={
-                "event": {
-                    "from_broadcaster_user_id": "channel-1",
-                    "to_broadcaster_user_id": "viewer-1",
-                }
-            },
-        )
-
-        self.page._handle_raid_event(event)
+        self.page._handle_raid_event(self._outgoing_raid_event())
 
         self.assertIsNone(self.page._active_raid)
+        self.assertFalse(self.page.open_raid_landing_checkbox.isChecked())
+        self.assertIsNone(self.page._landing_window)
         self.assertEqual(
             self.page.status_label.text(),
             "Raid sent to Channel Name.",
         )
+
+    def test_confirmed_outgoing_raid_opens_optional_local_landing(self) -> None:
+        self._apply([_stream()])
+        created = []
+
+        def factory(candidate, service, parent):
+            landing = _FakeLandingWindow(candidate, service, parent)
+            created.append(landing)
+            return landing
+
+        self.page._landing_window_factory = factory
+        self.page.open_raid_landing_checkbox.setChecked(True)
+        candidate = self.page._candidates[0]
+        self.page._set_active_raid(candidate, self.now)
+
+        self.page._handle_raid_event(self._outgoing_raid_event())
+
+        self.assertEqual(len(created), 1)
+        self.assertIs(created[0].candidate, candidate)
+        self.assertIs(created[0].service, self.service)
+        self.assertIs(self.page._landing_window, created[0])
+        self.assertIsNone(self.page._active_raid)
+
+    def test_unmatched_or_cancelled_raid_never_opens_landing(self) -> None:
+        self._apply([_stream()])
+        factory = Mock()
+        self.page._landing_window_factory = factory
+        self.page.open_raid_landing_checkbox.setChecked(True)
+        self.page._set_active_raid(self.page._candidates[0], self.now)
+
+        self.page._handle_raid_event(self._outgoing_raid_event("someone-else"))
+        factory.assert_not_called()
+
+        self.page._clear_active_raid("Raid cancelled.")
+        self.page._handle_raid_event(self._outgoing_raid_event())
+        factory.assert_not_called()
+
+    def test_repeated_confirmed_raids_replace_landing_and_preserve_main_chat(self) -> None:
+        self._apply(
+            [
+                _stream("viewer-1", login="first", name="First"),
+                _stream("viewer-2", login="second", name="Second"),
+            ]
+        )
+        created = []
+
+        def factory(candidate, service, parent):
+            landing = _FakeLandingWindow(candidate, service, parent)
+            created.append(landing)
+            return landing
+
+        main_channel = "streamer"
+        main_socket = object()
+        main_chat_widget = object()
+        self.service.channel = main_channel
+        self.service.live_socket = main_socket
+        self.page._main_chat_identity_for_test = main_chat_widget
+        self.page._landing_window_factory = factory
+        self.page.open_raid_landing_checkbox.setChecked(True)
+
+        self.page._set_active_raid(self.page._candidates[0], self.now)
+        self.page._handle_raid_event(self._outgoing_raid_event("viewer-1"))
+        first = created[0]
+        self.page._set_active_raid(self.page._candidates[1], self.now)
+        self.page._handle_raid_event(self._outgoing_raid_event("viewer-2"))
+
+        self.assertEqual(len(created), 2)
+        self.assertEqual(first.shutdown_count, 1)
+        self.assertIs(self.page._landing_window, created[1])
+        self.assertEqual(self.service.channel, main_channel)
+        self.assertIs(self.service.live_socket, main_socket)
+        self.assertIs(self.page._main_chat_identity_for_test, main_chat_widget)
+
+    def test_shutdown_closes_active_landing(self) -> None:
+        landing = _FakeLandingWindow(Mock(), self.service)
+        self.page._landing_window = landing
+
+        self.page.shutdown()
+
+        self.assertEqual(landing.shutdown_count, 1)
+        self.assertIsNone(self.page._landing_window)
 
     def test_hide_show_keeps_active_state_and_shutdown_stops_timer(self) -> None:
         self._apply([_stream()])
