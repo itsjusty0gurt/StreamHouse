@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
     QMenu,
     QMessageBox,
     QPushButton,
+    QSizePolicy,
     QWidget,
 )
 from PySide6.QtTest import QSignalSpy, QTest
@@ -477,6 +478,37 @@ class MainWindowTests(unittest.TestCase):
             self.window.ad_manager_group,
         )
         self.assertFalse(hasattr(self.window, "soundboard_page"))
+
+    def test_timers_navigation_button_uses_shared_responsive_sizing(self) -> None:
+        navigation_buttons = (
+            self.window.ui.dashboardButton,
+            self.window.ui.twitchButton,
+            self.window.automation_button,
+            self.window.timers_button,
+            self.window.wiki_button,
+            self.window.connections_button,
+            self.window.ui.logsButton,
+            self.window.ui.settingsButton,
+        )
+
+        for portrait in (True, False):
+            self.window._apply_responsive_layout(portrait)
+            for button in navigation_buttons:
+                self.assertEqual(button.minimumWidth(), 0)
+                self.assertEqual(
+                    button.sizePolicy().horizontalPolicy(),
+                    QSizePolicy.Policy.Expanding,
+                )
+                self.assertEqual(
+                    button.sizePolicy().verticalPolicy(),
+                    QSizePolicy.Policy.Fixed,
+                )
+
+        self.window.timers_button.click()
+        self.assertIs(
+            self.window.ui.mainStack.currentWidget(),
+            self.window.timers_page,
+        )
 
     def test_twitch_chat_keeps_stacked_side_column_across_layouts(self) -> None:
         chat = self.window.ui.twitchDetailTabs

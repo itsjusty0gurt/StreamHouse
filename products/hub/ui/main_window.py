@@ -1327,6 +1327,7 @@ class MainWindow(QMainWindow):
             self.ui.dashboardButton,
             self.ui.twitchButton,
             self.automation_button,
+            self.timers_button,
             self.wiki_button,
             self.connections_button,
             self.ui.logsButton,
