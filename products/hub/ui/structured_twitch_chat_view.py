@@ -139,6 +139,20 @@ class TwitchChatView(QWebEngineView):
         else:
             self._render()
 
+    def shutdown(self) -> None:
+        """Stop WebEngine work without starting a replacement page load."""
+        self.stop()
+        try:
+            self.loadFinished.disconnect(self._page_loaded)
+        except (RuntimeError, TypeError):
+            pass
+        self.history.clear()
+        self._options.clear()
+        self._html_by_entry.clear()
+        self._static_html = ""
+        self._loaded = False
+        self._pending_message_count = 0
+
     def setHtml(self, html: str, base_url: QUrl = QUrl()) -> None:
         self.clear()
         self._static_html = html

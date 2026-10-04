@@ -1,3 +1,4 @@
+import json
 import os
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -10,7 +11,9 @@ from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QMessageBox, QWidget
 
 from products.hub.twitch.auth import TwitchToken
+from products.hub.twitch.live import TwitchEventSubSocket
 from products.hub.twitch.models import TwitchEvent, TwitchEventTransport
+from products.hub.twitch.service import TwitchService
 from products.hub.ui.raid_page import (
     RAID_COUNTDOWN_SECONDS,
     RAID_SECONDARY_TEXT_COLOR,
@@ -448,7 +451,54 @@ class RaidPageTests(unittest.TestCase):
         self.page._update_countdown()
         self.assertIsNone(self.page._active_raid)
         self.assertFalse(self.page.countdown_timer.isActive())
-        self.assertIn("Raid sent", self.page.status_label.text())
+        self.assertIs(
+            self.page._raid_confirmation_target,
+            self.page._candidates[0],
+        )
+        self.assertTrue(self.page.raid_confirmation_timer.isActive())
+        self.assertIn(
+            "Waiting for Twitch confirmation",
+            self.page.status_label.text(),
+        )
+
+    def test_countdown_correlation_survives_until_outgoing_confirmation(self) -> None:
+        self._apply([_stream()])
+        created = []
+
+        def factory(candidate, service, parent):
+            landing = _FakeLandingWindow(candidate, service, parent)
+            created.append(landing)
+            return landing
+
+        self.page._landing_window_factory = factory
+        self.page.open_raid_landing_checkbox.setChecked(True)
+        candidate = self.page._candidates[0]
+        self.page._set_active_raid(candidate, self.now)
+        self.now += timedelta(seconds=RAID_COUNTDOWN_SECONDS + 1)
+
+        self.page._update_countdown()
+        self.page._handle_raid_event(self._outgoing_raid_event())
+
+        self.assertEqual(len(created), 1)
+        self.assertIs(created[0].candidate, candidate)
+        self.assertIsNone(self.page._active_raid)
+        self.assertIsNone(self.page._raid_confirmation_target)
+        self.assertFalse(self.page.raid_confirmation_timer.isActive())
+
+    def test_unconfirmed_countdown_correlation_expires_without_opening(self) -> None:
+        self._apply([_stream()])
+        candidate = self.page._candidates[0]
+        self.page._landing_window_factory = Mock()
+        self.page.open_raid_landing_checkbox.setChecked(True)
+        self.page._set_active_raid(candidate, self.now)
+        self.now += timedelta(seconds=RAID_COUNTDOWN_SECONDS + 1)
+        self.page._update_countdown()
+
+        self.page._expire_raid_confirmation()
+
+        self.assertIsNone(self.page._raid_confirmation_target)
+        self.assertTrue(self.page._cards[candidate.user_id].raid_button.isEnabled())
+        self.page._landing_window_factory.assert_not_called()
 
     def test_cancel_success_clears_active_state(self) -> None:
         self._apply([_stream()])
@@ -514,6 +564,80 @@ class RaidPageTests(unittest.TestCase):
         self.assertIs(self.page._landing_window, created[0])
         self.assertIsNone(self.page._active_raid)
 
+    def test_live_eventsub_notification_reaches_raid_landing_activation(self) -> None:
+        self._apply([_stream()])
+        created = []
+
+        def factory(candidate, service, parent):
+            landing = _FakeLandingWindow(candidate, service, parent)
+            created.append(landing)
+            return landing
+
+        self.page._landing_window_factory = factory
+        self.page.open_raid_landing_checkbox.setChecked(True)
+        candidate = self.page._candidates[0]
+        self.page._set_active_raid(candidate, self.now)
+        socket = TwitchEventSubSocket(
+            on_welcome=lambda _session_id: None,
+            on_message=lambda _message: None,
+            on_notification=TwitchService._receive_notification,
+            on_diagnostic=lambda _diagnostic: None,
+            on_revocation=lambda _status: None,
+            on_error=lambda _message: None,
+            on_bus_event=TwitchService._publish_bus_event,
+        )
+        event = {
+            "from_broadcaster_user_id": "channel-1",
+            "from_broadcaster_user_login": "streamer",
+            "from_broadcaster_user_name": "Streamer",
+            "to_broadcaster_user_id": "viewer-1",
+            "to_broadcaster_user_login": "channel_login",
+            "to_broadcaster_user_name": "Channel Name",
+            "viewers": 42,
+        }
+        socket._receive_text(
+            json.dumps(
+                {
+                    "metadata": {
+                        "message_id": "raid-live-1",
+                        "message_type": "notification",
+                        "message_timestamp": "2026-09-25T19:01:30Z",
+                        "subscription_type": "channel.raid",
+                        "subscription_version": "1",
+                    },
+                    "payload": {
+                        "subscription": {"version": "1"},
+                        "event": event,
+                    },
+                }
+            )
+        )
+        self.application.processEvents()
+
+        self.assertEqual(len(created), 1)
+        self.assertIs(created[0].candidate, candidate)
+        self.assertIs(self.page._landing_window, created[0])
+        self.assertIsNone(self.page._raid_confirmation_target)
+        socket.deleteLater()
+
+    def test_landing_window_creation_failure_is_safely_logged(self) -> None:
+        self._apply([_stream()])
+        self.page._landing_window_factory = Mock(
+            side_effect=RuntimeError("window unavailable")
+        )
+        self.page.open_raid_landing_checkbox.setChecked(True)
+        self.page._set_active_raid(self.page._candidates[0], self.now)
+
+        with patch("products.hub.ui.raid_page.Logger.error") as log_error:
+            self.page._handle_raid_event(self._outgoing_raid_event())
+
+        self.assertIsNone(self.page._landing_window)
+        self.assertIsNone(self.page._raid_confirmation_target)
+        self.assertIn(
+            "window creation failed",
+            log_error.call_args.args[0],
+        )
+
     def test_unmatched_or_cancelled_raid_never_opens_landing(self) -> None:
         self._apply([_stream()])
         factory = Mock()
@@ -572,6 +696,8 @@ class RaidPageTests(unittest.TestCase):
 
         self.assertEqual(landing.shutdown_count, 1)
         self.assertIsNone(self.page._landing_window)
+        self.assertIsNone(self.page._raid_confirmation_target)
+        self.assertFalse(self.page.raid_confirmation_timer.isActive())
 
     def test_hide_show_keeps_active_state_and_shutdown_stops_timer(self) -> None:
         self._apply([_stream()])

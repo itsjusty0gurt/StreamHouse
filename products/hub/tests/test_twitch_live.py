@@ -386,12 +386,13 @@ class TwitchHelixClientTests(unittest.TestCase):
         client._create_subscription = Mock()
         token = TwitchToken("access", "refresh", 999, [])
 
-        client.create_activity_subscriptions(
-            "session-1",
-            "channel-1",
-            "moderator-1",
-            token,
-        )
+        with patch("products.hub.twitch.live.Logger.info") as log_info:
+            client.create_activity_subscriptions(
+                "session-1",
+                "channel-1",
+                "moderator-1",
+                token,
+            )
 
         raid_conditions = [
             call.args[2]
@@ -404,6 +405,10 @@ class TwitchHelixClientTests(unittest.TestCase):
                 {"to_broadcaster_user_id": "channel-1"},
                 {"from_broadcaster_user_id": "channel-1"},
             ],
+        )
+        log_info.assert_any_call(
+            "Raid Landing: outgoing channel.raid subscription active.",
+            source="TWITCH",
         )
 
     def test_ads_scope_enables_ad_break_begin_eventsub(self) -> None:
@@ -572,6 +577,48 @@ class TwitchEventSubSocketTests(unittest.TestCase):
             bus_events[0].transport,
             TwitchEventTransport.WEBSOCKET,
         )
+
+    def test_outgoing_raid_notification_preserves_authoritative_payload(self) -> None:
+        bus_events = []
+        event = {
+            "from_broadcaster_user_id": "channel-1",
+            "from_broadcaster_user_login": "streamer",
+            "from_broadcaster_user_name": "Streamer",
+            "to_broadcaster_user_id": "target-1",
+            "to_broadcaster_user_login": "target",
+            "to_broadcaster_user_name": "Target",
+            "viewers": 42,
+        }
+        socket = TwitchEventSubSocket(
+            on_welcome=lambda _session_id: None,
+            on_message=lambda _message: None,
+            on_notification=lambda _kind, _payload: None,
+            on_diagnostic=lambda _diagnostic: None,
+            on_revocation=lambda _status: None,
+            on_error=lambda _message: None,
+            on_bus_event=bus_events.append,
+        )
+
+        socket._receive_text(
+            json.dumps(
+                {
+                    "metadata": {
+                        "message_id": "raid-live-1",
+                        "message_type": "notification",
+                        "message_timestamp": "2026-09-25T19:01:30Z",
+                        "subscription_type": "channel.raid",
+                        "subscription_version": "1",
+                    },
+                    "payload": {
+                        "subscription": {"version": "1"},
+                        "event": event,
+                    },
+                }
+            )
+        )
+
+        self.assertEqual(len(bus_events), 1)
+        self.assertEqual(bus_events[0].payload["event"], event)
 
 
 if __name__ == "__main__":

@@ -1314,8 +1314,11 @@ countdown, disables other targets, and offers Helix cancellation. Matching
 outgoing `channel.raid` events clear the active state immediately. Twitch
 executes the raid automatically when the countdown expires; Hub exposes no
 forced-completion action. The candidate list, message, and active raid state are
-never persisted. An optional, default-off **Raid Landing** opens only after the
-matching outgoing raid EventSub confirmation. It is a local runtime-owned
+never persisted. Countdown expiry clears the visible countdown but retains a
+short-lived, runtime-only stable target-ID correlation until Twitch's outgoing
+confirmation arrives or that correlation expires. An optional, default-off
+**Raid Landing** opens only after the matching outgoing raid EventSub
+confirmation. It is a local runtime-owned
 companion window with target identity, a separate temporary EventSub chat
 socket, Always on Top, and Open on Twitch. The target chat is read-only in V1,
 never enters the main chat event path, and closes with the window. Main Hub chat

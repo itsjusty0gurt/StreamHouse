@@ -22,6 +22,7 @@ from products.hub.twitch.models import (
     TwitchMessage,
 )
 from products.hub.twitch.parser import TwitchMessageParser, TwitchPayloadError
+from shared.streamhouse_runtime.logger import Logger
 
 
 class TwitchHelixClient:
@@ -307,7 +308,24 @@ class TwitchHelixClient:
                     event_type, version, condition, session_id, token
                 )
             except (OSError, ValueError, URLError) as error:
-                warnings.append(f"{event_type}: {error}")
+                direction = ""
+                if event_type == "channel.raid":
+                    direction = (
+                        " (outgoing)"
+                        if "from_broadcaster_user_id" in condition
+                        else " (incoming)"
+                    )
+                warnings.append(f"{event_type}{direction}: {error}")
+            else:
+                if (
+                    event_type == "channel.raid"
+                    and condition.get("from_broadcaster_user_id")
+                    == broadcaster_user_id
+                ):
+                    Logger.info(
+                        "Raid Landing: outgoing channel.raid subscription active.",
+                        source="TWITCH",
+                    )
         return tuple(warnings)
 
     def _create_subscription(

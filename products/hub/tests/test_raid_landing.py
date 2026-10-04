@@ -7,7 +7,7 @@ from unittest.mock import Mock
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QObject, Qt, Signal
+from PySide6.QtCore import QCoreApplication, QEvent, QObject, Qt, Signal
 from PySide6.QtWidgets import QApplication
 
 from products.hub.twitch.models import TwitchMessage
@@ -82,9 +82,14 @@ class RaidLandingWindowTests(unittest.TestCase):
         )
 
     def tearDown(self) -> None:
-        self.window.shutdown()
-        self.window.close()
-        self.window.deleteLater()
+        window = self.window
+        self.window = None
+        window.shutdown()
+        window.close()
+        window.deleteLater()
+        self.sessions.clear()
+        del window
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
         self.application.processEvents()
 
     def test_identity_chat_and_local_video_wording(self) -> None:

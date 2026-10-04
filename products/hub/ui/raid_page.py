@@ -48,6 +48,7 @@ from shared.streamhouse_runtime.logger import Logger
 FOLLOWED_STREAMS_SCOPE = "user:read:follows"
 RAID_SCOPE = "channel:manage:raids"
 RAID_SECONDARY_TEXT_COLOR = "#adadb8"
+RAID_CONFIRMATION_GRACE_SECONDS = 120
 
 
 def format_raid_uptime(
@@ -393,6 +394,7 @@ class RaidPage(QWidget):
         self._visible_candidates: tuple[RaidCandidate, ...] = ()
         self._cards: dict[str, RaidChannelCard] = {}
         self._active_raid: ActiveRaid | None = None
+        self._raid_confirmation_target: RaidCandidate | None = None
         self._landing_window: RaidLandingWindow | None = None
         self._load_workers: set[RaidCandidatesWorker] = set()
         self._raid_workers: set[RaidActionWorker] = set()
@@ -408,6 +410,11 @@ class RaidPage(QWidget):
         self.countdown_timer = QTimer(self)
         self.countdown_timer.setInterval(250)
         self.countdown_timer.timeout.connect(self._update_countdown)
+        self.raid_confirmation_timer = QTimer(self)
+        self.raid_confirmation_timer.setSingleShot(True)
+        self.raid_confirmation_timer.timeout.connect(
+            self._expire_raid_confirmation
+        )
 
         root = QVBoxLayout(self)
         self.refresh_button = QPushButton("Refresh", self)
@@ -669,20 +676,26 @@ class RaidPage(QWidget):
         can_start = (
             self._can_raid()
             and self._active_raid is None
+            and self._raid_confirmation_target is None
             and not self._raid_workers
         )
-        active_target_id = (
-            self._active_raid.candidate.user_id
+        active_target = (
+            self._active_raid.candidate
             if self._active_raid is not None
-            else ""
+            else self._raid_confirmation_target
+        )
+        active_target_id = (
+            active_target.user_id if active_target is not None else ""
         )
         for user_id, card in self._cards.items():
             active = user_id == active_target_id
             card.set_active_target(active)
             card.raid_button.setEnabled(can_start)
             if active:
-                card.raid_button.setToolTip("This raid is currently pending.")
-            elif self._active_raid is not None:
+                card.raid_button.setToolTip(
+                    "This raid is pending Twitch confirmation."
+                )
+            elif active_target is not None:
                 card.raid_button.setToolTip(
                     "Cancel or complete the current raid before starting another."
                 )
@@ -854,6 +867,7 @@ class RaidPage(QWidget):
             self._shutting_down
             or self._raid_workers
             or self._active_raid is not None
+            or self._raid_confirmation_target is not None
         ):
             return
         answer = QMessageBox.question(
@@ -912,6 +926,8 @@ class RaidPage(QWidget):
             created_at=created_at,
             deadline=created_at + timedelta(seconds=RAID_COUNTDOWN_SECONDS),
         )
+        self._raid_confirmation_target = candidate
+        self.raid_confirmation_timer.stop()
         self.active_raid_label.setText(f"Raiding {candidate.display_name}")
         self.active_raid_frame.show()
         self.countdown_timer.start()
@@ -931,8 +947,41 @@ class RaidPage(QWidget):
         minutes, seconds = divmod(remaining, 60)
         self.countdown_label.setText(f"Starting in {minutes:02d}:{seconds:02d}")
         if remaining == 0:
-            target = active.candidate.display_name
-            self._clear_active_raid(f"Raid sent to {target}.")
+            self._finish_raid_countdown(active.candidate)
+
+    def _finish_raid_countdown(self, candidate: RaidCandidate) -> None:
+        self.countdown_timer.stop()
+        self._active_raid = None
+        self.active_raid_frame.hide()
+        self.cancel_raid_button.setEnabled(True)
+        self.cancel_raid_button.setText("Cancel Raid")
+        self.raid_confirmation_timer.start(
+            RAID_CONFIRMATION_GRACE_SECONDS * 1_000
+        )
+        self._update_card_raid_state()
+        self._set_status(
+            f"Raid countdown finished for {candidate.display_name}. "
+            "Waiting for Twitch confirmation."
+        )
+        Logger.info(
+            "Raid Landing: countdown finished; awaiting outgoing raid "
+            f"confirmation for target ID {candidate.user_id}.",
+            source="TWITCH",
+        )
+
+    @Slot()
+    def _expire_raid_confirmation(self) -> None:
+        self.raid_confirmation_timer.stop()
+        candidate = self._raid_confirmation_target
+        if candidate is None:
+            return
+        self._raid_confirmation_target = None
+        self._update_card_raid_state()
+        Logger.warning(
+            "Raid Landing: activation skipped because no outgoing raid "
+            f"confirmation arrived for target ID {candidate.user_id}.",
+            source="TWITCH",
+        )
 
     @Slot()
     def _cancel_active_raid(self) -> None:
@@ -972,7 +1021,9 @@ class RaidPage(QWidget):
 
     def _clear_active_raid(self, message: str = "") -> None:
         self.countdown_timer.stop()
+        self.raid_confirmation_timer.stop()
         self._active_raid = None
+        self._raid_confirmation_target = None
         self.active_raid_frame.hide()
         self.cancel_raid_button.setEnabled(True)
         self.cancel_raid_button.setText("Cancel Raid")
@@ -986,24 +1037,64 @@ class RaidPage(QWidget):
 
     @Slot(object)
     def _handle_raid_event(self, twitch_event: object) -> None:
-        active = self._active_raid
-        if active is None or not isinstance(twitch_event, TwitchEvent):
+        if not isinstance(twitch_event, TwitchEvent):
             return
         event = twitch_event.payload.get("event", {})
         if not isinstance(event, dict):
-            return
-        from_id = str(event.get("from_broadcaster_user_id", ""))
-        to_id = str(event.get("to_broadcaster_user_id", ""))
-        if (
-            from_id == self.service.broadcaster_user_id
-            and to_id == active.candidate.user_id
-        ):
-            candidate = active.candidate
-            self._clear_active_raid(
-                f"Raid sent to {candidate.display_name}."
+            Logger.warning(
+                "Raid Landing: activation skipped because channel.raid "
+                "did not contain an event object.",
+                source="TWITCH",
             )
-            if self.open_raid_landing_checkbox.isChecked():
-                self._open_raid_landing(candidate)
+            return
+        from_id = str(event.get("from_broadcaster_user_id", "")).strip()
+        to_id = str(event.get("to_broadcaster_user_id", "")).strip()
+        broadcaster_id = str(self.service.broadcaster_user_id).strip()
+        if from_id != broadcaster_id:
+            return
+        candidate = (
+            self._active_raid.candidate
+            if self._active_raid is not None
+            else self._raid_confirmation_target
+        )
+        active_target_id = (
+            candidate.user_id if candidate is not None else "none"
+        )
+        Logger.info(
+            "Raid Landing: outgoing raid confirmation received for target ID "
+            f"{to_id or 'missing'}; active target ID {active_target_id}.",
+            source="TWITCH",
+        )
+        if candidate is None:
+            Logger.warning(
+                "Raid Landing: activation skipped because there is no active "
+                "raid target to correlate.",
+                source="TWITCH",
+            )
+            return
+        if to_id != candidate.user_id:
+            Logger.warning(
+                "Raid Landing: activation skipped because confirmation target "
+                f"ID {to_id or 'missing'} did not match active target ID "
+                f"{candidate.user_id}.",
+                source="TWITCH",
+            )
+            return
+        landing_enabled = self.open_raid_landing_checkbox.isChecked()
+        Logger.info(
+            "Raid Landing: outgoing raid target matched; landing toggle is "
+            f"{'enabled' if landing_enabled else 'disabled'}.",
+            source="TWITCH",
+        )
+        self._clear_active_raid(f"Raid sent to {candidate.display_name}.")
+        if landing_enabled:
+            self._open_raid_landing(candidate)
+        else:
+            Logger.info(
+                "Raid Landing: activation skipped because the landing toggle "
+                "is disabled.",
+                source="TWITCH",
+            )
 
     def _open_raid_landing(self, candidate: RaidCandidate) -> None:
         if self._shutting_down:
@@ -1014,17 +1105,32 @@ class RaidPage(QWidget):
             previous.shutdown()
             previous.close()
             previous.deleteLater()
-        landing = self._landing_window_factory(
-            candidate,
-            self.service,
-            self.window(),
+        Logger.info(
+            f"Raid Landing: opening window for target ID {candidate.user_id}.",
+            source="TWITCH",
         )
+        try:
+            landing = self._landing_window_factory(
+                candidate,
+                self.service,
+                self.window(),
+            )
+        except Exception as error:
+            Logger.error(
+                "Raid Landing: window creation failed for target ID "
+                f"{candidate.user_id}: {error}",
+                source="TWITCH",
+            )
+            return
         self._landing_window = landing
         landing.dismissed.connect(self._landing_dismissed)
         landing.show()
         landing.raise_()
         landing.activateWindow()
-        Logger.info("Raid Landing opened.", source="TWITCH")
+        Logger.info(
+            f"Raid Landing: window opened for target ID {candidate.user_id}.",
+            source="TWITCH",
+        )
 
     @Slot(object)
     def _landing_dismissed(self, landing: object) -> None:
@@ -1067,7 +1173,9 @@ class RaidPage(QWidget):
             self._raid_event_callback,
         )
         self.countdown_timer.stop()
+        self.raid_confirmation_timer.stop()
         self._active_raid = None
+        self._raid_confirmation_target = None
         landing = self._landing_window
         self._landing_window = None
         if landing is not None:

@@ -311,7 +311,7 @@ class RaidLandingWindow(QWidget):
             except (RuntimeError, TypeError):
                 pass
             session.close()
-        self.chat_view.clear()
+        self.chat_view.shutdown()
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802
         self.shutdown()
