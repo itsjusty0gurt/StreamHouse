@@ -713,6 +713,11 @@ class TaskEditorTests(unittest.TestCase):
 
         self.assertIsInstance(fields["wait_for_completion"], QCheckBox)
         self.assertIsNotNone(dialog.findChild(QLabel, "pythonScriptWarning"))
+        helper_text = dialog.findChild(QLabel, "pythonScriptHelpers").text()
+        self.assertIn('hub.set_output("song", value)', helper_text)
+        self.assertIn("{automation.song}", helper_text)
+        self.assertIn("hub.get_variable", helper_text)
+        self.assertIn("hub.log", helper_text)
         self.assertTrue(fields["timeout_seconds"].isEnabled())
         fields["wait_for_completion"].setChecked(False)
         self.assertFalse(fields["timeout_seconds"].isEnabled())

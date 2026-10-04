@@ -850,6 +850,20 @@ def _example_entries() -> tuple[WikiEntry, ...]:
             "Use Run Routine to reuse another routine while retaining the current root execution context.",
             ("nested routine", "Run Routine"),
         ),
+        (
+            "python-now-playing",
+            "Publish Python results to later tasks",
+            "In Run Python Script, call hub.set_output(\"artist\", artist) and hub.set_output(\"song\", song). A later OBS text task can use {automation.artist} - {automation.song}; no intermediate file or persistent Variable is needed.",
+            (
+                "Python Script Context",
+                "hub.set_output",
+                "hub.get_variable",
+                "hub.log",
+                "Now Playing",
+                "automation.artist",
+                "automation.song",
+            ),
+        ),
     )
     return tuple(
         WikiEntry(

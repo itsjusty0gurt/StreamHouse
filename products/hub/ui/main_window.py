@@ -571,7 +571,7 @@ class MainWindow(QMainWindow):
         self.task_registry.register(OpenTargetTask())
         self.task_registry.register(DesktopNotificationTask())
         self.task_registry.register(PlayAudioTask())
-        self.task_registry.register(PythonScriptTask())
+        self.task_registry.register(PythonScriptTask(self.variable_registry))
         register_variable_tasks(self.task_registry, self.custom_variable_store)
         register_control_tasks(
             self.task_registry,

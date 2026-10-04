@@ -1561,6 +1561,24 @@ class TaskEditorDialog(QDialog):
                 "border-radius:4px; color:#f2d675; padding:8px;"
             )
             layout.addWidget(warning)
+            helpers = QLabel(
+                "Available while Wait for the script to finish is enabled:\n"
+                "hub.set_output(\"song\", value)  →  {automation.song}\n"
+                "hub.get_variable(\"user.display_name\")\n"
+                "hub.log(\"Script completed\")\n"
+                "Outputs are available to later tasks and nested routines in "
+                "this execution only."
+            )
+            helpers.setObjectName("pythonScriptHelpers")
+            helpers.setWordWrap(True)
+            helpers.setTextInteractionFlags(
+                Qt.TextInteractionFlag.TextSelectableByMouse
+            )
+            helpers.setStyleSheet(
+                "background-color:palette(base); border:1px solid palette(mid); "
+                "border-radius:4px; padding:8px;"
+            )
+            layout.addWidget(helpers)
         self._build_variable_help(layout)
 
         if self.TEMPLATED_FIELDS.get(self.task_type):

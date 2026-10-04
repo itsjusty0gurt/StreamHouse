@@ -25,12 +25,24 @@ from PySide6.QtWidgets import QApplication, QStyle, QSystemTrayIcon
 
 from products.hub.automation.cancellation import current_cancellation
 from products.hub.automation.models import TaskDefinition, TaskExecutionResult, TriggerEvent
-from products.hub.automation.variable_registry import render_placeholders
+from products.hub.automation.script_context import (
+    ScriptBridgePayload,
+    parse_script_bridge,
+    script_bridge_command,
+    script_bridge_environment,
+)
+from products.hub.automation.variable_outputs import automation_output_name
+from products.hub.automation.variable_registry import (
+    VariableRegistry,
+    render_placeholders,
+    validate_variable_name,
+)
 from products.hub.automation.variable_tasks import VARIABLE_TASK_LABELS
 from products.hub.automation.logic_tasks import LOGIC_TASK_LABELS
 from products.hub.automation.file_tasks import FILE_TASK_LABELS
 from products.hub.automation.control_tasks import CONTROL_TASK_LABELS
 from products.hub.automation.value_tasks import VALUE_TASK_LABELS
+from shared.streamhouse_runtime.logger import Logger
 
 
 CORE_TASK_LABELS = {
@@ -583,27 +595,69 @@ class PythonScriptTask:
     task_type = "core.run_python_script"
     MAX_OUTPUT_LENGTH = 8_000
 
+    def __init__(
+        self,
+        variable_registry: VariableRegistry | None = None,
+        log_writer: Callable[[str], None] | None = None,
+    ) -> None:
+        self._variable_registry = variable_registry
+        self._log_writer = log_writer or self._log_script_message
+
     def execute(self, task: TaskDefinition, trigger: TriggerEvent) -> TaskExecutionResult:
         try:
             script = self._script_path(task.config, trigger.context)
-            command = [
-                *self._interpreter_command(task.config),
-                str(script),
-                *self._arguments(task.config, trigger.context),
-            ]
+            interpreter = self._interpreter_command(task.config)
+            arguments = self._arguments(task.config, trigger.context)
             working_directory = self._working_directory(
                 task.config, trigger.context, script
             )
             environment = self._environment(trigger)
             if not bool(task.config.get("wait_for_completion", True)):
+                command = [*interpreter, str(script), *arguments]
                 return self._start_background(
                     task, command, working_directory, environment
                 )
+            token, bridge_environment = script_bridge_environment(
+                self._script_variables(trigger.context)
+            )
+            environment.update(bridge_environment)
+            command = script_bridge_command(
+                interpreter,
+                str(script),
+                arguments,
+            )
             return self._run_and_wait(
-                task, command, working_directory, environment
+                task,
+                command,
+                working_directory,
+                environment,
+                token,
+                trigger,
             )
         except (OSError, TypeError, ValueError) as error:
             return _result(task, False, str(error))
+
+    def _script_variables(
+        self,
+        context: Mapping[str, object],
+    ) -> dict[str, str]:
+        values: dict[str, str] = {}
+        if self._variable_registry is not None:
+            for definition in self._variable_registry.definitions():
+                snapshot = self._variable_registry.resolve(
+                    definition.name,
+                    context,
+                )
+                if snapshot is not None and snapshot.available:
+                    values[definition.name] = snapshot.display_value
+        for raw_name, value in context.items():
+            try:
+                name = validate_variable_name(str(raw_name))
+            except ValueError:
+                continue
+            if self._variable_registry is None or name.startswith("automation."):
+                values[name] = VariableRegistry.display_value(value)
+        return values
 
     @classmethod
     def _script_path(
@@ -694,13 +748,14 @@ class PythonScriptTask:
                 environment[f"STREAMHOUSE_{safe_key}"] = value
         return environment
 
-    @classmethod
     def _run_and_wait(
-        cls,
+        self,
         task: TaskDefinition,
         command: list[str],
         working_directory: Path,
         environment: Mapping[str, str],
+        bridge_token: str,
+        trigger: TriggerEvent,
     ) -> TaskExecutionResult:
         process = QProcess()
         process.setProgram(command[0])
@@ -712,9 +767,13 @@ class PythonScriptTask:
         process.setProcessEnvironment(process_environment)
         capture_output = bool(task.config.get("capture_output", True))
         if capture_output:
-            process.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
+            process.setProcessChannelMode(
+                QProcess.ProcessChannelMode.SeparateChannels
+            )
         else:
-            process.setProcessChannelMode(QProcess.ProcessChannelMode.ForwardedChannels)
+            process.setProcessChannelMode(
+                QProcess.ProcessChannelMode.ForwardedOutputChannel
+            )
 
         process.start()
         if not process.waitForStarted(5_000):
@@ -749,17 +808,41 @@ class PythonScriptTask:
             process.kill()
             process.waitForFinished(1_000)
 
-        output = ""
-        if capture_output:
-            output = bytes(process.readAllStandardOutput()).decode(
-                "utf-8", errors="replace"
-            ).strip()
+        stdout = bytes(process.readAllStandardOutput()).decode(
+            "utf-8", errors="replace"
+        ).strip()
+        stderr = bytes(process.readAllStandardError()).decode(
+            "utf-8", errors="replace"
+        ).strip()
+        try:
+            bridge, ordinary_stderr = parse_script_bridge(
+                stderr,
+                bridge_token,
+            )
+        except ValueError as error:
+            return _result(task, False, str(error))
+        output = "\n".join(
+            value for value in (stdout, ordinary_stderr) if value
+        )
+        if not capture_output and ordinary_stderr:
+            print(ordinary_stderr, file=sys.stderr)
         stop_on_failure = bool(task.config.get("stop_on_failure", True))
         if timed_out:
             detail = f"Python script timed out after {timeout_seconds:g} seconds."
-            return _result(task, not stop_on_failure, cls._with_output(detail, output))
+            return _result(
+                task,
+                not stop_on_failure,
+                self._with_output(detail, output if capture_output else ""),
+            )
 
         exit_code = process.exitCode()
+        bridge_error = self._apply_bridge(
+            bridge,
+            trigger,
+            publish_outputs=exit_code == 0,
+        )
+        if bridge_error:
+            return _result(task, False, bridge_error)
         succeeded = exit_code == 0 or not stop_on_failure
         detail = (
             "Python script completed successfully."
@@ -768,7 +851,51 @@ class PythonScriptTask:
         )
         if exit_code != 0 and not stop_on_failure:
             detail += " The routine will continue."
-        return _result(task, succeeded, cls._with_output(detail, output))
+        return _result(
+            task,
+            succeeded,
+            self._with_output(detail, output if capture_output else ""),
+        )
+
+    def _apply_bridge(
+        self,
+        bridge: ScriptBridgePayload | None,
+        trigger: TriggerEvent,
+        *,
+        publish_outputs: bool,
+    ) -> str:
+        if bridge is None:
+            return "Python script did not return its execution context."
+        validated_outputs: list[tuple[str, str]] = []
+        try:
+            for name, value in bridge.outputs.items():
+                if str(name).strip().casefold().startswith("automation."):
+                    raise ValueError(
+                        f"Invalid automation output name: {name}"
+                    )
+                validated_outputs.append(
+                    (automation_output_name(name), value)
+                )
+        except ValueError as error:
+            return str(error)
+        for message in bridge.logs:
+            try:
+                self._log_writer(message)
+            except Exception:
+                Logger.warning(
+                    "A Python script log message could not be written.",
+                    source="SCRIPT",
+                )
+        if publish_outputs:
+            if not isinstance(trigger.context, dict):
+                return "Script execution context is no longer active"
+            for name, value in validated_outputs:
+                trigger.context[name] = VariableRegistry.display_value(value)
+        return ""
+
+    @staticmethod
+    def _log_script_message(message: str) -> None:
+        Logger.info(str(message), source="SCRIPT")
 
     @staticmethod
     def _start_background(

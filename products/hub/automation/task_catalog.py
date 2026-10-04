@@ -117,8 +117,8 @@ _SHORT_DESCRIPTIONS = {
         "text supports Variables."
     ),
     "core.run_python_script": (
-        "Runs a trusted local Python script in a separate process. Use only scripts "
-        "you understand and trust."
+        "Runs a trusted local Python script in a separate process with a small "
+        "execution-scoped Hub context."
     ),
     "core.play_audio": (
         "Plays a local audio file through the selected output device."
@@ -326,8 +326,10 @@ _HELP_TEXT = {
         "time limits prevent an accidental endless loop."
     ),
     "core.run_python_script": (
-        "Starts a trusted local Python script as a separate process. It can wait for "
-        "completion and record captured output in Run History."
+        "Starts a trusted local Python script as a separate process. When Hub waits "
+        "for completion, the script receives hub.set_output(), hub.get_variable(), "
+        "and hub.log(). Outputs use automation.* for later tasks and nested routines "
+        "in the same root execution."
     ),
     "core.select_text": (
         "Chooses a text template by matching an input value, then stores the rendered "
@@ -425,7 +427,7 @@ _INPUT_HELP: dict[str, dict[str, str]] = {
     },
     "core.run_python_script": {
         "python_executable": "Optional Python program; blank uses Hub's Python when available.",
-        "wait_for_completion": "Waits for the process and uses its exit status as the task result.",
+        "wait_for_completion": "Waits for the process, enables the hub helpers, and uses its exit status as the task result.",
         "capture_output": "Includes the script's output in Run History.",
     },
     "core.file_write": {
@@ -490,7 +492,11 @@ _NOTES = {
         "Only the selected branch runs, so outputs from the other branch do not exist.",
     ),
     "core.logic_while": ("The repeated routine runs inline and shares the current routine context.",),
-    "core.run_python_script": ("Only run scripts you understand and trust.",),
+    "core.run_python_script": (
+        "Only run scripts you understand and trust.",
+        "The hub helpers require Wait for the script to finish; background scripts do not retain an automation execution context.",
+        "Dynamic output names appear only after the script publishes them and are not predeclared in the Variable Picker.",
+    ),
     "obs.set_scene_item_enabled": ("Prefer Show or Hide when the final state matters.",),
     "obs.set_input_mute": ("Prefer Mute or Unmute when the final state matters.",),
     "obs.set_source_filter_state": ("Prefer Enable or Disable when the final state matters.",),
@@ -512,6 +518,10 @@ _EXAMPLES = {
     "core.wait": ("Show overlay → Wait 8 seconds → Hide overlay.",),
     "core.random_delay": ("Wait between 2 and 5 seconds before sending a response.",),
     "core.show_notification": ("Show “Raid incoming” when a raid trigger runs.",),
+    "core.run_python_script": (
+        "hub.set_output(\"song\", song) creates {automation.song} for later tasks.",
+        "viewer = hub.get_variable(\"user.display_name\"); hub.log(\"Script completed\")",
+    ),
     "core.create_routine_variable": ("Create automation.winner, then use {automation.winner} in later tasks.",),
     "core.run_routine": ("Run “Play raid alert”, then continue this routine.",),
     "core.end_routine": (

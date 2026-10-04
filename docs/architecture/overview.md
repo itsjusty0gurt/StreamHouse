@@ -767,6 +767,17 @@ earlier children are visible to later children. After the If, configured outputs
 from either branch are discoverable because either may be selected at runtime;
 only outputs actually produced by the selected branch receive a runtime value.
 
+The waited **Run Python Script** task exposes a per-process `hub` adapter with
+only `set_output()`, `get_variable()`, and `log()`. The adapter receives an
+allowlisted snapshot resolved through `VariableRegistry`, returns validated
+`automation.*` values into the same mutable root-execution context, and routes
+script log requests through the centralized redacting logger. It is not a
+service registry or automation engine: scripts receive no stores, credentials,
+Qt objects, or action services. Each invocation has a unique protocol token and
+closes its context when the child process finishes; background scripts do not
+retain this execution-scoped bridge. Dynamic script output names are runtime
+values and are not falsely predeclared in the global Variables catalog.
+
 `ChannelInformationVariableProvider` reads the same thread-safe configuration
 store used by **Your Channel > Channel Information**. All eight `socials.*`
 definitions, `channel.schedule`, `channel.rules`, and `serverinfo.details`

@@ -131,6 +131,26 @@ def test_shoutout_task_reference_is_derived_from_task_metadata() -> None:
     assert "twitch controls shoutout cooldowns" in text
 
 
+def test_python_script_context_helpers_and_now_playing_example_are_documented() -> None:
+    tasks, variables = _reference_sources()
+    entries = build_wiki_entries(tasks, variables)
+    task = next(
+        item for item in entries if item.entry_id == "task:core.run_python_script"
+    )
+    example = next(
+        item for item in entries if item.entry_id == "example:python-now-playing"
+    )
+
+    task_text = task.search_text()
+    example_text = example.search_text()
+    assert "hub.set_output" in task_text
+    assert "hub.get_variable" in task_text
+    assert "hub.log" in task_text
+    assert "same root execution" in task_text
+    assert "{automation.artist} - {automation.song}" in example_text
+    assert "no intermediate file" in example_text
+
+
 def test_raid_page_reference_documents_runtime_finder_and_permissions() -> None:
     tasks, variables = _reference_sources()
     entry = next(
