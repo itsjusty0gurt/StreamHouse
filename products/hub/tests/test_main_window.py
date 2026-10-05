@@ -74,6 +74,7 @@ from products.hub.twitch.models import (
     TwitchReply,
 )
 from products.hub.ui.main_window import MainWindow
+from products.hub.integrations.music_player import MusicConnectionState
 from products.hub.ui.automation_page import (
     RunHistoryDetailsDialog,
     TaskEditorDialog,
@@ -883,12 +884,16 @@ class MainWindowTests(unittest.TestCase):
         add_menu = self.window.automation_page._add_task_submenu(menu)
         self.assertEqual(
             [action.text() for action in add_menu.actions()],
-            ["Core", "Counters", "OBS", "Twitch"],
+            ["Core", "Counters", "Music", "OBS", "Twitch"],
         )
-        core_menu = add_menu.actions()[0].menu()
-        counters_menu = add_menu.actions()[1].menu()
-        obs_menu = add_menu.actions()[2].menu()
-        twitch_menu = add_menu.actions()[3].menu()
+        service_menus = {
+            action.text(): action.menu() for action in add_menu.actions()
+        }
+        core_menu = service_menus["Core"]
+        counters_menu = service_menus["Counters"]
+        music_menu = service_menus["Music"]
+        obs_menu = service_menus["OBS"]
+        twitch_menu = service_menus["Twitch"]
         self.assertIn("Launch application", [action.text() for action in core_menu.actions()])
         scripts_menu = next(
             action.menu()
@@ -907,6 +912,18 @@ class MainWindowTests(unittest.TestCase):
         twitch_tasks = [action.text() for action in twitch_menu.actions()]
         self.assertIn("Send chat message", twitch_tasks)
         self.assertIn("Run commercial", twitch_tasks)
+        self.assertEqual(
+            [action.text() for action in music_menu.actions()],
+            [
+                "Play",
+                "Pause",
+                "Play/Pause",
+                "Next Track",
+                "Previous Track",
+                "Set Volume",
+                "Set Muted",
+            ],
+        )
         commercial_menu = next(
             action.menu()
             for action in twitch_menu.actions()
@@ -937,7 +954,11 @@ class MainWindowTests(unittest.TestCase):
         page.select_routine(routine.routine_id)
         menu = QMenu()
         add_menu = page._add_task_submenu(menu)
-        twitch_menu = add_menu.actions()[3].menu()
+        twitch_menu = next(
+            action.menu()
+            for action in add_menu.actions()
+            if action.text() == "Twitch"
+        )
         commercial_menu = next(
             action.menu()
             for action in twitch_menu.actions()
@@ -4074,6 +4095,48 @@ class MainWindowTests(unittest.TestCase):
         self.window.obs_config_store.save.assert_called_once()
         config, _password = self.window.obs_config_store.save.call_args.args
         self.assertEqual(config.host, "192.168.1.50")
+
+    def test_optional_music_player_connection_is_discovered_and_user_controlled(self) -> None:
+        layout = self.window.connections_page.layout()
+        self.assertLess(
+            layout.indexOf(self.window.obs_connection_group),
+            layout.indexOf(self.window.music_player_connection_group),
+        )
+        self.assertFalse(hasattr(self.window, "music_player_port_spin"))
+        self.assertFalse(hasattr(self.window, "music_player_token_edit"))
+        self.assertEqual(
+            self.window.music_player_endpoint_label.text(),
+            "Not discovered",
+        )
+        self.window.music_player_config_store.save = Mock()
+        self.window.music_player_service.configure = Mock()
+        self.window.music_player_service.connect_to_player = Mock(return_value=True)
+        self.window.music_player_auto_connect_check.setChecked(True)
+        self.window.music_player_config_store.save.reset_mock()
+        self.window.music_player_service.configure.reset_mock()
+        self.window.music_player_service.connect_to_player.reset_mock()
+
+        self.window._refresh_and_connect_music_player()
+
+        (config,) = self.window.music_player_config_store.save.call_args.args
+        self.assertTrue(config.auto_connect)
+        self.window.music_player_service.configure.assert_called_once_with(config)
+        self.window.music_player_service.connect_to_player.assert_called_once_with()
+
+        self.window.music_player_service._connection_info = Mock(
+            endpoint="127.0.0.1:54321"
+        )
+        self.window._handle_music_player_status_changed(
+            MusicConnectionState.CONNECTED,
+            "Connected",
+        )
+        self.assertEqual(self.window.music_player_status_label.text(), "Connected")
+        self.assertEqual(
+            self.window.music_player_endpoint_label.text(),
+            "127.0.0.1:54321",
+        )
+        self.assertFalse(self.window.music_player_connect_button.isEnabled())
+        self.assertTrue(self.window.music_player_disconnect_button.isEnabled())
 
     def test_obs_default_audio_input_saves_and_resolves_muted_variable(self) -> None:
         self.window.obs_config_store.save = Mock()

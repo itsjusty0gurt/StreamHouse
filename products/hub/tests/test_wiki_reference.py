@@ -1,4 +1,5 @@
 import os
+from unittest.mock import Mock
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -16,6 +17,7 @@ from products.hub.automation.tasks import TaskRegistry
 from products.hub.automation.variable_providers import context_provider
 from products.hub.automation.variable_registry import VariableRegistry
 from products.hub.core.wiki_reference import WIKI_CATEGORIES, build_wiki_entries
+from products.hub.integrations.music_player import MusicVariableProvider
 from products.hub.twitch.slash_commands import TWITCH_SLASH_COMMANDS
 from products.hub.ui.wiki_page import WikiPage
 
@@ -24,6 +26,9 @@ def _reference_sources() -> tuple[TaskRegistry, VariableRegistry]:
     tasks = TaskRegistry(BUILTIN_TASK_METADATA)
     variables = VariableRegistry()
     variables.register(context_provider())
+    variables.register(
+        MusicVariableProvider(Mock(connected=False, playback_state=None))
+    )
     variables.register_alias("legacy.command_data", "command.data")
     return tasks, variables
 
@@ -44,6 +49,7 @@ def test_catalog_derives_tasks_triggers_variables_and_commands() -> None:
     assert "variable:command.data" in ids
     assert "variable:legacy.command_data" not in ids
     assert "variables:automation-outputs" in ids
+    assert "variable:music.title" in ids
     assert "commands:overview" in ids
     assert "integration:touch-portal" in ids
 
@@ -292,3 +298,34 @@ def test_touch_portal_reference_documents_the_narrow_local_boundary() -> None:
     assert "experimental" in text
     assert "does not fabricate" in text
     assert "command.*" in text
+
+
+def test_music_player_reference_uses_current_variables_and_tasks() -> None:
+    tasks, variables = _reference_sources()
+    entries = build_wiki_entries(tasks, variables)
+    entry = next(
+        item for item in entries if item.entry_id == "integration:music-player"
+    )
+    text = entry.search_text()
+
+    assert "127.0.0.1" in text
+    assert "protocol 1" in text
+    assert "no streamhouse cloud" in text
+    assert "automatically discovers" in text
+    assert "no manual port or token setup" in text
+    assert "music — next track" in text
+    assert "{music.artist} - {music.title}" in text
+    assert "unavailable" in text
+    assert {
+        metadata.task_type
+        for metadata in tasks.visible_metadata()
+        if metadata.category == "Music"
+    } == {
+        "music.play",
+        "music.pause",
+        "music.play_pause",
+        "music.next",
+        "music.previous",
+        "music.set_volume",
+        "music.set_muted",
+    }

@@ -37,6 +37,7 @@ RESERVED_NAMESPACES = frozenset(
         "channel_points",
         "subscription",
         "raid",
+        "music",
     }
 )
 

@@ -78,6 +78,7 @@ from products.hub.automation.logic_tasks import (
     UNARY_OPERATORS,
     comparison_choices_for_type,
 )
+from products.hub.automation.music_tasks import MUSIC_TASK_LABELS
 from products.hub.automation.file_tasks import FILE_TASK_TYPES
 from products.hub.automation.queues import (
     AutomationQueueDefinition,
@@ -1152,8 +1153,20 @@ class TaskEditorDialog(QDialog):
         **CORE_TASK_LABELS,
         **OBS_TASK_LABELS,
         **COUNTER_TASK_LABELS,
+        **MUSIC_TASK_LABELS,
     }
     SCHEMAS: dict[str, tuple[dict[str, object], ...]] = {
+        "music.play": (),
+        "music.pause": (),
+        "music.play_pause": (),
+        "music.next": (),
+        "music.previous": (),
+        "music.set_volume": (
+            {"key": "volume", "label": "Volume", "kind": "text", "default": "100", "required": True, "placeholder": "0–100 or {custom.music_volume}"},
+        ),
+        "music.set_muted": (
+            {"key": "muted", "label": "Muted", "kind": "choice", "default": True, "choices": (("Yes", True), ("No", False))},
+        ),
         "twitch.send_chat_message": (
             {"key": "message", "label": "Message", "kind": "multiline", "default": "", "required": True, "placeholder": "Hello {user.display_name}!"},
             {"key": "as_bot", "label": "", "kind": "bool", "default": True, "text": "Send through the configured bot account"},
@@ -5381,6 +5394,7 @@ class AutomationPage(QWidget):
         services = (
             ("Core", CORE_TASK_LABELS),
             ("Counters", COUNTER_TASK_LABELS),
+            ("Music", MUSIC_TASK_LABELS),
             ("OBS", OBS_TASK_LABELS),
             (
                 "Twitch",

@@ -62,6 +62,18 @@ Hub remains standalone and local wherever practical. Normal Hub features do not
 require Streamhouse-hosted cloud infrastructure; the public Twitch Soundboard
 relay is the intentional remote-service exception.
 
+The optional local Music Player integration is a protocol client, not a bundled
+player. The independent player owns playback, metadata, its authentication
+token, and command execution. Hub connects only to `127.0.0.1`, negotiates
+protocol v1, and projects authoritative full state snapshots into provider-backed
+`music.*` Variables plus completion-aware Music tasks. The player owns
+`%LOCALAPPDATA%\YouTubeMusicDesktop\YouTubeMusicDesktop\connection.json` and
+`api_token`; Hub rereads them for each connection attempt, never scans ports,
+and stores only the machine-local auto-connect preference in QSettings. Neither
+music state nor the player-owned token enters Backup, diagnostics, or Hub
+settings. Hub has no YouTube DOM, login, or backend API knowledge and requires
+no cloud service for this integration.
+
 Hub Alpha contains no inference engine, does not launch Streamhouse AI or a
 model provider, and never generates a local Sally fallback reply. Chat addressed
 to Sally is silent when the external AI lifecycle is not READY; a failed AI
@@ -79,6 +91,7 @@ flowchart LR
     Automation --> Tasks["Task providers"]
     Hub <--> LocalPreview["Local soundboard preview"]
     TouchPortal["Touch Portal plugin"] -->|"versioned loopback routine API"| Hub
+    MusicPlayer["Standalone Music Player"] -->|"versioned localhost WebSocket"| Hub
     Extension["Twitch Extension"] --> Relay["Hosted relay"]
     Hub -->|"outbound HTTPS polling"| Relay
     StreamhouseAI["Streamhouse AI"] -->|"Windows presence message"| Hub

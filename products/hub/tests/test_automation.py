@@ -17,6 +17,7 @@ from products.hub.automation.service import AutomationService
 from products.hub.automation.task_catalog import BUILTIN_TASK_METADATA
 from products.hub.automation.tasks import TaskMetadata, TaskRegistry
 from products.hub.automation.core_tasks import CORE_TASK_LABELS
+from products.hub.automation.music_tasks import MUSIC_TASK_LABELS
 from products.hub.counters.tasks import COUNTER_TASK_LABELS
 from products.hub.obs_service.tasks import OBS_TASK_LABELS
 from products.hub.core.events import Events
@@ -131,6 +132,7 @@ class AutomationServiceTests(unittest.TestCase):
             COUNTER_TASK_LABELS,
             CORE_TASK_LABELS,
             OBS_TASK_LABELS,
+            MUSIC_TASK_LABELS,
         )
 
         self.assertEqual(
@@ -139,7 +141,7 @@ class AutomationServiceTests(unittest.TestCase):
         )
         self.assertEqual(registry.missing_descriptions(), ())
         self.assertEqual(registry.missing_help(), ())
-        self.assertEqual(len(registry.visible_metadata()), 69)
+        self.assertEqual(len(registry.visible_metadata()), len(expected))
 
         shoutout = registry.metadata("twitch.shoutout_user")
         assert shoutout is not None

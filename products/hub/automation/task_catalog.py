@@ -13,6 +13,7 @@ from products.hub.automation.logic_tasks import (
     LOGIC_TASK_LABELS,
     UNARY_OPERATORS,
 )
+from products.hub.automation.music_tasks import MUSIC_TASK_LABELS
 from products.hub.automation.tasks import (
     TaskCardSummaryFormatter,
     TaskInputHelp,
@@ -26,6 +27,13 @@ from products.hub.twitch.tasks import TWITCH_TASK_LABELS
 
 
 _SHORT_DESCRIPTIONS = {
+    "music.play": "Starts playback in the connected local Music Player.",
+    "music.pause": "Pauses playback in the connected local Music Player.",
+    "music.play_pause": "Toggles playback in the connected local Music Player.",
+    "music.next": "Skips to the next track in the connected local Music Player.",
+    "music.previous": "Returns to the previous track in the connected local Music Player.",
+    "music.set_volume": "Sets local Music Player volume from 0 to 100; Variables are supported.",
+    "music.set_muted": "Mutes or unmutes the connected local Music Player.",
     "twitch.send_chat_message": (
         "Sends a message to Twitch chat using the configured chat account. "
         "The message supports Variables."
@@ -249,6 +257,7 @@ _SHORT_DESCRIPTIONS = {
 
 
 VARIABLE_INPUT_FIELDS: dict[str, tuple[str, ...]] = {
+    "music.set_volume": ("volume",),
     "core.wait": ("duration",),
     "twitch.send_chat_message": ("message",),
     "twitch.send_pinned_message": ("message",),
@@ -285,6 +294,13 @@ VARIABLE_INPUT_FIELDS: dict[str, tuple[str, ...]] = {
 
 
 _HELP_TEXT = {
+    "music.play": "Sends Play through the negotiated local Music Player protocol and waits for its command result.",
+    "music.pause": "Sends Pause through the negotiated local Music Player protocol and waits for its command result.",
+    "music.play_pause": "Sends Play/Pause through the negotiated local Music Player protocol and waits for its command result.",
+    "music.next": "Requests the next track and waits for the Music Player to accept or reject the command.",
+    "music.previous": "Requests the previous track and waits for the Music Player to accept or reject the command.",
+    "music.set_volume": "Resolves the configured value when the routine runs, validates 0–100, then waits for the Music Player command result.",
+    "music.set_muted": "Sends an explicit muted or unmuted value and waits for the Music Player command result.",
     "twitch.resolve_user": (
         "Looks up one Twitch account and makes its stable ID, login, display name, "
         "creation date, and lookup status available to later tasks."
@@ -347,6 +363,12 @@ _HELP_TEXT = {
 
 
 _INPUT_HELP: dict[str, dict[str, str]] = {
+    "music.set_volume": {
+        "volume": "A whole number from 0 to 100, or a Variable that resolves to one.",
+    },
+    "music.set_muted": {
+        "muted": "Choose whether the player should be muted.",
+    },
     "twitch.send_chat_message": {
         "message": "The chat message to send.",
         "as_bot": "Uses the configured bot account instead of the broadcaster account.",
@@ -541,6 +563,8 @@ _EXAMPLES = {
 
 
 def _requirements(task_type: str) -> tuple[str, ...]:
+    if task_type.startswith("music."):
+        return ("Requires the optional local Music Player connection and advertised command capability.",)
     if task_type.startswith("obs."):
         requirements = ["Requires an active OBS connection."]
         if task_type == "obs.set_preview_scene":
@@ -574,6 +598,8 @@ def _leaf_label(label: str) -> str:
 
 
 def _category(task_type: str) -> str:
+    if task_type.startswith("music."):
+        return "Music"
     if task_type.startswith("twitch."):
         return "Twitch"
     if task_type.startswith("counter."):
@@ -744,6 +770,7 @@ _LABELS = {
     **COUNTER_TASK_LABELS,
     **CORE_TASK_LABELS,
     **OBS_TASK_LABELS,
+    **MUSIC_TASK_LABELS,
 }
 
 BUILTIN_TASK_METADATA = tuple(

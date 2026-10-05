@@ -26,6 +26,7 @@ from products.hub.twitch.automation_triggers import (
 from products.hub.twitch.default_commands import default_command_definitions
 from products.hub.twitch.slash_commands import TWITCH_SLASH_COMMANDS
 from products.hub.twitch.raid_contract import RAID_COUNTDOWN_SECONDS
+from products.hub.integrations.music_player import MUSIC_VARIABLE_DEFINITIONS
 
 
 WIKI_CATEGORIES = (
@@ -807,6 +808,51 @@ def _integration_entries() -> tuple[WikiEntry, ...]:
                 "stable routine ID",
                 "localhost",
                 "experimental",
+            ),
+        ),
+        WikiEntry(
+            "integration:music-player",
+            "Integrations",
+            "Music Player (Local)",
+            "Connect Streamhouse Hub to the independent standalone Music Player on the same PC.",
+            (
+                WikiSection(
+                    "Connection",
+                    (
+                        "Hub automatically discovers the standalone player while it is running. No manual port or token setup is normally required, and Hub works normally while the player is unavailable.",
+                        "Hub uses versioned WebSocket protocol 1 on 127.0.0.1 only. No Streamhouse cloud service or YouTube backend API is involved.",
+                    ),
+                ),
+                WikiSection(
+                    "Variables",
+                    tuple(
+                        f"{definition.placeholder} — {definition.description}"
+                        for definition in MUSIC_VARIABLE_DEFINITIONS
+                    )
+                    + (
+                        "Definitions remain discoverable while disconnected; their live values are unavailable until the player supplies state.",
+                    ),
+                ),
+                WikiSection(
+                    "Automation tasks",
+                    (
+                        "Music tasks support Play, Pause, Play/Pause, Next Track, Previous Track, Set Volume, and Set Muted when advertised by the connected player.",
+                        "Each task waits for its command result and does not pretend the playback state changed; later state snapshots remain authoritative.",
+                    ),
+                ),
+                WikiSection(
+                    "Examples",
+                    (
+                        "A trigger or Command routine can run Music — Next Track.",
+                        "An OBS text task can use: Now Playing: {music.artist} - {music.title}",
+                    ),
+                ),
+            ),
+            (
+                "music player",
+                "localhost websocket",
+                "now playing",
+                *(definition.name for definition in MUSIC_VARIABLE_DEFINITIONS),
             ),
         ),
     )

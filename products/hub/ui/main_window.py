@@ -61,6 +61,14 @@ from shared.streamhouse_runtime.logger import Logger
 from shared.streamhouse_ui import install_window_chrome
 from products.hub.core.settings import AppSettings, SettingsStore
 from products.hub.integrations.local_api import HubIntegrationController
+from products.hub.integrations.music_player import (
+    MUSIC_PROTOCOL_VERSION,
+    MusicConnectionState,
+    MusicPlayerConfig,
+    MusicPlayerConfigStore,
+    MusicPlayerService,
+    MusicVariableProvider,
+)
 from products.hub.automation.service import AutomationService
 from products.hub.automation.models import TriggerEvent
 from products.hub.automation.custom_variables import CustomVariableStore
@@ -92,6 +100,7 @@ from products.hub.automation.task_catalog import BUILTIN_TASK_METADATA
 from products.hub.automation.variable_tasks import RunRoutineTask, register_variable_tasks
 from products.hub.automation.control_tasks import register_control_tasks
 from products.hub.automation.logic_tasks import register_logic_tasks
+from products.hub.automation.music_tasks import register_music_tasks
 from products.hub.automation.file_tasks import register_file_tasks
 from products.hub.automation.value_tasks import register_value_tasks
 from products.hub.automation.queues import AutomationQueueManager, AutomationQueueStore
@@ -452,6 +461,17 @@ class MainWindow(QMainWindow):
             routine_store=routine_store,
         )
         data_root = routine_store.path.parent.parent
+        self.music_player_config_store = MusicPlayerConfigStore()
+        try:
+            self.music_player_config = self.music_player_config_store.load()
+        except (TypeError, ValueError) as error:
+            self.music_player_config = MusicPlayerConfig()
+            Logger.warning(
+                f"Could not load local Music Player settings: {error}",
+                source="APP",
+            )
+        self.music_player_service = MusicPlayerService(parent=self)
+        self.music_player_service.configure(self.music_player_config)
         self.channel_information_store = (
             channel_information_store
             or ChannelInformationStore(data_root / "twitch" / "channel-information.json")
@@ -552,6 +572,7 @@ class MainWindow(QMainWindow):
                 ),
             )
         )
+        self.variable_registry.register(MusicVariableProvider(self.music_player_service))
         self.twitch_command_trigger_store.variable_registry = self.variable_registry
         self.task_registry = TaskRegistry(BUILTIN_TASK_METADATA)
         register_twitch_tasks(
@@ -600,6 +621,11 @@ class MainWindow(QMainWindow):
             )
         )
         register_obs_tasks(self.task_registry, self.obs_service)
+        register_music_tasks(
+            self.task_registry,
+            self.music_player_service,
+            self.variable_registry,
+        )
         self.automation_service = AutomationService(
             self.twitch_command_trigger_store.routine_store,
             self.task_registry,
@@ -1530,6 +1556,53 @@ class MainWindow(QMainWindow):
             self._schedule_obs_connection_save
         )
         self._handle_obs_status_changed(self.obs_service.state, "Disconnected")
+        music_group = QGroupBox("Local Music Player")
+        self.music_player_connection_group = music_group
+        music_form = QFormLayout(music_group)
+        music_help = QLabel(
+            "Optional. Hub automatically discovers the standalone music app "
+            "on this PC. No port or token setup is normally required."
+        )
+        music_help.setWordWrap(True)
+        self.music_player_auto_connect_check = QCheckBox(
+            "Connect automatically when Streamhouse Hub opens"
+        )
+        self.music_player_auto_connect_check.setChecked(
+            self.music_player_config.auto_connect
+        )
+        self.music_player_status_label = QLabel("Disconnected")
+        self.music_player_status_label.setWordWrap(True)
+        self.music_player_endpoint_label = QLabel("Not discovered")
+        self.music_player_endpoint_label.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        self.music_player_connect_button = QPushButton("Refresh / Connect")
+        self.music_player_disconnect_button = QPushButton("Disconnect")
+        self.music_player_disconnect_button.setEnabled(False)
+        music_actions = QHBoxLayout()
+        music_actions.addWidget(self.music_player_connect_button)
+        music_actions.addWidget(self.music_player_disconnect_button)
+        music_form.addRow(music_help)
+        music_form.addRow("", self.music_player_auto_connect_check)
+        music_form.addRow("Status", self.music_player_status_label)
+        music_form.addRow("Discovered endpoint", self.music_player_endpoint_label)
+        music_form.addRow("", music_actions)
+        self.music_player_connect_button.clicked.connect(
+            self._refresh_and_connect_music_player
+        )
+        self.music_player_auto_connect_check.toggled.connect(
+            self._save_music_player_preference
+        )
+        self.music_player_disconnect_button.clicked.connect(
+            self.music_player_service.disconnect_from_player
+        )
+        self.music_player_service.connection_state_changed.connect(
+            self._handle_music_player_status_changed
+        )
+        self._handle_music_player_status_changed(
+            self.music_player_service.connection_state,
+            self.music_player_service.status_detail,
+        )
         bot_account_group = QGroupBox("Bot Account")
         self.twitch_bot_account_group = bot_account_group
         bot_account_layout = QFormLayout(bot_account_group)
@@ -1582,6 +1655,7 @@ class MainWindow(QMainWindow):
         twitch_connections_layout.addWidget(self.ui.twitchErrorLabel)
         connections_layout.addWidget(self.twitch_connections_group)
         connections_layout.addWidget(obs_group)
+        connections_layout.addWidget(music_group)
         connections_layout.addStretch()
         self.ui.mainStack.addWidget(self.connections_page)
 
@@ -2951,6 +3025,64 @@ class MainWindow(QMainWindow):
     def start_local_integration(self) -> None:
         """Start the primary instance's loopback-only integration listener."""
         self.local_integration.start()
+
+    @Slot()
+    def start_music_player_integration(self) -> None:
+        """Start only the optional configured loopback Music Player client."""
+        self.music_player_service.start()
+
+    @Slot()
+    def _save_music_player_preference(self) -> bool:
+        config = MusicPlayerConfig(
+            auto_connect=self.music_player_auto_connect_check.isChecked()
+        )
+        try:
+            self.music_player_config_store.save(config)
+        except (OSError, ValueError) as error:
+            QMessageBox.warning(
+                self,
+                "Music Player",
+                f"Could not save the Music Player preference: {error}",
+            )
+            return False
+        self.music_player_config = config
+        self.music_player_service.configure(config)
+        return True
+
+    @Slot()
+    def _refresh_and_connect_music_player(self) -> None:
+        if not self._save_music_player_preference():
+            return
+        self.music_player_service.connect_to_player()
+
+    @Slot(object, str)
+    def _handle_music_player_status_changed(
+        self,
+        state: MusicConnectionState,
+        detail: str,
+    ) -> None:
+        if not hasattr(self, "music_player_status_label"):
+            return
+        labels = {
+            MusicConnectionState.DISCONNECTED: detail or "Disconnected",
+            MusicConnectionState.CONNECTING: "Connecting…",
+            MusicConnectionState.CONNECTED: "Connected",
+            MusicConnectionState.NOT_RUNNING: "Not running",
+            MusicConnectionState.AUTHENTICATION_UNAVAILABLE: "Authentication unavailable",
+            MusicConnectionState.AUTHENTICATION_FAILED: "Authentication failed",
+            MusicConnectionState.UNSUPPORTED_PROTOCOL: "Unsupported protocol",
+        }
+        self.music_player_status_label.setText(labels.get(state, detail))
+        endpoint = self.music_player_service.discovered_endpoint
+        self.music_player_endpoint_label.setText(endpoint or "Not discovered")
+        connected_or_connecting = state in {
+            MusicConnectionState.CONNECTING,
+            MusicConnectionState.CONNECTED,
+        }
+        self.music_player_connect_button.setEnabled(not connected_or_connecting)
+        self.music_player_disconnect_button.setEnabled(
+            connected_or_connecting or self.music_player_service.wants_connection
+        )
 
     def _fire_core_automation_event(self, event_type: str) -> None:
         context = {
@@ -8432,6 +8564,12 @@ class MainWindow(QMainWindow):
                 "connected": self.obs_service.connected,
                 "state": self.obs_service.state.value,
             },
+            "music_player": {
+                "connected": self.music_player_service.connected,
+                "state": self.music_player_service.connection_state.value,
+                "protocol": MUSIC_PROTOCOL_VERSION,
+                "capability_count": len(self.music_player_service.capabilities),
+            },
             "automation": {
                 "routines": len(self.twitch_command_trigger_store.routine_store.routines),
                 "triggers": (
@@ -8469,6 +8607,7 @@ class MainWindow(QMainWindow):
         self.activity_age_timer.stop()
         self._activity_rows.clear()
         self.local_integration.shutdown()
+        self.music_player_service.shutdown()
         self.chat_user_page.shutdown()
         self.raid_page.shutdown()
         self.timers_page.shutdown()
