@@ -329,3 +329,28 @@ def test_music_player_reference_uses_current_variables_and_tasks() -> None:
         "music.set_volume",
         "music.set_muted",
     }
+
+
+def test_music_trigger_reference_documents_v1_transitions_and_baseline() -> None:
+    tasks, variables = _reference_sources()
+    entries = {
+        item.entry_id: item for item in build_wiki_entries(tasks, variables)
+    }
+    expected = {
+        "track.changed",
+        "playback.started",
+        "playback.paused",
+        "playback.stopped",
+        "volume.changed",
+        "player.connected",
+        "player.disconnected",
+    }
+    assert expected == {
+        event_type
+        for event_type in expected
+        if f"trigger:{event_type}" in entries
+    }
+    track_text = entries["trigger:track.changed"].search_text()
+    assert "first state snapshot" in track_text
+    assert "position synchronization does not fire" in track_text
+    assert "{music.artist} - {music.title}" in track_text

@@ -74,6 +74,14 @@ music state nor the player-owned token enters Backup, diagnostics, or Hub
 settings. Hub has no YouTube DOM, login, or backend API knowledge and requires
 no cloud service for this integration.
 
+`MusicPlayerService` also owns normalized Automation transition detection. A
+successful protocol handshake emits the usable connected transition, the first
+full state snapshot establishes a non-firing baseline, and later snapshots may
+emit track, playback, or volume transitions. The Music trigger layer consumes
+those normalized events and never parses WebSocket JSON. Each event carries a
+canonical `music.*` context snapshot so queued routines observe the state that
+caused the trigger rather than a later live player state.
+
 Hub Alpha contains no inference engine, does not launch Streamhouse AI or a
 model provider, and never generates a local Sally fallback reply. Chat addressed
 to Sally is silent when the external AI lifecycle is not READY; a failed AI
@@ -193,7 +201,7 @@ normal writable composition.
 
 `MainWindow.__init__` creates or receives injectable instances of:
 
-- Twitch command, EventSub-trigger, Core-trigger, and OBS-trigger stores
+- Twitch command, EventSub-trigger, Core-trigger, OBS-trigger, and Music-trigger stores
 - the shared `RoutineStore`
 - `CustomVariableStore`
 - automation queue store/manager
@@ -453,7 +461,7 @@ routines.
 ### Shared routine store
 
 `TwitchCommandTriggerStore` creates the canonical `RoutineStore`. Twitch event
-(including Hub-derived Ads and chat triggers), Core, and OBS trigger stores
+(including Hub-derived Ads and chat triggers), Core, OBS, and Music trigger stores
 receive that same object/path. Do not instantiate
 an unrelated routine store for a new trigger provider inside `MainWindow`;
 doing so would split the automation graph.
@@ -958,6 +966,7 @@ Adding a task requires more than a handler. See **Adding an automation task**.
 | Core | `CoreTriggerStore` | `automation/core_triggers.json` | application started/closing |
 | Core Timer | `CoreTriggerStore` + `AutomationTimerScheduler` | `automation/core_triggers.json` | exact intervals or a newly sampled random interval range |
 | OBS | `ObsTriggerStore` | `obs/triggers.json` | connection, scene, source, audio, media, output changes |
+| Music | `MusicTriggerStore` | `automation/music_triggers.json` | normalized track, playback, volume, and usable-connection transitions owned by `MusicPlayerService` |
 | Soundboard | button record in `SoundboardStore` | `twitch/soundboard.json` | local preview or Extension button |
 
 The first-message trigger is synthesized from accepted chat messages, not a

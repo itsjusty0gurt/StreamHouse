@@ -17,6 +17,7 @@ from products.hub.automation.variable_outputs import (
 from products.hub.automation.variable_registry import VariableRegistry
 from products.hub.counters.models import SCOPES
 from products.hub.obs_service.triggers import OBS_TRIGGER_TYPES
+from products.hub.integrations.music_triggers import MUSIC_TRIGGER_TYPES
 from products.hub.twitch.automation_triggers import (
     ADS_TRIGGER_TYPES,
     KEYWORD_PHRASE_EVENT_TYPE,
@@ -281,6 +282,25 @@ def _trigger_entries(variable_registry: VariableRegistry) -> tuple[WikiEntry, ..
                 ("OBS", event_type),
             )
         )
+    music_summaries = {
+        "track.changed": "Fires once when the authoritative current track identity changes.",
+        "playback.started": "Fires when playback transitions into playing.",
+        "playback.paused": "Fires when playback transitions into paused.",
+        "playback.stopped": "Fires when playback transitions into stopped.",
+        "volume.changed": "Fires when volume or mute state changes.",
+        "player.connected": "Fires after the local player completes authentication and protocol negotiation.",
+        "player.disconnected": "Fires once when a previously usable player connection is lost.",
+    }
+    for event_type, label in MUSIC_TRIGGER_TYPES.items():
+        entries.append(
+            _trigger_entry(
+                event_type,
+                f"Music — {label}",
+                music_summaries[event_type],
+                variables("music."),
+                ("Music Player", "local integration", event_type),
+            )
+        )
     return tuple(entries)
 
 
@@ -353,6 +373,26 @@ def _trigger_entry(
         configuration = (
             "Optional OBS event-field filters such as scene, source, or input name.",
         )
+    elif trigger_id in MUSIC_TRIGGER_TYPES:
+        configuration = (
+            "No event fields are required; attach the trigger to a routine and enable it.",
+            "The first state snapshot after connecting establishes a baseline and does not create a track, playback, or volume event.",
+            "Periodic playback-position synchronization does not fire Automation triggers.",
+        )
+        if trigger_id == "track.changed":
+            additional_sections = (
+                WikiSection(
+                    "Examples",
+                    (
+                        "Track Changed → OBS Set Text → {music.artist} - {music.title}",
+                        "Track Changed → update a Now Playing overlay.",
+                    ),
+                ),
+            )
+        elif trigger_id == "player.disconnected":
+            additional_sections = (
+                WikiSection("Example", ("Player Disconnected → run an optional notification or log routine.",)),
+            )
     elif trigger_id in TWITCH_EVENT_AUTOMATION_TYPES or trigger_id in ADS_TRIGGER_TYPES:
         configuration = ("Optional event filters supported by this trigger editor.",)
     if configuration:

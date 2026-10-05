@@ -426,6 +426,7 @@ class AutomationService:
             "keyword.",
             "event.",
             "obs.",
+            "music.",
             "ads.requester.",
             "subscription.",
             "raid.",

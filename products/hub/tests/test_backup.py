@@ -28,6 +28,7 @@ from products.hub.counters.store import (
     CounterStore,
 )
 from products.hub.obs_service.triggers import ObsTriggerStore
+from products.hub.integrations.music_triggers import MusicTriggerStore
 from products.hub.twitch.automation_triggers import TwitchEventTriggerStore
 from products.hub.twitch.channel_information import ChannelInformationStore
 from products.hub.twitch.chatter_history import ChatterHistoryStore
@@ -142,6 +143,10 @@ class BackupManagerTests(unittest.TestCase):
         write_json(
             self.root / "obs/triggers.json",
             {"version": ObsTriggerStore.VERSION, "triggers": []},
+        )
+        write_json(
+            self.root / "automation/music_triggers.json",
+            {"version": MusicTriggerStore.VERSION, "triggers": []},
         )
         write_json(
             self.root / "automation/queues.json",
@@ -469,6 +474,42 @@ class BackupManagerTests(unittest.TestCase):
             set(routine_store.get("parent").trigger_ids),
             {"raid-trigger", "timer-exact", "timer-random"},
         )
+
+    def test_music_trigger_backup_restore_preserves_stable_identity(self) -> None:
+        routine_path = self.root / "automation/routines.json"
+        routines = json.loads(routine_path.read_text(encoding="utf-8"))
+        parent = next(item for item in routines["routines"] if item["routine_id"] == "parent")
+        parent["additional_trigger_ids"] = ["music-track"]
+        write_json(routine_path, routines)
+        write_json(
+            self.root / "automation/music_triggers.json",
+            {
+                "version": MusicTriggerStore.VERSION,
+                "triggers": [
+                    {
+                        "trigger_id": "music-track",
+                        "routine_id": "parent",
+                        "event_type": "track.changed",
+                        "enabled": True,
+                    }
+                ],
+            },
+        )
+
+        archive = self.manager.create("manual", preset=BackupPreset.RECOMMENDED)
+        write_json(
+            self.root / "automation/music_triggers.json",
+            {"version": MusicTriggerStore.VERSION, "triggers": []},
+        )
+        self.manager.restore(archive, create_safety=False)
+
+        routine_store = RoutineStore(routine_path)
+        routine_store.load()
+        restored = MusicTriggerStore(
+            self.root / "automation/music_triggers.json", routine_store
+        ).load()
+        self.assertEqual([item.trigger_id for item in restored], ["music-track"])
+        self.assertIn("music-track", routine_store.get("parent").trigger_ids)
 
     def test_backup_rejects_obsolete_twitch_trigger_schema(self) -> None:
         write_json(

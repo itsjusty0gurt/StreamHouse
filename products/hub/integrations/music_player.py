@@ -35,6 +35,23 @@ MUSIC_TOKEN_FILENAME = "api_token"
 MUSIC_COMMANDS = frozenset(
     {"play", "pause", "play_pause", "next", "previous", "set_volume", "set_muted"}
 )
+MUSIC_EVENT_TRACK_CHANGED = "track.changed"
+MUSIC_EVENT_PLAYBACK_STARTED = "playback.started"
+MUSIC_EVENT_PLAYBACK_PAUSED = "playback.paused"
+MUSIC_EVENT_PLAYBACK_STOPPED = "playback.stopped"
+MUSIC_EVENT_VOLUME_CHANGED = "volume.changed"
+MUSIC_EVENT_PLAYER_CONNECTED = "player.connected"
+MUSIC_EVENT_PLAYER_DISCONNECTED = "player.disconnected"
+MUSIC_AUTOMATION_EVENT_TYPES = (
+    MUSIC_EVENT_TRACK_CHANGED,
+    MUSIC_EVENT_PLAYBACK_STARTED,
+    MUSIC_EVENT_PLAYBACK_PAUSED,
+    MUSIC_EVENT_PLAYBACK_STOPPED,
+    MUSIC_EVENT_VOLUME_CHANGED,
+    MUSIC_EVENT_PLAYER_CONNECTED,
+    MUSIC_EVENT_PLAYER_DISCONNECTED,
+)
+MUSIC_EVENT_SNAPSHOT_MARKER = "__music_event_snapshot__"
 RECONNECT_DELAYS_MS = (500, 1_000, 2_000, 5_000, 10_000)
 MAX_MUSIC_MESSAGE_CHARS = 1_000_000
 
@@ -256,6 +273,12 @@ class MusicPlayerState:
         return min(position, self.duration_ms) if self.duration_ms is not None else position
 
 
+@dataclass(frozen=True, slots=True)
+class MusicPlayerEvent:
+    event_type: str
+    context: Mapping[str, str]
+
+
 @dataclass(slots=True)
 class MusicCommandResult:
     succeeded: bool
@@ -273,6 +296,7 @@ class MusicPlayerService(QObject):
 
     connection_state_changed = Signal(object, str)
     playback_state_changed = Signal(object)
+    automation_event = Signal(object)
 
     def __init__(
         self,
@@ -311,6 +335,9 @@ class MusicPlayerService(QObject):
         self._playback: MusicPlayerState | None = None
         self._last_sequence = -1
         self._pending: dict[str, _PendingCommand] = {}
+        self._automation_connected = False
+        self._transition_baseline: MusicPlayerState | None = None
+        self._track_identity: tuple[str, ...] | None = None
 
     @property
     def connection_state(self) -> MusicConnectionState:
@@ -368,10 +395,12 @@ class MusicPlayerService(QObject):
         self._want_connection = reconnect
         self._reconnect_timer.stop()
         self._handshake_timer.stop()
+        self._emit_disconnected()
         self._hello_complete = False
         self._capabilities = frozenset()
         self._playback = None
         self._last_sequence = -1
+        self._reset_transition_baseline()
         self._fail_pending("Music player disconnected.")
         self._socket.close()
         self._set_connection_state(MusicConnectionState.DISCONNECTED, "Disconnected")
@@ -503,6 +532,11 @@ class MusicPlayerService(QObject):
         self._handshake_timer.stop()
         self._reconnect_attempt = 0
         self._set_connection_state(MusicConnectionState.CONNECTED, "Connected")
+        if not self._automation_connected:
+            self._automation_connected = True
+            self.automation_event.emit(
+                MusicPlayerEvent(MUSIC_EVENT_PLAYER_CONNECTED, {})
+            )
 
     def _accept_state(self, message: Mapping[str, Any]) -> None:
         if not self._hello_complete:
@@ -516,8 +550,52 @@ class MusicPlayerService(QObject):
         if state.sequence <= self._last_sequence:
             return
         self._last_sequence = state.sequence
+        previous = self._transition_baseline
         self._playback = state
+        if previous is None:
+            self._transition_baseline = state
+            self._track_identity = _stable_track_identity(state)
+        else:
+            self._emit_state_transitions(previous, state)
+            self._transition_baseline = state
         self.playback_state_changed.emit(state)
+
+    def _emit_state_transitions(
+        self,
+        previous: MusicPlayerState,
+        current: MusicPlayerState,
+    ) -> None:
+        context = music_context_for_state(current)
+        identity = _stable_track_identity(current)
+        if identity is not None:
+            if self._track_identity is not None and _track_identities_differ(
+                self._track_identity, identity
+            ):
+                self.automation_event.emit(
+                    MusicPlayerEvent(MUSIC_EVENT_TRACK_CHANGED, context)
+                )
+            self._track_identity = identity
+        playback_events = {
+            "playing": MUSIC_EVENT_PLAYBACK_STARTED,
+            "paused": MUSIC_EVENT_PLAYBACK_PAUSED,
+            "stopped": MUSIC_EVENT_PLAYBACK_STOPPED,
+        }
+        if current.status != previous.status and current.status in playback_events:
+            self.automation_event.emit(
+                MusicPlayerEvent(playback_events[current.status], context)
+            )
+        if (
+            previous.volume is not None
+            and current.volume is not None
+            and previous.volume != current.volume
+        ) or (
+            previous.muted is not None
+            and current.muted is not None
+            and previous.muted != current.muted
+        ):
+            self.automation_event.emit(
+                MusicPlayerEvent(MUSIC_EVENT_VOLUME_CHANGED, context)
+            )
 
     def _accept_command_result(self, message: Mapping[str, Any]) -> None:
         if message.get("protocol_version") != MUSIC_PROTOCOL_VERSION:
@@ -554,10 +632,12 @@ class MusicPlayerService(QObject):
     def _socket_disconnected(self) -> None:
         self._handshake_timer.stop()
         was_available = self._playback is not None
+        self._emit_disconnected()
         self._hello_complete = False
         self._capabilities = frozenset()
         self._playback = None
         self._last_sequence = -1
+        self._reset_transition_baseline()
         self._fail_pending("Music player disconnected before the command completed.")
         if self._state not in {
             MusicConnectionState.AUTHENTICATION_FAILED,
@@ -567,6 +647,24 @@ class MusicPlayerService(QObject):
         if was_available:
             self.playback_state_changed.emit(None)
         self._schedule_reconnect()
+
+    def _emit_disconnected(self) -> None:
+        if not self._automation_connected:
+            return
+        self._automation_connected = False
+        if not self._shutting_down:
+            context = (
+                music_context_for_state(self._playback)
+                if self._playback is not None
+                else {}
+            )
+            self.automation_event.emit(
+                MusicPlayerEvent(MUSIC_EVENT_PLAYER_DISCONNECTED, context)
+            )
+
+    def _reset_transition_baseline(self) -> None:
+        self._transition_baseline = None
+        self._track_identity = None
 
     @Slot()
     def _socket_error(self, *_args: object) -> None:
@@ -664,6 +762,8 @@ class MusicPlayerService(QObject):
         self._playback = None
         self._capabilities = frozenset()
         self._hello_complete = False
+        self._automation_connected = False
+        self._reset_transition_baseline()
         self._token = ""
         self._connection_info = None
         self._set_connection_state(MusicConnectionState.DISCONNECTED, "Disconnected")
@@ -706,8 +806,21 @@ class MusicVariableProvider:
     def definitions(self) -> tuple[VariableDefinition, ...]:
         return self._DEFINITIONS
 
-    def resolve(self, name: str, _context: Mapping[str, object]) -> VariableSnapshot:
+    def resolve(self, name: str, context: Mapping[str, object]) -> VariableSnapshot:
         definition = next(item for item in self._DEFINITIONS if item.name == name)
+        if name in context:
+            value: object = context[name]
+            if definition.data_type is VariableDataType.INTEGER:
+                value = int(str(value))
+            elif definition.data_type is VariableDataType.BOOLEAN:
+                value = str(value).strip().casefold() in {"true", "1", "yes", "on"}
+            return VariableSnapshot(definition, value=value, available=True)
+        if context.get(MUSIC_EVENT_SNAPSHOT_MARKER) == "true":
+            return VariableSnapshot(
+                definition,
+                available=False,
+                detail="The triggering player state did not supply this value.",
+            )
         state = self._service.playback_state
         if not self._service.connected or state is None:
             return VariableSnapshot(
@@ -755,6 +868,48 @@ class MusicVariableProvider:
 
     def set_value(self, name: str, value: object) -> VariableSnapshot:
         raise PermissionError(f'Variable "{name}" is read-only.')
+
+
+def music_context_for_state(state: MusicPlayerState) -> dict[str, str]:
+    position = state.position_at()
+    values: dict[str, object | None] = {
+        "music.title": state.title or None,
+        "music.artist": state.artist or None,
+        "music.album": state.album or None,
+        "music.artwork_url": state.artwork_url or None,
+        "music.status": state.status,
+        "music.duration": _format_duration(state.duration_ms) if state.duration_ms is not None else None,
+        "music.position": _format_duration(position) if position is not None else None,
+        "music.volume": state.volume,
+        "music.muted": "true" if state.muted is True else "false" if state.muted is False else None,
+        "music.media_id": state.media_id,
+    }
+    return {
+        MUSIC_EVENT_SNAPSHOT_MARKER: "true",
+        **{key: str(value) for key, value in values.items() if value is not None},
+    }
+
+
+def _stable_track_identity(state: MusicPlayerState) -> tuple[str, ...] | None:
+    media_id = state.media_id.strip().casefold() if state.media_id else ""
+    title = " ".join(state.title.split()).casefold()
+    artist = " ".join(state.artist.split()).casefold()
+    album = " ".join(state.album.split()).casefold()
+    if not media_id and (not title or not artist):
+        return None
+    return (media_id, title, artist, album)
+
+
+def _track_identities_differ(
+    previous: tuple[str, ...], current: tuple[str, ...]
+) -> bool:
+    previous_media, *previous_metadata = previous
+    current_media, *current_metadata = current
+    if previous_media and current_media:
+        return previous_media != current_media
+    if all(previous_metadata[:2]) and all(current_metadata[:2]):
+        return previous_metadata != current_metadata
+    return previous != current
 
 
 def _bounded_integer(value: object, *, minimum: int, maximum: int = 2**63 - 1) -> int:

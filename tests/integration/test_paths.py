@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 from products.hub.automation.core_triggers import CoreTriggerStore
 from products.hub.automation.routines import RoutineStore
+from products.hub.integrations.music_triggers import MusicTriggerStore
 from shared.streamhouse_runtime.paths import (
     smoke_test_enabled,
     user_data_root,
@@ -39,6 +40,7 @@ class UserDataPathTests(unittest.TestCase):
                     TwitchEventTriggerStore().path,
                     RoutineStore().path,
                     CoreTriggerStore().path,
+                    MusicTriggerStore().path,
                     TwitchTokenStore().path,
                 )
                 self.assertTrue(all(root in path.parents for path in paths))

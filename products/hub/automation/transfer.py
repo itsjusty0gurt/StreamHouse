@@ -8,6 +8,7 @@ from products.hub.automation.routines import RoutineStore
 from products.hub.automation.tasks import TaskRegistry
 from products.hub.automation.core_triggers import CORE_TRIGGER_TYPES, CoreTriggerStore
 from products.hub.obs_service.triggers import OBS_TRIGGER_TYPES, ObsTriggerStore
+from products.hub.integrations.music_triggers import MUSIC_TRIGGER_TYPES, MusicTriggerStore
 from products.hub.twitch.automation_triggers import (
     TWITCH_AUTOMATION_EVENT_TYPES,
     TwitchEventTriggerStore,
@@ -58,6 +59,7 @@ def export_routine(
     event_store: TwitchEventTriggerStore,
     core_store: CoreTriggerStore,
     obs_store: ObsTriggerStore,
+    music_store: MusicTriggerStore,
 ) -> dict[str, Any]:
     group = routine_store.get_group(routine.group_id)
     command = command_store.for_routine(routine.routine_id)
@@ -117,6 +119,10 @@ def export_routine(
                 }
                 for trigger in obs_store.for_routine(routine.routine_id)
             ],
+            "music": [
+                {"event_type": trigger.event_type, "enabled": trigger.enabled}
+                for trigger in music_store.for_routine(routine.routine_id)
+            ],
         },
     }
 
@@ -154,13 +160,14 @@ def validate_import(
         for name in names:
             if command_store.resolve(name) is not None:
                 raise ValueError(f"Twitch command already exists: !{name.lstrip('!')}")
-    for key in ("twitch_events", "core", "obs"):
+    for key in ("twitch_events", "core", "obs", "music"):
         if not isinstance(triggers.get(key, []), list):
             raise ValueError(f"The imported {key.replace('_', ' ')} trigger list is invalid.")
     supported = {
         "twitch_events": set(TWITCH_AUTOMATION_EVENT_TYPES),
         "core": set(CORE_TRIGGER_TYPES),
         "obs": set(OBS_TRIGGER_TYPES),
+        "music": set(MUSIC_TRIGGER_TYPES),
     }
     for key, event_types in supported.items():
         for trigger in triggers.get(key, []):
@@ -181,6 +188,7 @@ def import_routine(
     event_store: TwitchEventTriggerStore,
     core_store: CoreTriggerStore,
     obs_store: ObsTriggerStore,
+    music_store: MusicTriggerStore,
 ) -> RoutineDefinition:
     validate_import(
         payload,
@@ -199,6 +207,7 @@ def import_routine(
     event_ids: list[str] = []
     core_ids: list[str] = []
     obs_ids: list[str] = []
+    music_ids: list[str] = []
     command_id = ""
     try:
         for values in trigger_values.get("twitch_events", []):
@@ -230,6 +239,13 @@ def import_routine(
                 enabled=bool(values.get("enabled", True)),
             )
             obs_ids.append(trigger.trigger_id)
+        for values in trigger_values.get("music", []):
+            trigger = music_store.add(
+                routine.routine_id,
+                str(values.get("event_type", "")),
+                enabled=bool(values.get("enabled", True)),
+            )
+            music_ids.append(trigger.trigger_id)
         command = trigger_values.get("twitch_command")
         if isinstance(command, Mapping):
             created = command_store.attach_routine(
@@ -255,6 +271,8 @@ def import_routine(
                 else_tasks=definition.else_tasks,
             )
     except (OSError, TypeError, ValueError):
+        for trigger_id in reversed(music_ids):
+            music_store.delete(trigger_id)
         if command_id:
             command_store.delete(command_id, delete_routine=False)
         for trigger_id in reversed(obs_ids):

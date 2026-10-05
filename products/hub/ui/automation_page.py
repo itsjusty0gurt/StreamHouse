@@ -79,6 +79,11 @@ from products.hub.automation.logic_tasks import (
     comparison_choices_for_type,
 )
 from products.hub.automation.music_tasks import MUSIC_TASK_LABELS
+from products.hub.integrations.music_triggers import (
+    MUSIC_TRIGGER_TYPES,
+    MusicAutomationTrigger,
+    MusicTriggerStore,
+)
 from products.hub.automation.file_tasks import FILE_TASK_TYPES
 from products.hub.automation.queues import (
     AutomationQueueDefinition,
@@ -843,6 +848,38 @@ class ObsTriggerDialog(QDialog):
         return {
             "event_type": str(self.event_combo.currentData()),
             "filters": _parse_event_filters(self.filters_edit.text()),
+            "enabled": self.enabled_check.isChecked(),
+        }
+
+
+class MusicTriggerDialog(QDialog):
+    def __init__(
+        self,
+        parent: QWidget | None = None,
+        trigger: MusicAutomationTrigger | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Edit Music Trigger" if trigger else "Add Music Trigger")
+        layout = QVBoxLayout(self)
+        form = QFormLayout()
+        self.event_combo = QComboBox()
+        for event_type, label in MUSIC_TRIGGER_TYPES.items():
+            self.event_combo.addItem(label, event_type)
+        self.enabled_check = QCheckBox("Enabled")
+        self.enabled_check.setChecked(trigger.enabled if trigger else True)
+        if trigger is not None:
+            self.event_combo.setCurrentIndex(max(self.event_combo.findData(trigger.event_type), 0))
+        form.addRow("Music event", self.event_combo)
+        form.addRow("", self.enabled_check)
+        layout.addLayout(form)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def values(self) -> dict[str, object]:
+        return {
+            "event_type": str(self.event_combo.currentData()),
             "enabled": self.enabled_check.isChecked(),
         }
 
@@ -2759,6 +2796,7 @@ class AutomationPage(QWidget):
         event_trigger_store: TwitchEventTriggerStore,
         core_trigger_store: CoreTriggerStore,
         obs_trigger_store: ObsTriggerStore,
+        music_trigger_store: MusicTriggerStore,
         task_registry: TaskRegistry,
         automation_service: AutomationService,
         *,
@@ -2779,6 +2817,7 @@ class AutomationPage(QWidget):
         self.event_trigger_store = event_trigger_store
         self.core_trigger_store = core_trigger_store
         self.obs_trigger_store = obs_trigger_store
+        self.music_trigger_store = music_trigger_store
         self.task_registry = task_registry
         self.automation_service = automation_service
         self.obs_service = obs_service
@@ -3668,6 +3707,7 @@ class AutomationPage(QWidget):
             + len(self.event_trigger_store.for_routine(routine_id))
             + len(self.core_trigger_store.for_routine(routine_id))
             + len(self.obs_trigger_store.for_routine(routine_id))
+            + len(self.music_trigger_store.for_routine(routine_id))
         )
 
     def _routine_card_content(self, routine, issues: list[str]) -> RoutineCardContent:
@@ -3685,6 +3725,8 @@ class AutomationPage(QWidget):
             families.add(family)
         if self.obs_trigger_store.for_routine(routine.routine_id):
             families.add("OBS")
+        if self.music_trigger_store.for_routine(routine.routine_id):
+            families.add("Music")
         if self.soundboard_store is not None:
             for page in self.soundboard_store.snapshot():
                 for button in page.buttons:
@@ -3879,6 +3921,7 @@ class AutomationPage(QWidget):
         event_triggers = self.event_trigger_store.for_routine(routine.routine_id)
         core_triggers = self.core_trigger_store.for_routine(routine.routine_id)
         obs_triggers = self.obs_trigger_store.for_routine(routine.routine_id)
+        music_triggers = self.music_trigger_store.for_routine(routine.routine_id)
         self.routine_title_label.setText(routine.name)
         trigger_count = self._routine_trigger_count(routine.routine_id)
         group = self.routine_store.get_group(routine.group_id)
@@ -3894,13 +3937,13 @@ class AutomationPage(QWidget):
         self.routine_enabled_check.blockSignals(True)
         self.routine_enabled_check.setChecked(routine.enabled)
         self.routine_enabled_check.blockSignals(False)
-        self._refresh_trigger(routine, command, event_triggers, core_triggers, obs_triggers)
+        self._refresh_trigger(routine, command, event_triggers, core_triggers, obs_triggers, music_triggers)
         self._refresh_tasks(routine)
         self._refresh_settings(routine)
         self._refresh_routine_history()
 
     def _refresh_trigger(
-        self, routine, command, event_triggers, core_triggers, obs_triggers
+        self, routine, command, event_triggers, core_triggers, obs_triggers, music_triggers
     ) -> None:
         self.trigger_list.blockSignals(True)
         self.trigger_list.clear()
@@ -3931,6 +3974,12 @@ class AutomationPage(QWidget):
                 trigger.trigger_id,
                 "obs",
                 self._obs_trigger_card_content(trigger),
+            )
+        for trigger in music_triggers:
+            self._add_trigger_card(
+                trigger.trigger_id,
+                "music",
+                self._music_trigger_card_content(trigger),
             )
         self.trigger_list.blockSignals(False)
         self.editor_tabs.setTabText(0, f"Triggers ({self.trigger_list.count()})")
@@ -4069,6 +4118,16 @@ class AutomationPage(QWidget):
             title=f"OBS — {display}",
             summary=summary,
             family="OBS",
+            enabled=trigger.enabled,
+        )
+
+    @staticmethod
+    def _music_trigger_card_content(trigger: MusicAutomationTrigger) -> TriggerCardContent:
+        label = MUSIC_TRIGGER_TYPES.get(trigger.event_type, trigger.event_type)
+        return TriggerCardContent(
+            title=f"Music — {label}",
+            summary="When the local player reports this transition",
+            family="Music",
             enabled=trigger.enabled,
         )
 
@@ -4336,6 +4395,7 @@ class AutomationPage(QWidget):
             event_store=self.event_trigger_store,
             core_store=self.core_trigger_store,
             obs_store=self.obs_trigger_store,
+            music_store=self.music_trigger_store,
         )
         try:
             Path(filename).write_text(
@@ -4379,6 +4439,7 @@ class AutomationPage(QWidget):
                 event_store=self.event_trigger_store,
                 core_store=self.core_trigger_store,
                 obs_store=self.obs_trigger_store,
+                music_store=self.music_trigger_store,
             )
         except (OSError, TypeError, ValueError, json.JSONDecodeError) as error:
             self._error("Could Not Import Routine", error)
@@ -4474,6 +4535,7 @@ class AutomationPage(QWidget):
         event_triggers = self.event_trigger_store.for_routine(routine.routine_id)
         core_triggers = self.core_trigger_store.for_routine(routine.routine_id)
         obs_triggers = self.obs_trigger_store.for_routine(routine.routine_id)
+        music_triggers = self.music_trigger_store.for_routine(routine.routine_id)
         detail = (
             "Its Twitch command trigger and all tasks will also be deleted."
             if command
@@ -4492,6 +4554,8 @@ class AutomationPage(QWidget):
                 self.core_trigger_store.delete(core_trigger.trigger_id)
             for obs_trigger in obs_triggers:
                 self.obs_trigger_store.delete(obs_trigger.trigger_id)
+            for music_trigger in music_triggers:
+                self.music_trigger_store.delete(music_trigger.trigger_id)
             if command:
                 self.trigger_store.delete(command.trigger_id)
                 self.commands_changed()
@@ -4604,6 +4668,15 @@ class AutomationPage(QWidget):
             )
         add_menu.addMenu(obs_menu)
         add_menu._streamhouse_trigger_submenus.append(obs_menu)
+
+        music_menu = QMenu("Music", add_menu)
+        for event_type, label in MUSIC_TRIGGER_TYPES.items():
+            music_menu.addAction(
+                label,
+                lambda checked=False, value=event_type: self._add_music_trigger(value),
+            )
+        add_menu.addMenu(music_menu)
+        add_menu._streamhouse_trigger_submenus.append(music_menu)
 
         twitch_menu = QMenu("Twitch", add_menu)
         chat_menu = QMenu("Chat", twitch_menu)
@@ -4792,6 +4865,25 @@ class AutomationPage(QWidget):
         self.select_routine(routine.routine_id)
         self._select_trigger("obs", trigger.trigger_id)
 
+    def _add_music_trigger(self, event_type: str | None = None) -> None:
+        routine = self.routine_store.get(self._selected_routine_id)
+        if routine is None:
+            return
+        if event_type is None:
+            dialog = MusicTriggerDialog(self)
+            if dialog.exec() != QDialog.DialogCode.Accepted:
+                return
+            values = dialog.values()
+        else:
+            values = {"event_type": event_type, "enabled": True}
+        try:
+            trigger = self.music_trigger_store.add(routine.routine_id, **values)
+        except (OSError, TypeError, ValueError) as error:
+            self._error("Could Not Add Trigger", error)
+            return
+        self.select_routine(routine.routine_id)
+        self._select_trigger("music", trigger.trigger_id)
+
     def _selected_trigger(self) -> tuple[str, str]:
         item = self.trigger_list.currentItem()
         if item is None:
@@ -4894,6 +4986,15 @@ class AutomationPage(QWidget):
                 f"Field filters: {filters}\n"
                 f"State: {'Enabled' if trigger.enabled else 'Disabled'}"
             )
+        elif kind == "music":
+            trigger = self.music_trigger_store.get(trigger_id)
+            if trigger is None:
+                return
+            self.trigger_detail_label.setText(
+                f"Music event: {MUSIC_TRIGGER_TYPES.get(trigger.event_type, trigger.event_type)}\n"
+                f"Event key: {trigger.event_type}\n"
+                f"State: {'Enabled' if trigger.enabled else 'Disabled'}"
+            )
 
     def _edit_trigger(self) -> None:
         routine = self.routine_store.get(self._selected_routine_id)
@@ -4929,6 +5030,11 @@ class AutomationPage(QWidget):
             trigger = self.obs_trigger_store.get(trigger_id)
             if trigger is not None:
                 self._edit_obs_trigger(routine.routine_id, trigger)
+            return
+        if kind == "music":
+            trigger = self.music_trigger_store.get(trigger_id)
+            if trigger is not None:
+                self._edit_music_trigger(routine.routine_id, trigger)
             return
         command = self.trigger_store.get(trigger_id)
         if command is None:
@@ -5065,6 +5171,20 @@ class AutomationPage(QWidget):
         self.select_routine(routine_id)
         self._select_trigger("obs", updated.trigger_id)
 
+    def _edit_music_trigger(
+        self, routine_id: str, trigger: MusicAutomationTrigger
+    ) -> None:
+        dialog = MusicTriggerDialog(self, trigger)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        try:
+            updated = self.music_trigger_store.update(trigger.trigger_id, **dialog.values())
+        except (OSError, TypeError, ValueError) as error:
+            self._error("Could Not Update Trigger", error)
+            return
+        self.select_routine(routine_id)
+        self._select_trigger("music", updated.trigger_id)
+
     def _remove_trigger(self) -> None:
         routine = self.routine_store.get(self._selected_routine_id)
         kind, trigger_id = self._selected_trigger()
@@ -5090,6 +5210,10 @@ class AutomationPage(QWidget):
             trigger = self.obs_trigger_store.get(trigger_id)
             detail = OBS_TRIGGER_TYPES.get(trigger.event_type, trigger.event_type) if trigger else "OBS event"
             prompt = f"Remove the {detail} trigger but keep the routine?"
+        elif kind == "music":
+            trigger = self.music_trigger_store.get(trigger_id)
+            detail = MUSIC_TRIGGER_TYPES.get(trigger.event_type, trigger.event_type) if trigger else "Music event"
+            prompt = f"Remove the {detail} trigger but keep the routine?"
         else:
             command = self.trigger_store.get(trigger_id)
             if command is None:
@@ -5108,6 +5232,8 @@ class AutomationPage(QWidget):
                 self.core_trigger_store.delete(trigger_id)
             elif kind == "obs":
                 self.obs_trigger_store.delete(trigger_id)
+            elif kind == "music":
+                self.music_trigger_store.delete(trigger_id)
             else:
                 self.trigger_store.delete(trigger_id, delete_routine=False)
         except (OSError, ValueError) as error:

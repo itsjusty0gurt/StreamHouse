@@ -67,8 +67,10 @@ from products.hub.integrations.music_player import (
     MusicPlayerConfig,
     MusicPlayerConfigStore,
     MusicPlayerService,
+    MusicPlayerEvent,
     MusicVariableProvider,
 )
+from products.hub.integrations.music_triggers import MusicTriggerStore
 from products.hub.automation.service import AutomationService
 from products.hub.automation.models import TriggerEvent
 from products.hub.automation.custom_variables import CustomVariableStore
@@ -398,6 +400,7 @@ class MainWindow(QMainWindow):
         obs_service: ObsWebSocketService | None = None,
         obs_config_store: ObsConfigStore | None = None,
         obs_trigger_store: ObsTriggerStore | None = None,
+        music_trigger_store: MusicTriggerStore | None = None,
         soundboard_store: SoundboardStore | None = None,
         soundboard_server: SoundboardLocalServer | None = None,
         soundboard_relay_config_store: SoundboardRelayConfigStore | None = None,
@@ -472,6 +475,10 @@ class MainWindow(QMainWindow):
             )
         self.music_player_service = MusicPlayerService(parent=self)
         self.music_player_service.configure(self.music_player_config)
+        self.music_trigger_store = music_trigger_store or MusicTriggerStore(
+            routine_store.path.with_name("music_triggers.json"),
+            routine_store,
+        )
         self.channel_information_store = (
             channel_information_store
             or ChannelInformationStore(data_root / "twitch" / "channel-information.json")
@@ -736,6 +743,17 @@ class MainWindow(QMainWindow):
                 f"Could not load OBS automation triggers: {error}",
                 source="OBS",
             )
+        try:
+            self.music_trigger_store.load()
+        except (OSError, ValueError, json.JSONDecodeError) as error:
+            self.music_trigger_store.triggers = []
+            Logger.warning(
+                f"Could not load Music automation triggers: {error}",
+                source="AUTOMATION",
+            )
+        self.music_player_service.automation_event.connect(
+            self._handle_music_automation_event
+        )
         try:
             self.chatter_history.load()
         except (OSError, ValueError, json.JSONDecodeError) as error:
@@ -2832,6 +2850,7 @@ class MainWindow(QMainWindow):
             self.twitch_event_trigger_store,
             self.core_trigger_store,
             self.obs_trigger_store,
+            self.music_trigger_store,
             self.task_registry,
             self.automation_service,
             obs_service=self.obs_service,
@@ -3011,6 +3030,23 @@ class MainWindow(QMainWindow):
             elif execution.handled:
                 Logger.warning(
                     f'OBS automation failed for "{obs_event.event_type}".',
+                    source="AUTOMATION",
+                )
+
+    @Slot(object)
+    def _handle_music_automation_event(self, music_event: MusicPlayerEvent) -> None:
+        for trigger in self.music_trigger_store.evaluate(music_event):
+            execution = self.automation_service.publish_trigger(trigger)
+            label = music_event.event_type.replace(".", " ").title()
+            self.automation_page.record_execution(execution, f"Music — {label}")
+            if execution.succeeded:
+                Logger.info(
+                    f'Executed Music automation for "{music_event.event_type}".',
+                    source="AUTOMATION",
+                )
+            elif execution.handled:
+                Logger.warning(
+                    f'Music automation failed for "{music_event.event_type}".',
                     source="AUTOMATION",
                 )
 
@@ -8472,6 +8508,7 @@ class MainWindow(QMainWindow):
         self.twitch_event_trigger_store.load()
         self.core_trigger_store.load()
         self.obs_trigger_store.load()
+        self.music_trigger_store.load()
         self.automation_queue_store.load()
         self.custom_variable_store.load()
         self.channel_information_store.load()
@@ -8577,6 +8614,7 @@ class MainWindow(QMainWindow):
                     + len(self.twitch_event_trigger_store.triggers)
                     + len(self.core_trigger_store.triggers)
                     + len(self.obs_trigger_store.triggers)
+                    + len(self.music_trigger_store.triggers)
                 ),
                 "commands": len(self.twitch_command_trigger_store.triggers),
                 "queues": len(self.automation_queue_store.queues),
@@ -8590,6 +8628,7 @@ class MainWindow(QMainWindow):
                 "event_triggers": self.twitch_event_trigger_store.VERSION,
                 "core_triggers": self.core_trigger_store.VERSION,
                 "obs_triggers": self.obs_trigger_store.VERSION,
+                "music_triggers": self.music_trigger_store.VERSION,
                 "queues": self.automation_queue_store.VERSION,
                 "chatter": self.chatter_history.VERSION,
                 "first_message": self.twitch_event_trigger_store.FIRST_MESSAGE_STATE_VERSION,

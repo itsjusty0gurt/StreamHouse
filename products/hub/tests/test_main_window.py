@@ -75,6 +75,7 @@ from products.hub.twitch.models import (
 )
 from products.hub.ui.main_window import MainWindow
 from products.hub.integrations.music_player import MusicConnectionState
+from products.hub.integrations.music_triggers import MUSIC_TRIGGER_TYPES
 from products.hub.ui.automation_page import (
     RunHistoryDetailsDialog,
     TaskEditorDialog,
@@ -982,7 +983,7 @@ class MainWindowTests(unittest.TestCase):
         add_menu = page._add_trigger_submenu(menu)
         self.assertEqual(
             [action.text() for action in add_menu.actions()],
-            ["Core", "OBS", "Twitch"],
+            ["Core", "OBS", "Music", "Twitch"],
         )
         self.assertEqual(
             [action.text() for action in add_menu.actions()[0].menu().actions()],
@@ -999,9 +1000,13 @@ class MainWindowTests(unittest.TestCase):
         )
         self.assertEqual(
             [action.text() for action in add_menu.actions()[2].menu().actions()],
+            list(MUSIC_TRIGGER_TYPES.values()),
+        )
+        self.assertEqual(
+            [action.text() for action in add_menu.actions()[3].menu().actions()],
             ["Chat", "Ads", "Channel Point Redemption…", "Events"],
         )
-        twitch_menu = add_menu.actions()[2].menu()
+        twitch_menu = add_menu.actions()[3].menu()
         self.assertEqual(
             [action.text() for action in twitch_menu.actions()[0].menu().actions()],
             ["Chat Command…", "Keyword / Phrase…", "First Message Of Stream"],
@@ -1057,7 +1062,7 @@ class MainWindowTests(unittest.TestCase):
         page.select_routine(routine.routine_id)
         menu = QMenu()
         add_menu = page._add_trigger_submenu(menu)
-        twitch_menu = add_menu.actions()[2].menu()
+        twitch_menu = add_menu.actions()[3].menu()
         event_menu = twitch_menu.actions()[3].menu()
 
         event_menu.actions()[0].trigger()
@@ -1084,6 +1089,23 @@ class MainWindowTests(unittest.TestCase):
         self.assertEqual(len(triggers), 1)
         self.assertEqual(triggers[0].event_type, "CurrentProgramSceneChanged")
         self.assertEqual(triggers[0].filters, {})
+        self.assertTrue(triggers[0].enabled)
+
+    def test_music_menu_adds_selected_trigger_directly(self) -> None:
+        routine = self.twitch_command_trigger_store.routine_store.add(
+            "Direct Music trigger"
+        )
+        page = self.window.automation_page
+        page.select_routine(routine.routine_id)
+        menu = QMenu()
+        add_menu = page._add_trigger_submenu(menu)
+        music_menu = add_menu.actions()[2].menu()
+
+        music_menu.actions()[0].trigger()
+
+        triggers = page.music_trigger_store.for_routine(routine.routine_id)
+        self.assertEqual(len(triggers), 1)
+        self.assertEqual(triggers[0].event_type, "track.changed")
         self.assertTrue(triggers[0].enabled)
 
     def test_variable_help_does_not_fabricate_trigger_context(self) -> None:
@@ -2046,6 +2068,7 @@ class MainWindowTests(unittest.TestCase):
             timer_maximum_unit="minutes",
             enabled=False,
         )
+        self.window.music_trigger_store.add(routine.routine_id, "track.changed")
 
         page = self.window.automation_page
         page.select_routine(routine.routine_id)
@@ -2062,6 +2085,10 @@ class MainWindowTests(unittest.TestCase):
         )
         self.assertIn(("Twitch — Incoming Raid", "Any raid"), contents)
         self.assertIn(("OBS — Scene Changed", "Scene BRB"), contents)
+        self.assertIn(
+            ("Music — Track Changed", "When the local player reports this transition"),
+            contents,
+        )
         self.assertIn(("Timer", "Every 10 minutes"), contents)
         random_card = contents[("Timer", "Random: 5–10 minutes")]
         self.assertFalse(random_card.content.enabled)

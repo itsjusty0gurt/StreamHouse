@@ -23,6 +23,7 @@ from products.hub.counters.models import CounterDefinition
 from products.hub.counters.store import COUNTER_VERSION, INDEX_VERSION, CounterStore
 from products.hub.obs_service.config import ObsConnectionConfig
 from products.hub.obs_service.triggers import ObsTriggerStore
+from products.hub.integrations.music_triggers import MusicTriggerStore
 from products.hub.twitch.automation_triggers import TwitchEventTriggerStore
 from products.hub.twitch.channel_information import ChannelInformationStore
 from products.hub.twitch.chatter_history import (
@@ -269,6 +270,7 @@ class BackupManager:
                             "twitch_triggers": TwitchEventTriggerStore.VERSION,
                             "core_triggers": CoreTriggerStore.VERSION,
                             "obs_triggers": ObsTriggerStore.VERSION,
+                            "music_triggers": MusicTriggerStore.VERSION,
                             "queues": AutomationQueueStore.VERSION,
                             "custom_variables": CustomVariableStore.VERSION,
                             "counter_definitions": INDEX_VERSION,
@@ -616,6 +618,7 @@ class BackupManager:
                 CoreTriggerStore.VERSION,
             ),
             ("obs", "obs/triggers.json", ObsTriggerStore.VERSION),
+            ("music", "automation/music_triggers.json", MusicTriggerStore.VERSION),
         )
         for label, relative, version in trigger_sources:
             default = {"version": version, "triggers": []}
@@ -979,6 +982,7 @@ class BackupManager:
             "twitch": "twitch/event_triggers.json",
             "core": "automation/core_triggers.json",
             "obs": "obs/triggers.json",
+            "music": "automation/music_triggers.json",
         }
         for name, store in payload.get("triggers", {}).items():
             if name in trigger_paths:
@@ -1330,6 +1334,9 @@ class BackupManager:
                 obs_path = root / "obs/triggers.json"
                 if obs_path.exists():
                     ObsTriggerStore(obs_path, routines).load()
+                music_path = root / "automation/music_triggers.json"
+                if music_path.exists():
+                    MusicTriggerStore(music_path, routines).load()
                 channel_path = root / "twitch/channel-information.json"
                 if channel_path.exists():
                     ChannelInformationStore(channel_path).load()

@@ -10,6 +10,7 @@ from products.hub.automation.routines import RoutineStore
 from products.hub.automation.tasks import TaskRegistry
 from products.hub.automation.transfer import export_routine, import_routine, validate_import
 from products.hub.obs_service.triggers import ObsTriggerStore
+from products.hub.integrations.music_triggers import MusicTriggerStore
 from products.hub.twitch.automation_triggers import TwitchEventTriggerStore
 from products.hub.twitch.commands import TwitchCommandTriggerStore
 
@@ -49,6 +50,7 @@ class AutomationTransferTests(unittest.TestCase):
             "event_store": TwitchEventTriggerStore(root / "events.json", routines),
             "core_store": CoreTriggerStore(root / "core.json", routines),
             "obs_store": ObsTriggerStore(root / "obs.json", routines),
+            "music_store": MusicTriggerStore(root / "music.json", routines),
         }
 
     def test_routine_round_trip_regenerates_ids_and_preserves_structure(self) -> None:
@@ -187,6 +189,28 @@ class AutomationTransferTests(unittest.TestCase):
         self.assertEqual(saved.timer_mode, "random")
         self.assertEqual(saved.timer_minimum, "30")
         self.assertEqual(saved.timer_maximum, "60")
+
+    def test_music_trigger_round_trip_preserves_event_and_enabled_state(self) -> None:
+        routine = self.stores["routine_store"].add("Now Playing")
+        self.stores["music_store"].add(
+            routine.routine_id,
+            "track.changed",
+            enabled=False,
+        )
+        payload = export_routine(routine, **self.stores)
+        destination = self.make_stores(self.root / "music-destination")
+
+        imported = import_routine(
+            payload,
+            group_id="",
+            task_registry=self.registry,
+            **destination,
+        )
+
+        triggers = destination["music_store"].for_routine(imported.routine_id)
+        self.assertEqual(len(triggers), 1)
+        self.assertEqual(triggers[0].event_type, "track.changed")
+        self.assertFalse(triggers[0].enabled)
 
     def test_import_detects_command_conflict(self) -> None:
         command = self.stores["command_store"].add("hello", "Hello!")
