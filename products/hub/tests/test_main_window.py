@@ -4109,7 +4109,7 @@ class MainWindowTests(unittest.TestCase):
                 )
 
     def test_obs_connection_is_below_twitch_group_and_saves_automatically(self) -> None:
-        layout = self.window.connections_page.layout()
+        layout = self.window.connections_content_layout
         self.assertLess(
             layout.indexOf(self.window.twitch_connections_group),
             layout.indexOf(self.window.obs_connection_group),
@@ -4124,7 +4124,7 @@ class MainWindowTests(unittest.TestCase):
         self.assertEqual(config.host, "192.168.1.50")
 
     def test_optional_music_player_connection_is_discovered_and_user_controlled(self) -> None:
-        layout = self.window.connections_page.layout()
+        layout = self.window.connections_content_layout
         self.assertLess(
             layout.indexOf(self.window.obs_connection_group),
             layout.indexOf(self.window.music_player_connection_group),
@@ -4164,6 +4164,59 @@ class MainWindowTests(unittest.TestCase):
         )
         self.assertFalse(self.window.music_player_connect_button.isEnabled())
         self.assertTrue(self.window.music_player_disconnect_button.isEnabled())
+
+    def test_connections_body_scrolls_instead_of_compressing_health_rows(self) -> None:
+        scroll = self.window.connections_scroll_area
+        content = self.window.connections_content
+        health = self.window.twitch_health_group
+        page_layout = self.window.connections_page.layout()
+
+        self.assertIs(
+            page_layout.itemAt(0).widget(),
+            self.window.connections_page_header,
+        )
+        self.assertIs(page_layout.itemAt(1).widget(), scroll)
+        self.assertTrue(scroll.widgetResizable())
+        self.assertIs(scroll.widget(), content)
+        self.assertEqual(
+            scroll.horizontalScrollBarPolicy(),
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff,
+        )
+        self.assertEqual(
+            content.sizePolicy().horizontalPolicy(),
+            QSizePolicy.Policy.Ignored,
+        )
+        self.assertEqual(
+            content.sizePolicy().verticalPolicy(),
+            QSizePolicy.Policy.Minimum,
+        )
+        self.assertEqual(
+            health.sizePolicy().verticalPolicy(),
+            QSizePolicy.Policy.Minimum,
+        )
+        self.assertEqual(
+            health.layout().rowWrapPolicy(),
+            health.layout().RowWrapPolicy.WrapLongRows,
+        )
+
+        self.window.show_connections()
+        self.window.show()
+        self.window.resize(600, 400)
+        self.application.processEvents()
+
+        self.assertGreater(scroll.verticalScrollBar().maximum(), 0)
+        self.assertEqual(scroll.horizontalScrollBar().maximum(), 0)
+        self.assertGreaterEqual(health.height(), health.minimumSizeHint().height())
+
+    def test_connections_body_does_not_scroll_when_all_content_fits(self) -> None:
+        scroll = self.window.connections_scroll_area
+        content_height = self.window.connections_content.minimumSizeHint().height()
+        scroll.resize(900, content_height + 40)
+        scroll.show()
+        self.application.processEvents()
+
+        self.assertEqual(scroll.verticalScrollBar().maximum(), 0)
+        self.assertEqual(scroll.horizontalScrollBar().maximum(), 0)
 
     def test_obs_default_audio_input_saves_and_resolves_muted_variable(self) -> None:
         self.window.obs_config_store.save = Mock()

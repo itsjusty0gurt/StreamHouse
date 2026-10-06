@@ -1506,6 +1506,26 @@ class MainWindow(QMainWindow):
         self.ui.verticalLayout.insertWidget(2, self.connections_button)
         self.connections_page = QWidget()
         connections_layout = QVBoxLayout(self.connections_page)
+        self.connections_scroll_area = QScrollArea(self.connections_page)
+        self.connections_scroll_area.setObjectName("connectionsScrollArea")
+        self.connections_scroll_area.setWidgetResizable(True)
+        self.connections_scroll_area.setFrameShape(QFrame.Shape.NoFrame)
+        self.connections_scroll_area.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        self.connections_scroll_area.setVerticalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded
+        )
+        self.connections_content = QWidget(self.connections_scroll_area)
+        self.connections_content.setObjectName("connectionsContent")
+        self.connections_content.setSizePolicy(
+            QSizePolicy.Policy.Ignored,
+            QSizePolicy.Policy.Minimum,
+        )
+        self.connections_content_layout = QVBoxLayout(self.connections_content)
+        self.connections_content_layout.setContentsMargins(0, 0, 0, 0)
+        self.connections_scroll_area.setWidget(self.connections_content)
+        connections_layout.addWidget(self.connections_scroll_area, 1)
         self.twitch_connections_group = QGroupBox("Twitch")
         self.twitch_connections_group.setObjectName("twitchConnectionsGroup")
         twitch_connections_layout = QVBoxLayout(self.twitch_connections_group)
@@ -1647,7 +1667,12 @@ class MainWindow(QMainWindow):
         twitch_connections_layout.addWidget(bot_account_group)
         health_group = QGroupBox("Connection Health")
         self.twitch_health_group = health_group
+        health_group.setSizePolicy(
+            QSizePolicy.Policy.Preferred,
+            QSizePolicy.Policy.Minimum,
+        )
         health_layout = QFormLayout(health_group)
+        health_layout.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
         self.health_auth_label = QLabel("Signed out")
         self.health_bot_auth_label = QLabel("Signed out")
         self.health_chat_label = QLabel("Disconnected")
@@ -1671,10 +1696,10 @@ class MainWindow(QMainWindow):
         health_layout.addRow("", self.health_retry_button)
         twitch_connections_layout.addWidget(health_group)
         twitch_connections_layout.addWidget(self.ui.twitchErrorLabel)
-        connections_layout.addWidget(self.twitch_connections_group)
-        connections_layout.addWidget(obs_group)
-        connections_layout.addWidget(music_group)
-        connections_layout.addStretch()
+        self.connections_content_layout.addWidget(self.twitch_connections_group)
+        self.connections_content_layout.addWidget(obs_group)
+        self.connections_content_layout.addWidget(music_group)
+        self.connections_content_layout.addStretch()
         self.ui.mainStack.addWidget(self.connections_page)
 
         stats = QGroupBox("Stream Overview", self.ui.twitchPage)
