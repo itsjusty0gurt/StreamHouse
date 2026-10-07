@@ -1,18 +1,24 @@
 # Streamhouse maintainer context
 
-Streamhouse is pre-alpha. Read and follow
+Streamhouse Hub is in public Alpha. Read and follow
 `docs/architecture/development-policy.md` for every architecture, persistence,
-migration, compatibility, Variables, or rebrand change. Before the first
-external Alpha, clean intended architecture takes priority over compatibility
-with disposable development-era data.
+migration, compatibility, Variables, or rebrand change. User data takes
+precedence over implementation convenience. Every publicly shipped Hub schema
+is a supported upgrade input, even when the runtime implementation is replaced.
 
-- Do not preserve obsolete systems, aliases, formats, or fallback paths solely
-  for private pre-alpha data. Migrate active consumers and remove the replaced
-  implementation, compatibility code, dead tests, and obsolete documentation.
-- Development routines, variables, counters, profiles, UI state, and other
-  local development data may be reset when that materially improves the design.
-- Prefer preserving encrypted Twitch tokens when easy, but never at the cost of
-  poor architecture. Never expose credentials or secrets.
+- Protect user data, not obsolete architecture. Upgrade publicly shipped data
+  through isolated migration boundaries, then run only the current schema and
+  implementation. Do not add permanent shims, dual reads/writes, or parallel
+  old/new runtimes.
+- Before a destructive migration, create a recoverable safety backup. A failed
+  migration must leave the original user data intact and must not publish mixed
+  or partially migrated durable state.
+- Never reset or discard publicly released routines, Variables, counters,
+  profiles, settings, credentials, or other user-owned state as a development
+  shortcut. Only formats that were never publicly released remain disposable,
+  and that exception must be verified and documented.
+- Preserve encrypted Twitch tokens and other credentials across upgrades.
+  Never expose credentials or secrets.
 - Treat compatibility for deployed external services, third-party contracts,
   security obligations, or intentionally supported releases separately and
   document the concrete requirement.

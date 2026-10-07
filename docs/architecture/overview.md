@@ -21,8 +21,8 @@ Read only the sections relevant to the task:
 This file describes the code that exists. The focused documents under `docs/`
 provide product behavior and policy detail:
 
-- `docs/architecture/development-policy.md` (authoritative pre-alpha engineering
-  and compatibility rules)
+- `docs/architecture/development-policy.md` (authoritative public Alpha user-data,
+  migration, and compatibility rules)
 - `docs/architecture/product-family.md` (canonical product-facing names)
 - `docs/hub/twitch.md`
 - `docs/ai/local-ai.md`
@@ -35,10 +35,11 @@ Product-facing branding is defined in the
 map uses the current code, executable, protocol, window-title, and storage
 identifiers.
 
-Streamhouse has not reached its first external Alpha. A transitional path
-described in this implementation map is not automatically an Alpha support
-requirement; apply `development-policy.md` when deciding whether to migrate or
-remove it.
+Streamhouse Hub Alpha 0.1 is the first public compatibility baseline. A schema
+or store shipped from that release onward is a supported upgrade input. A
+transitional runtime path is not automatically permanent; apply
+`development-policy.md` to migrate user data into the current architecture and
+then remove obsolete implementation paths.
 
 ## System at a glance
 
@@ -835,9 +836,11 @@ Variable precedence when preparing a trigger is:
 3. typed `automation.*` outputs are added as tasks execute.
 
 Custom creation is constrained to `custom.*`; its namespace cannot collide with
-provider-owned definitions. Pre-alpha custom-variable schema versions before
-version 3 are intentionally rejected for reset rather than migrated. Twitch
-authentication storage is independent and was not changed by this cleanup.
+provider-owned definitions. Custom-variable schema versions before version 3
+were never publicly released and are intentionally rejected for reset rather
+than migrated. Version 3 and later public schemas are supported upgrade inputs.
+Twitch authentication storage is independent and was not changed by this
+cleanup.
 
 `VariableRegistry`, its providers, and typed output definitions are now the only
 Variables metadata, validation, preview, resolution, and domain-write path.
@@ -864,8 +867,9 @@ use exact decimal arithmetic and persist as decimal strings; display rounding
 never changes the stored value. Optional singular/plural display units (for
 example `cup`/`cups`, `L`, or `points`) are presentation-only; canonical
 Variable values stay numeric. Renaming a counter does not change its storage
-file or canonical Variables. Counter storage is pre-alpha schema version 2;
-older private-development counter files are reset rather than migrated.
+file or canonical Variables. Counter schema version 2 is part of the public
+Alpha baseline; older, never-public development counter files reset rather than
+migrate.
 
 `CounterService` owns every mutation from the setup page, task providers, and
 registry-routed shared writes. It uses the real stream ID cached by the Twitch
@@ -984,11 +988,12 @@ current stream, not historical viewer analytics, and suppressed messages do not
 create Run History executions.
 
 `TwitchEventTriggerStore` schema v4 owns both trigger definitions and the shared
-First Message raid-suppression settings. An obsolete pre-Alpha trigger file is
-discarded during startup, its stable IDs are removed from routine links, and a
-clean v4 live/recovery pair is written before automatic Backup runs; the runtime
-loader and Backup do not accept the obsolete schema. Routine Backup projections
-retain the shared First Message settings alongside selected Twitch triggers.
+First Message raid-suppression settings. An obsolete trigger format that was
+never publicly released is discarded during startup, its stable IDs are removed
+from routine links, and a clean v4 live/recovery pair is written before automatic
+Backup runs. Publicly shipped versions require migration instead. Routine Backup
+projections retain the shared First Message settings alongside selected Twitch
+triggers.
 
 Keyword/Phrase is a separate chat concept from Chat Command. Its trigger
 context is fresh for one routine execution, keeps normal `user.*`/`chat.*`
@@ -1511,9 +1516,12 @@ Use these rules:
 2. `%LOCALAPPDATA%\Streamhouse`;
 3. a temporary `Streamhouse` directory if app data is unwritable.
 
-Sally-era data roots and environment aliases are not read or migrated. Private
-pre-alpha data may be reset. Twitch token storage remains under the current
-Streamhouse root and uses the current-user DPAPI contract described below.
+Sally-era data roots and environment aliases were removed before the public
+Alpha baseline and are not supported release inputs. Formats verified as never
+publicly shipped may still be reset under `development-policy.md`; data from
+Alpha 0.1 or any later public release may not. Twitch token storage remains
+under the current Streamhouse root and uses the current-user DPAPI contract
+described below.
 
 Qt application metadata and QSettings use organization `Streamhouse` with
 application names `Streamhouse Hub` and `Streamhouse AI`. Sally-era QSettings
@@ -1535,10 +1543,13 @@ the loader tries the independently validated `.bak`. The bad file is moved to a
 timestamped `corrupt/` sibling directory, never silently rewritten; a valid
 backup is restored as the live copy. If neither copy validates, startup may use
 an empty in-memory feature state so Hub can open, but the evidence remains
-quarantined and the error is logged. An exact unsupported pre-Alpha schema uses
-`UnsupportedJsonSchemaError` and follows the disposable-development-data reset
-policy instead; unsupported schema and current-schema corruption are not the
-same condition. Stale temp files never outrank a valid live file.
+quarantined and the error is logged. An exact unsupported schema that predates
+and was never included in the public Alpha baseline uses
+`UnsupportedJsonSchemaError` and follows the verified unreleased-development-
+data reset policy instead. A publicly shipped older schema must enter an
+isolated, safety-backed migration. Unsupported schema and current-schema
+corruption are not the same condition. Stale temp files never outrank a valid
+live file.
 A missing live file with a validated `.bak` is recovered from that backup; an
 uncommitted temp file is never treated as the committed candidate.
 
@@ -1553,18 +1564,19 @@ attempts both stores independently; a failure keeps the diagnostics active
 marker so the next launch reports that the prior session did not complete a
 fully clean shutdown.
 
-Current pre-alpha stores require their exact current schema and direct
-developers to reset discarded private-development data. This includes Hub/AI
-settings, routines, queues, custom Variables, Channel Information, Counters,
-commands, Core/Twitch/OBS triggers, soundboard and relay configuration,
-activity, chatter, and stream sessions. Their loaders retain current-schema
-validation and same-schema backup recovery, but do not silently migrate
-unversioned or obsolete private-development formats.
+At the Alpha 0.1 baseline, stores require their exact current schema. The
+documented reset paths for settings, routines, queues, custom Variables, Channel
+Information, Counters, commands, triggers, soundboard/relay configuration,
+activity, chatter, and stream sessions apply only to obsolete formats verified
+as never publicly released. From Alpha 0.1 onward, older public schemas are
+supported migration inputs: their loaders retain strict current-schema
+validation and same-schema backup recovery, while isolated migration code owns
+old-to-current conversion.
 
-Hub Settings startup has a deliberate pre-Alpha initialization boundary around
+Hub Settings startup has a deliberate unreleased-format initialization boundary around
 the strict v4 loader. A current live file loads without rewriting. An obsolete
 live file first recovers a validated current `.bak` when one exists; otherwise
-the obsolete portable preferences are discarded and authoritative v4 defaults
+the obsolete, never-public preferences are discarded and authoritative v4 defaults
 are atomically published to both live and recovery files. Missing live data is
 created as v4. Current-schema corruption still follows quarantine and validated
 same-schema recovery, and an unrecoverable or failed reset aborts startup rather
@@ -1575,7 +1587,7 @@ part of this reset.
 Commands, durable Custom Variables, and Channel Information use the same strict
 runtime/startup separation for their current schemas (v6, v3, and v3). Ordinary
 loads accept only the current schema. Startup restores a validated current
-recovery copy when available; otherwise an obsolete pre-Alpha live/recovery pair
+recovery copy when available; otherwise an obsolete, never-public live/recovery pair
 is discarded and a current durable store is atomically published before normal
 Hub composition continues. Missing stores are also initialized durably. Current
 schema corruption retains the shared quarantine and same-schema recovery rules,
@@ -1627,11 +1639,11 @@ identifiers or filename formats are accepted.
 | `automation/queues.json` | Hub | schema v1 Default Queue/custom definitions; pending items are volatile |
 | `automation/variables.json` | Hub | schema v3 global values; session/routine values are volatile |
 | `twitch/commands.json` | Hub | schema v6 configured commands and template provenance; templates stay in code |
-| `twitch/channel-information.json` | Hub | pre-alpha schema v3 committed social links/inclusion, schedule, rules, and server information; automatic Variables with no exposure flags; older development schemas reset |
-| `counters/index.json` | Hub | pre-alpha schema v2 definitions: stable ID, labels, scopes, numeric type, reset/minimum, and display precision |
+| `twitch/channel-information.json` | Hub | schema v3 committed social links/inclusion, schedule, rules, and server information; automatic Variables with no exposure flags; only never-public development schemas reset |
+| `counters/index.json` | Hub | schema v2 definitions: stable ID, labels, scopes, numeric type, reset/minimum, and display precision |
 | `counters/<counter_id>.json` | Hub | schema v2 atomic values stored as exact decimal strings; shared/current-stream and Twitch-user-ID keyed values |
 | `twitch/event_triggers.json` | Hub | schema v4 EventSub, stable-ID Channel Point Redemption, shared First Message raid-suppression settings, first-message, Keyword/Phrase, and Ads triggers |
-| `twitch/first_message_state.json` | Hub | schema v2 current-stream First Message viewer IDs, offline-grace timestamp, and active raid-suppression expiry; obsolete/malformed pre-alpha state resets |
+| `twitch/first_message_state.json` | Hub | schema v2 current-stream First Message viewer IDs, offline-grace timestamp, and active raid-suppression expiry; runtime state is not portable user configuration |
 | `twitch/soundboard.json` | Hub | schema v1 pages, buttons, routine IDs |
 | `twitch/soundboard-relay.json` | Hub | v1 non-secret relay URL/channel/autoconnect |
 | `obs/connection.json` | Hub | v1 non-secret OBS host/port/autoconnect |
@@ -1654,7 +1666,11 @@ Window geometry/state uses Qt `QSettings`, not the JSON stores.
 
 ### Alpha 0.1 data-contract baseline
 
-Alpha 0.1 becomes the first external compatibility baseline when it is released.
+Alpha 0.1 is the first external compatibility baseline.
+User data takes precedence over implementation convenience: every schema/store
+shipped in Alpha 0.1 or a later public release is a supported upgrade input.
+Failed migration must preserve the original data and must not publish mixed
+state; a recoverable safety backup precedes destructive transformation.
 Backward compatibility protects user data by upgrading an old persisted component
 into the current architecture; it does not preserve the old runtime architecture.
 Each feature service loads one exact current schema. Future old-schema and old-backup
@@ -1699,10 +1715,10 @@ transform an older component before this current-schema planning/validation path
 No current feature store is permitted to load an old Backup schema directly.
 
 The schemas, migration boundaries, and single-writer startup protection are
-suitable for the first external baseline. Atomic replacement protects file
+suitable for the public Alpha baseline. Atomic replacement protects file
 integrity and the data-root instance lock prevents two Hub processes from writing
-different valid snapshots concurrently. Alpha 0.1 may therefore be declared the
-first external data-contract compatibility baseline when it is released.
+different valid snapshots concurrently. Alpha 0.1 is therefore the first
+external data-contract compatibility baseline.
 
 ### Secret files
 
@@ -1977,16 +1993,16 @@ result, and explicit memory disable.
 
 For each persisted schema:
 
-1. identify whether the change is before or after the first external Alpha;
-2. before Alpha, prefer the clean intended schema and reset disposable
-   development data instead of building substantial compatibility machinery;
-3. at/after Alpha, version saved-data changes and consider migration, rollback,
-   breaking-change, and compatibility implications explicitly;
+1. identify the earliest public release that shipped the component/schema;
+2. treat every publicly shipped schema as supported user-data input and test its
+   old-to-current upgrade path;
+3. version saved-data changes and require an isolated migration, safety backup,
+   rollback, and explicit compatibility review;
 4. reject newer unknown versions where versioned stores require it;
 5. write atomically and use a temporary path in tests;
 6. decide backup, diagnostics, deletion, privacy, and secret handling; and
-7. test the current schema plus only migrations intentionally supported under
-   `development-policy.md`.
+7. test the current schema plus every migration required from supported public
+   releases under `development-policy.md`.
 
 ### Changing UI
 

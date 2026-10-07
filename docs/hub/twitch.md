@@ -197,13 +197,14 @@ configuration before publishing the committed value. On an ordinary write
 failure, already-written files and their backups are restored; the page keeps
 the draft and displays a row error. This is not a cross-file, crash-recovery
 database transaction: interruption/power loss during a multi-file write remains
-a persistence limitation. The current pre-alpha Channel Information schema is
-v3, without exposure fields; older development schemas are rejected/reset, not
-migrated. Twitch authentication is unrelated and unchanged.
+a persistence limitation. Channel Information schema v3, without exposure
+fields, is part of the public Alpha baseline. Older schemas that never shipped
+publicly are rejected/reset; any future publicly shipped older schema requires
+an isolated migration. Twitch authentication is unrelated and unchanged.
 
 Default Channel Information commands use these canonical Variables directly;
-obsolete pre-alpha routines containing removed Get tasks are rejected/reset
-rather than supported by a compatibility path.
+obsolete routines containing removed Get tasks that never shipped publicly are
+rejected/reset rather than supported by a compatibility path.
 
 `core.format_duration` and `core.select_text` provide reusable formatting and
 conditional response selection. Every output is routine-scoped and described
@@ -260,18 +261,20 @@ backup. Command triggers persist in the exact current v6 schema at
 `twitch/commands.json`; their managed routines and the Commands group persist at
 `automation/routines.json`. The six self-contained defaults are materialized on
 load when absent; unconfigured setup-dependent templates are not persisted in
-either file. The private-development v5 seeded-default format is rejected, not
-migrated. Both stores are included in current Streamhouse Hub backups.
+either file. The never-public v5 seeded-default format is rejected, not
+migrated. Publicly shipped command schemas require forward migration. Both
+stores are included in current Streamhouse Hub backups.
 Chatter records require the current management-only schema v8. It persists
 stable identity, local group/bot classification, known Twitch status,
 first/last seen, and aggregate participation counts. It rejects message text,
 message samples, memories/evidence, private notes, and timeline content; schema
-v7 is discarded before Alpha rather than migrated. Malformed identities and
+v7 was discarded before Alpha rather than migrated. Malformed identities and
 unsupported local group values are discarded or normalized at the store
 boundary. Activity history requires schema v2 and uses
 stable Twitch user IDs for viewer deletion; stream-session history requires
 schema v1 while preserving a current incomplete session across a restart.
-Older private-development schemas are rejected/reset. These history files
+Older schemas verified as never publicly released are rejected/reset. Publicly
+shipped versions require migration. These history files
 retain same-schema last-known-good backup recovery.
 
 The channel snapshot refresh reads Twitch's ad schedule with `channel:read:ads`.
