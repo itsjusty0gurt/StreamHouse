@@ -367,7 +367,21 @@ def _trigger_entry(
             ),
         )
     elif trigger_id == "channel.chat.first_message":
-        configuration = ("Reset window and normal enabled state.",)
+        configuration = (
+            "Tracks each viewer's first message for the current authoritative Twitch stream.",
+            "Hub resets the seen-viewer state automatically when Twitch reports a new stream ID.",
+            "Your Channel → Users can enable or disable the existing First Message triggers and reset the current stream for testing.",
+        )
+        additional_sections = (
+            WikiSection(
+                "Manual reset",
+                (
+                    "Reset First Words for Current Stream lets viewers trigger again during the same stream.",
+                    "The reset does not delete users, groups, roles, counters, or other chatter data.",
+                    "Incoming-raid suppression is separate and remains active after a manual reset.",
+                ),
+            ),
+        )
     elif "channel_points" in trigger_id:
         configuration = ("Any custom reward or one selected reward.",)
     elif trigger_id in OBS_TRIGGER_TYPES:

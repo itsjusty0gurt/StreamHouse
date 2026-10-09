@@ -2994,7 +2994,10 @@ class MainWindow(QMainWindow):
             lambda: self.current_memory_stream_id if self.stream_is_live else "",
             profile, self._open_chat_user, self._show_chatter_context_menu,
             self.user_groups,
-            self._count_user_group_references, self.channel_tabs,
+            self._count_user_group_references,
+            self.twitch_event_trigger_store,
+            self.automation_page.refresh,
+            self.channel_tabs,
         )
         self.channel_tabs.addTab(self.chat_user_page, "Users")
 

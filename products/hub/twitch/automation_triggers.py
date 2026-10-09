@@ -855,6 +855,56 @@ class TwitchEventTriggerStore:
             self._offline_since = now
             self._persist_first_message_state()
 
+    def first_message_trigger_counts(self) -> tuple[int, int]:
+        """Return enabled and total First Message trigger counts."""
+        triggers = tuple(
+            trigger
+            for trigger in self.triggers
+            if trigger.event_type == "channel.chat.first_message"
+        )
+        return sum(trigger.enabled for trigger in triggers), len(triggers)
+
+    def first_message_stream_status(self) -> tuple[bool, int]:
+        """Return active-stream state and unique viewers tracked for it."""
+        active = bool(self._stream_key and self._offline_since is None)
+        identities: set[str] = set()
+        for trigger in self.triggers:
+            if trigger.event_type == "channel.chat.first_message":
+                identities.update(self._first_message_seen.get(trigger.trigger_id, ()))
+        return active, len(identities)
+
+    def set_first_message_triggers_enabled(self, enabled: bool) -> bool:
+        """Set the existing per-trigger enabled flags as one management action."""
+        matching = [
+            trigger
+            for trigger in self.triggers
+            if trigger.event_type == "channel.chat.first_message"
+        ]
+        if not matching:
+            return False
+        previous = [trigger.enabled for trigger in matching]
+        for trigger in matching:
+            trigger.enabled = bool(enabled)
+        try:
+            self.save()
+        except OSError:
+            for trigger, was_enabled in zip(matching, previous, strict=True):
+                trigger.enabled = was_enabled
+            raise
+        return True
+
+    def reset_current_stream_first_messages(self) -> bool:
+        """Clear only seen-viewer state for the current active stream.
+
+        Raid suppression and the authoritative stream identity deliberately remain
+        untouched so a manual testing reset cannot weaken raid safeguards.
+        """
+        if not self._stream_key or self._offline_since is not None:
+            return False
+        self._first_message_seen.clear()
+        self._persist_first_message_state()
+        return True
+
     def evaluate_first_message(
         self,
         message: TwitchMessage,

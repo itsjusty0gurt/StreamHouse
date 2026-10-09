@@ -670,6 +670,82 @@ class TwitchEventTriggerStoreTests(unittest.TestCase):
         self.assertEqual(first[0].context["message"], "hello")
         self.assertEqual(repeated, ())
 
+    def test_manual_current_stream_reset_allows_viewer_again(self) -> None:
+        routine = self.routines.add("Welcome viewers")
+        trigger = self.store.add(routine.routine_id, "channel.chat.first_message")
+        started = datetime.now(timezone.utc)
+        message = TwitchMessage(
+            username="Viewer",
+            user_id="viewer-1",
+            text="hello",
+            received_at=started,
+        )
+        self.store.observe_stream({"id": "stream-1"}, started)
+        self.assertEqual(
+            len(self.store.evaluate_first_message(message, stream_is_live=True)),
+            1,
+        )
+
+        self.assertTrue(self.store.reset_current_stream_first_messages())
+
+        self.assertEqual(self.store._stream_key, "stream-1")
+        self.assertEqual(self.store._first_message_seen, {})
+        self.assertEqual(
+            len(self.store.evaluate_first_message(message, stream_is_live=True)),
+            1,
+        )
+        self.assertIn("id:viewer-1", self.store._first_message_seen[trigger.trigger_id])
+
+    def test_manual_reset_requires_active_stream_and_preserves_raid_suppression(self) -> None:
+        routine = self.routines.add("Welcome viewers")
+        self.store.add(routine.routine_id, "channel.chat.first_message")
+        self.assertFalse(self.store.reset_current_stream_first_messages())
+        started = datetime.now(timezone.utc)
+        self.store.observe_stream({"id": "stream-1"}, started)
+        self.store.evaluate(
+            event_with_condition(
+                "channel.raid",
+                {"from_broadcaster_user_id": "raider-1"},
+                {"to_broadcaster_user_id": "1000"},
+                received_at=started,
+            )
+        )
+        suppression_until = self.store._raid_suppression_until
+        suppression_deadline = self.store._raid_suppression_deadline
+
+        self.assertTrue(self.store.reset_current_stream_first_messages())
+
+        self.assertEqual(self.store._stream_key, "stream-1")
+        self.assertEqual(self.store._raid_suppression_until, suppression_until)
+        self.assertEqual(self.store._raid_suppression_deadline, suppression_deadline)
+        state = json.loads(
+            self.store.first_message_state_path.read_text(encoding="utf-8")
+        )
+        self.assertEqual(state["stream_id"], "stream-1")
+        self.assertEqual(state["raid_suppression_until"], suppression_until.isoformat())
+
+    def test_first_message_management_uses_existing_enabled_flags(self) -> None:
+        first_routine = self.routines.add("First welcome")
+        second_routine = self.routines.add("Second welcome")
+        first = self.store.add(first_routine.routine_id, "channel.chat.first_message")
+        second = self.store.add(
+            second_routine.routine_id,
+            "channel.chat.first_message",
+            enabled=False,
+        )
+        self.assertEqual(self.store.first_message_trigger_counts(), (1, 2))
+
+        self.assertTrue(self.store.set_first_message_triggers_enabled(False))
+        self.assertEqual(self.store.first_message_trigger_counts(), (0, 2))
+        self.assertFalse(self.store.get(first.trigger_id).enabled)
+        self.assertFalse(self.store.get(second.trigger_id).enabled)
+
+        self.assertTrue(self.store.set_first_message_triggers_enabled(True))
+        loaded_routines = RoutineStore(self.routines.path)
+        loaded = TwitchEventTriggerStore(self.store.path, loaded_routines)
+        loaded.load()
+        self.assertEqual(loaded.first_message_trigger_counts(), (2, 2))
+
     def test_incoming_raid_suppresses_first_messages_but_marks_viewers_seen(self) -> None:
         clock = [0.0]
         store = TwitchEventTriggerStore(

@@ -156,6 +156,24 @@ def test_unified_user_groups_reference_documents_system_and_custom_groups() -> N
     assert "{user.id}" in text
 
 
+def test_first_message_reference_documents_stream_controls_and_data_safety() -> None:
+    tasks, variables = _reference_sources()
+    entry = next(
+        item
+        for item in build_wiki_entries(tasks, variables)
+        if item.entry_id == "trigger:channel.chat.first_message"
+    )
+    text = entry.search_text()
+
+    assert "authoritative twitch stream" in text
+    assert "new stream id" in text
+    assert "your channel → users" in text
+    assert "reset first words for current stream" in text
+    assert "trigger again during the same stream" in text
+    assert "does not delete users" in text
+    assert "raid suppression is separate" in text
+
+
 def test_python_script_context_helpers_and_now_playing_example_are_documented() -> None:
     tasks, variables = _reference_sources()
     entries = build_wiki_entries(tasks, variables)

@@ -7,6 +7,7 @@ from uuid import uuid4
 
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, QTimer, Qt, Signal, Slot
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
@@ -87,6 +88,8 @@ class UsersPage(QWidget):
         context_menu,
         user_groups=None,
         group_reference_count: Callable[[str], int] | None = None,
+        first_message_store=None,
+        first_words_changed: Callable[[], None] | None = None,
         parent=None,
     ):
         super().__init__(parent)
@@ -95,6 +98,8 @@ class UsersPage(QWidget):
         self.context_menu = context_menu
         self.user_groups = user_groups
         self.group_reference_count = group_reference_count or (lambda _group_id: 0)
+        self.first_message_store = first_message_store
+        self.first_words_changed = first_words_changed or (lambda: None)
         self.selected_id = ""
         self._signature = None
         self._counter_pending = False
@@ -116,6 +121,22 @@ class UsersPage(QWidget):
         layout = QVBoxLayout(self)
         self.page_header = PageHeader("Users", parent=self)
         layout.addWidget(self.page_header)
+        self.first_words_group = QGroupBox("First Words of Stream")
+        first_words_layout = QVBoxLayout(self.first_words_group)
+        self.first_words_enabled = QCheckBox("Enable First Message triggers")
+        self.first_words_enabled.setTristate(True)
+        self.first_words_reset = QPushButton("Reset First Words for Current Stream")
+        first_words_layout.addWidget(self.first_words_enabled)
+        first_words_layout.addWidget(
+            self.first_words_reset, alignment=Qt.AlignmentFlag.AlignLeft
+        )
+        self.first_words_status = QLabel()
+        self.first_words_status.setWordWrap(True)
+        first_words_layout.addWidget(self.first_words_status)
+        self.first_words_feedback = QLabel()
+        self.first_words_feedback.setWordWrap(True)
+        first_words_layout.addWidget(self.first_words_feedback)
+        layout.addWidget(self.first_words_group)
         self.search = QLineEdit()
         self.search.setPlaceholderText("Search users by name or login…")
         layout.addWidget(self.search)
@@ -206,12 +227,15 @@ class UsersPage(QWidget):
         self.rename_group_button.clicked.connect(self._rename_group)
         self.delete_group_button.clicked.connect(self._delete_group)
         self.edit_counter.clicked.connect(self._edit_counter)
+        self.first_words_enabled.clicked.connect(self._set_first_words_enabled)
+        self.first_words_reset.clicked.connect(self._reset_first_words)
         self.counter_table.itemSelectionChanged.connect(self._counter_selection)
         self.timer = QTimer(self)
         self.timer.setInterval(1000)
         self.timer.timeout.connect(self._tick)
         self.timer.start()
         self._update_columns()
+        self._refresh_first_words_controls()
         self.refresh()
 
     def _tick(self):
@@ -220,7 +244,72 @@ class UsersPage(QWidget):
             if self.selected_id:
                 self._load_counters()
 
+    def _refresh_first_words_controls(self) -> None:
+        store = self.first_message_store
+        available = store is not None
+        self.first_words_group.setVisible(available)
+        if not available:
+            return
+        enabled, total = store.first_message_trigger_counts()
+        active, viewer_count = store.first_message_stream_status()
+        self.first_words_enabled.blockSignals(True)
+        if total and enabled == total:
+            state = Qt.CheckState.Checked
+        elif enabled:
+            state = Qt.CheckState.PartiallyChecked
+        else:
+            state = Qt.CheckState.Unchecked
+        self.first_words_enabled.setCheckState(state)
+        self.first_words_enabled.blockSignals(False)
+        self.first_words_enabled.setEnabled(bool(total))
+        self.first_words_reset.setEnabled(bool(total) and active)
+        if not total:
+            text = "Tracking unavailable — no First Message triggers are configured."
+        elif not active:
+            text = "No active Twitch stream."
+        elif not enabled:
+            text = "First Message triggers are disabled for this stream."
+        else:
+            noun = "viewer" if viewer_count == 1 else "viewers"
+            text = f"Tracking this stream · {viewer_count} {noun} tracked."
+            if enabled != total:
+                text += f" {enabled} of {total} triggers enabled."
+        self.first_words_status.setText(text)
+
+    def _set_first_words_enabled(self, enabled: bool) -> None:
+        store = self.first_message_store
+        if store is None:
+            return
+        try:
+            changed = store.set_first_message_triggers_enabled(enabled)
+        except OSError as error:
+            self.first_words_feedback.setText(f"Could not update First Words: {error}")
+        else:
+            self.first_words_feedback.setText(
+                "First Message triggers enabled."
+                if changed and enabled
+                else "First Message triggers disabled."
+                if changed
+                else "No First Message triggers are configured."
+            )
+            if changed:
+                self.first_words_changed()
+        self._refresh_first_words_controls()
+
+    def _reset_first_words(self) -> None:
+        store = self.first_message_store
+        if store is None:
+            return
+        if store.reset_current_stream_first_messages():
+            self.first_words_feedback.setText(
+                "First Words state reset for the current stream."
+            )
+        else:
+            self.first_words_feedback.setText("No active Twitch stream to reset.")
+        self._refresh_first_words_controls()
+
     def refresh(self, *, force=False):
+        self._refresh_first_words_controls()
         records = sorted(
             self.store.records.values(), key=lambda record: record.last_seen, reverse=True
         )

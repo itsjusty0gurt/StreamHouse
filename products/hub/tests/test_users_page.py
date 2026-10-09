@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from decimal import Decimal
 import os
 from pathlib import Path
@@ -19,6 +20,9 @@ from products.hub.counters.models import CounterDefinition
 from products.hub.counters.service import CounterService
 from products.hub.counters.store import CounterStore
 from products.hub.twitch.chatter_history import ChatterHistoryStore
+from products.hub.twitch.automation_triggers import TwitchEventTriggerStore
+from products.hub.automation.routines import RoutineStore
+from products.hub.twitch.models import TwitchMessage
 from products.hub.twitch.user_groups import (
     SYSTEM_BOTS_GROUP_ID,
     UserGroupService,
@@ -39,6 +43,14 @@ class UsersPageTests(unittest.TestCase):
         self.store = ChatterHistoryStore(self.chatter_path)
         self.counters = CounterService(CounterStore(root / "counters"))
         self.groups = UserGroupService(UserGroupStore(root / "user_groups.json"))
+        self.routines = RoutineStore(root / "routines.json")
+        self.first_messages = TwitchEventTriggerStore(
+            root / "event_triggers.json", self.routines
+        )
+        routine = self.routines.add("Welcome viewers")
+        self.first_message_trigger = self.first_messages.add(
+            routine.routine_id, "channel.chat.first_message"
+        )
         self.opened: list[str] = []
         self.menus: list[str] = []
         self.stream_id = "stream-1"
@@ -51,6 +63,7 @@ class UsersPageTests(unittest.TestCase):
             lambda _entry, user_id, _name: self.opened.append(user_id),
             lambda user_id, _name, _message_id: self.menus.append(user_id),
             self.groups,
+            first_message_store=self.first_messages,
         )
         self.page.resize(1100, 700)
         self.page.show()
@@ -105,6 +118,78 @@ class UsersPageTests(unittest.TestCase):
 
         self.page.search.clear()
         self.assertEqual(self.page.table.rowCount(), 2)
+
+    def test_first_words_controls_reset_only_current_stream_tracking(self) -> None:
+        self.add_user(
+            "1",
+            "JoeViewer",
+            "joe_login",
+            badges=("moderator", "subscriber"),
+            is_bot=True,
+        )
+        self.groups.assign_member(SYSTEM_BOTS_GROUP_ID, "1")
+        self.counters.create_counter(
+            CounterDefinition(
+                counter_id="points",
+                display_name="Points",
+                singular="point",
+                plural="points",
+            )
+        )
+        self.counters.set_value("points", "viewer_total", "7", user_id="1")
+        started = datetime.now().astimezone()
+        self.first_messages.observe_stream({"id": "stream-1"}, started)
+        message = TwitchMessage(
+            username="JoeViewer",
+            user_id="1",
+            user_login="joe_login",
+            text="hello",
+            received_at=started,
+        )
+        self.first_messages.evaluate_first_message(message, stream_is_live=True)
+        original_record = self.store.records["1"]
+        original_status = dict(original_record.twitch_status)
+
+        self.page._refresh_first_words_controls()
+        self.assertIn("1 viewer tracked", self.page.first_words_status.text())
+        self.page.first_words_reset.click()
+
+        self.assertEqual(self.first_messages._stream_key, "stream-1")
+        self.assertEqual(self.first_messages._first_message_seen, {})
+        self.assertIn("1", self.store.records)
+        self.assertTrue(self.store.records["1"].is_bot)
+        self.assertEqual(self.store.records["1"].twitch_status, original_status)
+        self.assertTrue(self.groups.is_member("1", SYSTEM_BOTS_GROUP_ID))
+        self.assertEqual(
+            self.counters.get_values("points", user_id="1").viewer_total,
+            Decimal("7"),
+        )
+        self.assertIn("reset for the current stream", self.page.first_words_feedback.text())
+        self.assertEqual(
+            len(self.first_messages.evaluate_first_message(message, stream_is_live=True)),
+            1,
+        )
+
+    def test_first_words_controls_use_existing_trigger_enabled_state(self) -> None:
+        self.first_messages.observe_stream({"id": "stream-1"})
+        self.page._refresh_first_words_controls()
+        self.assertEqual(
+            self.page.first_words_enabled.checkState(), Qt.CheckState.Checked
+        )
+
+        self.page._set_first_words_enabled(False)
+
+        self.assertFalse(
+            self.first_messages.get(self.first_message_trigger.trigger_id).enabled
+        )
+        self.assertIn("disabled", self.page.first_words_status.text())
+
+    def test_first_words_reset_offline_fails_safely(self) -> None:
+        self.page._reset_first_words()
+        self.assertEqual(
+            self.page.first_words_feedback.text(),
+            "No active Twitch stream to reset.",
+        )
 
     def test_details_distinguish_known_status_from_unknown(self) -> None:
         self.add_user("known", "Known", "known", badges=("moderator", "subscriber"))
