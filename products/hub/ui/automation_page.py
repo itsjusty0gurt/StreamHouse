@@ -4105,7 +4105,7 @@ class AutomationPage(QWidget):
             defaults = {
                 "channel.chat.first_message": "First message of stream",
                 "channel.raid": "Any raid",
-                "channel.raid.outgoing": "Any raid",
+                "channel.raid.outgoing": "After Twitch confirms the outgoing raid",
                 "channel.follow": "Any follow",
                 "channel.subscribe": "Any direct subscription",
                 "channel.subscription.message": "Any resubscription",

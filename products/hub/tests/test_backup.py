@@ -424,6 +424,10 @@ class BackupManagerTests(unittest.TestCase):
     def test_current_twitch_trigger_schema_backs_up_and_restores_with_stable_links(
         self,
     ) -> None:
+        trigger_path = self.root / "twitch/event_triggers.json"
+        trigger_payload = json.loads(trigger_path.read_text(encoding="utf-8"))
+        trigger_payload["triggers"][0]["event_type"] = "channel.raid.outgoing"
+        write_json(trigger_path, trigger_payload)
         archive = self.manager.create("manual", preset=BackupPreset.RECOMMENDED)
         with ZipFile(archive) as source:
             manifest = json.loads(source.read("manifest.json"))
@@ -455,6 +459,7 @@ class BackupManagerTests(unittest.TestCase):
             [trigger.trigger_id for trigger in triggers],
             ["raid-trigger"],
         )
+        self.assertEqual(triggers[0].event_type, "channel.raid.outgoing")
         self.assertIn("raid-trigger", routine_store.get("parent").trigger_ids)
 
     def test_exact_and_random_timers_backup_restore_with_stable_identity(self) -> None:

@@ -174,6 +174,30 @@ def test_first_message_reference_documents_stream_controls_and_data_safety() -> 
     assert "raid suppression is separate" in text
 
 
+def test_outgoing_raid_completed_reference_uses_authoritative_confirmation() -> None:
+    tasks, variables = _reference_sources()
+    entry = next(
+        item
+        for item in build_wiki_entries(tasks, variables)
+        if item.entry_id == "trigger:channel.raid.outgoing"
+    )
+    text = entry.search_text()
+
+    assert entry.title == "Twitch — Outgoing Raid Completed"
+    assert "authoritative outgoing channel.raid eventsub confirmation" in text
+    assert "starting a raid" in text
+    assert "countdown reaching zero" in text
+    assert "cancelling a raid" in text
+    assert "raid landing is a separate consumer" in text
+    for variable in (
+        "raid.target.id",
+        "raid.target.login",
+        "raid.target.name",
+        "raid.viewers",
+    ):
+        assert variable in text
+
+
 def test_python_script_context_helpers_and_now_playing_example_are_documented() -> None:
     tasks, variables = _reference_sources()
     entries = build_wiki_entries(tasks, variables)

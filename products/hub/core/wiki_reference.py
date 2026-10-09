@@ -382,6 +382,20 @@ def _trigger_entry(
                 ),
             ),
         )
+    elif trigger_id == "channel.raid.outgoing":
+        configuration = (
+            "No fields are required; attach the trigger to a routine and enable it.",
+            "It fires only from Twitch's authoritative outgoing channel.raid EventSub confirmation.",
+        )
+        additional_sections = (
+            WikiSection(
+                "Completion semantics",
+                (
+                    "Starting a raid, the local countdown reaching zero, and cancelling a raid do not fire this trigger.",
+                    "Raid Landing is a separate consumer of the same Twitch confirmation event.",
+                ),
+            ),
+        )
     elif "channel_points" in trigger_id:
         configuration = ("Any custom reward or one selected reward.",)
     elif trigger_id in OBS_TRIGGER_TYPES:

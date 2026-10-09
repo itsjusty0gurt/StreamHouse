@@ -225,6 +225,29 @@ class EventSubWebhookProcessorTests(unittest.TestCase):
         self.assertIn("followed_at", self.notifications[0][1]["event"])
         self.assertEqual(self.diagnostics[0].result, "Processed")
 
+    def test_duplicate_outgoing_raid_confirmation_is_forwarded_once(self) -> None:
+        payload = create_eventsub_notification("channel.raid", "1", "target")
+        payload["subscription"]["condition"] = {
+            "from_broadcaster_user_id": "source-1"
+        }
+        body = json.dumps(payload).encode()
+        headers = signed_headers(
+            body,
+            message_id="outgoing-raid-1",
+            subscription_type="channel.raid",
+        )
+
+        self.assertEqual(self.processor.process(headers, body).status, 204)
+        self.assertEqual(self.processor.process(headers, body).status, 204)
+
+        self.assertEqual(len(self.notifications), 1)
+        event_type, forwarded = self.notifications[0]
+        self.assertEqual(event_type, "channel.raid")
+        self.assertEqual(
+            forwarded["subscription"]["condition"]["from_broadcaster_user_id"],
+            "source-1",
+        )
+
     def test_revocation_is_reported(self) -> None:
         body = json.dumps(
             {"subscription": {"status": "authorization_revoked"}}

@@ -1039,7 +1039,7 @@ class MainWindowTests(unittest.TestCase):
                 "Subscription › Message",
                 "Cheer",
                 "Incoming Raid",
-                "Outgoing Raid",
+                "Outgoing Raid Completed",
                 "Stream › Online",
                 "Stream › Offline",
             ],

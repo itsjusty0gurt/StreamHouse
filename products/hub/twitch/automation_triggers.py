@@ -60,7 +60,7 @@ TWITCH_TRIGGER_DISPLAY_NAMES = {
     "channel.subscription.gift": "Gift Subscription",
     "channel.cheer": "Cheer",
     "channel.raid": "Incoming Raid",
-    "channel.raid.outgoing": "Outgoing Raid",
+    "channel.raid.outgoing": "Outgoing Raid Completed",
     "channel.channel_points_custom_reward_redemption.add": "Channel Point Redemption",
     "stream.online": "Stream Online",
     "stream.offline": "Stream Offline",

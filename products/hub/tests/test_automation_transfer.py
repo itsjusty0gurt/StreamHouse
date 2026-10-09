@@ -236,6 +236,27 @@ class AutomationTransferTests(unittest.TestCase):
         self.assertEqual(triggers[0].event_type, "track.changed")
         self.assertFalse(triggers[0].enabled)
 
+    def test_outgoing_raid_completed_trigger_round_trip_preserves_event(self) -> None:
+        routine = self.stores["routine_store"].add("Raid completed")
+        original = self.stores["event_store"].add(
+            routine.routine_id,
+            "channel.raid.outgoing",
+        )
+        payload = export_routine(routine, **self.stores)
+        destination = self.make_stores(self.root / "raid-destination")
+
+        imported = import_routine(
+            payload,
+            group_id="",
+            task_registry=self.registry,
+            **destination,
+        )
+
+        triggers = destination["event_store"].for_routine(imported.routine_id)
+        self.assertEqual(len(triggers), 1)
+        self.assertEqual(triggers[0].event_type, "channel.raid.outgoing")
+        self.assertNotEqual(triggers[0].trigger_id, original.trigger_id)
+
     def test_import_detects_command_conflict(self) -> None:
         command = self.stores["command_store"].add("hello", "Hello!")
         routine = self.stores["routine_store"].get(command.routine_id)

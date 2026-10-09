@@ -546,8 +546,47 @@ class TwitchEventTriggerStoreTests(unittest.TestCase):
         self.assertEqual(context["raid.direction"], "outgoing")
         self.assertEqual(context["raid.source.login"], "raider")
         self.assertEqual(context["raid.target.id"], "target-1")
+        self.assertEqual(context["raid.target.login"], "streamer")
+        self.assertEqual(context["raid.target.name"], "Streamer")
         self.assertEqual(context["raid.viewers"], "25")
         self.assertEqual(context["user_login"], "raider")
+
+    def test_outgoing_raid_completed_enabled_state_and_reload(self) -> None:
+        routine = self.routines.add("Raid complete")
+        trigger = self.store.add(
+            routine.routine_id,
+            "channel.raid.outgoing",
+            enabled=False,
+        )
+        confirmed = event_with_condition(
+            "channel.raid",
+            {
+                "from_broadcaster_user_id": "source-1",
+                "to_broadcaster_user_id": "target-1",
+                "to_broadcaster_user_login": "target_login",
+                "to_broadcaster_user_name": "Target Name",
+                "viewers": 42,
+            },
+            {"from_broadcaster_user_id": "source-1"},
+        )
+        self.assertEqual(self.store.evaluate(confirmed), ())
+
+        self.store.update(
+            trigger.trigger_id,
+            event_type="channel.raid.outgoing",
+            enabled=True,
+        )
+        loaded_routines = RoutineStore(self.routines.path)
+        loaded = TwitchEventTriggerStore(self.store.path, loaded_routines)
+        loaded.load()
+
+        matches = loaded.evaluate(confirmed)
+        self.assertEqual(len(matches), 1)
+        self.assertEqual(matches[0].trigger_id, trigger.trigger_id)
+        self.assertEqual(matches[0].context["raid.target.id"], "target-1")
+        self.assertEqual(matches[0].context["raid.target.login"], "target_login")
+        self.assertEqual(matches[0].context["raid.target.name"], "Target Name")
+        self.assertEqual(matches[0].context["raid.viewers"], "42")
 
     def test_redemption_matches_stable_reward_id_and_exposes_full_context(self) -> None:
         hydrate = self.routines.add("Hydrate")
