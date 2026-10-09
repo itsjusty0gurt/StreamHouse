@@ -1,5 +1,10 @@
 # Streamhouse maintainer context
 
+For every coding task, follow the mandatory workflow and scope rules in
+[`docs/development/codex-task-rules.md`](docs/development/codex-task-rules.md).
+Start from the current working tree, inspect before changing, preserve unrelated
+work, and never commit or push unless the user explicitly asks.
+
 Streamhouse Hub is in public Alpha. Read and follow
 `docs/architecture/development-policy.md` for every architecture, persistence,
 migration, compatibility, Variables, or rebrand change. User data takes
