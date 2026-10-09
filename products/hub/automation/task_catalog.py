@@ -45,6 +45,10 @@ _SHORT_DESCRIPTIONS = {
     "twitch.shoutout_user": (
         "Sends a real Twitch shoutout to a user ID, login, or resolved Variable."
     ),
+    "twitch.get_user_clip": (
+        "Fetches clips for a target Twitch user and selects one clip for later "
+        "tasks through routine-scoped automation.* outputs."
+    ),
     "twitch.get_stream_information": (
         "Retrieves the channel's current Twitch stream details. The results become "
         "routine-scoped automation.* outputs for later tasks."
@@ -267,6 +271,7 @@ VARIABLE_INPUT_FIELDS: dict[str, tuple[str, ...]] = {
     "twitch.update_redemption": ("reward_id", "redemption_id"),
     "twitch.resolve_user": ("reference",),
     "twitch.shoutout_user": ("target",),
+    "twitch.get_user_clip": ("target",),
     "twitch.get_follow_relationship": ("user_id",),
     "core.create_global_variable": ("value",),
     "core.create_session_variable": ("value",),
@@ -308,6 +313,11 @@ _HELP_TEXT = {
     "twitch.get_stream_information": (
         "Reads the current channel state from Twitch, including live status, title, "
         "category, start time, viewer count, and stream identifiers."
+    ),
+    "twitch.get_user_clip": (
+        "Resolves the target Twitch user, fetches that broadcaster's clips, and "
+        "selects one by the configured mode. The normal clip URL and clip details "
+        "are available to following tasks in the same root routine execution."
     ),
     "twitch.moderate_user": (
         "Runs one explicit moderation action. Timeout, ban, unban, and message "
@@ -378,6 +388,10 @@ _INPUT_HELP: dict[str, dict[str, str]] = {
     },
     "twitch.shoutout_user": {
         "target": "A Twitch user ID, login, @login, or any Variable that resolves to one.",
+    },
+    "twitch.get_user_clip": {
+        "target": "A Twitch user ID, login, @login, or any Variable that resolves to one.",
+        "selection_mode": "Random, featured-only random, newest returned, or highest viewed.",
     },
     "twitch.moderate_user": {
         "user": "The stable Twitch user ID or login to moderate.",
@@ -494,6 +508,10 @@ _NOTES = {
         "Requires the Twitch shoutout permission.",
         "Twitch controls shoutout cooldowns and target eligibility.",
     ),
+    "twitch.get_user_clip": (
+        "Random Featured fails when the target has no featured clips; it never falls back to other clips.",
+        "Outputs are available only to later tasks in the same root routine execution.",
+    ),
     "twitch.send_pinned_message": ("Pinned messages may not be available for every channel.",),
     "twitch.run_commercial": ("Twitch cooldowns and channel eligibility still apply.",),
     "twitch.snooze_ad": ("The task fails if no snooze is currently available.",),
@@ -533,6 +551,9 @@ _NOTES = {
 _EXAMPLES = {
     "twitch.shoutout_user": (
         "Shout out {command.data}, {user.name}, or {user.id}.",
+    ),
+    "twitch.get_user_clip": (
+        "First Message → User Is In Group → Twitch — Get User Clip {user.id} → use {automation.clip_url} in a later task.",
     ),
     "twitch.send_chat_message": ("Send: Thanks for the follow, {user.display_name}!",),
     "twitch.resolve_user": ("Resolve {command.data}, then use {automation.target_user_id} in a later task.",),

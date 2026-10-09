@@ -552,6 +552,20 @@ class TwitchService:
             else self.helix.get_user(clean, token)
         )
 
+    def get_user_clips(
+        self,
+        target_reference: str,
+        *,
+        featured_only: bool = False,
+    ) -> list[dict]:
+        target_user_id = self.resolve_user_id(target_reference)
+        _broadcaster_id, token = self._broadcaster_credentials()
+        return self.helix.get_clips(
+            target_user_id,
+            token,
+            featured_only=featured_only,
+        )
+
     def get_stream_information(self) -> dict | None:
         broadcaster_id, token = self._broadcaster_credentials()
         return self.helix.get_stream_information(broadcaster_id, token)

@@ -565,6 +565,21 @@ def test_generated_task_outputs_have_typed_temporary_metadata() -> None:
     assert by_name["automation.stream_viewers"].data_type is VariableDataType.INTEGER
     assert by_name["automation.stream_started_at"].data_type is VariableDataType.DATETIME
 
+    clip_outputs = generated_output_definitions("twitch.get_user_clip", {})
+    clip_by_name = {item.name: item for item in clip_outputs}
+    assert set(clip_by_name) == {
+        "automation.clip_url",
+        "automation.clip_id",
+        "automation.clip_title",
+        "automation.clip_duration",
+        "automation.clip_thumbnail",
+    }
+    assert clip_by_name["automation.clip_duration"].data_type is VariableDataType.NUMBER
+    assert all(
+        item.availability is VariableAvailability.TEMPORARY
+        for item in clip_outputs
+    )
+
 
 def test_configured_output_references_are_routine_and_order_aware() -> None:
     with TemporaryDirectory() as temporary:

@@ -163,6 +163,13 @@ STATIC_OUTPUTS = {
     "twitch.get_stream_information": ("stream_status", "is_live", "stream_started_at", "stream_title", "stream_category", "stream_id", "stream_viewers", "stream_game_id"),
     "twitch.get_follow_relationship": ("is_following", "followed_at", "follow_status", "channel_display_name"),
     "twitch.build_command_list": ("command_list", "command_list_status"),
+    "twitch.get_user_clip": (
+        "clip_url",
+        "clip_id",
+        "clip_title",
+        "clip_duration",
+        "clip_thumbnail",
+    ),
 }
 
 OUTPUT_CONFIG_KEYS = {
@@ -239,6 +246,8 @@ def _output_type(
         )
     if normalized == "core.path_exists":
         return VariableDataType.BOOLEAN
+    if normalized == "twitch.get_user_clip" and name.endswith(".clip_duration"):
+        return VariableDataType.NUMBER
     if normalized == "core.file_count_lines":
         return VariableDataType.INTEGER
     suffix = _matching_suffix(name)

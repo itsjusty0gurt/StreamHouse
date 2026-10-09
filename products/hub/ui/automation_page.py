@@ -1218,6 +1218,10 @@ class TaskEditorDialog(QDialog):
         "twitch.shoutout_user": (
             {"key": "target", "label": "Target User", "kind": "text", "default": "{command.data}", "required": True, "placeholder": "Twitch login, user ID, or Variable"},
         ),
+        "twitch.get_user_clip": (
+            {"key": "target", "label": "Target User", "kind": "text", "default": "{user.id}", "required": True, "placeholder": "Twitch login, user ID, or Variable"},
+            {"key": "selection_mode", "label": "Selection", "kind": "choice", "default": "random", "choices": (("Random", "random"), ("Random Featured", "random_featured"), ("Recent", "recent"), ("Most Viewed", "most_viewed"))},
+        ),
         "twitch.get_stream_information": (),
         "twitch.get_follow_relationship": (
             {"key": "user_id", "label": "Target user ID", "kind": "text", "default": "{automation.target_user_id}", "required": True},

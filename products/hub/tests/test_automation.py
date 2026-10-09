@@ -147,6 +147,10 @@ class AutomationServiceTests(unittest.TestCase):
         assert shoutout is not None
         self.assertEqual(shoutout.variable_inputs, ("target",))
         self.assertIn("cooldowns", " ".join(shoutout.notes).casefold())
+        get_clip = registry.metadata("twitch.get_user_clip")
+        assert get_clip is not None
+        self.assertEqual(get_clip.variable_inputs, ("target",))
+        self.assertIn("normal clip url", get_clip.help_text.casefold())
         self.assertIsNone(registry.metadata("twitch.get_channel_information"))
 
         wait = registry.metadata("core.wait")

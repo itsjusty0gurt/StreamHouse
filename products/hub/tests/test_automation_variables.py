@@ -14,7 +14,7 @@ from products.hub.automation.variable_outputs import generated_output_definition
 from products.hub.automation.variable_providers import CustomVariableProvider, context_provider
 from products.hub.automation.variable_registry import VariableRegistry
 from products.hub.automation.variable_tasks import RunRoutineTask, register_variable_tasks
-from products.hub.twitch.tasks import SendTwitchChatMessageTask
+from products.hub.twitch.tasks import SendTwitchChatMessageTask, TwitchAutomationTask
 
 
 class CaptureContextTask:
@@ -35,6 +35,19 @@ class CaptureTwitchService:
     def send_message(self, message: str, *, as_bot: bool = True) -> bool:
         self.messages.append(message)
         return True
+
+    def get_user_clips(self, target: str, *, featured_only: bool = False) -> list[dict]:
+        return [
+            {
+                "id": "clip-1",
+                "url": "https://clips.twitch.tv/clip-1",
+                "title": "A useful clip",
+                "duration": 14.2,
+                "thumbnail_url": "https://example.test/clip.jpg",
+                "created_at": "2026-10-09T00:00:00Z",
+                "view_count": 12,
+            }
+        ]
 
 
 class AutomationVariableTests(unittest.TestCase):
@@ -162,6 +175,30 @@ class AutomationVariableTests(unittest.TestCase):
         self.assertTrue(result.succeeded)
         self.assertEqual(twitch.messages, ["Yippie!", "Yippie!"])
         self.assertNotIn("automation.random_line", supplied_context)
+
+    def test_clip_output_is_available_to_later_tasks_and_clears_after_root(self) -> None:
+        twitch = self._register_file_and_chat_tasks()
+        self.registry.register(TwitchAutomationTask(twitch, "twitch.get_user_clip"))
+        routine = self.routine_store.add("Clip workflow")
+        self.routine_store.add_task(
+            routine.routine_id,
+            task_type="twitch.get_user_clip",
+            name="Get viewer clip",
+            config={"target": "{user.id}", "selection_mode": "recent"},
+        )
+        self.routine_store.add_task(
+            routine.routine_id,
+            task_type="twitch.send_chat_message",
+            name="Use clip",
+            config={"message": "Clip: {automation.clip_url}", "as_bot": True},
+        )
+        supplied_context = {"user.id": "target-42"}
+
+        result = self.service.run_routine(routine.routine_id, supplied_context)
+
+        self.assertTrue(result.succeeded)
+        self.assertEqual(twitch.messages, ["Clip: https://clips.twitch.tv/clip-1"])
+        self.assertNotIn("automation.clip_url", supplied_context)
 
     def test_generated_output_is_unavailable_before_producer_and_never_leaks(self) -> None:
         twitch = self._register_file_and_chat_tasks()

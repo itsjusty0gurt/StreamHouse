@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 import tempfile
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from products.hub.automation.models import TaskDefinition, TriggerEvent
 from products.hub.automation.tasks import TaskRegistry
@@ -46,6 +46,31 @@ class FakeTwitchService:
     def send_shoutout(self, target):
         self.calls.append(("shoutout", target))
         return "42"
+
+    def get_user_clips(self, target, *, featured_only=False):
+        self.calls.append(("clips", target, featured_only))
+        return [
+            {
+                "id": "older-popular",
+                "url": "https://clips.twitch.tv/older-popular",
+                "title": "Popular clip",
+                "duration": 12.9,
+                "thumbnail_url": "https://example.test/popular.jpg",
+                "created_at": "2025-01-01T00:00:00Z",
+                "view_count": 100,
+                "is_featured": featured_only,
+            },
+            {
+                "id": "newer",
+                "url": "https://clips.twitch.tv/newer",
+                "title": "New clip",
+                "duration": 8.4,
+                "thumbnail_url": "https://example.test/new.jpg",
+                "created_at": "2026-01-01T00:00:00Z",
+                "view_count": 10,
+                "is_featured": featured_only,
+            },
+        ]
 
     def resolve_user_id(self, reference):
         self.calls.append(("resolve", reference))
@@ -221,6 +246,80 @@ class TwitchTaskTests(unittest.TestCase):
         result = self.registry.execute(failed, self.trigger)
         self.assertFalse(result.succeeded)
         self.assertIn("cooldown", result.detail)
+
+    @patch("products.hub.twitch.tasks.choice", side_effect=lambda clips: clips[-1])
+    def test_get_user_clip_supports_all_selection_modes_and_outputs(self, _choice) -> None:
+        expected_ids = {
+            "random": "newer",
+            "random_featured": "newer",
+            "recent": "newer",
+            "most_viewed": "older-popular",
+        }
+        for mode, expected_id in expected_ids.items():
+            with self.subTest(mode=mode):
+                self.trigger.context.pop("automation.clip_id", None)
+                task = TaskDefinition(
+                    f"clip-{mode}",
+                    "twitch.get_user_clip",
+                    "Get clip",
+                    {"target": "{user.id}", "selection_mode": mode},
+                )
+                result = self.registry.execute(task, self.trigger)
+
+                self.assertTrue(result.succeeded, result.detail)
+                self.assertEqual(
+                    self.service.calls[-1],
+                    ("clips", "42", mode == "random_featured"),
+                )
+                self.assertEqual(
+                    self.trigger.context["automation.clip_id"], expected_id
+                )
+                selected = next(
+                    clip
+                    for clip in self.service.get_user_clips(
+                        "unused", featured_only=mode == "random_featured"
+                    )
+                    if clip["id"] == expected_id
+                )
+                self.service.calls.pop()
+                self.assertEqual(
+                    self.trigger.context["automation.clip_url"], selected["url"]
+                )
+                self.assertEqual(
+                    self.trigger.context["automation.clip_title"], selected["title"]
+                )
+                self.assertEqual(
+                    self.trigger.context["automation.clip_duration"],
+                    str(selected["duration"]),
+                )
+                self.assertEqual(
+                    self.trigger.context["automation.clip_thumbnail"],
+                    selected["thumbnail_url"],
+                )
+
+    def test_get_user_clip_reports_empty_results_without_fallback(self) -> None:
+        self.service.get_user_clips = Mock(return_value=[])
+        for mode, expected in (
+            ("random", "No Twitch clips"),
+            ("random_featured", "No featured Twitch clips"),
+        ):
+            with self.subTest(mode=mode):
+                task = TaskDefinition(
+                    mode,
+                    "twitch.get_user_clip",
+                    "Get clip",
+                    {"target": "{user.id}", "selection_mode": mode},
+                )
+                result = self.registry.execute(task, self.trigger)
+                self.assertFalse(result.succeeded)
+                self.assertIn(expected, result.detail)
+        self.assertEqual(
+            self.service.get_user_clips.call_args_list,
+            [
+                unittest.mock.call("42", featured_only=False),
+                unittest.mock.call("42", featured_only=True),
+            ],
+        )
 
     def test_social_links_message_uses_selected_channel_information(self) -> None:
         information = ChannelInformation(schedule="Friday at 8 PM")

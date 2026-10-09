@@ -52,6 +52,7 @@ class TwitchHelixClient:
     ANNOUNCEMENTS_URL = "https://api.twitch.tv/helix/chat/announcements"
     SHOUTOUTS_URL = "https://api.twitch.tv/helix/chat/shoutouts"
     RAIDS_URL = "https://api.twitch.tv/helix/raids"
+    CLIPS_URL = "https://api.twitch.tv/helix/clips"
     CUSTOM_REWARDS_URL = (
         "https://api.twitch.tv/helix/channel_points/custom_rewards"
     )
@@ -165,6 +166,28 @@ class TwitchHelixClient:
         if not isinstance(values, list) or not values:
             return None
         return values[0] if isinstance(values[0], dict) else None
+
+    def get_clips(
+        self,
+        broadcaster_id: str,
+        token: TwitchToken,
+        *,
+        featured_only: bool = False,
+    ) -> list[dict[str, Any]]:
+        clean_id = str(broadcaster_id).strip()
+        if not clean_id:
+            raise ValueError("A Twitch broadcaster ID is required.")
+        parameters: dict[str, object] = {
+            "broadcaster_id": clean_id,
+            "first": 100,
+        }
+        if featured_only:
+            parameters["is_featured"] = "true"
+        return self._get_paginated(
+            f"{self.CLIPS_URL}?{urlencode(parameters)}",
+            token,
+            max_pages=1,
+        )
 
     def get_followed_streams(
         self,

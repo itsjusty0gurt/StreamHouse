@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable
+from random import choice
 from typing import Mapping
 from urllib.error import HTTPError, URLError
 
@@ -130,6 +131,7 @@ TWITCH_TASK_LABELS = {
     SendTwitchChatMessageTask.task_type: "Twitch — Send chat message",
     "twitch.resolve_user": "Twitch — Resolve user",
     "twitch.shoutout_user": "Twitch — Shoutout User",
+    "twitch.get_user_clip": "Twitch — Get User Clip",
     "twitch.get_stream_information": "Twitch — Get stream information",
     "twitch.get_follow_relationship": "Twitch — Get follow relationship",
     "twitch.build_command_list": "Twitch — Build command list",
@@ -148,6 +150,7 @@ TWITCH_INFORMATION_TASK_TYPES = frozenset(
         "twitch.resolve_user",
         "twitch.get_stream_information",
         "twitch.get_follow_relationship",
+        "twitch.get_user_clip",
         "twitch.build_social_links_message",
     }
 )
@@ -487,6 +490,50 @@ class TwitchAutomationTask:
                 raise ValueError("Enter a Twitch user to shout out.")
             self.service.send_shoutout(target)
             return "Sent Twitch shoutout."
+        if self.task_type == "twitch.get_user_clip":
+            target = render("target", "{user.id}")
+            if not target:
+                raise ValueError("Enter a Twitch user whose clips should be fetched.")
+            selection_mode = str(config.get("selection_mode", "random")).casefold()
+            if selection_mode not in {
+                "random",
+                "random_featured",
+                "recent",
+                "most_viewed",
+            }:
+                raise ValueError("Choose a valid clip selection mode.")
+            featured_only = selection_mode == "random_featured"
+            clips = self.service.get_user_clips(
+                target,
+                featured_only=featured_only,
+            )
+            if not clips:
+                if featured_only:
+                    raise ValueError(
+                        "No featured Twitch clips were found for the target user."
+                    )
+                raise ValueError("No Twitch clips were found for the target user.")
+            if selection_mode in {"random", "random_featured"}:
+                selected = choice(clips)
+            elif selection_mode == "recent":
+                selected = max(clips, key=lambda clip: str(clip.get("created_at", "")))
+            else:
+                selected = max(clips, key=lambda clip: int(clip.get("view_count", 0)))
+            clip_url = str(selected.get("url", "")).strip()
+            clip_id = str(selected.get("id", "")).strip()
+            if not clip_url or not clip_id:
+                raise ValueError("Twitch returned invalid clip information.")
+            _publish(
+                _mutable_context(trigger),
+                {
+                    "clip_url": clip_url,
+                    "clip_id": clip_id,
+                    "clip_title": selected.get("title", ""),
+                    "clip_duration": selected.get("duration", 0),
+                    "clip_thumbnail": selected.get("thumbnail_url", ""),
+                },
+            )
+            return f'Selected Twitch clip "{selected.get("title", clip_id)}".'
         if self.task_type == "twitch.moderate_user":
             action = str(config.get("action", "timeout"))
             user_id = self.service.resolve_user_id(render("user", "{user.id}"))

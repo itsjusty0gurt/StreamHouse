@@ -137,6 +137,21 @@ def test_shoutout_task_reference_is_derived_from_task_metadata() -> None:
     assert "twitch controls shoutout cooldowns" in text
 
 
+def test_get_user_clip_reference_is_derived_from_task_metadata() -> None:
+    tasks, variables = _reference_sources()
+    entry = next(
+        item
+        for item in build_wiki_entries(tasks, variables)
+        if item.entry_id == "task:twitch.get_user_clip"
+    )
+    text = entry.search_text()
+
+    assert "normal clip url" in text
+    assert "random featured" in text
+    assert "{automation.clip_url}" in text
+    assert "same root routine execution" in text
+
+
 def test_unified_user_groups_reference_documents_system_and_custom_groups() -> None:
     tasks, variables = _reference_sources()
     entry = next(

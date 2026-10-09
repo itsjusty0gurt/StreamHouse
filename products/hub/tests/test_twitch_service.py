@@ -249,6 +249,30 @@ class TwitchServiceTests(unittest.TestCase):
         helix.start_commercial.assert_not_called()
         helix.snooze_ad.assert_not_called()
 
+    def test_get_user_clips_resolves_target_instead_of_using_broadcaster(self) -> None:
+        token = TwitchToken(
+            "access",
+            "refresh",
+            999,
+            [],
+            user_id="signed-in-broadcaster",
+        )
+        helix = Mock()
+        helix.get_user.return_value = {"id": "target-42"}
+        helix.get_clips.return_value = [{"id": "clip-1"}]
+        service = TwitchService(auth=Mock(token=token), helix=helix)
+        service.broadcaster_user_id = "signed-in-broadcaster"
+
+        clips = service.get_user_clips("@TargetLogin", featured_only=True)
+
+        self.assertEqual(clips, [{"id": "clip-1"}])
+        helix.get_user.assert_called_once_with("TargetLogin", token)
+        helix.get_clips.assert_called_once_with(
+            "target-42",
+            token,
+            featured_only=True,
+        )
+
     def test_same_account_cannot_fill_broadcaster_and_bot_slots(self) -> None:
         token = TwitchToken(
             "access",

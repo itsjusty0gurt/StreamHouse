@@ -680,6 +680,20 @@ class TaskEditorTests(unittest.TestCase):
             ("target",),
         )
 
+    def test_get_user_clip_editor_defaults_to_trigger_user_and_selection_mode(self) -> None:
+        dialog = TaskEditorDialog(
+            "twitch.get_user_clip",
+            variable_registry=self.variables(),
+        )
+        fields = dialog.field_widgets["twitch.get_user_clip"]
+
+        self.assertEqual(fields["target"].text(), "{user.id}")
+        self.assertEqual(fields["selection_mode"].currentData(), "random")
+        self.assertEqual(
+            TaskEditorDialog.TEMPLATED_FIELDS["twitch.get_user_clip"],
+            ("target",),
+        )
+
     def test_twitch_information_outputs_have_friendly_insertable_labels(self) -> None:
         dialog = TaskEditorDialog(
             "twitch.send_chat_message",

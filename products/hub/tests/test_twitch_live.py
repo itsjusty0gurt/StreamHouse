@@ -72,6 +72,29 @@ class TwitchHelixClientTests(unittest.TestCase):
         self.assertIn("first=100", urls[0])
         self.assertIn("after=next-page", urls[1])
 
+    @patch("products.hub.twitch.live.urlopen")
+    def test_get_clips_uses_target_broadcaster_and_featured_filter(
+        self, open_url
+    ) -> None:
+        open_url.return_value = _JsonResponse(
+            {
+                "data": [{"id": "clip-1", "url": "https://clips.twitch.tv/clip-1"}],
+                "pagination": {},
+            }
+        )
+        token = TwitchToken("access", "refresh", 999, [])
+
+        clips = TwitchHelixClient().get_clips(
+            "target-42", token, featured_only=True
+        )
+
+        self.assertEqual(clips[0]["id"], "clip-1")
+        request = open_url.call_args.args[0]
+        self.assertIn("helix/clips", request.full_url)
+        self.assertIn("broadcaster_id=target-42", request.full_url)
+        self.assertIn("first=100", request.full_url)
+        self.assertIn("is_featured=true", request.full_url)
+
     def test_chat_subscriptions_include_moderation_sync_events(self) -> None:
         client = TwitchHelixClient()
         client._create_subscription = Mock()
