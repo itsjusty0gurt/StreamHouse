@@ -8,14 +8,13 @@ from uuid import uuid4
 
 from shared.streamhouse_runtime.json_store import (
     UnsupportedJsonSchemaError,
+    atomic_write_bytes,
     atomic_write_json,
     json_store_exists,
     load_validated_json,
 )
 from shared.streamhouse_runtime.paths import user_data_root
 
-
-LOCAL_CHATTER_GROUPS = frozenset({"", "Regulars", "Bots", "Viewers"})
 
 PERSISTED_CHATTER_FIELDS = frozenset(
     {
@@ -32,16 +31,10 @@ PERSISTED_CHATTER_FIELDS = frozenset(
         "roles",
         "followed_at",
         "session_messages",
-        "manual_group",
         "twitch_status",
     }
 )
 BACKUP_CHATTER_FIELDS = PERSISTED_CHATTER_FIELDS - {"session_messages"}
-
-
-def _normalize_manual_group(value: Any) -> str:
-    group = str(value).strip()
-    return group if group in LOCAL_CHATTER_GROUPS else ""
 
 
 @dataclass(slots=True)
@@ -64,7 +57,6 @@ class ChatterRecord:
     timeline: list[dict[str, Any]] = field(default_factory=list)
     role_history: list[dict[str, Any]] = field(default_factory=list)
     memory_enabled: bool = False
-    manual_group: str = ""
     memory_consent: str = "unknown"
     memory_consented_at: str = ""
     memory_consent_version: str = ""
@@ -108,7 +100,6 @@ class ChatterRecord:
             }
             if isinstance(values.get("session_messages", {}), dict)
             else {},
-            manual_group=_normalize_manual_group(values.get("manual_group", "")),
         )
 
 
@@ -120,39 +111,53 @@ class ChatterHistoryStore:
     REGULAR_SNAPSHOT_DAYS = 10
     MEMORY_REGULAR_STREAMS = 5
     MEMORY_CONSENT_VERSION = "1"
-    VERSION = 8
+    VERSION = 9
+    LEGACY_VERSION = 8
 
     def __init__(self, path: Path | None = None) -> None:
         self.path = path or user_data_root() / "memory" / "twitch_chatters.json"
         self.records: dict[str, ChatterRecord] = {}
         self.dirty = False
+        self.legacy_manual_groups: dict[str, str] = {}
+        self.loaded_schema_version = self.VERSION
 
     def load(self) -> None:
         if not json_store_exists(self.path):
             return
-        loaded, normalized = load_validated_json(self.path, self._parse_payload)
+        loaded, normalized, legacy_groups, loaded_version = load_validated_json(
+            self.path, self._parse_payload
+        )
         self.records = loaded
-        self.dirty = normalized
+        self.legacy_manual_groups = legacy_groups
+        self.loaded_schema_version = loaded_version
+        self.dirty = normalized or bool(legacy_groups)
 
     def _parse_payload(
         self, values: object
-    ) -> tuple[dict[str, ChatterRecord], bool]:
+    ) -> tuple[dict[str, ChatterRecord], bool, dict[str, str], int]:
         if not isinstance(values, dict):
             raise ValueError("Chatter history must contain a JSON object.")
-        if int(values.get("version", 0)) != self.VERSION:
+        version = int(values.get("version", 0))
+        if version not in {self.LEGACY_VERSION, self.VERSION}:
             raise UnsupportedJsonSchemaError(
-                "Chatter history uses a discarded pre-alpha schema and must be reset."
+                "Chatter history uses an unsupported schema version."
             )
         records = values.get("chatters", {})
         if not isinstance(records, dict):
             raise ValueError("Chatter history chatters must be an object.")
         loaded: dict[str, ChatterRecord] = {}
-        normalized = False
+        legacy_groups: dict[str, str] = {}
+        normalized = version == self.LEGACY_VERSION
+        allowed_fields = (
+            PERSISTED_CHATTER_FIELDS | {"manual_group"}
+            if version == self.LEGACY_VERSION
+            else PERSISTED_CHATTER_FIELDS
+        )
         for raw_user_id, raw_record in records.items():
             user_id = str(raw_user_id).strip()
             if not isinstance(raw_record, dict) or not user_id:
                 raise ValueError("Every chatter must have a stable ID and JSON object record.")
-            unexpected = set(raw_record) - PERSISTED_CHATTER_FIELDS
+            unexpected = set(raw_record) - allowed_fields
             if unexpected:
                 raise ValueError(
                     "Chatter history must contain management metadata only."
@@ -161,10 +166,12 @@ class ChatterHistoryStore:
             if record.user_id != user_id:
                 normalized = True
             record.user_id = user_id
-            if str(raw_record.get("manual_group", "")).strip() != record.manual_group:
-                normalized = True
+            if version == self.LEGACY_VERSION:
+                legacy_group = str(raw_record.get("manual_group", "")).strip()
+                if legacy_group in {"Bots", "Regulars", "Viewers"}:
+                    legacy_groups[user_id] = legacy_group
             loaded[user_id] = record
-        return loaded, normalized
+        return loaded, normalized, legacy_groups, version
 
     def observe_message(
         self,
@@ -484,7 +491,6 @@ class ChatterHistoryStore:
         record.timeline.clear()
         record.role_history.clear()
         record.roles.clear()
-        record.manual_group = ""
         record.first_seen = ""
         record.last_seen = ""
         self.dirty = True
@@ -597,8 +603,6 @@ class ChatterHistoryStore:
     def viewer_summary(self, user_id: str) -> str:
         record = self.records[user_id]
         groups = list(record.roles)
-        if self.is_regular(user_id):
-            groups.append("Regular")
         memories = self.approved_memories(user_id)
         facts = "; ".join(str(item.get("text", "")) for item in memories[:6])
         summary = (
@@ -720,8 +724,6 @@ class ChatterHistoryStore:
         target.message_count += source.message_count
         target.snapshot_days += source.snapshot_days
         target.is_bot = target.is_bot or source.is_bot
-        if not target.manual_group:
-            target.manual_group = source.manual_group
         target.tags = list(dict.fromkeys(target.tags + source.tags))[:50]
         if source.private_notes:
             separator = "\n\n" if target.private_notes else ""
@@ -781,7 +783,7 @@ class ChatterHistoryStore:
         )
         record.timeline = record.timeline[-200:]
 
-    def is_regular(self, user_id: str) -> bool:
+    def qualifies_as_regular(self, user_id: str) -> bool:
         record = self.records.get(user_id)
         if record is None:
             return False
@@ -790,17 +792,18 @@ class ChatterHistoryStore:
             or record.snapshot_days >= self.REGULAR_SNAPSHOT_DAYS
         )
 
-    def is_bot(self, user_id: str) -> bool:
+    def has_observed_bot_identity(self, user_id: str) -> bool:
         record = self.records.get(user_id)
-        return bool(record and (record.is_bot or record.manual_group == "Bots"))
+        return bool(record and record.is_bot)
 
-    def set_manual_group(self, user_id: str, group: str) -> None:
-        """Override a chatter's local display group without changing Twitch roles."""
-        if group not in LOCAL_CHATTER_GROUPS:
-            raise ValueError(f"Unsupported local chatter group: {group}")
-        record = self.records[user_id]
-        record.manual_group = group
-        self.dirty = True
+    def create_v8_migration_backup(self) -> Path | None:
+        """Preserve the released v8 input before publishing v9 state."""
+        if self.loaded_schema_version != self.LEGACY_VERSION or not self.path.exists():
+            return None
+        target = self.path.parent / "migrations" / "twitch_chatters-v8-safety.json"
+        if not target.exists():
+            atomic_write_bytes(target, self.path.read_bytes())
+        return target
 
     def save(self) -> None:
         if not self.dirty:
@@ -814,6 +817,7 @@ class ChatterHistoryStore:
         }
         atomic_write_json(self.path, payload)
         self.dirty = False
+        self.loaded_schema_version = self.VERSION
 
     @staticmethod
     def management_record(record: ChatterRecord) -> dict[str, Any]:
@@ -834,7 +838,6 @@ class ChatterHistoryStore:
             "roles": list(record.roles),
             "followed_at": record.followed_at,
             "session_messages": dict(record.session_messages),
-            "manual_group": record.manual_group,
             "twitch_status": dict(record.twitch_status),
         }
 

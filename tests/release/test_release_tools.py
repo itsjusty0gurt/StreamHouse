@@ -17,6 +17,7 @@ from products.hub.twitch.chatter_history import (
     ChatterHistoryStore,
 )
 from products.hub.twitch.commands import TwitchCommandTriggerStore
+from products.hub.twitch.user_groups import UserGroupService, UserGroupStore
 from products.hub.ui.controllers.release_controller import ReleaseController
 
 
@@ -161,10 +162,14 @@ class ReleaseToolsTests(unittest.TestCase):
             root = Path(directory)
             store = ChatterHistoryStore(root / "memory" / "twitch_chatters.json")
             store.observe_message("1", "Viewer", user_login="viewer")
-            store.set_manual_group("1", "Regulars")
             store.observe_message("2", "Other", user_login="other")
             store.records["1"].private_notes = "must never be archived"
             store.save()
+            groups = UserGroupService(
+                UserGroupStore(root / "memory" / "user_groups.json")
+            )
+            group = groups.create_group("Friends")
+            groups.assign_member(group.group_id, "1")
             controller = ReleaseController(root)
             archive = controller.create_backup(BackupPreset.EVERYTHING_ELIGIBLE)
 
@@ -176,9 +181,7 @@ class ReleaseToolsTests(unittest.TestCase):
                 ChatterHistoryStore.VERSION,
             )
             self.assertEqual(set(users_before["chatters"]), {"1", "2"})
-            self.assertEqual(
-                users_before["chatters"]["1"]["manual_group"], "Regulars"
-            )
+            self.assertNotIn("manual_group", users_before["chatters"]["1"])
             self.assertNotIn("must never be archived", json.dumps(users_before))
             forbidden_fields = {"private_notes", "message", "text", "evidence"}
             for record in users_before["chatters"].values():
@@ -188,7 +191,11 @@ class ReleaseToolsTests(unittest.TestCase):
             self.assertEqual(controller.scrub_viewer_data("1"), 1)
             with ZipFile(archive) as source:
                 users_after = json.loads(source.read("components/users.json"))
+                groups_after = json.loads(
+                    source.read("components/user_groups.json")
+                )
             self.assertEqual(set(users_after["chatters"]), {"2"})
+            self.assertNotIn("1", groups_after["memberships"])
 
     def test_windows_release_assets_exist(self) -> None:
         root = Path(__file__).resolve().parents[2]

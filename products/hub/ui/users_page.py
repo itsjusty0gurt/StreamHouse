@@ -11,9 +11,15 @@ from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QFormLayout,
+    QGroupBox,
     QHeaderView,
+    QHBoxLayout,
+    QInputDialog,
     QLabel,
     QLineEdit,
+    QListWidget,
+    QListWidgetItem,
+    QMessageBox,
     QPushButton,
     QScrollArea,
     QSplitter,
@@ -79,14 +85,16 @@ class UsersPage(QWidget):
         profile,
         open_user,
         context_menu,
-        set_group,
+        user_groups=None,
+        group_reference_count: Callable[[str], int] | None = None,
         parent=None,
     ):
         super().__init__(parent)
         self.store, self.counters, self.stream_id = store, counters, stream_id
         self.open_user = open_user
         self.context_menu = context_menu
-        self.set_group = set_group
+        self.user_groups = user_groups
+        self.group_reference_count = group_reference_count or (lambda _group_id: 0)
         self.selected_id = ""
         self._signature = None
         self._counter_pending = False
@@ -124,7 +132,7 @@ class UsersPage(QWidget):
             ["Display Name", "Login", "Group", "Status", "First Seen", "Last Seen"]
         )
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        self.table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        self.table.setSelectionMode(QTableWidget.SelectionMode.ExtendedSelection)
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.table.setAlternatingRowColors(True)
         self.table.verticalHeader().hide()
@@ -141,17 +149,32 @@ class UsersPage(QWidget):
         self.info.setWordWrap(True)
         self.info.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         detail_layout.addWidget(self.info)
-        self.group = QComboBox()
-        for label, value in (
-            ("Automatic", ""),
-            ("Regulars", "Regulars"),
-            ("Bots", "Bots"),
-            ("Viewers", "Viewers"),
+        user_groups = QGroupBox("User Groups")
+        group_layout = QVBoxLayout(user_groups)
+        group_help = QLabel(
+            "Users may belong to several groups. System groups are protected; custom groups can be renamed or deleted."
+        )
+        group_help.setWordWrap(True)
+        group_layout.addWidget(group_help)
+        self.user_group_list = QListWidget()
+        self.user_group_list.setObjectName("userGroupList")
+        self.user_group_list.setMaximumHeight(150)
+        group_layout.addWidget(self.user_group_list)
+        group_actions = QHBoxLayout()
+        self.create_group_button = QPushButton("Create")
+        self.rename_group_button = QPushButton("Rename")
+        self.delete_group_button = QPushButton("Delete")
+        for button in (
+            self.create_group_button,
+            self.rename_group_button,
+            self.delete_group_button,
         ):
-            self.group.addItem(label, value)
-        form = QFormLayout()
-        form.addRow("Group", self.group)
-        detail_layout.addLayout(form)
+            group_actions.addWidget(button)
+        group_layout.addLayout(group_actions)
+        self.group_members = QLabel("Select a user group to view its members.")
+        self.group_members.setWordWrap(True)
+        group_layout.addWidget(self.group_members)
+        detail_layout.addWidget(user_groups)
         detail_layout.addWidget(QLabel("Viewer Counters"))
         self.counter_table = QTableWidget(0, 3)
         self.counter_table.setHorizontalHeaderLabels(
@@ -177,7 +200,11 @@ class UsersPage(QWidget):
         self.search.textChanged.connect(lambda: self.refresh(force=True))
         self.table.itemSelectionChanged.connect(self._selected)
         self.table.customContextMenuRequested.connect(self._menu)
-        self.group.activated.connect(self._group_changed)
+        self.user_group_list.itemChanged.connect(self._user_group_membership_changed)
+        self.user_group_list.itemSelectionChanged.connect(self._show_group_members)
+        self.create_group_button.clicked.connect(self._create_group)
+        self.rename_group_button.clicked.connect(self._rename_group)
+        self.delete_group_button.clicked.connect(self._delete_group)
         self.edit_counter.clicked.connect(self._edit_counter)
         self.counter_table.itemSelectionChanged.connect(self._counter_selection)
         self.timer = QTimer(self)
@@ -204,13 +231,22 @@ class UsersPage(QWidget):
                 record.user_login,
                 record.last_seen,
                 record.first_seen,
-                record.manual_group,
                 record.is_bot,
                 tuple(record.roles),
                 tuple(record.twitch_status.items()),
             )
             for record in records
         )
+        if self.user_groups is not None:
+            signature += (
+                tuple((group.group_id, group.name) for group in self.user_groups.list_groups()),
+                tuple(
+                    (user_id, tuple(sorted(group_ids)))
+                    for user_id, group_ids in sorted(
+                        self.user_groups.store.memberships.items()
+                    )
+                ),
+            )
         if not force and signature == self._signature:
             return
         self._signature = signature
@@ -226,12 +262,15 @@ class UsersPage(QWidget):
         selected_row = -1
         for row, record in enumerate(records):
             status = [key for key, value in record.twitch_status.items() if value]
-            if self.store.is_bot(record.user_id):
-                status.append("Bot")
+            group_names = (
+                [group.name for group in self.user_groups.groups_for_user(record.user_id)]
+                if self.user_groups is not None
+                else []
+            )
             values = (
                 record.user_name or record.user_id,
                 f"@{record.user_login}" if record.user_login else "Unknown",
-                record.manual_group or "Automatic",
+                ", ".join(group_names) or "Viewer",
                 " · ".join(status) or "—",
                 local_timestamp(record.first_seen),
                 local_timestamp(record.last_seen),
@@ -269,13 +308,12 @@ class UsersPage(QWidget):
 
     def _show_details(self):
         record = self.store.records.get(self.selected_id)
-        self.group.setEnabled(record is not None)
+        self._refresh_user_groups()
         if record is None:
             self.info.setText("Select a user to manage their profile and counters.")
             self.counter_table.setRowCount(0)
             self.edit_counter.setEnabled(False)
             return
-        self.group.setCurrentIndex(max(0, self.group.findData(record.manual_group)))
         roles = []
         for role in ("Moderator", "VIP", "Subscriber"):
             value = record.twitch_status.get(role, True if role in record.roles else None)
@@ -287,7 +325,7 @@ class UsersPage(QWidget):
                     record.user_name,
                     f"Login: {record.user_login or 'Unknown'}",
                     f"Twitch ID: {record.user_id}",
-                    f"Bot: {'Yes' if self.store.is_bot(record.user_id) else 'No'}",
+                    f"Bot: {'Yes' if self.user_groups is not None and self.user_groups.is_bot(record.user_id) else 'No'}",
                     *roles,
                     f"First Seen: {local_timestamp(record.first_seen)}",
                     f"Last Seen: {local_timestamp(record.last_seen)}",
@@ -297,10 +335,161 @@ class UsersPage(QWidget):
         )
         self._load_counters()
 
-    def _group_changed(self):
-        if self.selected_id:
-            self.set_group(self.selected_id, self.group.currentData())
-            self.refresh(force=True)
+    def _refresh_user_groups(self) -> None:
+        selected_group_id = self._selected_user_group_id()
+        selected_user_ids = self._selected_user_ids()
+        self.user_group_list.blockSignals(True)
+        self.user_group_list.clear()
+        for group in self.user_groups.list_groups() if self.user_groups is not None else ():
+            item = QListWidgetItem(group.name)
+            item.setData(Qt.ItemDataRole.UserRole, group.group_id)
+            if group.membership_editable:
+                item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            states = [
+                self.user_groups.is_member(user_id, group.group_id)
+                for user_id in selected_user_ids
+            ]
+            item.setCheckState(
+                Qt.CheckState.Checked
+                if states and all(states)
+                else Qt.CheckState.PartiallyChecked
+                if any(states)
+                else Qt.CheckState.Unchecked
+            )
+            item.setToolTip(
+                "Managed automatically by Hub."
+                if not group.membership_editable
+                else "Assign or remove this group for the selected user(s)."
+            )
+            self.user_group_list.addItem(item)
+            if group.group_id == selected_group_id:
+                self.user_group_list.setCurrentItem(item)
+        self.user_group_list.blockSignals(False)
+        enabled = self.user_groups is not None
+        self.create_group_button.setEnabled(enabled)
+        self._update_group_actions()
+        self._show_group_members()
+
+    def _selected_user_group_id(self) -> str:
+        item = self.user_group_list.currentItem() if hasattr(self, "user_group_list") else None
+        return str(item.data(Qt.ItemDataRole.UserRole) or "") if item is not None else ""
+
+    def _user_group_membership_changed(self, item: QListWidgetItem) -> None:
+        selected_user_ids = self._selected_user_ids()
+        if self.user_groups is None or not selected_user_ids:
+            self._refresh_user_groups()
+            return
+        group_id = str(item.data(Qt.ItemDataRole.UserRole) or "")
+        try:
+            for user_id in selected_user_ids:
+                if item.checkState() == Qt.CheckState.Checked:
+                    self.user_groups.assign_member(group_id, user_id)
+                else:
+                    self.user_groups.remove_member(group_id, user_id)
+        except (OSError, ValueError) as error:
+            self.status.setText(f"Could not update user group: {error}")
+        else:
+            self.status.setText("User group membership saved.")
+        self.refresh(force=True)
+
+    def _create_group(self) -> None:
+        if self.user_groups is None:
+            return
+        name, accepted = QInputDialog.getText(self, "Create Custom Group", "Group name:")
+        if not accepted:
+            return
+        try:
+            group = self.user_groups.create_group(name)
+        except (OSError, ValueError) as error:
+            QMessageBox.warning(self, "Could Not Create Group", str(error))
+            return
+        self.refresh(force=True)
+        self._select_user_group(group.group_id)
+
+    def _rename_group(self) -> None:
+        if self.user_groups is None:
+            return
+        group_id = self._selected_user_group_id()
+        group = self.user_groups.get_group(group_id)
+        if group is None:
+            return
+        name, accepted = QInputDialog.getText(
+            self, "Rename Custom Group", "Group name:", text=group.name
+        )
+        if not accepted:
+            return
+        try:
+            self.user_groups.rename_group(group_id, name)
+        except (OSError, ValueError) as error:
+            QMessageBox.warning(self, "Could Not Rename Group", str(error))
+            return
+        self.refresh(force=True)
+        self._select_user_group(group_id)
+
+    def _delete_group(self) -> None:
+        if self.user_groups is None:
+            return
+        group_id = self._selected_user_group_id()
+        group = self.user_groups.get_group(group_id)
+        if group is None:
+            return
+        members = len(self.user_groups.member_ids(group_id))
+        references = self.group_reference_count(group_id)
+        message = (
+            f'Delete "{group.name}"?\n\n'
+            f"Memberships removed: {members}\n"
+            f"Automation references left unresolved: {references}\n\n"
+            "Chatter records will not be changed."
+        )
+        if QMessageBox.question(self, "Delete Custom Group", message) != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            self.user_groups.delete_group(group_id)
+        except (OSError, ValueError) as error:
+            QMessageBox.warning(self, "Could Not Delete Group", str(error))
+            return
+        self.refresh(force=True)
+
+    def _select_user_group(self, group_id: str) -> None:
+        for row in range(self.user_group_list.count()):
+            item = self.user_group_list.item(row)
+            if item.data(Qt.ItemDataRole.UserRole) == group_id:
+                self.user_group_list.setCurrentItem(item)
+                break
+
+    def _show_group_members(self) -> None:
+        group_id = self._selected_user_group_id()
+        self._update_group_actions()
+        if self.user_groups is None or not group_id:
+            self.group_members.setText("Select a user group to view its members.")
+            return
+        labels = []
+        for user_id in self.user_groups.member_ids(group_id):
+            record = self.store.records.get(user_id)
+            labels.append(record.user_name if record is not None and record.user_name else user_id)
+        self.group_members.setText(
+            "Members: " + (", ".join(labels) if labels else "None")
+        )
+
+    def _selected_user_ids(self) -> tuple[str, ...]:
+        ids = {
+            str(item.data(Qt.ItemDataRole.UserRole) or "")
+            for item in self.table.selectedItems()
+            if item.column() == 0
+        }
+        if not ids and self.selected_id:
+            ids.add(self.selected_id)
+        return tuple(sorted(value for value in ids if value))
+
+    def _update_group_actions(self) -> None:
+        group = (
+            self.user_groups.get_group(self._selected_user_group_id())
+            if self.user_groups is not None
+            else None
+        )
+        editable = group is not None and not group.protected
+        self.rename_group_button.setEnabled(editable)
+        self.delete_group_button.setEnabled(editable)
 
     def _menu(self, position):
         item = self.table.itemAt(position)

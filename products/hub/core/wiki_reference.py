@@ -188,6 +188,7 @@ def _field_format(spec: Mapping[str, object]) -> str:
         "bool": "On/off option",
         "choice": "Choice",
         "counter": "Counter selection",
+        "user_group": "User group selection",
         "file": "Local file",
         "folder": "Local folder",
         "json": "JSON object",
@@ -704,6 +705,31 @@ def _twitch_entries() -> tuple[WikiEntry, ...]:
                 for command in TWITCH_SLASH_COMMANDS
                 for keyword in (command.name, command.syntax, command.required_scope)
             ),
+        ),
+        WikiEntry(
+            "twitch:user-groups",
+            "Twitch",
+            "User Groups",
+            "Organize Twitch users in one shared system for Hub behavior and Automation.",
+            (
+                WikiSection(
+                    "Groups and membership",
+                    (
+                        "Bots and Regulars are protected system groups. Bots drives Hub's bot filtering; Regulars is maintained automatically from observed participation.",
+                        "Automatic was a classification mode, not a group, and Viewers is the natural fallback for users without a more specific display group.",
+                        "A Twitch user may belong to several groups. Create, rename, delete, assign, and remove custom-group memberships from Your Channel → Users.",
+                        "Membership uses stable Twitch user IDs; renaming a group keeps its stable internal identity and existing Automation references.",
+                    ),
+                ),
+                WikiSection(
+                    "Automation",
+                    (
+                        "In an If task, choose User Is In Group and select a system or custom group. A missing triggering user evaluates false; a deleted group is shown as missing and fails safely.",
+                        "Example: First Message → User Is In Group: Auto Shoutout → Twitch — Shoutout User {user.id}.",
+                    ),
+                ),
+            ),
+            ("groups", "membership", "Auto Shoutout", "user.id", "First Message"),
         ),
         WikiEntry(
             "twitch:raid-page",

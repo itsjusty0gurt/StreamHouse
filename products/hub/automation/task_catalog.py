@@ -171,8 +171,8 @@ _SHORT_DESCRIPTIONS = {
         "Chooses one configured branch by weight and runs its routine."
     ),
     "core.if": (
-        "Compares two values and runs its nested Then or optional Else tasks. "
-        "Values may use Variables."
+        "Compares two values or checks whether the triggering user belongs to a "
+        "user group, then runs nested Then or optional Else tasks."
     ),
     "core.logic_switch": (
         "Matches one value against configured cases and runs the selected routine."
@@ -439,8 +439,9 @@ _INPUT_HELP: dict[str, dict[str, str]] = {
     },
     "core.if": {
         "left": "A literal value or canonical Variable used on the left side.",
-        "operator": "The text, numeric, or empty-value comparison to perform.",
+        "operator": "The comparison to perform, including User Is In Group.",
         "right": "A literal value or canonical Variable used on the right side.",
+        "group_id": "The stable custom-group identity used by User Is In Group.",
         "ignore_case": "Applies case-insensitive matching to text comparisons.",
     },
     "core.logic_while": {
@@ -512,6 +513,7 @@ _NOTES = {
     "core.if": (
         "Numeric comparisons use exact decimal values and fail when either side is not numeric.",
         "Only the selected branch runs, so outputs from the other branch do not exist.",
+        "User Is In Group uses the triggering user's stable Twitch ID and a stable custom-group ID.",
     ),
     "core.logic_while": ("The repeated routine runs inline and shares the current routine context.",),
     "core.run_python_script": (
@@ -549,7 +551,10 @@ _EXAMPLES = {
     "core.end_routine": (
         "If a viewer is not allowed, send “Mods only”, then End Routine before OBS tasks run.",
     ),
-    "core.if": ("If {event.viewers} is greater than 20, run the nested raid-alert tasks.",),
+    "core.if": (
+        "If {event.viewers} is greater than 20, run the nested raid-alert tasks.",
+        "First Message → User Is In Group: Auto Shoutout → Twitch — Shoutout User {user.id}.",
+    ),
     "core.logic_switch": ("Match {event.reward} and run the routine assigned to that reward.",),
     "core.file_random_line": ("Read one quote, then send {automation.random_line} to chat.",),
     "core.file_write": ("Append {user.display_name} to a giveaway entries file.",),
@@ -655,7 +660,9 @@ def _unit_abbreviation(unit: object) -> str:
     }.get(str(unit).strip().casefold(), _summary_text(unit))
 
 
-def _condition_summary(config: Mapping[str, Any]) -> str:
+def _condition_summary(
+    config: Mapping[str, Any], resolver: TaskReferenceResolver | None = None
+) -> str:
     left = _summary_text(config.get("left", "value")) or "value"
     operator = str(config.get("operator", "equals"))
     label = next(
@@ -666,6 +673,9 @@ def _condition_summary(config: Mapping[str, Any]) -> str:
         ),
         operator.replace("_", " ").title(),
     )
+    if operator == "user_in_group":
+        group = _resolved(config, "group_id", "user_group", resolver) or "Missing Group"
+        return f"User Is In Group: {group}"
     if operator in UNARY_OPERATORS or operator in IF_UNARY_OPERATORS:
         return f"{left} {label.casefold()}"
     right = _summary_text(config.get("right", ""))
@@ -749,7 +759,7 @@ def _card_summary(
     if task_type == "core.end_routine":
         return "End this routine here"
     if task_type == "core.if":
-        return _condition_summary(config)
+        return _condition_summary(config, resolver)
     if task_type in {"obs.set_program_scene", "obs.set_preview_scene"}:
         return _summary_text(config.get("scene", ""))
     if task_type in {"obs.set_source_filter_state", "obs.set_scene_filter_state"}:

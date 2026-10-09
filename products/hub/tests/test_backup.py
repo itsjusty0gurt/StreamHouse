@@ -33,6 +33,11 @@ from products.hub.twitch.automation_triggers import TwitchEventTriggerStore
 from products.hub.twitch.channel_information import ChannelInformationStore
 from products.hub.twitch.chatter_history import ChatterHistoryStore
 from products.hub.twitch.commands import TwitchCommandTriggerStore
+from products.hub.twitch.user_groups import (
+    SYSTEM_REGULARS_GROUP_ID,
+    UserGroupService,
+    UserGroupStore,
+)
 from shared.streamhouse_runtime.version import VERSION
 
 
@@ -248,7 +253,6 @@ class BackupManagerTests(unittest.TestCase):
                         "first_seen": "2026-09-01T00:00:00+00:00",
                         "last_seen": "2026-09-11T00:00:00+00:00",
                         "is_bot": False,
-                        "manual_group": "Regulars",
                         "twitch_status": {"Subscriber": True},
                         "daily_memory": [
                             {"message": "private viewer message"}
@@ -259,6 +263,9 @@ class BackupManagerTests(unittest.TestCase):
                 },
             },
         )
+        group_store = UserGroupStore(self.root / "memory/user_groups.json")
+        group_store.memberships["viewer-1"] = {SYSTEM_REGULARS_GROUP_ID}
+        group_store.save()
         write_json(
             self.root / "config/settings.json",
             {
@@ -331,6 +338,7 @@ class BackupManagerTests(unittest.TestCase):
             manifest = json.loads(source.read("manifest.json"))
             routines = json.loads(source.read("components/routines.json"))
             users = json.loads(source.read("components/users.json"))
+            user_groups = json.loads(source.read("components/user_groups.json"))
             settings = json.loads(source.read("components/hub_settings.json"))
             obs = json.loads(source.read("components/obs_configuration.json"))
             combined = b"\n".join(source.read(name) for name in names)
@@ -348,7 +356,11 @@ class BackupManagerTests(unittest.TestCase):
             set(routines["custom_variables"]["global"]), {"greeting"}
         )
         user = users["chatters"]["viewer-1"]
-        self.assertEqual(user["manual_group"], "Regulars")
+        self.assertNotIn("manual_group", user)
+        self.assertEqual(
+            user_groups["memberships"]["viewer-1"],
+            [SYSTEM_REGULARS_GROUP_ID],
+        )
         self.assertNotIn("daily_memory", user)
         self.assertNotIn("memories", user)
         self.assertNotIn("private_notes", user)
@@ -369,6 +381,45 @@ class BackupManagerTests(unittest.TestCase):
             b"support",
         ):
             self.assertNotIn(forbidden, combined)
+
+    def test_user_group_backup_restore_preserves_ids_memberships_and_references(
+        self,
+    ) -> None:
+        group_store = UserGroupStore(self.root / "memory/user_groups.json")
+        group_store.load()
+        groups = UserGroupService(group_store)
+        custom = groups.create_group("Auto Shoutout")
+        groups.assign_member(custom.group_id, "viewer-1")
+        routines = RoutineStore(self.root / "automation/routines.json")
+        routines.load()
+        routines.add_task(
+            "parent",
+            task_type="core.if",
+            name="Known streamer",
+            config={"operator": "user_in_group", "group_id": custom.group_id},
+        )
+
+        archive = self.manager.create(
+            "manual", components={BackupComponent.ROUTINES}
+        )
+        group_store.path.unlink()
+        self.manager.restore(archive, create_safety=False)
+
+        restored_groups = UserGroupStore(group_store.path)
+        restored_groups.load()
+        restored_routines = RoutineStore(routines.path)
+        restored_routines.load()
+        restored_condition = next(
+            task
+            for task in restored_routines.get("parent").tasks
+            if task.config.get("operator") == "user_in_group"
+        )
+        self.assertEqual(restored_groups.groups[custom.group_id].name, "Auto Shoutout")
+        self.assertEqual(
+            restored_groups.memberships["viewer-1"],
+            {SYSTEM_REGULARS_GROUP_ID, custom.group_id},
+        )
+        self.assertEqual(restored_condition.config["group_id"], custom.group_id)
 
     def test_current_twitch_trigger_schema_backs_up_and_restores_with_stable_links(
         self,

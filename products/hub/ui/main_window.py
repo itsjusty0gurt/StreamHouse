@@ -143,6 +143,10 @@ from products.hub.twitch.activity_history import (
     PersistedActivity,
 )
 from products.hub.twitch.chatter_history import ChatterHistoryStore
+from products.hub.twitch.user_groups import (
+    UserGroupService,
+    UserGroupStore,
+)
 from products.hub.twitch.commands import (
     TwitchCommandPermission,
     TwitchCommandSetupState,
@@ -388,6 +392,7 @@ class MainWindow(QMainWindow):
         twitch_bot_auth: TwitchAuthService | None = None,
         window_state_store: WindowStateStore | None = None,
         chatter_history_store: ChatterHistoryStore | None = None,
+        user_group_store: UserGroupStore | None = None,
         activity_history_store: ActivityHistoryStore | None = None,
         session_store: StreamSessionStore | None = None,
         release_controller: ReleaseController | None = None,
@@ -464,6 +469,17 @@ class MainWindow(QMainWindow):
             routine_store=routine_store,
         )
         data_root = routine_store.path.parent.parent
+        self.user_group_store = user_group_store or UserGroupStore(
+            data_root / "memory" / "user_groups.json"
+        )
+        self.user_groups = UserGroupService(self.user_group_store)
+        try:
+            self.user_group_store.load()
+        except (OSError, ValueError, json.JSONDecodeError) as error:
+            Logger.warning(
+                f"Could not load user groups: {error}",
+                source="DATA",
+            )
         self.music_player_config_store = MusicPlayerConfigStore()
         try:
             self.music_player_config = self.music_player_config_store.load()
@@ -548,7 +564,7 @@ class MainWindow(QMainWindow):
         self.counter_store = CounterStore(data_root / "counters")
         self.counter_service = CounterService(
             self.counter_store,
-            bot_checker=self.chatter_history.is_bot,
+            bot_checker=self.user_groups.is_bot,
         )
         self.variable_registry = VariableRegistry()
         self.variable_registry.register(context_provider())
@@ -671,7 +687,9 @@ class MainWindow(QMainWindow):
                 self.automation_service.routine_name,
             )
         )
-        register_logic_tasks(self.task_registry, self.automation_service)
+        register_logic_tasks(
+            self.task_registry, self.automation_service, self.user_groups
+        )
         self.training_opted_in_users: set[str] = set()
         self.training_notice_attempt_context = ""
         try:
@@ -761,6 +779,7 @@ class MainWindow(QMainWindow):
                 f"Could not load Twitch chatter history: {error}",
                 source="TWITCH",
             )
+        self._migrate_and_sync_user_groups()
         try:
             self.session_store.load()
         except (OSError, ValueError, json.JSONDecodeError) as error:
@@ -2887,6 +2906,7 @@ class MainWindow(QMainWindow):
             counter_service=self.counter_service,
             variable_registry=self.variable_registry,
             soundboard_store=self.soundboard_store,
+            user_groups=self.user_groups,
         )
         self.ui.mainStack.addWidget(self.automation_page)
         self.automation_timer_scheduler.start()
@@ -2973,7 +2993,8 @@ class MainWindow(QMainWindow):
             self.chatter_history, self.counter_service,
             lambda: self.current_memory_stream_id if self.stream_is_live else "",
             profile, self._open_chat_user, self._show_chatter_context_menu,
-            self._set_local_chatter_group, self.channel_tabs,
+            self.user_groups,
+            self._count_user_group_references, self.channel_tabs,
         )
         self.channel_tabs.addTab(self.chat_user_page, "Users")
 
@@ -4110,11 +4131,13 @@ class MainWindow(QMainWindow):
                     else ""
                 ),
             )
+            self._sync_observed_user_groups(
+                chat_message.user_id,
+                observed_bot=twitch_identified_bot,
+            )
             if new_viewer:
                 self._refresh_memory_viewer_list()
-        is_bot = twitch_identified_bot or self.chatter_history.is_bot(
-            chat_message.user_id
-        )
+        is_bot = twitch_identified_bot or self.user_groups.is_bot(chat_message.user_id)
         is_broadcaster = any(
             badge.set_id == "broadcaster"
             for badge in chat_message.badges
@@ -4437,6 +4460,7 @@ class MainWindow(QMainWindow):
                         source="DATA",
                     )
                 self.chatter_history.delete_viewer_data(user_id)
+                self.user_groups.remove_user(user_id)
                 self._clear_viewer_runtime_memory(user_id)
                 self._save_chatter_history()
                 self._refresh_memory_viewer_list()
@@ -4617,7 +4641,7 @@ class MainWindow(QMainWindow):
         if (
             record is None
             or not self.chatter_history.can_create_keynotes(user_id)
-            or self.chatter_history.is_bot(user_id)
+            or self.user_groups.is_bot(user_id)
         ):
             return
         text = " ".join(chat_message.text.strip().split())[:500]
@@ -6545,10 +6569,11 @@ class MainWindow(QMainWindow):
         self.memory_name_label.setText(record.user_name or "Unknown viewer")
         self.memory_id_label.setText(f"Twitch user ID: {record.user_id}")
         groups = list(record.roles)
-        if self.chatter_history.is_bot(user_id) and "Bot" not in groups:
-            groups.append("Bot")
-        if self.chatter_history.is_regular(user_id):
-            groups.append("Regular")
+        groups.extend(
+            group.name
+            for group in self.user_groups.groups_for_user(user_id)
+            if group.name not in groups
+        )
         self.memory_groups_label.setText(", ".join(groups) or "Viewer")
         self.memory_first_seen_label.setText(
             self._format_memory_timestamp(record.first_seen)
@@ -6767,6 +6792,7 @@ class MainWindow(QMainWindow):
         ) is not QMessageBox.StandardButton.Yes:
             return
         self.chatter_history.merge_records(source_id, target_id)
+        self.user_groups.merge_users(source_id, target_id)
         self._save_chatter_history()
         self._refresh_memory_viewer_list()
         for row in range(self.memory_viewer_list.count()):
@@ -7507,6 +7533,7 @@ class MainWindow(QMainWindow):
                 else ""
             ),
         )
+        self._sync_all_observed_user_groups()
         self._refresh_memory_viewer_list()
         groups: dict[str, list[tuple[str, str]]] = {
             "Moderators": [],
@@ -7521,9 +7548,7 @@ class MainWindow(QMainWindow):
             user_name = str(chatter.get("user_name", ""))
             if user_id == self.twitch_service.broadcaster_user_id:
                 continue
-            record = self.chatter_history.records.get(user_id)
-            manual_group = record.manual_group if record else ""
-            is_bot = self.chatter_history.is_bot(user_id)
+            is_bot = self.user_groups.is_bot(user_id)
             if is_bot:
                 groups["Bots"].append((user_name, user_id))
             elif user_id in result.moderator_ids:
@@ -7532,9 +7557,7 @@ class MainWindow(QMainWindow):
                 groups["VIPs"].append((user_name, user_id))
             elif user_id in result.subscriber_ids:
                 groups["Subscribers"].append((user_name, user_id))
-            elif manual_group:
-                groups[manual_group].append((user_name, user_id))
-            elif self.chatter_history.is_regular(user_id):
+            elif self.user_groups.is_regular(user_id):
                 groups["Regulars"].append((user_name, user_id))
             else:
                 groups["Viewers"].append((user_name, user_id))
@@ -7634,21 +7657,15 @@ class MainWindow(QMainWindow):
             lambda: self._open_chat_user(entry, user_id, user_name)
         )
         menu.addSeparator()
-        move_menu = menu.addMenu("Move to local group")
-        record = self.chatter_history.records.get(user_id)
-        current_group = record.manual_group if record else ""
-        for title, group in (
-            ("Automatic", ""),
-            ("Regulars", "Regulars"),
-            ("Bots", "Bots"),
-            ("Viewers", "Viewers"),
-        ):
-            action = move_menu.addAction(title)
+        move_menu = menu.addMenu("User groups")
+        for group in self.user_groups.list_groups():
+            action = move_menu.addAction(group.name)
             action.setCheckable(True)
-            action.setChecked(current_group == group)
+            action.setChecked(self.user_groups.is_member(user_id, group.group_id))
+            action.setEnabled(group.membership_editable)
             action.triggered.connect(
-                lambda _checked=False, selected=group: self._set_local_chatter_group(
-                    user_id, selected
+                lambda checked=False, selected=group.group_id: self._set_user_group_membership(
+                    user_id, selected, checked
                 )
             )
 
@@ -7814,14 +7831,56 @@ class MainWindow(QMainWindow):
                 "timeout", user_id, user_name, duration=duration
             )
 
-    def _set_local_chatter_group(self, user_id: str, group: str) -> None:
+    def _set_user_group_membership(
+        self, user_id: str, group_id: str, enabled: bool
+    ) -> None:
         if user_id not in self.chatter_history.records:
             return
-        self.chatter_history.set_manual_group(user_id, group)
-        self.chatter_history.save()
+        try:
+            if enabled:
+                self.user_groups.assign_member(group_id, user_id)
+            else:
+                self.user_groups.remove_member(group_id, user_id)
+        except (OSError, ValueError) as error:
+            Logger.warning(f"Could not update user group: {error}", source="DATA")
+            return
         if self.last_channel_snapshot is not None:
             self._apply_chatter_groups(self.last_channel_snapshot)
         self._refresh_memory_viewer_list()
+
+    def _count_user_group_references(self, group_id: str) -> int:
+        def count(tasks) -> int:
+            total = 0
+            for task in tasks:
+                if (
+                    task.task_type == "core.if"
+                    and task.config.get("operator") == "user_in_group"
+                    and str(task.config.get("group_id", "")) == group_id
+                ):
+                    total += 1
+                total += count(task.child_tasks)
+            return total
+
+        return sum(
+            count(routine.tasks)
+            for routine in self.twitch_command_trigger_store.routine_store.routines
+        )
+
+    def _migrate_and_sync_user_groups(self) -> None:
+        if isinstance(getattr(self.chatter_history, "legacy_manual_groups", None), dict):
+            self.user_groups.migrate_chatter_store(self.chatter_history)
+
+    def _sync_observed_user_groups(
+        self, user_id: str, *, observed_bot: bool = False
+    ) -> None:
+        self.user_groups.sync_chatter_record(
+            self.chatter_history,
+            user_id,
+            observed_bot=observed_bot,
+        )
+
+    def _sync_all_observed_user_groups(self) -> None:
+        self.user_groups.sync_all_chatter_records(self.chatter_history)
 
     def _run_moderation_action(
         self,

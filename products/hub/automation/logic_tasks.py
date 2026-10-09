@@ -67,8 +67,9 @@ IF_COMPARISON_CHOICES = (
     ("Less Than or Equal", "less_or_equal"),
     ("Is Empty", "is_empty"),
     ("Is Not Empty", "is_not_empty"),
+    ("User Is In Group", "user_in_group"),
 )
-IF_UNARY_OPERATORS = frozenset({"is_empty", "is_not_empty"})
+IF_UNARY_OPERATORS = frozenset({"is_empty", "is_not_empty", "user_in_group"})
 
 
 def comparison_choices_for_type(
@@ -390,19 +391,30 @@ class IfTask:
             [tuple[TaskDefinition, ...], TriggerEvent],
             tuple[TaskExecutionResult, ...],
         ],
+        user_groups=None,
     ) -> None:
         self.branch_runner = branch_runner
+        self.user_groups = user_groups
 
     def execute(self, task: TaskDefinition, trigger: TriggerEvent) -> TaskExecutionResult:
         try:
             context = _context(trigger)
-            matched = evaluate_if_condition(
-                str(task.config.get("left", "")),
-                str(task.config.get("operator", "equals")),
-                str(task.config.get("right", "")),
-                context,
-                ignore_case=bool(task.config.get("ignore_case", False)),
-            )
+            operator = str(task.config.get("operator", "equals"))
+            if operator == "user_in_group":
+                group_id = str(task.config.get("group_id", "")).strip()
+                if self.user_groups is None or self.user_groups.get_group(group_id) is None:
+                    raise ValueError("The selected user group no longer exists.")
+                matched = self.user_groups.is_member(
+                    str(context.get("user.id", "")).strip(), group_id
+                )
+            else:
+                matched = evaluate_if_condition(
+                    str(task.config.get("left", "")),
+                    operator,
+                    str(task.config.get("right", "")),
+                    context,
+                    ignore_case=bool(task.config.get("ignore_case", False)),
+                )
             branch = "then" if matched else "else"
             branch_tasks = tuple(task.then_tasks if matched else task.else_tasks)
             child_results = self.branch_runner(branch_tasks, trigger)
@@ -518,13 +530,13 @@ class WhileTask(_RoutineLogicTask):
             return _result(task, False, str(error))
 
 
-def register_logic_tasks(registry, service) -> None:
+def register_logic_tasks(registry, service, user_groups=None) -> None:
     registry.register(EndRoutineTask())
     registry.register(GetInputTask())
     registry.register(GetRandomNumberTask())
     registry.register(
         RandomChoiceTask(service.run_nested_routine, service.routine_name)
     )
-    registry.register(IfTask(service.execute_child_tasks))
+    registry.register(IfTask(service.execute_child_tasks, user_groups))
     registry.register(SwitchTask(service.run_nested_routine, service.routine_name))
     registry.register(WhileTask(service.run_nested_routine, service.routine_name))

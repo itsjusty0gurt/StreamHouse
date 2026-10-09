@@ -445,6 +445,7 @@ class TaskEditorTests(unittest.TestCase):
                 "less_or_equal",
                 "is_empty",
                 "is_not_empty",
+                "user_in_group",
             ],
         )
         operator.setCurrentIndex(operator.findData("is_not_empty"))

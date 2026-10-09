@@ -164,6 +164,30 @@ class AutomationTransferTests(unittest.TestCase):
         self.assertNotEqual(imported_if.else_tasks[0].task_id, "else-wait")
         self.assertEqual(imported_if.then_tasks[0].config["duration"], "1")
 
+    def test_user_group_reference_is_preserved_as_unresolved_stable_id(self) -> None:
+        routine = self.stores["routine_store"].add("Auto shoutout")
+        stable_group_id = "custom-group-stable-id"
+        self.stores["routine_store"].add_task(
+            routine.routine_id,
+            task_type="core.if",
+            name="Known streamer",
+            config={"operator": "user_in_group", "group_id": stable_group_id},
+        )
+
+        payload = export_routine(
+            self.stores["routine_store"].get(routine.routine_id),
+            **self.stores,
+        )
+        destination = self.make_stores(self.root / "group-reference-destination")
+        imported = import_routine(
+            payload,
+            group_id="",
+            task_registry=self.registry,
+            **destination,
+        )
+
+        self.assertEqual(imported.tasks[0].config["group_id"], stable_group_id)
+
     def test_timer_trigger_round_trip_preserves_schedule_configuration(self) -> None:
         routine = self.stores["routine_store"].add("Random promo")
         self.stores["core_store"].add_timer(

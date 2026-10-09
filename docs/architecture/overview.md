@@ -907,13 +907,21 @@ is a navigation ownership choice only: definitions, named value files,
 transactional updates, and automation providers remain in
 `products/hub/counters/`.
 
-The Users workspace reads viewer identity, groups, bot classification, observed
-Twitch roles, and first/last seen from the chatter-history store. Stable Twitch
+The Users workspace reads viewer identity, observed bot status,
+observed Twitch roles, and first/last seen from the chatter-history store. Stable Twitch
 user ID is authoritative; a changed login or display name does not create a new
 record. Twitch role values remain Unknown until chat badges or a complete
 channel snapshot confirms them. The workspace reuses the chat moderation menu
 and edits only `viewer_total` and `viewer_stream_total` through `CounterService`;
-it does not own a parallel user, moderation, or counter store. Selected-viewer
+it does not own a parallel user, moderation, or counter store. User-defined
+many-to-many memberships use one authoritative `UserGroupStore` v1 domain keyed
+by stable Twitch user and group IDs. Protected system groups and custom groups
+share this store and query service. Bots drives bot filtering; Regulars is
+derived from observed participation. Automatic is not a group and Viewers is a
+display fallback, so neither is persisted as redundant membership. Automation
+stores only the group ID; rename therefore preserves references and deletion
+leaves them visibly unresolved.
+Selected-viewer
 writes capture immutable counter, user, scope, exact-value, and confirmed-stream
 identity before worker dispatch. Completion returns through a queued Qt signal;
 only a still-matching selection is repainted, and completed workers are released.
@@ -1648,7 +1656,8 @@ identifiers or filename formats are accepted.
 | `twitch/soundboard-relay.json` | Hub | v1 non-secret relay URL/channel/autoconnect |
 | `obs/connection.json` | Hub | v1 non-secret OBS host/port/autoconnect |
 | `obs/triggers.json` | Hub | schema v1 OBS trigger definitions |
-| `memory/twitch_chatters.json` | Hub | schema v8 management-only stable-Twitch-ID profiles, observed Twitch status, first/last seen, aggregate participation counts, and Hub-owned local groups; no message or memory content |
+| `memory/twitch_chatters.json` | Hub | schema v9 management-only stable-Twitch-ID profiles, observed Twitch/bot status, first/last seen, and aggregate participation counts; released v8 `manual_group` values are migration input only and no message or memory content is stored |
+| `memory/user_groups.json` | Hub | schema v1 protected-system/custom group definitions, stable group IDs, and stable-Twitch-ID many-to-many memberships; the sole active group source, with Automation referencing group IDs |
 | `memory/twitch_activity.json` | Hub | schema v2 bounded activity feed history with stable Twitch user references where applicable |
 | `memory/stream_sessions.json` | Hub | schema v1 active/completed session analytics, including current incomplete-session recovery |
 | `training/examples.json` | Streamhouse AI | v1 consent-based classifier examples |
@@ -1746,10 +1755,10 @@ crash reports, Support Bundles, diagnostic state, or Streamhouse AI data.
 
 The eligible components are Routines & Dependencies, Commands, Counter
 Definitions, Counter Values, durable `custom.*` Variables, Channel Information,
-optional Users/Chatter management metadata, portable Hub Settings, and safe OBS
-connection configuration. Twitch/OBS/relay credentials, window geometry, and
+unified User Groups, optional Users/Chatter management metadata, portable Hub
+Settings, and safe OBS connection configuration. Twitch/OBS/relay credentials, window geometry, and
 other machine-specific or hidden-product state are ineligible. User backup
-records use the same chatter schema v8 management-field
+records use the same chatter schema v9 management-field
 allowlist; message text, memories/evidence, private notes, and timeline content
 are never archived. Counter Values remain exact decimal strings and keyed by
 stable Twitch user IDs. Restore receives the same confirmed active Twitch stream
@@ -1815,7 +1824,7 @@ relay/server credentials, provider credentials, logs, and diagnostics.
   and Keyword/Phrase parsing, moderation, First Message, and the active root
   routine context, including nested routines. It is discarded after that
   runtime ownership ends and is omitted from completed Run History snapshots.
-- Hub never durably stores Twitch chat/message history. Chatter schema v8 is an
+- Hub never durably stores Twitch chat/message history. Chatter schema v9 is an
   exact management-only projection; Activity persists normalized non-chat
   events only; no raw EventSub chat payload store exists. Live chat and raw
   EventSub diagnostics are bounded in-memory views that start empty after a

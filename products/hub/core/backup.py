@@ -31,6 +31,7 @@ from products.hub.twitch.chatter_history import (
     ChatterHistoryStore,
 )
 from products.hub.twitch.commands import TwitchCommandTriggerStore
+from products.hub.twitch.user_groups import UserGroupStore
 from shared.streamhouse_runtime.paths import user_data_root
 from shared.streamhouse_runtime.redaction import is_secret_key, redact_secret_text
 from shared.streamhouse_runtime.version import VERSION
@@ -48,6 +49,7 @@ class BackupComponent(str, Enum):
     CUSTOM_VARIABLES = "custom_variables"
     CHANNEL_INFORMATION = "channel_information"
     USERS = "users"
+    USER_GROUPS = "user_groups"
     HUB_SETTINGS = "hub_settings"
     OBS_CONFIGURATION = "obs_configuration"
 
@@ -66,6 +68,7 @@ CONFIGURATION_COMPONENTS = frozenset(
         BackupComponent.COUNTER_DEFINITIONS,
         BackupComponent.CUSTOM_VARIABLES,
         BackupComponent.CHANNEL_INFORMATION,
+        BackupComponent.USER_GROUPS,
         BackupComponent.HUB_SETTINGS,
         BackupComponent.OBS_CONFIGURATION,
     }
@@ -84,6 +87,7 @@ COMPONENT_LABELS: Mapping[BackupComponent, str] = {
     BackupComponent.CUSTOM_VARIABLES: "Custom Variables",
     BackupComponent.CHANNEL_INFORMATION: "Channel Information",
     BackupComponent.USERS: "Users / Chatter Management Data",
+    BackupComponent.USER_GROUPS: "User Groups",
     BackupComponent.HUB_SETTINGS: "Hub Settings",
     BackupComponent.OBS_CONFIGURATION: "OBS Hub Configuration",
 }
@@ -95,10 +99,12 @@ _COMPONENT_SCHEMAS: Mapping[BackupComponent, int] = {
     BackupComponent.CUSTOM_VARIABLES: CustomVariableStore.VERSION,
     BackupComponent.CHANNEL_INFORMATION: ChannelInformationStore.VERSION,
     BackupComponent.USERS: ChatterHistoryStore.VERSION,
+    BackupComponent.USER_GROUPS: UserGroupStore.VERSION,
     BackupComponent.HUB_SETTINGS: SettingsStore.VERSION,
     BackupComponent.OBS_CONFIGURATION: 1,
 }
 _DEPENDENCIES: Mapping[BackupComponent, frozenset[BackupComponent]] = {
+    BackupComponent.ROUTINES: frozenset({BackupComponent.USER_GROUPS}),
     BackupComponent.COUNTER_VALUES: frozenset(
         {BackupComponent.COUNTER_DEFINITIONS}
     ),
@@ -227,6 +233,9 @@ class BackupManager:
         users = payloads.get(BackupComponent.USERS, {})
         if isinstance(users, dict):
             counts["users"] = len(users.get("chatters", {}))
+        user_groups = payloads.get(BackupComponent.USER_GROUPS, {})
+        if isinstance(user_groups, dict):
+            counts["user_groups"] = len(user_groups.get("groups", []))
         return BackupSummary(
             tuple(sorted(components, key=lambda item: item.value)), counts
         )
@@ -478,6 +487,14 @@ class BackupManager:
                             and viewers.pop(clean_id, None) is not None
                         ):
                             archive_changed = True
+            user_groups = payloads.get(BackupComponent.USER_GROUPS)
+            if isinstance(user_groups, dict):
+                memberships = user_groups.get("memberships", {})
+                if (
+                    isinstance(memberships, dict)
+                    and memberships.pop(clean_id, None) is not None
+                ):
+                    archive_changed = True
             if archive_changed:
                 self._rewrite_archive(archive, manifest, payloads)
                 changed += 1
@@ -523,6 +540,11 @@ class BackupManager:
             )
         if BackupComponent.USERS in components:
             payloads[BackupComponent.USERS] = self._safe_users_snapshot()
+        if BackupComponent.USER_GROUPS in components:
+            payloads[BackupComponent.USER_GROUPS] = self._json_or_default(
+                "memory/user_groups.json",
+                UserGroupStore().to_payload(),
+            )
         if BackupComponent.HUB_SETTINGS in components:
             payloads[BackupComponent.HUB_SETTINGS] = self._safe_settings_snapshot()
         if BackupComponent.OBS_CONFIGURATION in components:
@@ -918,6 +940,7 @@ class BackupManager:
             BackupComponent.CUSTOM_VARIABLES: "automation/variables.json",
             BackupComponent.CHANNEL_INFORMATION: "twitch/channel-information.json",
             BackupComponent.USERS: "memory/twitch_chatters.json",
+            BackupComponent.USER_GROUPS: "memory/user_groups.json",
             BackupComponent.HUB_SETTINGS: "config/settings.json",
             BackupComponent.OBS_CONFIGURATION: "obs/connection.json",
         }
@@ -1230,7 +1253,10 @@ class BackupManager:
                 raise BackupError(f'Unknown backup component "{name}".') from error
             if not isinstance(details, dict):
                 raise BackupError(f'Backup component "{name}" is malformed.')
-            if details.get("schema") != _COMPONENT_SCHEMAS[component]:
+            supported_schema = details.get("schema") == _COMPONENT_SCHEMAS[component]
+            if component is BackupComponent.USERS and details.get("schema") == 8:
+                supported_schema = True
+            if not supported_schema:
                 raise BackupError(
                     f'Backup component "{name}" uses an unsupported schema.'
                 )
@@ -1343,6 +1369,9 @@ class BackupManager:
                 users_path = root / "memory/twitch_chatters.json"
                 if users_path.exists():
                     ChatterHistoryStore(users_path).load()
+                user_groups_path = root / "memory/user_groups.json"
+                if user_groups_path.exists():
+                    UserGroupStore(user_groups_path).load()
                 settings_path = root / "config/settings.json"
                 if settings_path.exists():
                     SettingsStore(settings_path).load()

@@ -19,6 +19,11 @@ from products.hub.counters.models import CounterDefinition
 from products.hub.counters.service import CounterService
 from products.hub.counters.store import CounterStore
 from products.hub.twitch.chatter_history import ChatterHistoryStore
+from products.hub.twitch.user_groups import (
+    SYSTEM_BOTS_GROUP_ID,
+    UserGroupService,
+    UserGroupStore,
+)
 from products.hub.ui.users_page import UsersPage
 
 
@@ -33,13 +38,10 @@ class UsersPageTests(unittest.TestCase):
         self.chatter_path = root / "chatters.json"
         self.store = ChatterHistoryStore(self.chatter_path)
         self.counters = CounterService(CounterStore(root / "counters"))
+        self.groups = UserGroupService(UserGroupStore(root / "user_groups.json"))
         self.opened: list[str] = []
         self.menus: list[str] = []
         self.stream_id = "stream-1"
-
-        def set_group(user_id: str, group: str) -> None:
-            self.store.set_manual_group(user_id, group)
-            self.store.save()
 
         self.page = UsersPage(
             self.store,
@@ -48,7 +50,7 @@ class UsersPageTests(unittest.TestCase):
             QWidget(),
             lambda _entry, user_id, _name: self.opened.append(user_id),
             lambda user_id, _name, _message_id: self.menus.append(user_id),
-            set_group,
+            self.groups,
         )
         self.page.resize(1100, 700)
         self.page.show()
@@ -123,17 +125,43 @@ class UsersPageTests(unittest.TestCase):
     def test_group_assignment_and_existing_context_menu_are_reused(self) -> None:
         self.add_user("1", "Joe", "joe")
         self.page.select_user("1")
-        self.page.group.setCurrentIndex(self.page.group.findData("Bots"))
-        self.page._group_changed()
+        self.page._select_user_group(SYSTEM_BOTS_GROUP_ID)
+        item = self.page.user_group_list.currentItem()
+        item.setCheckState(Qt.CheckState.Checked)
+        QApplication.processEvents()
 
-        restored = ChatterHistoryStore(self.chatter_path)
+        restored = UserGroupStore(self.groups.store.path)
         restored.load()
-        self.assertEqual(restored.records["1"].manual_group, "Bots")
-        self.assertTrue(restored.is_bot("1"))
+        self.assertIn(SYSTEM_BOTS_GROUP_ID, restored.memberships["1"])
 
         self.page.table.selectRow(0)
         self.page._menu(self.page.table.visualItemRect(self.page.table.item(0, 0)).center())
         self.assertEqual(self.menus, ["1"])
+
+    def test_multi_selection_assigns_one_custom_group_to_each_stable_user(self) -> None:
+        self.add_user("1", "Joe", "joe")
+        self.add_user("2", "Sam", "sam")
+        custom = self.groups.create_group("Auto Shoutout")
+        self.page.refresh(force=True)
+        for row in range(self.page.table.rowCount()):
+            self.page.table.item(row, 0).setSelected(True)
+        self.page._select_user_group(custom.group_id)
+        item = self.page.user_group_list.currentItem()
+        item.setCheckState(Qt.CheckState.Checked)
+        QApplication.processEvents()
+
+        self.assertTrue(self.groups.is_member("1", custom.group_id))
+        self.assertTrue(self.groups.is_member("2", custom.group_id))
+
+    def test_system_groups_share_the_list_but_protected_actions_are_disabled(self) -> None:
+        self.page._select_user_group(SYSTEM_BOTS_GROUP_ID)
+
+        self.assertFalse(self.page.rename_group_button.isEnabled())
+        self.assertFalse(self.page.delete_group_button.isEnabled())
+        self.assertEqual(
+            self.page.user_group_list.currentItem().text(),
+            "Bots",
+        )
 
     def test_live_record_updates_refresh_without_replacing_identity(self) -> None:
         self.add_user("stable", "Old Name", "old_login")
@@ -252,7 +280,7 @@ class UsersPageTests(unittest.TestCase):
                     QWidget(),
                     lambda *_args: None,
                     lambda *_args: None,
-                    lambda *_args: None,
+                    self.groups,
                 )
                 page.timer.stop()
                 signal_source = page._job_signals

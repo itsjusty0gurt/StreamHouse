@@ -40,6 +40,11 @@ from products.hub.core.backup import BackupComponent
 from products.hub.twitch.auth import TwitchAuthState, TwitchToken
 from products.hub.config.twitch import TWITCH_BOT_SCOPES, TWITCH_SCOPES
 from products.hub.twitch.chatter_history import ChatterHistoryStore, ChatterRecord
+from products.hub.twitch.user_groups import (
+    SYSTEM_BOTS_GROUP_ID,
+    SYSTEM_REGULARS_GROUP_ID,
+    UserGroupStore,
+)
 from products.hub.twitch.activity_history import PersistedActivity
 from products.hub.automation.routines import RoutineStore
 from products.hub.automation.custom_variables import CustomVariableStore
@@ -119,8 +124,10 @@ class MainWindowTests(unittest.TestCase):
         self.window_state_store.restore.return_value = False
         self.chatter_history_store = Mock()
         self.chatter_history_store.records = {}
-        self.chatter_history_store.is_regular.return_value = False
-        self.chatter_history_store.is_bot.return_value = False
+        self.chatter_history_store.qualifies_as_regular.return_value = False
+        self.chatter_history_store.legacy_manual_groups = {}
+        self.chatter_history_store.loaded_schema_version = ChatterHistoryStore.VERSION
+        self.chatter_history_store.LEGACY_VERSION = ChatterHistoryStore.LEGACY_VERSION
         self.chatter_history_store.has_memory_consent.return_value = False
         self.chatter_history_store.can_create_keynotes.return_value = False
         self.chatter_history_store.REGULAR_ACTIVE_DAYS = 5
@@ -220,6 +227,7 @@ class MainWindowTests(unittest.TestCase):
                 command_root / "channel-information.json"
             ),
             twitch_event_trigger_store=self.twitch_event_trigger_store,
+            user_group_store=UserGroupStore(command_root / "user_groups.json"),
             soundboard_store=SoundboardStore(command_root / "soundboard.json"),
             auto_upgrade_permissions=False,
         )
@@ -4262,7 +4270,7 @@ class MainWindowTests(unittest.TestCase):
         self.window.twitch_service.helix.get_chat_roles = Mock(
             return_value=({"1", "5"}, {"2"}, {"3"})
         )
-        self.chatter_history_store.is_bot.side_effect = lambda user_id: user_id == "5"
+        self.window.user_groups.assign_member(SYSTEM_BOTS_GROUP_ID, "5")
         self.window.channel_snapshot_thread_pool.start = Mock(
             side_effect=lambda worker: worker.run()
         )
@@ -4297,15 +4305,11 @@ class MainWindowTests(unittest.TestCase):
             first_seen="2026-07-12T00:00:00+00:00",
             last_seen="2026-07-12T00:00:00+00:00",
         )
-        self.chatter_history_store.set_manual_group.side_effect = (
-            lambda user_id, group: setattr(
-                self.chatter_history_store.records[user_id],
-                "manual_group",
-                group,
-            )
+        self.window.user_groups.sync_system_membership(
+            SYSTEM_REGULARS_GROUP_ID, "4", True
         )
-        self.window._set_local_chatter_group("4", "Regulars")
-        self.chatter_history_store.save.assert_called()
+        self.window.user_groups.save_synced_memberships()
+        self.window._apply_chatter_groups(self.window.last_channel_snapshot)
         self.assertEqual(
             self.window.chatter_list.topLevelItem(4).child(0).text(0),
             "ViewerOne",
@@ -4326,12 +4330,8 @@ class MainWindowTests(unittest.TestCase):
             user_name="HelperBot",
             first_seen="2026-08-22T00:00:00+00:00",
             last_seen="2026-08-22T00:00:00+00:00",
-            manual_group="Bots",
         )
-        self.chatter_history_store.is_bot.side_effect = lambda user_id: bool(
-            self.chatter_history_store.records.get(user_id)
-            and self.chatter_history_store.records[user_id].manual_group == "Bots"
-        )
+        self.window.user_groups.assign_member(SYSTEM_BOTS_GROUP_ID, "bot-1")
         self.window._handle_twitch_first_message = Mock()
         self.window._handle_twitch_keyword_phrase = Mock()
 
@@ -4957,10 +4957,7 @@ class MainWindowTests(unittest.TestCase):
                 last_seen="2026-07-13T00:00:00+00:00",
                 is_bot=user_id == "bot-1",
             )
-        self.chatter_history_store.is_bot.side_effect = lambda user_id: bool(
-            self.chatter_history_store.records.get(user_id)
-            and self.chatter_history_store.records[user_id].is_bot
-        )
+        self.window.user_groups.assign_member(SYSTEM_BOTS_GROUP_ID, "bot-1")
         for user_id in ("streamer-1", "bot-1"):
             self.window.handle_twitch_message(
                 TwitchMessage(

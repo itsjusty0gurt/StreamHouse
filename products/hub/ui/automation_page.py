@@ -1149,6 +1149,7 @@ class NestedTaskListEditor(QGroupBox):
             self.owner.counter_service,
             self.owner.variable_registry,
             tuple(output_definitions.values()),
+            self.owner.user_groups,
         )
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return None
@@ -1420,6 +1421,7 @@ class TaskEditorDialog(QDialog):
             {"key": "left", "label": "Left Value", "kind": "text", "default": "", "required": True, "placeholder": "{counter.deaths.total}"},
             {"key": "operator", "label": "Comparison", "kind": "choice", "default": "equals", "choices": IF_COMPARISON_CHOICES},
             {"key": "right", "label": "Right Value", "kind": "text", "default": ""},
+            {"key": "group_id", "label": "User Group", "kind": "user_group", "default": ""},
             {"key": "ignore_case", "label": "", "kind": "bool", "default": False, "text": "Ignore uppercase and lowercase differences"},
         ),
         "core.logic_switch": (
@@ -1534,6 +1536,7 @@ class TaskEditorDialog(QDialog):
         counter_service: CounterService | None = None,
         variable_registry: VariableRegistry | None = None,
         output_definitions: tuple[VariableDefinition, ...] = (),
+        user_groups=None,
     ) -> None:
         super().__init__(parent)
         self.task = task
@@ -1545,6 +1548,7 @@ class TaskEditorDialog(QDialog):
         self.counter_service = counter_service
         self.variable_registry = variable_registry
         self._output_definitions = output_definitions
+        self.user_groups = user_groups
         self._obs_request_generation = 0
         self._obs_refresh_scheduled = False
         self.field_widgets: dict[str, dict[str, QWidget]] = {}
@@ -1934,6 +1938,17 @@ class TaskEditorDialog(QDialog):
             index = combo.findData(str(value or ""))
             combo.setCurrentIndex(max(index, 0))
             return combo, combo
+        if kind == "user_group":
+            combo = QComboBox()
+            combo.addItem("Choose a user group…", "")
+            if self.user_groups is not None:
+                for group in self.user_groups.list_groups():
+                    combo.addItem(group.name, group.group_id)
+            current_id = str(value or "")
+            if current_id and combo.findData(current_id) < 0:
+                combo.addItem("Missing Group", current_id)
+            combo.setCurrentIndex(max(combo.findData(current_id), 0))
+            return combo, combo
         if kind == "routine":
             combo = QComboBox()
             combo.addItem("Choose a routine…", "")
@@ -2075,7 +2090,10 @@ class TaskEditorDialog(QDialog):
 
             def update_if_condition(_value: object = None) -> None:
                 operation = str(operator.currentData())
+                membership = operation == "user_in_group"
+                fields["left"].setEnabled(not membership)
                 fields["right"].setEnabled(operation not in IF_UNARY_OPERATORS)
+                fields["group_id"].setEnabled(membership)
                 fields["ignore_case"].setEnabled(
                     operation
                     in {
@@ -2427,9 +2445,22 @@ class TaskEditorDialog(QDialog):
                 value = widget.value()
             else:
                 value = ""
-            if spec.get("required") and not str(value).strip():
+            membership_condition = (
+                task_type == "core.if"
+                and fields.get("operator") is not None
+                and fields["operator"].currentData() == "user_in_group"
+            )
+            if spec.get("required") and not str(value).strip() and not (
+                membership_condition and key == "left"
+            ):
                 raise ValueError(f"{spec.get('label', key)} is required.")
             config[key] = value
+        if task_type == "core.if" and config.get("operator") == "user_in_group":
+            group_id = str(config.get("group_id", "")).strip()
+            if not group_id:
+                raise ValueError("User Group is required.")
+            if self.user_groups is None or self.user_groups.get_group(group_id) is None:
+                raise ValueError("Missing Group: choose an existing user group.")
         if task_type == "core.logic_random_choice" and not config.get("choices"):
             raise ValueError("Add at least one weighted choice and select its routine.")
         if (
@@ -2809,6 +2840,7 @@ class AutomationPage(QWidget):
         counter_service: CounterService | None = None,
         variable_registry: VariableRegistry | None = None,
         soundboard_store: SoundboardStore | None = None,
+        user_groups=None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -2831,6 +2863,7 @@ class AutomationPage(QWidget):
         self.counter_service = counter_service
         self.variable_registry = variable_registry or VariableRegistry()
         self.soundboard_store = soundboard_store
+        self.user_groups = user_groups
         self.history: list[dict[str, object]] = []
         self._selected_routine_id = ""
         self._group_expansion_state: dict[str, bool] = {}
@@ -3764,8 +3797,23 @@ class AutomationPage(QWidget):
             if not spec.get("required"):
                 continue
             key = str(spec["key"])
+            if (
+                task.task_type == "core.if"
+                and task.config.get("operator") == "user_in_group"
+                and key == "left"
+            ):
+                continue
             if not str(task.config.get(key, "")).strip():
                 issues.append(f'{spec.get("label", key)} is required')
+        if (
+            task.task_type == "core.if"
+            and task.config.get("operator") == "user_in_group"
+            and (
+                self.user_groups is None
+                or self.user_groups.get_group(str(task.config.get("group_id", ""))) is None
+            )
+        ):
+            issues.append("Missing Group: the referenced user group was deleted or is unavailable")
         if (
             task.task_type == "core.run_routine"
             and str(task.config.get("routine_id", "")).strip()
@@ -3824,6 +3872,9 @@ class AutomationPage(QWidget):
         if kind == "counter" and self.counter_service is not None:
             counter = self.counter_service.get_counter(reference_id)
             return counter.display_name if counter is not None else reference_id
+        if kind == "user_group" and self.user_groups is not None:
+            group = self.user_groups.get_group(reference_id)
+            return group.name if group is not None else "Missing Group"
         return reference_id
 
     def _task_card_content(self, task: TaskDefinition) -> TaskCardContent:
@@ -5265,6 +5316,7 @@ class AutomationPage(QWidget):
             counter_service=self.counter_service,
             variable_registry=self.variable_registry,
             output_definitions=self._output_definitions_before(routine),
+            user_groups=self.user_groups,
         )
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
@@ -5314,6 +5366,7 @@ class AutomationPage(QWidget):
             self.counter_service,
             self.variable_registry,
             self._output_definitions_before(routine, task.task_id),
+            self.user_groups,
         )
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return

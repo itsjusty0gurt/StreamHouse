@@ -137,6 +137,25 @@ def test_shoutout_task_reference_is_derived_from_task_metadata() -> None:
     assert "twitch controls shoutout cooldowns" in text
 
 
+def test_unified_user_groups_reference_documents_system_and_custom_groups() -> None:
+    tasks, variables = _reference_sources()
+    entry = next(
+        item
+        for item in build_wiki_entries(tasks, variables)
+        if item.entry_id == "twitch:user-groups"
+    )
+    text = entry.search_text()
+
+    assert "protected system groups" in text
+    assert "bots drives hub's bot filtering" in text
+    assert "regulars is maintained automatically" in text
+    assert "viewers is the natural fallback" in text
+    assert "stable twitch user ids" in text
+    assert "user is in group" in text
+    assert "auto shoutout" in text
+    assert "{user.id}" in text
+
+
 def test_python_script_context_helpers_and_now_playing_example_are_documented() -> None:
     tasks, variables = _reference_sources()
     entries = build_wiki_entries(tasks, variables)

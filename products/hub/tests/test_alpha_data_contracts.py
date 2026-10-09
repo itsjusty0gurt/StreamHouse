@@ -20,6 +20,12 @@ from products.hub.twitch.channel_information import (
 )
 from products.hub.twitch.chatter_history import ChatterHistoryStore
 from products.hub.twitch.commands import TwitchCommandTriggerStore
+from products.hub.twitch.user_groups import (
+    SYSTEM_BOTS_GROUP_ID,
+    SYSTEM_REGULARS_GROUP_ID,
+    UserGroupService,
+    UserGroupStore,
+)
 
 
 def test_representative_alpha_contract_survives_save_restart_and_reload() -> None:
@@ -124,7 +130,6 @@ def test_representative_alpha_contract_survives_save_restart_and_reload() -> Non
         users.observe_message(
             "viewer-1", "Viewer One", observed, user_login="viewer_one"
         )
-        users.set_manual_group("viewer-1", "Regulars")
         users.observe_message(
             "viewer-1",
             "Renamed Viewer",
@@ -135,6 +140,17 @@ def test_representative_alpha_contract_survives_save_restart_and_reload() -> Non
             "viewer-2", "Helper Bot", observed, is_bot=True, user_login="helperbot"
         )
         users.save()
+        user_groups = UserGroupStore(root / "memory" / "user_groups.json")
+        group_service = UserGroupService(user_groups)
+        group_service.sync_system_membership(
+            SYSTEM_REGULARS_GROUP_ID, "viewer-1", True
+        )
+        group_service.sync_system_membership(
+            SYSTEM_BOTS_GROUP_ID, "viewer-2", True
+        )
+        custom_group = group_service.create_group("Auto Shoutout")
+        group_service.assign_member(custom_group.group_id, "viewer-1")
+        group_service.save_synced_memberships()
 
         queues.update(custom_queue.queue_id, name="Priority Alerts")
         routines.update_group(group.group_id, name="Community Events")
@@ -196,8 +212,14 @@ def test_representative_alpha_contract_survives_save_restart_and_reload() -> Non
         reloaded_users.load()
         assert set(reloaded_users.records) == {"viewer-1", "viewer-2"}
         assert reloaded_users.records["viewer-1"].user_name == "Renamed Viewer"
-        assert reloaded_users.records["viewer-1"].manual_group == "Regulars"
         assert reloaded_users.records["viewer-2"].is_bot
+        reloaded_groups = UserGroupStore(user_groups.path)
+        reloaded_groups.load()
+        assert reloaded_groups.memberships["viewer-1"] == {
+            SYSTEM_REGULARS_GROUP_ID,
+            custom_group.group_id,
+        }
+        assert reloaded_groups.memberships["viewer-2"] == {SYSTEM_BOTS_GROUP_ID}
 
         loaded_channel = ChannelInformationStore(
             root / "twitch" / "channel-information.json"

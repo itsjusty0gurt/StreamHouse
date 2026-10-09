@@ -230,11 +230,13 @@ thread.
   bottom. Message menus provide reply/copy/user details plus service-backed
   delete, timeout, ban, and unban controls when OAuth scopes permit them. The
   User tab shows roles and recent messages from the current in-memory session.
-  Local Regulars/Bots/Viewers assignments are Hub-owned classifications stored
-  in `memory/twitch_chatters.json` by stable Twitch user ID. Twitch snapshot
-  refreshes update account names and roles without replacing those assignments.
-  The same saved Bots classification drives chat, memory, and counter bot
-  filtering; there is no separate known-bots list.
+  One unified user-group domain stores protected system groups and custom groups
+  in `memory/user_groups.json` schema v1. Memberships are many-to-many and keyed
+  by stable Twitch user ID. Bots drives chat, memory, and counter bot filtering;
+  Regulars is maintained from observed participation. Automatic was a mode, not
+  a group, and Viewers is the display fallback rather than redundant persisted
+  membership. Renaming a custom group preserves its stable ID; Automation's
+  User Is In Group condition references that ID rather than its display name.
   Counters lives here because it is Twitch/stream interaction, while its store,
   service, and task providers remain under `products/hub/counters/`.
 - **Connections** contains independent broadcaster and optional bot OAuth
@@ -264,13 +266,15 @@ load when absent; unconfigured setup-dependent templates are not persisted in
 either file. The never-public v5 seeded-default format is rejected, not
 migrated. Publicly shipped command schemas require forward migration. Both
 stores are included in current Streamhouse Hub backups.
-Chatter records require the current management-only schema v8. It persists
-stable identity, local group/bot classification, known Twitch status,
+Chatter records require the current management-only schema v9. It persists
+stable identity, observed bot metadata, known Twitch status,
 first/last seen, and aggregate participation counts. It rejects message text,
 message samples, memories/evidence, private notes, and timeline content; schema
-v7 was discarded before Alpha rather than migrated. Malformed identities and
-unsupported local group values are discarded or normalized at the store
-boundary. Activity history requires schema v2 and uses
+v8 is a released migration input: Hub creates a safety copy, moves useful Bots
+and Regulars assignments into the unified group store, preserves unrelated
+chatter fields, and then writes only schema v9 without `manual_group`. There is
+no runtime fallback to the old field. Schema v7 was discarded before Alpha
+rather than migrated. Activity history requires schema v2 and uses
 stable Twitch user IDs for viewer deletion; stream-session history requires
 schema v1 while preserving a current incomplete session across a restart.
 Older schemas verified as never publicly released are rejected/reset. Publicly
