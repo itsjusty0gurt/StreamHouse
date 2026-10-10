@@ -2,7 +2,9 @@
 
 > Canonical implementation map for maintainers and coding agents.
 >
-> Last verified: 2026-09-01 against version `0.1.0`.
+> Last verified: 2026-10-09 against current `develop` after the
+> `v0.1.0-alpha` baseline. This records an implementation audit, not a later
+> released-version claim.
 > Update this file when a change moves ownership, adds a persisted format,
 > changes an inter-process contract, or introduces a new service/trigger/task.
 

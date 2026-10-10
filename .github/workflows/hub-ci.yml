@@ -1,0 +1,57 @@
+name: Hub CI
+
+on:
+  push:
+    branches:
+      - develop
+  pull_request:
+    branches:
+      - develop
+
+permissions:
+  contents: read
+
+jobs:
+  hub-core:
+    name: Hub core checks
+    runs-on: windows-latest
+    timeout-minutes: 15
+    env:
+      QT_QPA_PLATFORM: offscreen
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Install test dependencies
+        run: python -m pip install -e ".[test]"
+
+      - name: Compile Hub and shared packages
+        run: python -m compileall -q products/hub shared
+
+      - name: Run unattended-safe Hub tests
+        run: >-
+          python -m pytest -q
+          products/hub/tests/test_alpha_data_contracts.py
+          products/hub/tests/test_automation.py
+          products/hub/tests/test_automation_logic.py
+          products/hub/tests/test_automation_queues.py
+          products/hub/tests/test_automation_transfer.py
+          products/hub/tests/test_automation_variables.py
+          products/hub/tests/test_backup.py
+          products/hub/tests/test_chatter_history.py
+          products/hub/tests/test_core_triggers.py
+          products/hub/tests/test_counters.py
+          products/hub/tests/test_events.py
+          products/hub/tests/test_settings.py
+          products/hub/tests/test_timer_scheduler.py
+          products/hub/tests/test_user_groups.py
+          products/hub/tests/test_variable_registry.py
+          shared/tests/test_json_store.py
+          shared/tests/test_logger.py
