@@ -382,11 +382,12 @@ Subscribe Automation by default; users do not need an `is_gift=false` filter.
 
 Hub creates both official `channel.raid` v1 conditions on the broadcaster
 EventSub socket: `to_broadcaster_user_id` for **Incoming Raid** and
-`from_broadcaster_user_id` for **Outgoing Raid**. Raid routines receive
+`from_broadcaster_user_id` for **Outgoing Raid Completed**. Raid routines receive
 `raid.direction`, `raid.source.*`, `raid.target.*`, and `raid.viewers` Routine
 Variables. `user.*` represents the initiating/source broadcaster. Twitch does
-not publish a separate completed-raid EventSub event, so Hub does not expose a
-fake Raid Completed trigger.
+not publish a separate completed-raid EventSub type; Hub's trigger name refers
+only to the authoritative outgoing `channel.raid` confirmation. Starting the
+raid countdown, reaching zero locally, or cancelling never fires it.
 
 An incoming raid also starts the shared First Message raid-suppression window,
 enabled by default for three minutes and configurable with First Message. The
@@ -470,7 +471,8 @@ registered with a Task provider; they are plans, not current capability.
 Raid controls and normalized events distinguish:
 
 - **Raid Initiated**: Hub successfully starts the Twitch raid countdown.
-- **Outgoing Raid Sent**: Twitch confirms that the outgoing raid occurred.
+- **Outgoing Raid Completed**: Twitch confirms through the outgoing
+  `channel.raid` subscription that the raid occurred.
 - **Incoming Raid**: another broadcaster raids the channel.
 
 Incoming and outgoing `channel.raid` observation are implemented. Outgoing
@@ -480,8 +482,10 @@ raid controls are implemented through the shared service used by `/raid` and
 chat sending; cancellation reuses Helix Cancel Raid. Twitch executes the raid
 automatically when the countdown expires, and Hub exposes no forced-completion
 action. An outgoing `channel.raid` event clears matching active UI state as soon
-as Twitch confirms the raid. A separate Raid Initiated Automation event remains
-planned; there is no separate public Twitch raid-completed event.
+as Twitch confirms the raid and fires **Twitch — Outgoing Raid Completed** once.
+A separate Raid Initiated Automation event remains planned; the completed
+trigger consumes the existing outgoing `channel.raid` event rather than a
+separate Twitch completion event.
 
 Raid Landing V1 is an optional, session-only local companion window. The option
 is off by default and opens only when the outgoing `channel.raid` EventSub event

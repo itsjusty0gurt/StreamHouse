@@ -650,6 +650,9 @@ _NOTES = {
     "core.run_python_script": (
         "Only run scripts you understand and trust.",
         "The hub helpers require Wait for the script to finish; background scripts do not retain an automation execution context.",
+        "hub.set_output(\"name\", value) publishes {automation.name} only after a successful waited script; later tasks and nested routines in the same root execution can use it.",
+        "hub.get_variable(\"user.id\") reads a canonical Variable from the current execution; braces are optional and unavailable values raise a lookup error.",
+        "hub.log(\"message\") writes a script message to Hub's normal log without turning it into task output.",
         "Dynamic output names appear only after the script publishes them and are not predeclared in the Variable Picker.",
     ),
     "obs.set_scene_item_enabled": ("Prefer Show or Hide when the final state matters.",),

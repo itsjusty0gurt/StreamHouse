@@ -144,14 +144,16 @@ provider.
 Raid controls and events distinguish:
 
 - **Raid Initiated**: Hub successfully starts the Twitch raid countdown.
-- **Outgoing Raid Sent**: Twitch confirms that the outgoing raid occurred.
+- **Outgoing Raid Completed**: Twitch confirms through the outgoing
+  `channel.raid` subscription that the raid occurred.
 - **Incoming Raid**: another broadcaster raids the channel.
 
-Incoming Raid and Outgoing Raid Sent observation are implemented through the
-two official `channel.raid` conditions. Outgoing raid controls are implemented
+Incoming Raid and Outgoing Raid Completed observation are implemented through
+the two official `channel.raid` conditions. The completed trigger name refers
+to Hub consuming Twitch's authoritative outgoing confirmation; Twitch exposes
+no separate raid-completed EventSub type. Outgoing raid controls are implemented
 through the shared Twitch raid service used by Chat slash commands and **Your
-Channel > Raid**. A separate Raid Initiated Automation event remains planned;
-Twitch exposes no separate raid-completed EventSub event.
+Channel > Raid**. A separate Raid Initiated Automation event remains planned.
 
 Stream Health may summarize:
 

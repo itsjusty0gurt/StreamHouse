@@ -18,6 +18,7 @@ from products.hub.automation.variable_providers import context_provider
 from products.hub.automation.variable_registry import VariableRegistry
 from products.hub.core.wiki_reference import WIKI_CATEGORIES, build_wiki_entries
 from products.hub.integrations.music_player import MusicVariableProvider
+from products.hub.obs_service.triggers import OBS_TRIGGER_TYPES
 from products.hub.twitch.slash_commands import TWITCH_SLASH_COMMANDS
 from products.hub.ui.wiki_page import WikiPage
 
@@ -52,6 +53,25 @@ def test_catalog_derives_tasks_triggers_variables_and_commands() -> None:
     assert "variable:music.title" in ids
     assert "commands:overview" in ids
     assert "integration:touch-portal" in ids
+
+
+def test_generated_reference_has_unique_entries_and_exact_task_labels() -> None:
+    tasks, variables = _reference_sources()
+    entries = build_wiki_entries(tasks, variables)
+    ids = [entry.entry_id for entry in entries]
+    category_titles = [(entry.category, entry.title) for entry in entries]
+    task_entries = {
+        entry.entry_id.removeprefix("task:"): entry.title
+        for entry in entries
+        if entry.category == "Tasks"
+    }
+
+    assert len(ids) == len(set(ids))
+    assert len(category_titles) == len(set(category_titles))
+    assert task_entries == {
+        metadata.task_type: metadata.label
+        for metadata in tasks.visible_metadata()
+    }
 
 
 def test_contextual_variables_are_documented_without_active_context() -> None:
@@ -274,6 +294,10 @@ def test_python_script_context_helpers_and_now_playing_example_are_documented() 
     assert "hub.get_variable" in task_text
     assert "hub.log" in task_text
     assert "same root execution" in task_text
+    assert "braces are optional" in task_text
+    assert "unavailable values raise a lookup error" in task_text
+    assert "normal log" in task_text
+    assert "only after a successful waited script" in task_text
     assert "{automation.artist} - {automation.song}" in example_text
     assert "no intermediate file" in example_text
 
@@ -292,6 +316,7 @@ def test_raid_page_reference_documents_runtime_finder_and_permissions() -> None:
     assert "viewer count" in text
     assert "uptime" in text
     assert "search" in text
+    assert "opening the raid page automatically refreshes" in text
     assert "refresh" in text
     assert "confirmation" in text
     assert "user:read:follows" in text
@@ -309,6 +334,51 @@ def test_raid_page_reference_documents_runtime_finder_and_permissions() -> None:
     assert "copy channel link" in text
     assert "read-only target chat" in text
     assert "open on twitch" in text
+
+
+def test_command_and_timer_references_document_stable_open_routine_navigation() -> None:
+    tasks, variables = _reference_sources()
+    entries = {
+        item.entry_id: item.search_text()
+        for item in build_wiki_entries(tasks, variables)
+    }
+
+    for entry_id in ("commands:overview", "trigger:timer"):
+        text = entries[entry_id]
+        assert "open routine" in text
+        assert "stable id" in text
+        assert "expands" in text
+        assert "scrolls it into view" in text
+
+
+def test_all_current_obs_triggers_have_exact_ui_names_and_event_descriptions() -> None:
+    tasks, variables = _reference_sources()
+    entries = {
+        item.entry_id: item
+        for item in build_wiki_entries(tasks, variables)
+    }
+
+    expected_summaries = {
+        "ConnectionOpened": "usable obs websocket connection",
+        "ConnectionClosed": "connection is lost or closed",
+        "CurrentProgramSceneChanged": "program scene changes",
+        "CurrentPreviewSceneChanged": "preview scene changes",
+        "StreamStateChanged": "streaming output state change",
+        "RecordStateChanged": "recording output state change",
+        "ReplayBufferStateChanged": "replay-buffer state change",
+        "SceneItemEnableStateChanged": "shown or hidden",
+        "InputMuteStateChanged": "muted or unmuted",
+        "InputVolumeChanged": "input volume changes",
+        "MediaInputPlaybackStarted": "starts playback",
+        "MediaInputPlaybackEnded": "end of playback",
+        "StudioModeStateChanged": "enabled or disabled",
+        "ExitStarted": "begins shutting down",
+    }
+    assert set(expected_summaries) == set(OBS_TRIGGER_TYPES)
+    for event_type, label in OBS_TRIGGER_TYPES.items():
+        entry = entries[f"trigger:{event_type}"]
+        assert entry.title == f"OBS — {label}"
+        assert expected_summaries[event_type] in entry.search_text()
 
 
 def test_wiki_search_is_local_case_insensitive_and_does_not_mutate_sources() -> None:

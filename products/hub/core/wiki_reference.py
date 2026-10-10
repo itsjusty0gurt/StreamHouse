@@ -273,12 +273,28 @@ def _trigger_entries(variable_registry: VariableRegistry) -> tuple[WikiEntry, ..
                 ("Twitch", "ads"),
             )
         )
+    obs_summaries = {
+        "ConnectionOpened": "Fires after Hub establishes a usable OBS WebSocket connection.",
+        "ConnectionClosed": "Fires when a previously usable OBS connection is lost or closed.",
+        "CurrentProgramSceneChanged": "Fires when the current OBS program scene changes.",
+        "CurrentPreviewSceneChanged": "Fires when the OBS Studio Mode preview scene changes.",
+        "StreamStateChanged": "Fires when OBS reports a streaming output state change.",
+        "RecordStateChanged": "Fires when OBS reports a recording output state change.",
+        "ReplayBufferStateChanged": "Fires when OBS reports a replay-buffer state change.",
+        "SceneItemEnableStateChanged": "Fires when a source item is shown or hidden in an OBS scene.",
+        "InputMuteStateChanged": "Fires when an OBS input is muted or unmuted.",
+        "InputVolumeChanged": "Fires when an OBS input volume changes.",
+        "MediaInputPlaybackStarted": "Fires when an OBS media input starts playback.",
+        "MediaInputPlaybackEnded": "Fires when an OBS media input reaches the end of playback.",
+        "StudioModeStateChanged": "Fires when OBS Studio Mode is enabled or disabled.",
+        "ExitStarted": "Fires when OBS begins shutting down.",
+    }
     for event_type, label in OBS_TRIGGER_TYPES.items():
         entries.append(
             _trigger_entry(
                 event_type,
                 f"OBS — {label}",
-                f"Fires when the connected OBS instance reports {label.lower()}.",
+                obs_summaries[event_type],
                 variables("obs."),
                 ("OBS", event_type),
             )
@@ -356,6 +372,7 @@ def _trigger_entry(
                     "The Timers page lists every Timer trigger and its live next-run status, recurring state, and linked routine.",
                     "Create a Timer there for an existing or new routine, or continue adding Timer triggers from the Routines page.",
                     "Both pages edit the same Timer trigger; enable, disable, edit, and delete changes apply immediately to its normal routine queue.",
+                    "Open Routine selects the linked routine by stable ID, expands its group if needed, and scrolls it into view.",
                 ),
             ),
             WikiSection(
@@ -629,6 +646,7 @@ def _command_entries() -> tuple[WikiEntry, ...]:
                     (
                         "New command routines default to the Commands group, but the user may move them anywhere.",
                         "Commands use normal routine queues; no custom assignment means Default Queue.",
+                        "Open Routine selects the command's exact linked routine by stable ID, expands its current group if needed, and scrolls it into view.",
                     ),
                 ),
                 WikiSection("Built-in Commands", command_lines),
@@ -777,6 +795,7 @@ def _twitch_entries() -> tuple[WikiEntry, ...]:
                     (
                         "Each card shows the channel, category, stream title, viewer count, uptime, and Twitch thumbnail when available.",
                         "Search matches channel name, login, category, and stream title. Results can be sorted by viewers or channel name.",
+                        "Opening the Raid page automatically refreshes the followed channels that are currently live; Refresh can request another update.",
                     ),
                 ),
                 WikiSection(
