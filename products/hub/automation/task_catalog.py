@@ -250,6 +250,17 @@ _SHORT_DESCRIPTIONS = {
     "obs.set_browser_source_url": (
         "Changes the URL used by an OBS Browser Source. The URL supports Variables."
     ),
+    "obs.set_media_source_file": (
+        "Changes the local file used by an OBS Media Source. The path supports Variables."
+    ),
+    "obs.set_source_audio_track": (
+        "Enables, disables, or toggles one OBS source audio track."
+    ),
+    "obs.set_color_source_color": (
+        "Changes an OBS Color Source using a #RRGGBB color value."
+    ),
+    "obs.restart_media_source": "Restarts an OBS Media Source from the beginning.",
+    "obs.set_transition": "Changes the current OBS scene transition.",
     "obs.stream_control": "Starts or stops streaming through OBS.",
     "obs.record_control": "Starts, stops, pauses, or resumes OBS recording.",
     "obs.replay_buffer_control": "Starts, stops, or saves the OBS replay buffer.",
@@ -296,6 +307,8 @@ VARIABLE_INPUT_FIELDS: dict[str, tuple[str, ...]] = {
     "obs.set_text_source": ("text",),
     "obs.set_image_source": ("file",),
     "obs.set_browser_source_url": ("url",),
+    "obs.set_media_source_file": ("file",),
+    "obs.set_color_source_color": ("color",),
     "counter.increase": ("amount",),
     "counter.decrease": ("amount",),
     "counter.set_value": ("value",),
@@ -372,6 +385,24 @@ _HELP_TEXT = {
     "obs.set_browser_source_url": (
         "Resolves the configured URL, then updates only the URL setting of the "
         "selected OBS Browser Source and waits for OBS to confirm the request."
+    ),
+    "obs.set_media_source_file": (
+        "Resolves the configured file path, then updates only the local-file setting "
+        "of the selected OBS Media Source."
+    ),
+    "obs.set_source_audio_track": (
+        "Changes one of the selected source's six OBS audio-track assignments. "
+        "Toggle reads the current track state before applying the opposite value."
+    ),
+    "obs.set_color_source_color": (
+        "Resolves and validates a #RRGGBB value, then updates only the selected "
+        "OBS Color Source color."
+    ),
+    "obs.restart_media_source": (
+        "Uses OBS media control to restart the selected Media Source from the beginning."
+    ),
+    "obs.set_transition": (
+        "Selects the current OBS scene transition and waits for OBS to confirm it."
     ),
     "obs.raw_request": (
         "Sends one advanced OBS WebSocket request and waits for its response. Use "
@@ -508,6 +539,25 @@ _INPUT_HELP: dict[str, dict[str, str]] = {
         "input": "The existing OBS Browser Source input to update.",
         "url": "A literal URL or canonical Variable such as {automation.clip_url}.",
     },
+    "obs.set_media_source_file": {
+        "input": "The existing OBS Media Source input to update.",
+        "file": "A local file path or canonical Variable that resolves to one.",
+    },
+    "obs.set_source_audio_track": {
+        "input": "The existing OBS source/input whose audio routing should change.",
+        "track": "The OBS audio track, from Track 1 through Track 6.",
+        "action": "Enable and Disable are deterministic; Toggle reverses the current state.",
+    },
+    "obs.set_color_source_color": {
+        "input": "The existing OBS Color Source input to update.",
+        "color": "An opaque color in #RRGGBB format, or a Variable that resolves to one.",
+    },
+    "obs.restart_media_source": {
+        "input": "The existing OBS Media Source to restart from the beginning.",
+    },
+    "obs.set_transition": {
+        "transition": "The existing OBS scene transition to make current.",
+    },
     "obs.raw_request": {
         "request_type": "The exact OBS WebSocket request type.",
         "request_data": "A JSON object containing that request's data.",
@@ -553,6 +603,7 @@ _NOTES = {
     ),
     "obs.set_scene_item_enabled": ("Prefer Show or Hide when the final state matters.",),
     "obs.set_input_mute": ("Prefer Mute or Unmute when the final state matters.",),
+    "obs.set_source_audio_track": ("Prefer Enable or Disable when the final state matters.",),
     "obs.set_source_filter_state": ("Prefer Enable or Disable when the final state matters.",),
     "obs.set_scene_filter_state": ("Prefer Enable or Disable when the final state matters.",),
     "obs.stream_control": ("Stop streaming ends the live broadcast immediately after OBS confirms it.",),
@@ -600,6 +651,11 @@ _EXAMPLES = {
     "obs.set_browser_source_url": (
         "Twitch — Get User Clip → OBS — Set Browser Source URL using {automation.clip_url}.",
     ),
+    "obs.set_media_source_file": ("Set a Media Source file to {automation.media_file}.",),
+    "obs.set_source_audio_track": ("Enable Track 2 for a selected OBS source.",),
+    "obs.set_color_source_color": ("Set an OBS Color Source to #7A4DFF.",),
+    "obs.restart_media_source": ("Restart an alert Media Source from the beginning.",),
+    "obs.set_transition": ("Select Fade as the current OBS transition.",),
 }
 
 

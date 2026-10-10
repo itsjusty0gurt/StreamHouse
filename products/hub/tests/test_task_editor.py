@@ -57,6 +57,12 @@ class FakeObsService:
             "GetSceneList": {"scenes": [{"sceneName": "Gameplay"}, {"sceneName": "Starting Soon"}]},
             "GetInputList": {"inputs": [{"inputName": "Mic/Aux"}, {"inputName": "Music"}]},
             "GetHotkeyList": {"hotkeys": ["OBSBasic.StartStreaming"]},
+            "GetSceneTransitionList": {
+                "transitions": [
+                    {"transitionName": "Cut"},
+                    {"transitionName": "Fade"},
+                ]
+            },
             "GetSceneItemList": {"sceneItems": [{"sourceName": "Camera"}, {"sourceName": "Game Capture"}]},
             "GetSourceFilterList": {
                 "filters": [
@@ -151,7 +157,12 @@ class TaskEditorTests(unittest.TestCase):
         cases = {
             "obs.set_input_mute": "GetInputList",
             "obs.set_browser_source_url": "GetInputList",
+            "obs.set_media_source_file": "GetInputList",
+            "obs.set_source_audio_track": "GetInputList",
+            "obs.set_color_source_color": "GetInputList",
+            "obs.restart_media_source": "GetInputList",
             "obs.set_program_scene": "GetSceneList",
+            "obs.set_transition": "GetSceneTransitionList",
             "obs.trigger_hotkey": "GetHotkeyList",
         }
         for task_type, expected_request in cases.items():
@@ -179,6 +190,27 @@ class TaskEditorTests(unittest.TestCase):
             TaskEditorDialog.OBS_PRIMARY_DISCOVERY["obs.set_browser_source_url"],
             "obs_input",
         )
+
+    def test_obs_batch_one_forms_and_transition_discovery(self) -> None:
+        self.assertEqual(
+            TaskEditorDialog.TEMPLATED_FIELDS["obs.set_media_source_file"],
+            ("file",),
+        )
+        self.assertEqual(
+            TaskEditorDialog.TEMPLATED_FIELDS["obs.set_color_source_color"],
+            ("color",),
+        )
+        service = FakeObsService()
+        dialog = TaskEditorDialog("obs.set_transition", obs_service=service)
+        dialog._refresh_obs_choices()
+        transition = dialog.field_widgets["obs.set_transition"]["transition"]
+        self.assertIsInstance(transition, QComboBox)
+        self.assertGreaterEqual(transition.findText("Fade"), 0)
+
+        audio = TaskEditorDialog("obs.set_source_audio_track")
+        fields = audio.field_widgets["obs.set_source_audio_track"]
+        self.assertEqual(fields["track"].count(), 6)
+        self.assertEqual(fields["action"].count(), 3)
 
     def test_obs_task_without_discovery_hides_refresh_toolbar(self) -> None:
         service = FakeObsService()

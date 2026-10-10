@@ -19,6 +19,11 @@ OBS_TASK_LABELS = {
     "obs.set_text_source": "OBS — Set text source",
     "obs.set_image_source": "OBS — Set image source",
     "obs.set_browser_source_url": "OBS — Set Browser Source URL",
+    "obs.set_media_source_file": "OBS — Set Media Source File",
+    "obs.set_source_audio_track": "OBS — Set Source Audio Track",
+    "obs.set_color_source_color": "OBS — Set Color Source Color",
+    "obs.restart_media_source": "OBS — Restart Media Source",
+    "obs.set_transition": "OBS — Set Transition",
     "obs.stream_control": "OBS — Start or stop streaming",
     "obs.record_control": "OBS — Control recording",
     "obs.replay_buffer_control": "OBS — Control replay buffer",
@@ -58,6 +63,20 @@ class ObsTask:
                     source,
                     self._required(c, "filter"),
                     str(c.get("action", "toggle")).casefold(),
+                )
+                return self._result(task, result)
+            if self.task_type == "obs.set_source_audio_track":
+                c = task.config
+                track = int(c.get("track", 1))
+                if track not in range(1, 7):
+                    raise ValueError("OBS audio track must be from 1 to 6.")
+                action = str(c.get("action", "toggle")).casefold()
+                if action not in {"enable", "disable", "toggle"}:
+                    raise ValueError("OBS audio track action is invalid.")
+                result = self.service.set_input_audio_track(
+                    self._required(c, "input"),
+                    track,
+                    action,
                 )
                 return self._result(task, result)
             request_type, request_data = self._request(task, trigger)
@@ -133,6 +152,41 @@ class ObsTask:
                 "inputSettings": {"url": url},
                 "overlay": True,
             }
+        if self.task_type == "obs.set_media_source_file":
+            media_file = render_placeholders(
+                str(c.get("file", "")),
+                trigger.context,
+                fallback="",
+                strip_values=True,
+            ).strip()
+            if not media_file:
+                raise ValueError("OBS task requires a media file.")
+            return "SetInputSettings", {
+                "inputName": self._required(c, "input"),
+                "inputSettings": {"local_file": media_file},
+                "overlay": True,
+            }
+        if self.task_type == "obs.set_color_source_color":
+            color = render_placeholders(
+                str(c.get("color", "")),
+                trigger.context,
+                fallback="",
+                strip_values=True,
+            ).strip()
+            return "SetInputSettings", {
+                "inputName": self._required(c, "input"),
+                "inputSettings": {"color": self._obs_color(color)},
+                "overlay": True,
+            }
+        if self.task_type == "obs.restart_media_source":
+            return "TriggerMediaInputAction", {
+                "inputName": self._required(c, "input"),
+                "mediaAction": "OBS_WEBSOCKET_MEDIA_INPUT_ACTION_RESTART",
+            }
+        if self.task_type == "obs.set_transition":
+            return "SetCurrentSceneTransition", {
+                "transitionName": self._required(c, "transition")
+            }
         if self.task_type == "obs.stream_control":
             return ("StartStream" if c.get("action", "start") == "start" else "StopStream"), {}
         if self.task_type == "obs.record_control":
@@ -153,6 +207,19 @@ class ObsTask:
                 raise ValueError("OBS request data must be a JSON object.")
             return self._required(c, "request_type"), data
         raise ValueError(f"Unsupported OBS task type: {self.task_type}")
+
+    @staticmethod
+    def _obs_color(value: str) -> int:
+        clean = value.strip()
+        if len(clean) != 7 or not clean.startswith("#"):
+            raise ValueError("OBS color must use #RRGGBB format.")
+        try:
+            red = int(clean[1:3], 16)
+            green = int(clean[3:5], 16)
+            blue = int(clean[5:7], 16)
+        except ValueError as error:
+            raise ValueError("OBS color must use #RRGGBB format.") from error
+        return 0xFF000000 | (blue << 16) | (green << 8) | red
 
     @staticmethod
     def _required(config: dict, key: str) -> str:

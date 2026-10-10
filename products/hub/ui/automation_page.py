@@ -1493,6 +1493,25 @@ class TaskEditorDialog(QDialog):
             {"key": "input", "label": "Browser Source", "kind": "obs_input", "default": "", "required": True},
             {"key": "url", "label": "URL", "kind": "text", "default": "{automation.clip_url}", "required": True, "placeholder": "https://example.com or {automation.clip_url}"},
         ),
+        "obs.set_media_source_file": (
+            {"key": "input", "label": "Media Source", "kind": "obs_input", "default": "", "required": True},
+            {"key": "file", "label": "Media file", "kind": "file", "default": "", "required": True},
+        ),
+        "obs.set_source_audio_track": (
+            {"key": "input", "label": "Source", "kind": "obs_input", "default": "", "required": True},
+            {"key": "track", "label": "Audio track", "kind": "choice", "default": 1, "choices": tuple((f"Track {track}", track) for track in range(1, 7))},
+            {"key": "action", "label": "Action", "kind": "choice", "default": "toggle", "choices": (("Enable", "enable"), ("Disable", "disable"), ("Toggle", "toggle"))},
+        ),
+        "obs.set_color_source_color": (
+            {"key": "input", "label": "Color Source", "kind": "obs_input", "default": "", "required": True},
+            {"key": "color", "label": "Color", "kind": "text", "default": "#FFFFFF", "required": True, "placeholder": "#RRGGBB"},
+        ),
+        "obs.restart_media_source": (
+            {"key": "input", "label": "Media Source", "kind": "obs_input", "default": "", "required": True},
+        ),
+        "obs.set_transition": (
+            {"key": "transition", "label": "Transition", "kind": "obs_transition", "default": "", "required": True},
+        ),
         "obs.stream_control": (
             {"key": "action", "label": "Action", "kind": "choice", "default": "start", "choices": (("Start streaming", "start"), ("Stop streaming", "stop"))},
         ),
@@ -1529,6 +1548,11 @@ class TaskEditorDialog(QDialog):
         "obs.set_text_source": "obs_input",
         "obs.set_image_source": "obs_input",
         "obs.set_browser_source_url": "obs_input",
+        "obs.set_media_source_file": "obs_input",
+        "obs.set_source_audio_track": "obs_input",
+        "obs.set_color_source_color": "obs_input",
+        "obs.restart_media_source": "obs_input",
+        "obs.set_transition": "obs_transition",
         "obs.media_control": "obs_input",
         "obs.trigger_hotkey": "obs_hotkey",
     }
@@ -2254,6 +2278,15 @@ class TaskEditorDialog(QDialog):
                 kind="obs_hotkey",
                 collection_key="hotkeys",
                 loading_text="Loading OBS hotkeys…",
+            )
+        elif kind == "obs_transition":
+            self._request_obs_choices(
+                "GetSceneTransitionList",
+                kind="obs_transition",
+                collection_key="transitions",
+                value_key="transitionName",
+                loading_text="Loading OBS transitions…",
+                empty_text="No OBS transitions found.",
             )
 
     def _refresh_obs_sources(self, scene: str) -> None:

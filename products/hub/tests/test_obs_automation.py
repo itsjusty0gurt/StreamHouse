@@ -68,6 +68,23 @@ class FakeObsService:
         self.requests.append(("source-filter", {"source": source, "filter": filter_name, "action": action}))
         return self._result("SetSourceFilterEnabled")
 
+    def set_input_audio_track(self, input_name, track, action):
+        self.requests.append(
+            (
+                "source-audio-track",
+                {"input": input_name, "track": track, "action": action},
+            )
+        )
+        if not self.connected:
+            return ObsRequestResult(
+                "",
+                "SetInputAudioTracks",
+                False,
+                -1,
+                "OBS is not connected.",
+            )
+        return self._result("SetInputAudioTracks")
+
 
 class ObsServiceTests(unittest.TestCase):
     @classmethod
@@ -158,6 +175,54 @@ class ObsServiceTests(unittest.TestCase):
         self.assertEqual(
             service._request_sync.call_args_list[1].args,
             ("GetInputMute", {"inputName": "Mic/Aux"}),
+        )
+        service.disconnect()
+
+    def test_set_input_audio_track_uses_partial_track_update(self) -> None:
+        service = ObsWebSocketService()
+        service.request_and_wait = Mock(
+            return_value=ObsRequestResult(
+                "set", "SetInputAudioTracks", True, 100
+            )
+        )
+
+        result = service.set_input_audio_track("Desktop Audio", 3, "enable")
+
+        self.assertTrue(result.succeeded)
+        service.request_and_wait.assert_called_once_with(
+            "SetInputAudioTracks",
+            {
+                "inputName": "Desktop Audio",
+                "inputAudioTracks": {"3": True},
+            },
+            timeout_ms=None,
+        )
+        service.disconnect()
+
+    def test_toggle_input_audio_track_reads_current_state_first(self) -> None:
+        service = ObsWebSocketService()
+        service.request_and_wait = Mock(
+            side_effect=(
+                ObsRequestResult(
+                    "get",
+                    "GetInputAudioTracks",
+                    True,
+                    100,
+                    response_data={"inputAudioTracks": {"2": True}},
+                ),
+                ObsRequestResult("set", "SetInputAudioTracks", True, 100),
+            )
+        )
+
+        result = service.set_input_audio_track("Music", 2, "toggle")
+
+        self.assertTrue(result.succeeded)
+        self.assertEqual(
+            service.request_and_wait.call_args_list[1].args,
+            (
+                "SetInputAudioTracks",
+                {"inputName": "Music", "inputAudioTracks": {"2": False}},
+            ),
         )
         service.disconnect()
 
@@ -458,6 +523,158 @@ class ObsTaskTests(unittest.TestCase):
         self.assertFalse(result.succeeded)
         self.assertIn("OBS is not connected", result.detail)
 
+    def test_media_source_file_resolves_variables_and_overlays_local_file(self) -> None:
+        self.trigger = TriggerEvent(
+            "manual",
+            "test",
+            "manual",
+            {"automation.media_file": "C:/media/intro.mp4"},
+        )
+
+        result = self.run_result(
+            "obs.set_media_source_file",
+            {"input": "Intro", "file": "{automation.media_file}"},
+        )
+
+        self.assertTrue(result.succeeded)
+        self.assertEqual(
+            self.service.requests[-1],
+            (
+                "SetInputSettings",
+                {
+                    "inputName": "Intro",
+                    "inputSettings": {"local_file": "C:/media/intro.mp4"},
+                    "overlay": True,
+                },
+            ),
+        )
+
+    def test_media_source_file_rejects_empty_rendered_path(self) -> None:
+        result = self.run_result(
+            "obs.set_media_source_file",
+            {"input": "Intro", "file": "{automation.missing}"},
+        )
+
+        self.assertFalse(result.succeeded)
+        self.assertIn("media file", result.detail)
+        self.assertEqual(self.service.requests, [])
+
+    def test_source_audio_track_uses_service_state_helper(self) -> None:
+        result = self.run_result(
+            "obs.set_source_audio_track",
+            {"input": "Music", "track": 4, "action": "disable"},
+        )
+
+        self.assertTrue(result.succeeded)
+        self.assertEqual(
+            self.service.requests[-1],
+            (
+                "source-audio-track",
+                {"input": "Music", "track": 4, "action": "disable"},
+            ),
+        )
+
+    def test_color_source_validates_and_converts_rrggbb(self) -> None:
+        self.trigger = TriggerEvent(
+            "manual", "test", "manual", {"automation.brand_color": "#123456"}
+        )
+
+        valid = self.run_result(
+            "obs.set_color_source_color",
+            {"input": "Brand Color", "color": "{automation.brand_color}"},
+        )
+        invalid = self.run_result(
+            "obs.set_color_source_color",
+            {"input": "Brand Color", "color": "purple"},
+        )
+
+        self.assertTrue(valid.succeeded)
+        self.assertEqual(
+            self.service.requests[-1],
+            (
+                "SetInputSettings",
+                {
+                    "inputName": "Brand Color",
+                    "inputSettings": {"color": 0xFF563412},
+                    "overlay": True,
+                },
+            ),
+        )
+        self.assertFalse(invalid.succeeded)
+        self.assertIn("#RRGGBB", invalid.detail)
+
+    def test_restart_media_source_and_set_transition_use_dedicated_requests(self) -> None:
+        self.assertTrue(
+            self.run_task("obs.restart_media_source", {"input": "Intro"})
+        )
+        self.assertTrue(
+            self.run_task("obs.set_transition", {"transition": "Fade"})
+        )
+
+        self.assertEqual(
+            self.service.requests,
+            [
+                (
+                    "TriggerMediaInputAction",
+                    {
+                        "inputName": "Intro",
+                        "mediaAction": "OBS_WEBSOCKET_MEDIA_INPUT_ACTION_RESTART",
+                    },
+                ),
+                (
+                    "SetCurrentSceneTransition",
+                    {"transitionName": "Fade"},
+                ),
+            ],
+        )
+
+    def test_batch_one_tasks_fail_cleanly_when_obs_is_disconnected(self) -> None:
+        self.service.connected = False
+        cases = {
+            "obs.set_media_source_file": {
+                "input": "Intro",
+                "file": "C:/media/intro.mp4",
+            },
+            "obs.set_source_audio_track": {
+                "input": "Music",
+                "track": 1,
+                "action": "enable",
+            },
+            "obs.set_color_source_color": {
+                "input": "Brand Color",
+                "color": "#FFFFFF",
+            },
+            "obs.restart_media_source": {"input": "Intro"},
+            "obs.set_transition": {"transition": "Fade"},
+        }
+
+        for task_type, config in cases.items():
+            with self.subTest(task_type=task_type):
+                result = self.run_result(task_type, config)
+                self.assertFalse(result.succeeded)
+                self.assertIn("OBS is not connected", result.detail)
+
+    def test_batch_one_tasks_reject_missing_required_inputs(self) -> None:
+        cases = {
+            "obs.set_media_source_file": {"input": "", "file": "C:/intro.mp4"},
+            "obs.set_source_audio_track": {
+                "input": "",
+                "track": 1,
+                "action": "enable",
+            },
+            "obs.set_color_source_color": {"input": "", "color": "#FFFFFF"},
+            "obs.restart_media_source": {"input": ""},
+            "obs.set_transition": {"transition": ""},
+        }
+
+        for task_type, config in cases.items():
+            with self.subTest(task_type=task_type):
+                self.service.requests.clear()
+                result = self.run_result(task_type, config)
+                self.assertFalse(result.succeeded)
+                self.assertIn("requires", result.detail)
+                self.assertEqual(self.service.requests, [])
+
     def test_raw_request_rejects_non_object_json(self) -> None:
         self.assertFalse(self.run_task("obs.raw_request", {"request_type": "GetVersion", "request_data": "[]"}))
 
@@ -497,6 +714,21 @@ class ObsTaskTests(unittest.TestCase):
                 "input": "Clip Player",
                 "url": "https://example.test",
             },
+            "obs.set_media_source_file": {
+                "input": "Intro",
+                "file": "C:/media/intro.mp4",
+            },
+            "obs.set_source_audio_track": {
+                "input": "Music",
+                "track": 2,
+                "action": "enable",
+            },
+            "obs.set_color_source_color": {
+                "input": "Brand Color",
+                "color": "#7A4DFF",
+            },
+            "obs.restart_media_source": {"input": "Intro"},
+            "obs.set_transition": {"transition": "Fade"},
             "obs.stream_control": {"action": "start"},
             "obs.record_control": {"action": "start"},
             "obs.replay_buffer_control": {"action": "save"},

@@ -1144,9 +1144,9 @@ change. The acknowledgement is the ordering boundary; tasks do not wait for a
 separate OBS state-change event.
 
 Dedicated input-setting tasks use `SetInputSettings` with overlay semantics so
-they change only their owned setting. This includes text, image-file, and Browser
-Source URL updates; URL templates resolve canonical Variables such as
-`{automation.clip_url}` before the request is sent.
+they change only their owned setting. This includes text, image-file, media-file,
+Color Source color, and Browser Source URL updates; templated values resolve
+canonical Variables before the request is sent.
 
 ## Streamhouse AI subsystem
 

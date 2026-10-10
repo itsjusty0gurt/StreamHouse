@@ -385,6 +385,48 @@ class ObsWebSocketService(QObject):
             timeout_ms=timeout_ms,
         )
 
+    def set_input_audio_track(
+        self,
+        input_name: str,
+        track: int,
+        action: str,
+        *,
+        timeout_ms: int | None = None,
+    ) -> ObsRequestResult:
+        if track not in range(1, 7):
+            return self._failure(
+                "SetInputAudioTracks", "OBS audio track must be from 1 to 6."
+            )
+        if action not in {"enable", "disable", "toggle"}:
+            return self._failure(
+                "SetInputAudioTracks", "OBS audio track action is invalid."
+            )
+        enabled = action == "enable"
+        if action == "toggle":
+            current = self.request_and_wait(
+                "GetInputAudioTracks",
+                {"inputName": input_name},
+                timeout_ms=timeout_ms,
+            )
+            if not current.succeeded:
+                return current
+            tracks = current.response_data.get("inputAudioTracks", {})
+            if not isinstance(tracks, dict):
+                return self._failure(
+                    "GetInputAudioTracks",
+                    "OBS returned invalid audio track state.",
+                    request_id=current.request_id,
+                )
+            enabled = not bool(tracks.get(str(track), False))
+        return self.request_and_wait(
+            "SetInputAudioTracks",
+            {
+                "inputName": input_name,
+                "inputAudioTracks": {str(track): enabled},
+            },
+            timeout_ms=timeout_ms,
+        )
+
     def current_mute_state(
         self,
         input_name: str = "",
