@@ -247,6 +247,9 @@ _SHORT_DESCRIPTIONS = {
     "obs.set_image_source": (
         "Changes the file used by an OBS image source. The path supports Variables."
     ),
+    "obs.set_browser_source_url": (
+        "Changes the URL used by an OBS Browser Source. The URL supports Variables."
+    ),
     "obs.stream_control": "Starts or stops streaming through OBS.",
     "obs.record_control": "Starts, stops, pauses, or resumes OBS recording.",
     "obs.replay_buffer_control": "Starts, stops, or saves the OBS replay buffer.",
@@ -292,6 +295,7 @@ VARIABLE_INPUT_FIELDS: dict[str, tuple[str, ...]] = {
     "core.file_count_lines": ("path",),
     "obs.set_text_source": ("text",),
     "obs.set_image_source": ("file",),
+    "obs.set_browser_source_url": ("url",),
     "counter.increase": ("amount",),
     "counter.decrease": ("amount",),
     "counter.set_value": ("value",),
@@ -364,6 +368,10 @@ _HELP_TEXT = {
     "obs.set_scene_item_enabled": (
         "Shows or hides a source in a specific scene. Hub first finds that scene "
         "item, then waits for OBS to confirm the requested state."
+    ),
+    "obs.set_browser_source_url": (
+        "Resolves the configured URL, then updates only the URL setting of the "
+        "selected OBS Browser Source and waits for OBS to confirm the request."
     ),
     "obs.raw_request": (
         "Sends one advanced OBS WebSocket request and waits for its response. Use "
@@ -496,6 +504,10 @@ _INPUT_HELP: dict[str, dict[str, str]] = {
         "filter": "The filter to enable or disable.",
         "action": "Enable and Disable are deterministic; Toggle reverses the current state.",
     },
+    "obs.set_browser_source_url": {
+        "input": "The existing OBS Browser Source input to update.",
+        "url": "A literal URL or canonical Variable such as {automation.clip_url}.",
+    },
     "obs.raw_request": {
         "request_type": "The exact OBS WebSocket request type.",
         "request_data": "A JSON object containing that request's data.",
@@ -585,6 +597,9 @@ _EXAMPLES = {
     "obs.set_source_filter_state": ("Enable Glow → Wait 1.5 seconds → Disable Glow.",),
     "obs.set_text_source": ("Set a text source to Now playing: {stream.category}.",),
     "obs.set_image_source": ("Change an image source file, then show that source.",),
+    "obs.set_browser_source_url": (
+        "Twitch — Get User Clip → OBS — Set Browser Source URL using {automation.clip_url}.",
+    ),
 }
 
 

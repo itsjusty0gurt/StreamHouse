@@ -1489,6 +1489,10 @@ class TaskEditorDialog(QDialog):
             {"key": "input", "label": "Image source", "kind": "obs_input", "default": "", "required": True},
             {"key": "file", "label": "Image file", "kind": "file", "default": "", "required": True},
         ),
+        "obs.set_browser_source_url": (
+            {"key": "input", "label": "Browser Source", "kind": "obs_input", "default": "", "required": True},
+            {"key": "url", "label": "URL", "kind": "text", "default": "{automation.clip_url}", "required": True, "placeholder": "https://example.com or {automation.clip_url}"},
+        ),
         "obs.stream_control": (
             {"key": "action", "label": "Action", "kind": "choice", "default": "start", "choices": (("Start streaming", "start"), ("Stop streaming", "stop"))},
         ),
@@ -1524,6 +1528,7 @@ class TaskEditorDialog(QDialog):
         "obs.set_scene_filter_state": "obs_scene",
         "obs.set_text_source": "obs_input",
         "obs.set_image_source": "obs_input",
+        "obs.set_browser_source_url": "obs_input",
         "obs.media_control": "obs_input",
         "obs.trigger_hotkey": "obs_hotkey",
     }

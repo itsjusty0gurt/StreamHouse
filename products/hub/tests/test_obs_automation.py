@@ -50,6 +50,14 @@ class FakeObsService:
 
     def request_and_wait(self, request_type, request_data=None, **_kwargs):
         self.requests.append((request_type, request_data or {}))
+        if not self.connected:
+            return ObsRequestResult(
+                "",
+                request_type,
+                False,
+                -1,
+                "OBS is not connected.",
+            )
         return self._result(request_type)
 
     def set_scene_item_enabled(self, scene, source, action):
@@ -361,6 +369,95 @@ class ObsTaskTests(unittest.TestCase):
             {"file": "C:/art/portal.png"},
         )
 
+    def test_browser_source_url_supports_literal_and_canonical_variable(self) -> None:
+        self.assertTrue(
+            self.run_task(
+                "obs.set_browser_source_url",
+                {"input": "Clip Player", "url": "https://example.test/video"},
+            )
+        )
+        self.trigger = TriggerEvent(
+            "manual",
+            "test",
+            "manual",
+            {"automation.clip_url": "https://clips.twitch.tv/selected-clip"},
+        )
+        self.assertTrue(
+            self.run_task(
+                "obs.set_browser_source_url",
+                {"input": "Clip Player", "url": "{automation.clip_url}"},
+            )
+        )
+
+        self.assertEqual(
+            self.service.requests,
+            [
+                (
+                    "SetInputSettings",
+                    {
+                        "inputName": "Clip Player",
+                        "inputSettings": {"url": "https://example.test/video"},
+                        "overlay": True,
+                    },
+                ),
+                (
+                    "SetInputSettings",
+                    {
+                        "inputName": "Clip Player",
+                        "inputSettings": {
+                            "url": "https://clips.twitch.tv/selected-clip"
+                        },
+                        "overlay": True,
+                    },
+                ),
+            ],
+        )
+
+    def test_browser_source_url_rejects_empty_rendered_value(self) -> None:
+        self.trigger = TriggerEvent(
+            "manual",
+            "test",
+            "manual",
+            {"automation.clip_url": "  "},
+        )
+
+        result = self.run_result(
+            "obs.set_browser_source_url",
+            {"input": "Clip Player", "url": "{automation.clip_url}"},
+        )
+
+        self.assertFalse(result.succeeded)
+        self.assertIn("browser source URL", result.detail)
+        self.assertEqual(self.service.requests, [])
+
+    def test_browser_source_url_reports_missing_obs_input(self) -> None:
+        self.service.next_result = ObsRequestResult(
+            "failed-request",
+            "SetInputSettings",
+            False,
+            601,
+            "No source was found by that input name.",
+        )
+
+        result = self.run_result(
+            "obs.set_browser_source_url",
+            {"input": "Missing Browser", "url": "https://example.test"},
+        )
+
+        self.assertFalse(result.succeeded)
+        self.assertIn("No source was found", result.detail)
+
+    def test_browser_source_url_reports_disconnected_obs(self) -> None:
+        self.service.connected = False
+
+        result = self.run_result(
+            "obs.set_browser_source_url",
+            {"input": "Clip Player", "url": "https://example.test"},
+        )
+
+        self.assertFalse(result.succeeded)
+        self.assertIn("OBS is not connected", result.detail)
+
     def test_raw_request_rejects_non_object_json(self) -> None:
         self.assertFalse(self.run_task("obs.raw_request", {"request_type": "GetVersion", "request_data": "[]"}))
 
@@ -396,6 +493,10 @@ class ObsTaskTests(unittest.TestCase):
             },
             "obs.set_text_source": {"input": "Title", "text": "Hello"},
             "obs.set_image_source": {"input": "Art", "file": "C:/art.png"},
+            "obs.set_browser_source_url": {
+                "input": "Clip Player",
+                "url": "https://example.test",
+            },
             "obs.stream_control": {"action": "start"},
             "obs.record_control": {"action": "start"},
             "obs.replay_buffer_control": {"action": "save"},

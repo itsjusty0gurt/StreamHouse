@@ -1143,6 +1143,11 @@ failures. Source visibility confirms both scene-item lookup and the final state
 change. The acknowledgement is the ordering boundary; tasks do not wait for a
 separate OBS state-change event.
 
+Dedicated input-setting tasks use `SetInputSettings` with overlay semantics so
+they change only their owned setting. This includes text, image-file, and Browser
+Source URL updates; URL templates resolve canonical Variables such as
+`{automation.clip_url}` before the request is sent.
+
 ## Streamhouse AI subsystem
 
 ### Local HTTP contract

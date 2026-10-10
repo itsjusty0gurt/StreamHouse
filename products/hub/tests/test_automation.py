@@ -163,6 +163,11 @@ class AutomationServiceTests(unittest.TestCase):
         assert obs is not None
         self.assertIn("OBS connection", obs.requirements[0])
         self.assertTrue(obs.examples)
+        browser_url = registry.metadata("obs.set_browser_source_url")
+        assert browser_url is not None
+        self.assertEqual(browser_url.variable_inputs, ("url",))
+        self.assertIn("only the url setting", browser_url.help_text.casefold())
+        self.assertIn("automation.clip_url", " ".join(browser_url.examples))
 
     def test_registry_rejects_incomplete_visible_help_metadata(self) -> None:
         registry = TaskRegistry()

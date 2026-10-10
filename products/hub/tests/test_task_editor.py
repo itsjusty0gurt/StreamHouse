@@ -150,6 +150,7 @@ class TaskEditorTests(unittest.TestCase):
     def test_obs_discovery_is_contextual_to_the_task(self) -> None:
         cases = {
             "obs.set_input_mute": "GetInputList",
+            "obs.set_browser_source_url": "GetInputList",
             "obs.set_program_scene": "GetSceneList",
             "obs.trigger_hotkey": "GetHotkeyList",
         }
@@ -164,6 +165,20 @@ class TaskEditorTests(unittest.TestCase):
                     [expected_request],
                 )
                 self.assertEqual(dialog.obs_choices_status.text(), "")
+
+    def test_browser_source_url_form_supports_canonical_variables(self) -> None:
+        dialog = TaskEditorDialog("obs.set_browser_source_url")
+        fields = dialog.field_widgets["obs.set_browser_source_url"]
+
+        self.assertEqual(fields["url"].text(), "{automation.clip_url}")
+        self.assertEqual(
+            TaskEditorDialog.TEMPLATED_FIELDS["obs.set_browser_source_url"],
+            ("url",),
+        )
+        self.assertEqual(
+            TaskEditorDialog.OBS_PRIMARY_DISCOVERY["obs.set_browser_source_url"],
+            "obs_input",
+        )
 
     def test_obs_task_without_discovery_hides_refresh_toolbar(self) -> None:
         service = FakeObsService()

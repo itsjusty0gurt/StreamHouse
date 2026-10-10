@@ -18,6 +18,7 @@ OBS_TASK_LABELS = {
     "obs.set_scene_filter_state": "OBS - Enable, disable, or toggle scene filter",
     "obs.set_text_source": "OBS — Set text source",
     "obs.set_image_source": "OBS — Set image source",
+    "obs.set_browser_source_url": "OBS — Set Browser Source URL",
     "obs.stream_control": "OBS — Start or stop streaming",
     "obs.record_control": "OBS — Control recording",
     "obs.replay_buffer_control": "OBS — Control replay buffer",
@@ -116,6 +117,20 @@ class ObsTask:
             return "SetInputSettings", {
                 "inputName": self._required(c, "input"),
                 "inputSettings": {"file": image_file},
+                "overlay": True,
+            }
+        if self.task_type == "obs.set_browser_source_url":
+            url = render_placeholders(
+                str(c.get("url", "")),
+                trigger.context,
+                fallback="",
+                strip_values=True,
+            ).strip()
+            if not url:
+                raise ValueError("OBS task requires a browser source URL.")
+            return "SetInputSettings", {
+                "inputName": self._required(c, "input"),
+                "inputSettings": {"url": url},
                 "overlay": True,
             }
         if self.task_type == "obs.stream_control":

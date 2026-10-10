@@ -152,6 +152,21 @@ def test_get_user_clip_reference_is_derived_from_task_metadata() -> None:
     assert "same root routine execution" in text
 
 
+def test_obs_browser_source_url_reference_is_derived_from_task_metadata() -> None:
+    tasks, variables = _reference_sources()
+    entry = next(
+        item
+        for item in build_wiki_entries(tasks, variables)
+        if item.entry_id == "task:obs.set_browser_source_url"
+    )
+    text = entry.search_text()
+
+    assert "selected obs browser source" in text
+    assert "canonical variable" in text
+    assert "{automation.clip_url}" in text
+    assert "active obs connection" in text
+
+
 def test_unified_user_groups_reference_documents_system_and_custom_groups() -> None:
     tasks, variables = _reference_sources()
     entry = next(
