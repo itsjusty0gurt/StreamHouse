@@ -580,6 +580,12 @@ def test_generated_task_outputs_have_typed_temporary_metadata() -> None:
         for item in clip_outputs
     )
 
+    screenshot_outputs = generated_output_definitions("obs.take_screenshot", {})
+    assert tuple(item.name for item in screenshot_outputs) == (
+        "automation.screenshot_path",
+    )
+    assert screenshot_outputs[0].availability is VariableAvailability.TEMPORARY
+
 
 def test_configured_output_references_are_routine_and_order_aware() -> None:
     with TemporaryDirectory() as temporary:

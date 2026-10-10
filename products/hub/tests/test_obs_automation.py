@@ -64,6 +64,23 @@ class FakeObsService:
         self.requests.append(("resolved-scene-item", {"scene": scene, "source": source, "action": action}))
         return self._result("SetSceneItemEnabled")
 
+    def set_scene_item_transform(self, scene, source, transform):
+        self.requests.append(
+            (
+                "source-transform",
+                {"scene": scene, "source": source, "transform": transform},
+            )
+        )
+        if not self.connected:
+            return ObsRequestResult(
+                "",
+                "SetSceneItemTransform",
+                False,
+                -1,
+                "OBS is not connected.",
+            )
+        return self._result("SetSceneItemTransform")
+
     def set_source_filter_enabled(self, source, filter_name, action):
         self.requests.append(("source-filter", {"source": source, "filter": filter_name, "action": action}))
         return self._result("SetSourceFilterEnabled")
@@ -176,6 +193,57 @@ class ObsServiceTests(unittest.TestCase):
             service._request_sync.call_args_list[1].args,
             ("GetInputMute", {"inputName": "Mic/Aux"}),
         )
+        service.disconnect()
+
+    def test_source_transform_resolves_scene_item_and_sends_partial_update(self) -> None:
+        service = ObsWebSocketService()
+        service.request_and_wait = Mock(
+            side_effect=(
+                ObsRequestResult(
+                    "lookup",
+                    "GetSceneItemId",
+                    True,
+                    100,
+                    response_data={"sceneItemId": 42},
+                ),
+                ObsRequestResult(
+                    "update", "SetSceneItemTransform", True, 100
+                ),
+            )
+        )
+
+        result = service.set_scene_item_transform(
+            "Gameplay", "Camera", {"positionX": 120.0, "cropTop": 8}
+        )
+
+        self.assertTrue(result.succeeded)
+        self.assertEqual(
+            service.request_and_wait.call_args_list[1].args,
+            (
+                "SetSceneItemTransform",
+                {
+                    "sceneName": "Gameplay",
+                    "sceneItemId": 42,
+                    "sceneItemTransform": {"positionX": 120.0, "cropTop": 8},
+                },
+            ),
+        )
+        service.disconnect()
+
+    def test_source_transform_stops_when_scene_item_lookup_fails(self) -> None:
+        service = ObsWebSocketService()
+        service.request_and_wait = Mock(
+            return_value=ObsRequestResult(
+                "lookup", "GetSceneItemId", False, 600, "Scene item not found."
+            )
+        )
+
+        result = service.set_scene_item_transform(
+            "Gameplay", "Missing", {"positionX": 120.0}
+        )
+
+        self.assertFalse(result.succeeded)
+        self.assertEqual(service.request_and_wait.call_count, 1)
         service.disconnect()
 
     def test_set_input_audio_track_uses_partial_track_update(self) -> None:
@@ -628,6 +696,190 @@ class ObsTaskTests(unittest.TestCase):
             ],
         )
 
+    def test_take_screenshot_supports_source_scene_variables_and_output(self) -> None:
+        self.trigger = TriggerEvent(
+            "manual",
+            "test",
+            "manual",
+            {"automation.capture_folder": "C:/captures"},
+        )
+
+        source_result = self.run_result(
+            "obs.take_screenshot",
+            {
+                "target_type": "source",
+                "target": "Camera",
+                "file": "{automation.capture_folder}/camera.png",
+                "image_format": "auto",
+            },
+        )
+        scene_result = self.run_result(
+            "obs.take_screenshot",
+            {
+                "target_type": "scene",
+                "target": "Gameplay",
+                "file": "C:/captures/gameplay.jpg",
+                "image_format": "auto",
+            },
+        )
+
+        self.assertTrue(source_result.succeeded)
+        self.assertTrue(scene_result.succeeded)
+        self.assertEqual(
+            self.service.requests,
+            [
+                (
+                    "SaveSourceScreenshot",
+                    {
+                        "sourceName": "Camera",
+                        "imageFormat": "png",
+                        "imageFilePath": "C:/captures/camera.png",
+                    },
+                ),
+                (
+                    "SaveSourceScreenshot",
+                    {
+                        "sourceName": "Gameplay",
+                        "imageFormat": "jpeg",
+                        "imageFilePath": "C:/captures/gameplay.jpg",
+                    },
+                ),
+            ],
+        )
+        self.assertEqual(
+            self.trigger.context["automation.screenshot_path"],
+            "C:/captures/gameplay.jpg",
+        )
+
+    def test_take_screenshot_rejects_empty_path_and_invalid_format(self) -> None:
+        empty = self.run_result(
+            "obs.take_screenshot",
+            {"target": "Camera", "file": "{automation.missing}"},
+        )
+        invalid = self.run_result(
+            "obs.take_screenshot",
+            {"target": "Camera", "file": "C:/capture.webp"},
+        )
+
+        self.assertFalse(empty.succeeded)
+        self.assertIn("output file path", empty.detail)
+        self.assertFalse(invalid.succeeded)
+        self.assertIn("PNG or JPEG", invalid.detail)
+        self.assertEqual(self.service.requests, [])
+        self.assertNotIn("automation.screenshot_path", self.trigger.context)
+
+    def test_set_source_transform_renders_only_supplied_numeric_fields(self) -> None:
+        self.trigger = TriggerEvent(
+            "manual",
+            "test",
+            "manual",
+            {"automation.x": "125.5", "automation.crop": "12"},
+        )
+
+        result = self.run_result(
+            "obs.set_source_transform",
+            {
+                "scene": "Gameplay",
+                "source": "Camera",
+                "position_x": "{automation.x}",
+                "scale_y": "1.25",
+                "rotation": "15",
+                "crop_top": "{automation.crop}",
+                "crop_right": "3",
+                "crop_bottom": "4",
+                "crop_left": "5",
+            },
+        )
+
+        self.assertTrue(result.succeeded)
+        self.assertEqual(
+            self.service.requests[-1],
+            (
+                "source-transform",
+                {
+                    "scene": "Gameplay",
+                    "source": "Camera",
+                    "transform": {
+                        "positionX": 125.5,
+                        "scaleY": 1.25,
+                        "rotation": 15.0,
+                        "cropTop": 12,
+                        "cropRight": 3,
+                        "cropBottom": 4,
+                        "cropLeft": 5,
+                    },
+                },
+            ),
+        )
+
+    def test_set_source_transform_rejects_invalid_or_empty_values(self) -> None:
+        invalid = self.run_result(
+            "obs.set_source_transform",
+            {"scene": "Gameplay", "source": "Camera", "position_x": "left"},
+        )
+        empty = self.run_result(
+            "obs.set_source_transform",
+            {"scene": "Gameplay", "source": "Camera"},
+        )
+
+        self.assertFalse(invalid.succeeded)
+        self.assertIn("position x", invalid.detail)
+        self.assertFalse(empty.succeeded)
+        self.assertIn("at least one", empty.detail)
+        self.assertEqual(self.service.requests, [])
+
+    def test_batch_two_tasks_reject_missing_required_inputs(self) -> None:
+        cases = {
+            "obs.take_screenshot": {"target": "", "file": "C:/capture.png"},
+            "obs.set_source_transform": {
+                "scene": "Gameplay",
+                "source": "",
+                "position_x": "120",
+            },
+            "obs.create_record_chapter": {"title": "{automation.missing}"},
+        }
+
+        for task_type, config in cases.items():
+            with self.subTest(task_type=task_type):
+                self.service.requests.clear()
+                result = self.run_result(task_type, config)
+                self.assertFalse(result.succeeded)
+                self.assertIn("requires", result.detail)
+                self.assertEqual(self.service.requests, [])
+
+    def test_create_record_chapter_supports_literal_and_variable_titles(self) -> None:
+        literal = self.run_result(
+            "obs.create_record_chapter", {"title": "Introduction"}
+        )
+        self.trigger = TriggerEvent(
+            "manual", "test", "manual", {"automation.chapter": "Boss Fight"}
+        )
+        templated = self.run_result(
+            "obs.create_record_chapter", {"title": "{automation.chapter}"}
+        )
+
+        self.assertTrue(literal.succeeded)
+        self.assertTrue(templated.succeeded)
+        self.assertEqual(
+            self.service.requests,
+            [
+                ("CreateRecordChapter", {"chapterName": "Introduction"}),
+                ("CreateRecordChapter", {"chapterName": "Boss Fight"}),
+            ],
+        )
+
+    def test_create_record_chapter_surfaces_obs_recording_rejection(self) -> None:
+        self.service.next_result = ObsRequestResult(
+            "chapter", "CreateRecordChapter", False, 504, "Record is not active."
+        )
+
+        result = self.run_result(
+            "obs.create_record_chapter", {"title": "Introduction"}
+        )
+
+        self.assertFalse(result.succeeded)
+        self.assertIn("Record is not active", result.detail)
+
     def test_batch_one_tasks_fail_cleanly_when_obs_is_disconnected(self) -> None:
         self.service.connected = False
         cases = {
@@ -646,6 +898,17 @@ class ObsTaskTests(unittest.TestCase):
             },
             "obs.restart_media_source": {"input": "Intro"},
             "obs.set_transition": {"transition": "Fade"},
+            "obs.take_screenshot": {
+                "target_type": "source",
+                "target": "Camera",
+                "file": "C:/capture.png",
+            },
+            "obs.set_source_transform": {
+                "scene": "Gameplay",
+                "source": "Camera",
+                "position_x": "120",
+            },
+            "obs.create_record_chapter": {"title": "Introduction"},
         }
 
         for task_type, config in cases.items():
@@ -729,6 +992,17 @@ class ObsTaskTests(unittest.TestCase):
             },
             "obs.restart_media_source": {"input": "Intro"},
             "obs.set_transition": {"transition": "Fade"},
+            "obs.take_screenshot": {
+                "target_type": "source",
+                "target": "Camera",
+                "file": "C:/capture.png",
+            },
+            "obs.set_source_transform": {
+                "scene": "Gameplay",
+                "source": "Camera",
+                "position_x": "120",
+            },
+            "obs.create_record_chapter": {"title": "Introduction"},
             "obs.stream_control": {"action": "start"},
             "obs.record_control": {"action": "start"},
             "obs.replay_buffer_control": {"action": "save"},

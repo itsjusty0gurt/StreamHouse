@@ -161,7 +161,9 @@ class TaskEditorTests(unittest.TestCase):
             "obs.set_source_audio_track": "GetInputList",
             "obs.set_color_source_color": "GetInputList",
             "obs.restart_media_source": "GetInputList",
+            "obs.take_screenshot": "GetInputList",
             "obs.set_program_scene": "GetSceneList",
+            "obs.set_source_transform": "GetSceneList",
             "obs.set_transition": "GetSceneTransitionList",
             "obs.trigger_hotkey": "GetHotkeyList",
         }
@@ -175,7 +177,12 @@ class TaskEditorTests(unittest.TestCase):
                     [kind for kind, _data in service.requests],
                     [expected_request],
                 )
-                self.assertEqual(dialog.obs_choices_status.text(), "")
+                expected_status = (
+                    "Select an OBS scene to load sources."
+                    if task_type == "obs.set_source_transform"
+                    else ""
+                )
+                self.assertEqual(dialog.obs_choices_status.text(), expected_status)
 
     def test_browser_source_url_form_supports_canonical_variables(self) -> None:
         dialog = TaskEditorDialog("obs.set_browser_source_url")
@@ -211,6 +218,39 @@ class TaskEditorTests(unittest.TestCase):
         fields = audio.field_widgets["obs.set_source_audio_track"]
         self.assertEqual(fields["track"].count(), 6)
         self.assertEqual(fields["action"].count(), 3)
+
+    def test_obs_batch_two_forms_support_variables_and_contextual_discovery(self) -> None:
+        self.assertEqual(
+            TaskEditorDialog.TEMPLATED_FIELDS["obs.take_screenshot"],
+            ("file",),
+        )
+        self.assertIn(
+            "position_x",
+            TaskEditorDialog.TEMPLATED_FIELDS["obs.set_source_transform"],
+        )
+        self.assertEqual(
+            TaskEditorDialog.TEMPLATED_FIELDS["obs.create_record_chapter"],
+            ("title",),
+        )
+
+        service = FakeObsService()
+        screenshot = TaskEditorDialog("obs.take_screenshot", obs_service=service)
+        screenshot._refresh_obs_choices()
+        target = screenshot.field_widgets["obs.take_screenshot"]["target"]
+        self.assertIsInstance(target, QComboBox)
+        self.assertGreaterEqual(target.findText("Mic/Aux"), 0)
+
+        target_type = screenshot.field_widgets["obs.take_screenshot"]["target_type"]
+        target_type.setCurrentIndex(target_type.findData("scene"))
+        screenshot._refresh_obs_choices()
+        self.assertGreaterEqual(target.findText("Gameplay"), 0)
+
+        transform = TaskEditorDialog("obs.set_source_transform", obs_service=service)
+        transform._refresh_obs_choices()
+        fields = transform.field_widgets["obs.set_source_transform"]
+        fields["scene"].setCurrentText("Gameplay")
+        transform._refresh_obs_sources("Gameplay")
+        self.assertGreaterEqual(fields["source"].findText("Camera"), 0)
 
     def test_obs_task_without_discovery_hides_refresh_toolbar(self) -> None:
         service = FakeObsService()

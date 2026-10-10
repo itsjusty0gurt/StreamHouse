@@ -356,6 +356,38 @@ class ObsWebSocketService(QObject):
             timeout_ms=timeout_ms,
         )
 
+    def set_scene_item_transform(
+        self,
+        scene_name: str,
+        source_name: str,
+        transform: dict[str, object],
+        *,
+        timeout_ms: int | None = None,
+    ) -> ObsRequestResult:
+        found = self.request_and_wait(
+            "GetSceneItemId",
+            {"sceneName": scene_name, "sourceName": source_name},
+            timeout_ms=timeout_ms,
+        )
+        if not found.succeeded:
+            return found
+        item_id = found.response_data.get("sceneItemId")
+        if item_id is None:
+            return self._failure(
+                "GetSceneItemId",
+                f'OBS did not return an item ID for source "{source_name}".',
+                request_id=found.request_id,
+            )
+        return self.request_and_wait(
+            "SetSceneItemTransform",
+            {
+                "sceneName": scene_name,
+                "sceneItemId": item_id,
+                "sceneItemTransform": dict(transform),
+            },
+            timeout_ms=timeout_ms,
+        )
+
     def set_source_filter_enabled(
         self,
         source_name: str,

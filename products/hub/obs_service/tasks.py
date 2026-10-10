@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import math
 
 from products.hub.automation.models import TaskDefinition, TaskExecutionResult, TriggerEvent
 from products.hub.automation.variable_registry import render_placeholders
+from products.hub.automation.variable_outputs import automation_output_name
 from products.hub.obs_service.models import ObsRequestResult
 from products.hub.obs_service.service import ObsWebSocketService
 
@@ -24,6 +26,9 @@ OBS_TASK_LABELS = {
     "obs.set_color_source_color": "OBS — Set Color Source Color",
     "obs.restart_media_source": "OBS — Restart Media Source",
     "obs.set_transition": "OBS — Set Transition",
+    "obs.take_screenshot": "OBS — Take Screenshot",
+    "obs.set_source_transform": "OBS — Set Source Transform",
+    "obs.create_record_chapter": "OBS — Create Record Chapter",
     "obs.stream_control": "OBS — Start or stop streaming",
     "obs.record_control": "OBS — Control recording",
     "obs.replay_buffer_control": "OBS — Control replay buffer",
@@ -79,11 +84,30 @@ class ObsTask:
                     action,
                 )
                 return self._result(task, result)
+            if self.task_type == "obs.set_source_transform":
+                c = task.config
+                result = self.service.set_scene_item_transform(
+                    self._required(c, "scene"),
+                    self._required(c, "source"),
+                    self._source_transform(c, trigger),
+                )
+                return self._result(task, result)
+            if self.task_type == "obs.take_screenshot" and not isinstance(
+                trigger.context, dict
+            ):
+                raise ValueError(
+                    "OBS screenshot output requires an active routine context."
+                )
             request_type, request_data = self._request(task, trigger)
             result = self.service.request_and_wait(request_type, request_data)
         except (TypeError, ValueError, json.JSONDecodeError) as error:
             return TaskExecutionResult(task.task_id, task.task_type, False, str(error))
-        return self._result(task, result)
+        execution_result = self._result(task, result)
+        if execution_result.succeeded and self.task_type == "obs.take_screenshot":
+            trigger.context[automation_output_name("screenshot_path")] = str(
+                request_data["imageFilePath"]
+            )
+        return execution_result
 
     @staticmethod
     def _result(
@@ -187,6 +211,43 @@ class ObsTask:
             return "SetCurrentSceneTransition", {
                 "transitionName": self._required(c, "transition")
             }
+        if self.task_type == "obs.take_screenshot":
+            target_type = str(c.get("target_type", "source")).strip().casefold()
+            if target_type not in {"source", "scene"}:
+                raise ValueError("OBS screenshot target type must be Source or Scene.")
+            output_path = render_placeholders(
+                str(c.get("file", "")),
+                trigger.context,
+                fallback="",
+                strip_values=True,
+            ).strip()
+            if not output_path:
+                raise ValueError("OBS task requires a screenshot output file path.")
+            image_format = str(c.get("image_format", "auto")).strip().casefold()
+            if image_format == "auto":
+                suffix = output_path.rpartition(".")[2].casefold()
+                image_format = "jpeg" if suffix in {"jpg", "jpeg"} else suffix
+            if image_format == "jpg":
+                image_format = "jpeg"
+            if image_format not in {"png", "jpeg"}:
+                raise ValueError(
+                    "OBS screenshot format must be PNG or JPEG, or match the output file extension."
+                )
+            return "SaveSourceScreenshot", {
+                "sourceName": self._required(c, "target"),
+                "imageFormat": image_format,
+                "imageFilePath": output_path,
+            }
+        if self.task_type == "obs.create_record_chapter":
+            title = render_placeholders(
+                str(c.get("title", "")),
+                trigger.context,
+                fallback="",
+                strip_values=True,
+            ).strip()
+            if not title:
+                raise ValueError("OBS task requires a record chapter title.")
+            return "CreateRecordChapter", {"chapterName": title}
         if self.task_type == "obs.stream_control":
             return ("StartStream" if c.get("action", "start") == "start" else "StopStream"), {}
         if self.task_type == "obs.record_control":
@@ -207,6 +268,53 @@ class ObsTask:
                 raise ValueError("OBS request data must be a JSON object.")
             return self._required(c, "request_type"), data
         raise ValueError(f"Unsupported OBS task type: {self.task_type}")
+
+    @staticmethod
+    def _source_transform(
+        config: dict,
+        trigger: TriggerEvent,
+    ) -> dict[str, object]:
+        transform: dict[str, object] = {}
+        fields = (
+            ("position_x", "positionX", float, False),
+            ("position_y", "positionY", float, False),
+            ("scale_x", "scaleX", float, False),
+            ("scale_y", "scaleY", float, False),
+            ("rotation", "rotation", float, False),
+            ("crop_top", "cropTop", int, True),
+            ("crop_right", "cropRight", int, True),
+            ("crop_bottom", "cropBottom", int, True),
+            ("crop_left", "cropLeft", int, True),
+        )
+        for config_key, obs_key, converter, nonnegative in fields:
+            raw = render_placeholders(
+                str(config.get(config_key, "")),
+                trigger.context,
+                fallback="",
+                strip_values=True,
+            ).strip()
+            if not raw:
+                continue
+            try:
+                numeric = float(raw)
+                if not math.isfinite(numeric):
+                    raise ValueError
+                if converter is int:
+                    if not numeric.is_integer():
+                        raise ValueError
+                    value = int(numeric)
+                else:
+                    value = numeric
+            except (TypeError, ValueError) as error:
+                label = config_key.replace("_", " ")
+                raise ValueError(f"OBS {label} must be a valid number.") from error
+            if nonnegative and value < 0:
+                label = config_key.replace("_", " ")
+                raise ValueError(f"OBS {label} cannot be negative.")
+            transform[obs_key] = value
+        if not transform:
+            raise ValueError("Enter at least one OBS source transform value.")
+        return transform
 
     @staticmethod
     def _obs_color(value: str) -> int:

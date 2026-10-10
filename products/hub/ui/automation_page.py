@@ -1512,6 +1512,28 @@ class TaskEditorDialog(QDialog):
         "obs.set_transition": (
             {"key": "transition", "label": "Transition", "kind": "obs_transition", "default": "", "required": True},
         ),
+        "obs.take_screenshot": (
+            {"key": "target_type", "label": "Target type", "kind": "choice", "default": "source", "choices": (("Source", "source"), ("Scene", "scene"))},
+            {"key": "target", "label": "Target name", "kind": "obs_screenshot_target", "default": "", "required": True},
+            {"key": "file", "label": "Output file", "kind": "file", "default": "", "required": True},
+            {"key": "image_format", "label": "Image format", "kind": "choice", "default": "auto", "choices": (("From file extension", "auto"), ("PNG", "png"), ("JPEG", "jpeg"))},
+        ),
+        "obs.set_source_transform": (
+            {"key": "scene", "label": "Scene", "kind": "obs_scene", "default": "", "required": True},
+            {"key": "source", "label": "Source", "kind": "obs_source", "default": "", "required": True},
+            {"key": "position_x", "label": "Position X", "kind": "text", "default": "", "placeholder": "Leave blank to preserve"},
+            {"key": "position_y", "label": "Position Y", "kind": "text", "default": "", "placeholder": "Leave blank to preserve"},
+            {"key": "scale_x", "label": "Scale X", "kind": "text", "default": "", "placeholder": "Leave blank to preserve"},
+            {"key": "scale_y", "label": "Scale Y", "kind": "text", "default": "", "placeholder": "Leave blank to preserve"},
+            {"key": "rotation", "label": "Rotation", "kind": "text", "default": "", "placeholder": "Leave blank to preserve"},
+            {"key": "crop_top", "label": "Crop top", "kind": "text", "default": "", "placeholder": "Leave blank to preserve"},
+            {"key": "crop_right", "label": "Crop right", "kind": "text", "default": "", "placeholder": "Leave blank to preserve"},
+            {"key": "crop_bottom", "label": "Crop bottom", "kind": "text", "default": "", "placeholder": "Leave blank to preserve"},
+            {"key": "crop_left", "label": "Crop left", "kind": "text", "default": "", "placeholder": "Leave blank to preserve"},
+        ),
+        "obs.create_record_chapter": (
+            {"key": "title", "label": "Chapter title", "kind": "text", "default": "", "required": True, "placeholder": "Chapter name or canonical Variable"},
+        ),
         "obs.stream_control": (
             {"key": "action", "label": "Action", "kind": "choice", "default": "start", "choices": (("Start streaming", "start"), ("Stop streaming", "stop"))},
         ),
@@ -1553,6 +1575,8 @@ class TaskEditorDialog(QDialog):
         "obs.set_color_source_color": "obs_input",
         "obs.restart_media_source": "obs_input",
         "obs.set_transition": "obs_transition",
+        "obs.take_screenshot": "obs_screenshot_target",
+        "obs.set_source_transform": "obs_scene",
         "obs.media_control": "obs_input",
         "obs.trigger_hotkey": "obs_hotkey",
     }
@@ -2029,7 +2053,11 @@ class TaskEditorDialog(QDialog):
             has_dependent_choices = (
                 kind == "obs_scene"
                 and self.task_type
-                in {"obs.set_scene_item_enabled", "obs.set_scene_filter_state"}
+                in {
+                    "obs.set_scene_item_enabled",
+                    "obs.set_scene_filter_state",
+                    "obs.set_source_transform",
+                }
             ) or (
                 kind == "obs_input"
                 and self.task_type == "obs.set_source_filter_state"
@@ -2117,6 +2145,10 @@ class TaskEditorDialog(QDialog):
 
             mode.currentIndexChanged.connect(update_random_mode)
             update_random_mode()
+        if self.task_type == "obs.take_screenshot":
+            target_type = self.field_widgets[self.task_type]["target_type"]
+            if isinstance(target_type, QComboBox):
+                target_type.currentIndexChanged.connect(self._refresh_obs_choices)
         if self.task_type == "core.if":
             fields = self.field_widgets[self.task_type]
             operator = fields["operator"]
@@ -2246,7 +2278,10 @@ class TaskEditorDialog(QDialog):
             return
         if not self._obs_discovery_available():
             return
-        if self.task_type == "obs.set_scene_item_enabled":
+        if self.task_type in {
+            "obs.set_scene_item_enabled",
+            "obs.set_source_transform",
+        }:
             self._populate_obs_choices("obs_source", [])
         elif self.task_type in {
             "obs.set_source_filter_state",
@@ -2254,7 +2289,25 @@ class TaskEditorDialog(QDialog):
         }:
             self._populate_obs_choices("obs_filter", [])
 
-        if kind == "obs_scene":
+        if kind == "obs_screenshot_target":
+            target_type = self.field_widgets[self.task_type].get("target_type")
+            scene_target = (
+                isinstance(target_type, QComboBox)
+                and target_type.currentData() == "scene"
+            )
+            self._request_obs_choices(
+                "GetSceneList" if scene_target else "GetInputList",
+                kind="obs_screenshot_target",
+                collection_key="scenes" if scene_target else "inputs",
+                value_key="sceneName" if scene_target else "inputName",
+                loading_text=(
+                    "Loading OBS scenes…" if scene_target else "Loading OBS inputs…"
+                ),
+                empty_text=(
+                    "No OBS scenes found." if scene_target else "No OBS inputs found."
+                ),
+            )
+        elif kind == "obs_scene":
             self._request_obs_choices(
                 "GetSceneList",
                 kind="obs_scene",
@@ -2331,7 +2384,10 @@ class TaskEditorDialog(QDialog):
         )
 
     def _refresh_obs_dependent_choices(self, kind: str, value: str) -> None:
-        if self.task_type == "obs.set_scene_item_enabled" and kind == "obs_scene":
+        if self.task_type in {
+            "obs.set_scene_item_enabled",
+            "obs.set_source_transform",
+        } and kind == "obs_scene":
             self._refresh_obs_sources(value)
         elif self.task_type == "obs.set_scene_filter_state" and kind == "obs_scene":
             self._refresh_obs_filters(value)
@@ -2340,7 +2396,10 @@ class TaskEditorDialog(QDialog):
 
     def _refresh_selected_obs_dependency(self, _values: list[str]) -> None:
         fields = self.field_widgets.get(self.task_type, {})
-        if self.task_type == "obs.set_scene_item_enabled":
+        if self.task_type in {
+            "obs.set_scene_item_enabled",
+            "obs.set_source_transform",
+        }:
             parent = fields.get("scene")
             if isinstance(parent, QComboBox):
                 self._refresh_obs_sources(parent.currentText())

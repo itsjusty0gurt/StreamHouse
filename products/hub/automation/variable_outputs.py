@@ -170,6 +170,7 @@ STATIC_OUTPUTS = {
         "clip_duration",
         "clip_thumbnail",
     ),
+    "obs.take_screenshot": ("screenshot_path",),
 }
 
 OUTPUT_CONFIG_KEYS = {

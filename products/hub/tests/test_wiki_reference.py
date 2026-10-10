@@ -181,6 +181,22 @@ def test_obs_batch_one_references_are_derived_from_task_metadata() -> None:
     assert "scene transition" in entries["task:obs.set_transition"]
 
 
+def test_obs_batch_two_references_are_derived_from_task_metadata() -> None:
+    tasks, variables = _reference_sources()
+    entries = {
+        item.entry_id: item.search_text()
+        for item in build_wiki_entries(tasks, variables)
+    }
+
+    screenshot = entries["task:obs.take_screenshot"]
+    assert "source or scene" in screenshot
+    assert "{automation.screenshot_path}" in screenshot
+    assert "same root routine execution" in screenshot
+    assert "scene-item id" in entries["task:obs.set_source_transform"]
+    assert "blank to preserve" in entries["task:obs.set_source_transform"]
+    assert "active recording" in entries["task:obs.create_record_chapter"]
+
+
 def test_unified_user_groups_reference_documents_system_and_custom_groups() -> None:
     tasks, variables = _reference_sources()
     entry = next(

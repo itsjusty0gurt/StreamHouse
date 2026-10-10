@@ -1148,6 +1148,12 @@ they change only their owned setting. This includes text, image-file, media-file
 Color Source color, and Browser Source URL updates; templated values resolve
 canonical Variables before the request is sent.
 
+Dedicated screenshot, scene-item transform, and recording-chapter tasks remain
+thin clients of the OBS request boundary. Transform requests resolve the current
+scene-item ID and send only explicitly configured fields, leaving OBS to preserve
+the rest. A successful screenshot publishes `automation.screenshot_path` only
+for the current root routine execution.
+
 ## Streamhouse AI subsystem
 
 ### Local HTTP contract

@@ -261,6 +261,11 @@ _SHORT_DESCRIPTIONS = {
     ),
     "obs.restart_media_source": "Restarts an OBS Media Source from the beginning.",
     "obs.set_transition": "Changes the current OBS scene transition.",
+    "obs.take_screenshot": "Saves a screenshot of an OBS source or scene to a local file.",
+    "obs.set_source_transform": (
+        "Updates selected position, scale, rotation, and crop fields for a source in an OBS scene."
+    ),
+    "obs.create_record_chapter": "Creates a named chapter in the active OBS recording.",
     "obs.stream_control": "Starts or stops streaming through OBS.",
     "obs.record_control": "Starts, stops, pauses, or resumes OBS recording.",
     "obs.replay_buffer_control": "Starts, stops, or saves the OBS replay buffer.",
@@ -309,6 +314,19 @@ VARIABLE_INPUT_FIELDS: dict[str, tuple[str, ...]] = {
     "obs.set_browser_source_url": ("url",),
     "obs.set_media_source_file": ("file",),
     "obs.set_color_source_color": ("color",),
+    "obs.take_screenshot": ("file",),
+    "obs.set_source_transform": (
+        "position_x",
+        "position_y",
+        "scale_x",
+        "scale_y",
+        "rotation",
+        "crop_top",
+        "crop_right",
+        "crop_bottom",
+        "crop_left",
+    ),
+    "obs.create_record_chapter": ("title",),
     "counter.increase": ("amount",),
     "counter.decrease": ("amount",),
     "counter.set_value": ("value",),
@@ -403,6 +421,17 @@ _HELP_TEXT = {
     ),
     "obs.set_transition": (
         "Selects the current OBS scene transition and waits for OBS to confirm it."
+    ),
+    "obs.take_screenshot": (
+        "Resolves the output path, asks OBS to save the selected source or scene, "
+        "then exposes the final path to later tasks in the same root routine execution."
+    ),
+    "obs.set_source_transform": (
+        "Finds the source's scene-item ID, resolves only the supplied numeric fields, "
+        "and asks OBS to update those transform values."
+    ),
+    "obs.create_record_chapter": (
+        "Resolves the chapter title and asks OBS to create it in the active recording."
     ),
     "obs.raw_request": (
         "Sends one advanced OBS WebSocket request and waits for its response. Use "
@@ -558,6 +587,28 @@ _INPUT_HELP: dict[str, dict[str, str]] = {
     "obs.set_transition": {
         "transition": "The existing OBS scene transition to make current.",
     },
+    "obs.take_screenshot": {
+        "target_type": "Choose whether the target name identifies an OBS source or scene.",
+        "target": "The existing OBS source or scene to capture.",
+        "file": "A local output path or canonical Variable. Use a PNG, JPG, or JPEG extension when format is automatic.",
+        "image_format": "Use the output extension or explicitly choose PNG or JPEG.",
+    },
+    "obs.set_source_transform": {
+        "scene": "The OBS scene containing the source item.",
+        "source": "The source item whose transform should change.",
+        "position_x": "New horizontal position, or blank to preserve it.",
+        "position_y": "New vertical position, or blank to preserve it.",
+        "scale_x": "New horizontal scale, or blank to preserve it.",
+        "scale_y": "New vertical scale, or blank to preserve it.",
+        "rotation": "New rotation in degrees, or blank to preserve it.",
+        "crop_top": "New top crop in pixels, or blank to preserve it.",
+        "crop_right": "New right crop in pixels, or blank to preserve it.",
+        "crop_bottom": "New bottom crop in pixels, or blank to preserve it.",
+        "crop_left": "New left crop in pixels, or blank to preserve it.",
+    },
+    "obs.create_record_chapter": {
+        "title": "A chapter title or canonical Variable that resolves to one.",
+    },
     "obs.raw_request": {
         "request_type": "The exact OBS WebSocket request type.",
         "request_data": "A JSON object containing that request's data.",
@@ -656,6 +707,15 @@ _EXAMPLES = {
     "obs.set_color_source_color": ("Set an OBS Color Source to #7A4DFF.",),
     "obs.restart_media_source": ("Restart an alert Media Source from the beginning.",),
     "obs.set_transition": ("Select Fade as the current OBS transition.",),
+    "obs.take_screenshot": (
+        "Save a scene screenshot, then use {automation.screenshot_path} in a later task.",
+    ),
+    "obs.set_source_transform": (
+        "Move a source to X 120 and Y 80 while preserving its other transform values.",
+    ),
+    "obs.create_record_chapter": (
+        "Create a recording chapter named Boss Fight {counter.deaths}.",
+    ),
 }
 
 
