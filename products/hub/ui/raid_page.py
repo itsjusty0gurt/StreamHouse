@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from math import ceil
@@ -8,6 +9,7 @@ from typing import Callable
 from PySide6.QtCore import (
     QEvent,
     QObject,
+    QSettings,
     QThreadPool,
     QRunnable,
     Qt,
@@ -16,7 +18,7 @@ from PySide6.QtCore import (
     Signal,
     Slot,
 )
-from PySide6.QtGui import QPixmap, QResizeEvent
+from PySide6.QtGui import QDesktopServices, QPixmap, QResizeEvent
 from PySide6.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkRequest
 from PySide6.QtWidgets import (
     QApplication,
@@ -40,7 +42,6 @@ from products.hub.twitch.models import TwitchEvent
 from products.hub.twitch.raid_contract import RAID_COUNTDOWN_SECONDS
 from products.hub.ui.automation_task_cards import ElidingLabel
 from products.hub.ui.page_header import PageHeader
-from products.hub.ui.raid_landing_window import RaidLandingWindow
 from shared.streamhouse_shared.responsive import responsive_grid_columns
 from shared.streamhouse_runtime.logger import Logger
 
@@ -49,6 +50,17 @@ FOLLOWED_STREAMS_SCOPE = "user:read:follows"
 RAID_SCOPE = "channel:manage:raids"
 RAID_SECONDARY_TEXT_COLOR = "#adadb8"
 RAID_CONFIRMATION_GRACE_SECONDS = 120
+OPEN_RAIDED_CHANNEL_SETTING = "raid/open_raided_channel_in_browser"
+TWITCH_LOGIN_PATTERN = re.compile(r"[A-Za-z0-9_]{1,25}")
+
+
+def twitch_channel_url(login: object) -> QUrl | None:
+    if not isinstance(login, str):
+        return None
+    clean_login = login.strip()
+    if not TWITCH_LOGIN_PATTERN.fullmatch(clean_login):
+        return None
+    return QUrl(f"https://www.twitch.tv/{clean_login}")
 
 
 def format_raid_uptime(
@@ -379,13 +391,15 @@ class RaidPage(QWidget):
         parent: QWidget | None = None,
         *,
         clock: Callable[[], datetime] | None = None,
-        landing_window_factory=RaidLandingWindow,
+        settings: QSettings | None = None,
+        url_opener: Callable[[QUrl], object] | None = None,
     ) -> None:
         super().__init__(parent)
         self.service = service
         self.auth = auth
         self._clock = clock or (lambda: datetime.now(timezone.utc))
-        self._landing_window_factory = landing_window_factory
+        self._settings = settings if isinstance(settings, QSettings) else None
+        self._url_opener = url_opener or QDesktopServices.openUrl
         self._generation = 0
         self._loading = False
         self._shutting_down = False
@@ -395,7 +409,6 @@ class RaidPage(QWidget):
         self._cards: dict[str, RaidChannelCard] = {}
         self._active_raid: ActiveRaid | None = None
         self._raid_confirmation_target: RaidCandidate | None = None
-        self._landing_window: RaidLandingWindow | None = None
         self._load_workers: set[RaidCandidatesWorker] = set()
         self._raid_workers: set[RaidActionWorker] = set()
         self._cancel_workers: set[RaidCancelWorker] = set()
@@ -455,19 +468,29 @@ class RaidPage(QWidget):
         message_layout.addWidget(self.send_message_button)
         root.addWidget(self.raid_message_frame)
 
-        self.open_raid_landing_checkbox = QCheckBox(
-            "Open Raid Landing after raid",
+        self.open_raided_channel_checkbox = QCheckBox(
+            "Open raided channel in browser after raid",
             self,
         )
-        self.open_raid_landing_checkbox.setObjectName(
-            "openRaidLandingAfterRaid"
+        self.open_raided_channel_checkbox.setObjectName(
+            "openRaidedChannelInBrowserAfterRaid"
         )
-        self.open_raid_landing_checkbox.setToolTip(
-            "After Twitch confirms the outgoing raid, open a local companion "
-            "window with the target chat."
+        self.open_raided_channel_checkbox.setToolTip(
+            "After Twitch confirms the outgoing raid, open the target "
+            "channel in your default browser."
         )
-        self.open_raid_landing_checkbox.setChecked(False)
-        root.addWidget(self.open_raid_landing_checkbox)
+        open_after_raid = False
+        if self._settings is not None:
+            open_after_raid = self._settings.value(
+                OPEN_RAIDED_CHANNEL_SETTING,
+                False,
+                type=bool,
+            )
+        self.open_raided_channel_checkbox.setChecked(bool(open_after_raid))
+        self.open_raided_channel_checkbox.toggled.connect(
+            self._save_open_raided_channel_preference
+        )
+        root.addWidget(self.open_raided_channel_checkbox)
 
         self.active_raid_frame = QFrame(self)
         self.active_raid_frame.setObjectName("activeRaidPanel")
@@ -964,7 +987,7 @@ class RaidPage(QWidget):
             "Waiting for Twitch confirmation."
         )
         Logger.info(
-            "Raid Landing: countdown finished; awaiting outgoing raid "
+            "Raid browser open: countdown finished; awaiting outgoing raid "
             f"confirmation for target ID {candidate.user_id}.",
             source="TWITCH",
         )
@@ -978,7 +1001,7 @@ class RaidPage(QWidget):
         self._raid_confirmation_target = None
         self._update_card_raid_state()
         Logger.warning(
-            "Raid Landing: activation skipped because no outgoing raid "
+            "Raid browser open skipped because no outgoing raid "
             f"confirmation arrived for target ID {candidate.user_id}.",
             source="TWITCH",
         )
@@ -1042,7 +1065,7 @@ class RaidPage(QWidget):
         event = twitch_event.payload.get("event", {})
         if not isinstance(event, dict):
             Logger.warning(
-                "Raid Landing: activation skipped because channel.raid "
+                "Raid browser open skipped because channel.raid "
                 "did not contain an event object.",
                 source="TWITCH",
             )
@@ -1061,84 +1084,57 @@ class RaidPage(QWidget):
             candidate.user_id if candidate is not None else "none"
         )
         Logger.info(
-            "Raid Landing: outgoing raid confirmation received for target ID "
+            "Outgoing raid confirmation received for target ID "
             f"{to_id or 'missing'}; active target ID {active_target_id}.",
             source="TWITCH",
         )
         if candidate is None:
             Logger.warning(
-                "Raid Landing: activation skipped because there is no active "
+                "Raid browser open skipped because there is no active "
                 "raid target to correlate.",
                 source="TWITCH",
             )
             return
         if to_id != candidate.user_id:
             Logger.warning(
-                "Raid Landing: activation skipped because confirmation target "
+                "Raid browser open skipped because confirmation target "
                 f"ID {to_id or 'missing'} did not match active target ID "
                 f"{candidate.user_id}.",
                 source="TWITCH",
             )
             return
-        landing_enabled = self.open_raid_landing_checkbox.isChecked()
+        browser_enabled = self.open_raided_channel_checkbox.isChecked()
         Logger.info(
-            "Raid Landing: outgoing raid target matched; landing toggle is "
-            f"{'enabled' if landing_enabled else 'disabled'}.",
+            "Outgoing raid target matched; browser-open preference is "
+            f"{'enabled' if browser_enabled else 'disabled'}.",
             source="TWITCH",
         )
         self._clear_active_raid(f"Raid sent to {candidate.display_name}.")
-        if landing_enabled:
-            self._open_raid_landing(candidate)
-        else:
-            Logger.info(
-                "Raid Landing: activation skipped because the landing toggle "
-                "is disabled.",
-                source="TWITCH",
-            )
-
-    def _open_raid_landing(self, candidate: RaidCandidate) -> None:
-        if self._shutting_down:
+        if not browser_enabled:
             return
-        previous = self._landing_window
-        if previous is not None:
-            self._landing_window = None
-            previous.shutdown()
-            previous.close()
-            previous.deleteLater()
-        Logger.info(
-            f"Raid Landing: opening window for target ID {candidate.user_id}.",
-            source="TWITCH",
-        )
-        try:
-            landing = self._landing_window_factory(
-                candidate,
-                self.service,
-                self.window(),
-            )
-        except Exception as error:
-            Logger.error(
-                "Raid Landing: window creation failed for target ID "
-                f"{candidate.user_id}: {error}",
+        target_login = event.get("to_broadcaster_user_login", "")
+        url = twitch_channel_url(target_login)
+        if url is None:
+            Logger.warning(
+                "Raid browser open skipped because Twitch did not provide a "
+                "valid target login.",
                 source="TWITCH",
             )
             return
-        self._landing_window = landing
-        landing.dismissed.connect(self._landing_dismissed)
-        landing.show()
-        landing.raise_()
-        landing.activateWindow()
-        Logger.info(
-            f"Raid Landing: window opened for target ID {candidate.user_id}.",
-            source="TWITCH",
-        )
+        if not bool(self._url_opener(url)):
+            Logger.warning(
+                "The confirmed raid target could not be opened in the default "
+                "browser.",
+                source="TWITCH",
+            )
 
-    @Slot(object)
-    def _landing_dismissed(self, landing: object) -> None:
-        if landing is not self._landing_window:
-            return
-        self._landing_window = None
-        landing.deleteLater()
-        Logger.info("Raid Landing closed.", source="TWITCH")
+    @Slot(bool)
+    def _save_open_raided_channel_preference(self, enabled: bool) -> None:
+        if self._settings is not None:
+            self._settings.setValue(
+                OPEN_RAIDED_CHANNEL_SETTING,
+                bool(enabled),
+            )
 
     def _set_status(self, message: str) -> None:
         self.status_label.setText(message)
@@ -1176,12 +1172,6 @@ class RaidPage(QWidget):
         self.raid_confirmation_timer.stop()
         self._active_raid = None
         self._raid_confirmation_target = None
-        landing = self._landing_window
-        self._landing_window = None
-        if landing is not None:
-            landing.shutdown()
-            landing.close()
-            landing.deleteLater()
         self._cancel_thumbnails()
         self.load_pool.clear()
         self.raid_pool.clear()

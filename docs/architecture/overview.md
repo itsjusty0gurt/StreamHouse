@@ -1365,13 +1365,11 @@ forced-completion action. The candidate list, message, and active raid state are
 never persisted. Countdown expiry clears the visible countdown but retains a
 short-lived, runtime-only stable target-ID correlation until Twitch's outgoing
 confirmation arrives or that correlation expires. An optional, default-off
-**Raid Landing** opens only after the matching outgoing raid EventSub
-confirmation. It is a local runtime-owned
-companion window with target identity, a separate temporary EventSub chat
-socket, Always on Top, and Open on Twitch. The target chat is read-only in V1,
-never enters the main chat event path, and closes with the window. Main Hub chat
-identity and connection are unchanged. Video opens in the user's browser; Hub
-does not depend on a hosted Streamhouse embed origin or persist landing state.
+machine-local preference opens the confirmed target login on twitch.tv in the
+user's default browser only after the matching outgoing raid EventSub
+confirmation. Hub owns no companion raid window, embedded Twitch player, or
+temporary target-chat session. The action adds no hosted Streamhouse dependency,
+and its QSettings preference is outside the durable Hub data schema and Backup.
 
 Hub Alpha 0.1 does not expose the Soundboard page while Twitch Extension
 approval is pending. Its store, local server, relay client, Automation

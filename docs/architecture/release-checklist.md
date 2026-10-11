@@ -98,7 +98,7 @@ compatibility and migration rules.
 - [ ] Verify OBS connection and a representative OBS action when available.
 - [ ] Verify Automation/Routines execute through their normal queues.
 - [ ] Verify Commands, Timers, Variables, Counters, and Channel Information.
-- [ ] Verify Raid and Raid Landing behavior where the test account permits it.
+- [ ] Verify Raid and optional post-confirmation browser opening where the test account permits it.
 - [ ] Verify current major optional integrations, including the local Music
       Player when available; absence of an optional integration must remain safe.
 - [ ] Run the development and packaged smoke suites referenced in

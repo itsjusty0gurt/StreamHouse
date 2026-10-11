@@ -268,7 +268,7 @@ def test_outgoing_raid_completed_reference_uses_authoritative_confirmation() -> 
     assert "starting a raid" in text
     assert "countdown reaching zero" in text
     assert "cancelling a raid" in text
-    assert "raid landing is a separate consumer" in text
+    assert "default-browser action is a separate consumer" in text
     for variable in (
         "raid.target.id",
         "raid.target.login",
@@ -330,10 +330,10 @@ def test_raid_page_reference_documents_runtime_finder_and_permissions() -> None:
     assert "twitch automatically executes the raid" in text
     assert "raid now" not in text
     assert "outgoing channel raid event" in text
-    assert "retry chat" in text
-    assert "copy channel link" in text
-    assert "read-only target chat" in text
-    assert "open on twitch" in text
+    assert "open raided channel in browser after raid" in text
+    assert "normal default browser" in text
+    assert "temporary target chat" in text
+    assert "starting a raid, countdown expiry, cancellation" in text
 
 
 def test_command_and_timer_references_document_stable_open_routine_navigation() -> None:

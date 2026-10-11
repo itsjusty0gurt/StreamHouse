@@ -409,7 +409,7 @@ def _trigger_entry(
                 "Completion semantics",
                 (
                     "Starting a raid, the local countdown reaching zero, and cancelling a raid do not fire this trigger.",
-                    "Raid Landing is a separate consumer of the same Twitch confirmation event.",
+                    "The optional default-browser action is a separate consumer of the same Twitch confirmation event.",
                 ),
             ),
         )
@@ -815,14 +815,12 @@ def _twitch_entries() -> tuple[WikiEntry, ...]:
                     ),
                 ),
                 WikiSection(
-                    "Raid Landing",
+                    "Open after raid",
                     (
-                        "Open Raid Landing after raid is an optional session-only setting and is off by default.",
-                        "After Twitch confirms the outgoing raid, Raid Landing opens a separate local companion window for the target channel. Starting or cancelling a raid does not open it.",
-                        "The window keeps a temporary, read-only target chat separate from your main Hub chat. Closing it releases that temporary chat session and does not affect the raid or your main Twitch connection.",
-                        "Use Open on Twitch for video and viewing. V1 intentionally has no embedded video or Streamhouse-hosted cloud dependency.",
-                        "Retry Chat reconnects a failed target-chat session. Copy Channel Link copies the target's Twitch URL.",
-                        "Always on Top keeps the companion visible; Close dismisses it. A later confirmed raid replaces an existing landing window.",
+                        "Open raided channel in browser after raid is optional, saved on this computer, and off by default.",
+                        "After Twitch authoritatively confirms the outgoing raid, Hub opens the confirmed target login on twitch.tv in your normal default browser.",
+                        "Starting a raid, countdown expiry, cancellation, and incoming raids never open the browser.",
+                        "Hub does not embed Twitch video, open a temporary target chat, or depend on a Streamhouse-hosted service for this action.",
                     ),
                 ),
             ),
@@ -836,10 +834,8 @@ def _twitch_entries() -> tuple[WikiEntry, ...]:
                 "raid message",
                 "countdown",
                 "cancel raid",
-                "raid landing",
-                "open on twitch",
-                "always on top",
-                "target chat",
+                "open raided channel",
+                "default browser",
             ),
         ),
     )

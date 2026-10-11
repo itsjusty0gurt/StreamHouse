@@ -487,16 +487,14 @@ A separate Raid Initiated Automation event remains planned; the completed
 trigger consumes the existing outgoing `channel.raid` event rather than a
 separate Twitch completion event.
 
-Raid Landing V1 is an optional, session-only local companion window. The option
-is off by default and opens only when the outgoing `channel.raid` EventSub event
-matches the active target; starting, counting down, or cancelling a raid never
-opens it. The landing owns a separate temporary `channel.chat.message` EventSub
-socket for the target channel and renders that bounded, read-only chat in memory.
-It never switches, clears, reconnects, or republishes messages through the main
-broadcaster chat path. Closing or replacing the landing closes its socket and
-releases the temporary subscription. The user's browser opens the target login
-on Twitch for video. There is no embedded player, Streamhouse-hosted origin,
-persistence, Backup component, or additional OAuth scope.
+**Open raided channel in browser after raid** is an optional machine-local
+preference and is off by default. When enabled, Hub opens
+`https://www.twitch.tv/<target_login>` in the user's normal default browser only
+after the outgoing `channel.raid` EventSub event matches the active target.
+Starting a raid, countdown expiry, cancellation, and incoming raids never open
+the browser. Hub uses the target login from the confirmed Twitch event and
+rejects missing or invalid logins. There is no embedded player, temporary target
+chat, Streamhouse-hosted origin, Backup component, or additional OAuth scope.
 
 ### Stream Health and Moderation
 

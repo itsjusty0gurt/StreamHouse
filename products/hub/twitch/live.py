@@ -346,7 +346,7 @@ class TwitchHelixClient:
                     == broadcaster_user_id
                 ):
                     Logger.info(
-                        "Raid Landing: outgoing channel.raid subscription active.",
+                        "Outgoing channel.raid confirmation subscription active.",
                         source="TWITCH",
                     )
         return tuple(warnings)

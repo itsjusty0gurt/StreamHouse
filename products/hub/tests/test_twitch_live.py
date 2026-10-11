@@ -430,7 +430,7 @@ class TwitchHelixClientTests(unittest.TestCase):
             ],
         )
         log_info.assert_any_call(
-            "Raid Landing: outgoing channel.raid subscription active.",
+            "Outgoing channel.raid confirmation subscription active.",
             source="TWITCH",
         )
 

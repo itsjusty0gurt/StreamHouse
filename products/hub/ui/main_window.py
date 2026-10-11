@@ -2575,6 +2575,7 @@ class MainWindow(QMainWindow):
             self.twitch_service,
             self.twitch_auth,
             self.channel_tabs,
+            settings=getattr(self.window_state_store, "settings", None),
         )
         self.channel_tabs.addTab(self.raid_page, "Raid")
 
