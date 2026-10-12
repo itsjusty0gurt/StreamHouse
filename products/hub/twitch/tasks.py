@@ -13,6 +13,7 @@ from products.hub.automation.variable_registry import (
     VariableDefinition,
     VariableRegistry,
     render_placeholders,
+    validate_variable_name,
     validate_placeholders,
 )
 from products.hub.twitch.channel_information import ChannelInformationStore
@@ -69,7 +70,11 @@ class SendTwitchChatMessageTask:
             for name in set(self.TEMPLATE_PATTERN.findall(template))
             if str(
                 context.get(
-                    automation_output_name(name, "status")
+                    (
+                        validate_variable_name(f"{name}_status")
+                        if name.count(".") > 1
+                        else automation_output_name(name, "status")
+                    )
                     if name.startswith("automation.")
                     else "",
                     "",
@@ -132,6 +137,7 @@ TWITCH_TASK_LABELS = {
     "twitch.resolve_user": "Twitch — Resolve user",
     "twitch.shoutout_user": "Twitch — Shoutout User",
     "twitch.get_user_clip": "Twitch — Get User Clip",
+    "twitch.get_user_info": "Twitch — Get User Info",
     "twitch.get_stream_information": "Twitch — Get stream information",
     "twitch.get_follow_relationship": "Twitch — Get follow relationship",
     "twitch.build_command_list": "Twitch — Build command list",
@@ -151,6 +157,7 @@ TWITCH_INFORMATION_TASK_TYPES = frozenset(
         "twitch.get_stream_information",
         "twitch.get_follow_relationship",
         "twitch.get_user_clip",
+        "twitch.get_user_info",
         "twitch.build_social_links_message",
     }
 )
@@ -174,6 +181,26 @@ def _output(context: Mapping[str, str], name: str, default: str = "") -> str:
 
 def _set_output(context: dict[str, str], name: str, value: object) -> None:
     context[automation_output_name(name)] = str(value)
+
+
+USER_INFO_OUTPUTS = (
+    "id",
+    "login",
+    "display_name",
+    "description",
+    "profile_image_url",
+    "broadcaster_type",
+    "game_id",
+    "game_name",
+    "stream_title",
+    "channel_url",
+)
+
+
+def _publish_user_info(context: dict[str, str], values: Mapping[str, object]) -> None:
+    for name in USER_INFO_OUTPUTS:
+        canonical_name = validate_variable_name(f"automation.user.{name}")
+        context[canonical_name] = str(values.get(name, ""))
 
 
 def _task_result(task: TaskDefinition, detail: str, succeeded: bool = True):
@@ -534,6 +561,33 @@ class TwitchAutomationTask:
                 },
             )
             return f'Selected Twitch clip "{selected.get("title", clip_id)}".'
+        if self.task_type == "twitch.get_user_info":
+            context = _mutable_context(trigger)
+            _publish_user_info(context, {})
+            target = render("target", "{user.id}")
+            if not target or target == "--" or PLACEHOLDER_PATTERN.fullmatch(target):
+                raise ValueError("Enter a Twitch user to look up.")
+            user, channel = self.service.get_user_information(target)
+            user_id = str(user.get("id", "")).strip()
+            login = str(user.get("login", "")).strip()
+            if not user_id or not login:
+                raise ValueError("Twitch returned invalid user information.")
+            _publish_user_info(
+                context,
+                {
+                    "id": user_id,
+                    "login": login,
+                    "display_name": user.get("display_name", login),
+                    "description": user.get("description", ""),
+                    "profile_image_url": user.get("profile_image_url", ""),
+                    "broadcaster_type": user.get("broadcaster_type", ""),
+                    "game_id": channel.get("game_id", ""),
+                    "game_name": channel.get("game_name", ""),
+                    "stream_title": channel.get("title", ""),
+                    "channel_url": f"https://www.twitch.tv/{login}",
+                },
+            )
+            return f'Retrieved Twitch user information for "{login}".'
         if self.task_type == "twitch.moderate_user":
             action = str(config.get("action", "timeout"))
             user_id = self.service.resolve_user_id(render("user", "{user.id}"))

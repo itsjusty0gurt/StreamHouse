@@ -580,6 +580,18 @@ class TwitchService:
             featured_only=featured_only,
         )
 
+    def get_user_information(self, target_reference: str) -> tuple[dict, dict]:
+        """Return authoritative Twitch user and channel metadata for one target."""
+        user = self.resolve_user(target_reference)
+        user_id = str(user.get("id", "")).strip()
+        if not user_id:
+            raise ValueError("Twitch returned invalid user information.")
+        _broadcaster_id, token = self._broadcaster_credentials()
+        channel = self.helix.get_channel_information(user_id, token)
+        if channel is None:
+            raise ValueError("Twitch channel information was not found.")
+        return user, channel
+
     def get_stream_information(self) -> dict | None:
         broadcaster_id, token = self._broadcaster_credentials()
         return self.helix.get_stream_information(broadcaster_id, token)

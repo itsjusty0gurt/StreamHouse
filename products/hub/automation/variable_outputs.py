@@ -170,6 +170,18 @@ STATIC_OUTPUTS = {
         "clip_duration",
         "clip_thumbnail",
     ),
+    "twitch.get_user_info": (
+        "automation.user.id",
+        "automation.user.login",
+        "automation.user.display_name",
+        "automation.user.description",
+        "automation.user.profile_image_url",
+        "automation.user.broadcaster_type",
+        "automation.user.game_id",
+        "automation.user.game_name",
+        "automation.user.stream_title",
+        "automation.user.channel_url",
+    ),
     "obs.take_screenshot": ("screenshot_path",),
 }
 
@@ -207,7 +219,12 @@ def has_temporary_outputs(task_type: str) -> bool:
 
 def _output_definition_names(task_type: str, config: Mapping[str, object]) -> tuple[str, ...]:
     if task_type in STATIC_OUTPUTS:
-        return tuple(automation_output_name(name) for name in STATIC_OUTPUTS[task_type])
+        return tuple(
+            validate_variable_name(name)
+            if name.startswith("automation.")
+            else automation_output_name(name)
+            for name in STATIC_OUTPUTS[task_type]
+        )
     if task_type == "twitch.build_social_links_message":
         default = "social_links_message"
         base = output_id(config.get("output_variable") or default)
@@ -277,7 +294,7 @@ def _matching_suffix(name: str) -> str:
 
 
 def _display_name(name: str) -> str:
-    return name.split(".", 1)[1].replace("_", " ").title()
+    return name.removeprefix("automation.").replace(".", " ").replace("_", " ").title()
 
 
 def _preview_value(data_type: VariableDataType) -> object:

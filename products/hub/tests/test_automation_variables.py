@@ -49,6 +49,23 @@ class CaptureTwitchService:
             }
         ]
 
+    def get_user_information(self, target: str) -> tuple[dict, dict]:
+        return (
+            {
+                "id": "target-42",
+                "login": "targetlogin",
+                "display_name": "Target Login",
+                "description": "Creator description",
+                "profile_image_url": "https://example.test/avatar.png",
+                "broadcaster_type": "affiliate",
+            },
+            {
+                "game_id": "509658",
+                "game_name": "Just Chatting",
+                "title": "Target stream title",
+            },
+        )
+
 
 class AutomationVariableTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -199,6 +216,40 @@ class AutomationVariableTests(unittest.TestCase):
         self.assertTrue(result.succeeded)
         self.assertEqual(twitch.messages, ["Clip: https://clips.twitch.tv/clip-1"])
         self.assertNotIn("automation.clip_url", supplied_context)
+
+    def test_user_info_outputs_are_scoped_and_do_not_replace_trigger_user(self) -> None:
+        twitch = self._register_file_and_chat_tasks()
+        self.registry.register(TwitchAutomationTask(twitch, "twitch.get_user_info"))
+        routine = self.routine_store.add("User information workflow")
+        self.routine_store.add_task(
+            routine.routine_id,
+            task_type="twitch.get_user_info",
+            name="Get user info",
+            config={"target": "{user.id}"},
+        )
+        self.routine_store.add_task(
+            routine.routine_id,
+            task_type="twitch.send_chat_message",
+            name="Use user info",
+            config={
+                "message": "{user.display_name} recommends {automation.user.display_name}: {automation.user.channel_url}",
+                "as_bot": True,
+            },
+        )
+        supplied_context = {
+            "user.id": "target-42",
+            "user.display_name": "Trigger Viewer",
+        }
+
+        result = self.service.run_routine(routine.routine_id, supplied_context)
+
+        self.assertTrue(result.succeeded)
+        self.assertEqual(
+            twitch.messages,
+            ["Trigger Viewer recommends Target Login: https://www.twitch.tv/targetlogin"],
+        )
+        self.assertEqual(supplied_context["user.display_name"], "Trigger Viewer")
+        self.assertNotIn("automation.user.channel_url", supplied_context)
 
     def test_generated_output_is_unavailable_before_producer_and_never_leaks(self) -> None:
         twitch = self._register_file_and_chat_tasks()

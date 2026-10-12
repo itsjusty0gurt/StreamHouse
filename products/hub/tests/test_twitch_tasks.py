@@ -72,6 +72,24 @@ class FakeTwitchService:
             },
         ]
 
+    def get_user_information(self, target):
+        self.calls.append(("user_info", target))
+        return (
+            {
+                "id": "9001",
+                "login": "resolvedlogin",
+                "display_name": "ResolvedLogin",
+                "description": "A Twitch creator.",
+                "profile_image_url": "https://example.test/avatar.png",
+                "broadcaster_type": "partner",
+            },
+            {
+                "game_id": "509658",
+                "game_name": "Just Chatting",
+                "title": "A current or recent stream title",
+            },
+        )
+
     def resolve_user_id(self, reference):
         self.calls.append(("resolve", reference))
         return "42"
@@ -320,6 +338,128 @@ class TwitchTaskTests(unittest.TestCase):
                 unittest.mock.call("42", featured_only=True),
             ],
         )
+
+    def test_get_user_info_supports_target_forms_and_publishes_grouped_outputs(self) -> None:
+        self.trigger.context.update(
+            {
+                "user.login": "TriggerViewer",
+                "user.display_name": "Trigger Viewer",
+                "custom.lookup_target": "VariableViewer",
+            }
+        )
+        original_user_context = {
+            name: value
+            for name, value in self.trigger.context.items()
+            if name.startswith("user.")
+        }
+        for target, expected in (
+            ("9001", "9001"),
+            ("SomeLogin", "SomeLogin"),
+            ("@SomeLogin", "@SomeLogin"),
+            ("{custom.lookup_target}", "VariableViewer"),
+            ("{user.id}", "42"),
+        ):
+            with self.subTest(target=target):
+                result = self.registry.execute(
+                    TaskDefinition(
+                        f"info-{expected}",
+                        "twitch.get_user_info",
+                        "Get user info",
+                        {"target": target},
+                    ),
+                    self.trigger,
+                )
+                self.assertTrue(result.succeeded, result.detail)
+                self.assertEqual(self.service.calls[-1], ("user_info", expected))
+                self.assertEqual(
+                    {
+                        name: value
+                        for name, value in self.trigger.context.items()
+                        if name.startswith("user.")
+                    },
+                    original_user_context,
+                )
+                self.assertEqual(self.trigger.context["automation.user.id"], "9001")
+                self.assertEqual(
+                    self.trigger.context["automation.user.login"], "resolvedlogin"
+                )
+                self.assertEqual(
+                    self.trigger.context["automation.user.display_name"],
+                    "ResolvedLogin",
+                )
+                self.assertEqual(
+                    self.trigger.context["automation.user.description"],
+                    "A Twitch creator.",
+                )
+                self.assertEqual(
+                    self.trigger.context["automation.user.profile_image_url"],
+                    "https://example.test/avatar.png",
+                )
+                self.assertEqual(
+                    self.trigger.context["automation.user.broadcaster_type"], "partner"
+                )
+                self.assertEqual(
+                    self.trigger.context["automation.user.game_id"], "509658"
+                )
+                self.assertEqual(
+                    self.trigger.context["automation.user.game_name"], "Just Chatting"
+                )
+                self.assertEqual(
+                    self.trigger.context["automation.user.stream_title"],
+                    "A current or recent stream title",
+                )
+                self.assertEqual(
+                    self.trigger.context["automation.user.channel_url"],
+                    "https://www.twitch.tv/resolvedlogin",
+                )
+
+    def test_get_user_info_clears_outputs_on_empty_or_failed_lookup(self) -> None:
+        output_names = (
+            "id", "login", "display_name", "description", "profile_image_url",
+            "broadcaster_type", "game_id", "game_name", "stream_title", "channel_url",
+        )
+        for name in output_names:
+            self.trigger.context[f"automation.user.{name}"] = "stale"
+
+        empty = self.registry.execute(
+            TaskDefinition("empty-info", "twitch.get_user_info", "Info", {"target": " "}),
+            self.trigger,
+        )
+        self.assertFalse(empty.succeeded)
+        self.assertIn("Enter a Twitch user", empty.detail)
+        self.assertTrue(
+            all(not self.trigger.context[f"automation.user.{name}"] for name in output_names)
+        )
+
+        self.service.get_user_information = Mock(
+            side_effect=ValueError('Twitch user "missing" was not found.')
+        )
+        failed = self.registry.execute(
+            TaskDefinition(
+                "failed-info",
+                "twitch.get_user_info",
+                "Info",
+                {"target": "missing"},
+            ),
+            self.trigger,
+        )
+        self.assertFalse(failed.succeeded)
+        self.assertIn("not found", failed.detail)
+        self.assertEqual(self.trigger.context["automation.user.channel_url"], "")
+
+        self.service.get_user_information = Mock(side_effect=OSError("network unavailable"))
+        api_failed = self.registry.execute(
+            TaskDefinition(
+                "api-failed-info",
+                "twitch.get_user_info",
+                "Info",
+                {"target": "target"},
+            ),
+            self.trigger,
+        )
+        self.assertFalse(api_failed.succeeded)
+        self.assertIn("network unavailable", api_failed.detail)
+        self.assertEqual(self.trigger.context["automation.user.channel_url"], "")
 
     def test_social_links_message_uses_selected_channel_information(self) -> None:
         information = ChannelInformation(schedule="Friday at 8 PM")

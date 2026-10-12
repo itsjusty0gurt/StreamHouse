@@ -172,6 +172,21 @@ def test_get_user_clip_reference_is_derived_from_task_metadata() -> None:
     assert "same root routine execution" in text
 
 
+def test_get_user_info_reference_documents_grouped_outputs_and_context_safety() -> None:
+    tasks, variables = _reference_sources()
+    entry = next(
+        item
+        for item in build_wiki_entries(tasks, variables)
+        if item.entry_id == "task:twitch.get_user_info"
+    )
+    text = entry.search_text()
+
+    assert "{automation.user.display_name}" in text
+    assert "{automation.user.channel_url}" in text
+    assert "triggering user context" in text
+    assert "current or last configured" in text
+
+
 def test_obs_browser_source_url_reference_is_derived_from_task_metadata() -> None:
     tasks, variables = _reference_sources()
     entry = next(

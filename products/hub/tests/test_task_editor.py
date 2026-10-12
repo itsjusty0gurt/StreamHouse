@@ -6,7 +6,15 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from PySide6.QtWidgets import QApplication, QCheckBox, QComboBox, QLabel, QLineEdit
+from PySide6.QtWidgets import (
+    QApplication,
+    QCheckBox,
+    QComboBox,
+    QDialog,
+    QLabel,
+    QLineEdit,
+    QMessageBox,
+)
 from PySide6.QtGui import QTextCursor
 
 from products.hub.automation.models import TaskDefinition
@@ -680,6 +688,148 @@ class TaskEditorTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Invalid canonical variable placeholder"):
             dialog.values()
 
+    def test_chat_validation_failure_keeps_editor_open_and_preserves_form(self) -> None:
+        dialog = TaskEditorDialog(
+            "twitch.send_chat_message",
+            variable_registry=self.variables(),
+        )
+        fields = dialog.field_widgets["twitch.send_chat_message"]
+        message = fields["message"]
+        as_bot = fields["as_bot"]
+        dialog.name_edit.setText("Custom greeting")
+        message.setPlainText("Hello {user.not_a_real_variable}")
+        as_bot.setChecked(False)
+        message_identity = id(message)
+        as_bot_identity = id(as_bot)
+        dialog.show()
+        self.application.processEvents()
+
+        with patch.object(QMessageBox, "warning") as warning:
+            dialog.accept()
+            dialog.accept()
+
+        self.assertTrue(dialog.isVisible())
+        self.assertEqual(dialog.result(), QDialog.DialogCode.Rejected)
+        self.assertEqual(message.toPlainText(), "Hello {user.not_a_real_variable}")
+        self.assertFalse(as_bot.isChecked())
+        self.assertEqual(dialog.name_edit.text(), "Custom greeting")
+        self.assertEqual(id(message), message_identity)
+        self.assertEqual(id(as_bot), as_bot_identity)
+        self.assertEqual(warning.call_count, 2)
+        self.assertEqual(warning.call_args.args[1], "Invalid Task")
+        self.assertIn("user.not_a_real_variable", warning.call_args.args[2])
+
+        message.setPlainText("Hello {user.display_name}")
+        dialog.accept()
+
+        self.assertEqual(dialog.result(), QDialog.DialogCode.Accepted)
+        self.assertEqual(
+            dialog.values()["config"],
+            {"message": "Hello {user.display_name}", "as_bot": False},
+        )
+
+    def test_cancel_after_chat_validation_failure_discards_unsaved_task_edits(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = RoutineStore(Path(directory) / "routines.json")
+            routine = store.add("Greeting")
+            original = store.add_task(
+                routine.routine_id,
+                task_type="twitch.send_chat_message",
+                name="Original greeting",
+                config={"message": "Hello {user.display_name}", "as_bot": True},
+            )
+            dialog = TaskEditorDialog(
+                original.task_type,
+                task=original,
+                variable_registry=self.variables(),
+            )
+            fields = dialog.field_widgets[original.task_type]
+            fields["message"].setPlainText("Broken {user.not_a_real_variable}")
+            fields["as_bot"].setChecked(False)
+            dialog.name_edit.setText("Unsaved name")
+            dialog.show()
+
+            with patch.object(QMessageBox, "warning"):
+                dialog.accept()
+            self.assertTrue(dialog.isVisible())
+            self.assertEqual(
+                store.get(routine.routine_id).tasks[0].config,
+                {"message": "Hello {user.display_name}", "as_bot": True},
+            )
+
+            dialog.reject()
+
+            self.assertEqual(dialog.result(), QDialog.DialogCode.Rejected)
+            saved = store.get(routine.routine_id).tasks[0]
+            self.assertEqual(saved.name, "Original greeting")
+            self.assertEqual(
+                saved.config,
+                {"message": "Hello {user.display_name}", "as_bot": True},
+            )
+
+    def test_existing_task_updates_only_after_corrected_validation_succeeds(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = RoutineStore(Path(directory) / "routines.json")
+            routine = store.add("Greeting")
+            original = store.add_task(
+                routine.routine_id,
+                task_type="twitch.send_chat_message",
+                name="Original greeting",
+                config={"message": "Hello {user.display_name}", "as_bot": True},
+            )
+            dialog = TaskEditorDialog(
+                original.task_type,
+                task=original,
+                variable_registry=self.variables(),
+            )
+            fields = dialog.field_widgets[original.task_type]
+            fields["message"].setPlainText("Broken {user.not_a_real_variable}")
+            fields["as_bot"].setChecked(False)
+            dialog.name_edit.setText("Updated greeting")
+
+            with patch.object(QMessageBox, "warning"):
+                dialog.accept()
+            self.assertEqual(
+                store.get(routine.routine_id).tasks[0].config,
+                {"message": "Hello {user.display_name}", "as_bot": True},
+            )
+
+            fields["message"].setPlainText("Welcome {user.display_name}")
+            dialog.accept()
+            self.assertEqual(dialog.result(), QDialog.DialogCode.Accepted)
+            store.update_task(routine.routine_id, original.task_id, **dialog.values())
+
+            saved = store.get(routine.routine_id).tasks[0]
+            self.assertEqual(saved.name, "Updated greeting")
+            self.assertEqual(
+                saved.config,
+                {"message": "Welcome {user.display_name}", "as_bot": False},
+            )
+
+    def test_shared_validation_keeps_non_twitch_task_editor_open(self) -> None:
+        dialog = TaskEditorDialog("core.wait")
+        fields = dialog.field_widgets["core.wait"]
+        duration = fields["duration"]
+        unit = fields["unit"]
+        dialog.name_edit.setText("Wait later")
+        duration.setText("")
+        unit.setCurrentIndex(unit.findData("minutes"))
+        dialog.enabled_check.setChecked(False)
+        dialog.show()
+
+        with patch.object(QMessageBox, "warning") as warning:
+            dialog.accept()
+
+        self.assertTrue(dialog.isVisible())
+        self.assertEqual(duration.text(), "")
+        self.assertEqual(unit.currentData(), "minutes")
+        self.assertFalse(dialog.enabled_check.isChecked())
+        self.assertIn("Duration is required", warning.call_args.args[2])
+
+        duration.setText("5")
+        dialog.accept()
+        self.assertEqual(dialog.result(), QDialog.DialogCode.Accepted)
+
     def test_trigger_variable_can_be_inserted_and_previewed(self) -> None:
         dialog = TaskEditorDialog(
             "twitch.send_chat_message",
@@ -778,6 +928,20 @@ class TaskEditorTests(unittest.TestCase):
         self.assertEqual(fields["selection_mode"].currentData(), "random")
         self.assertEqual(
             TaskEditorDialog.TEMPLATED_FIELDS["twitch.get_user_clip"],
+            ("target",),
+        )
+
+    def test_get_user_info_editor_defaults_to_trigger_user(self) -> None:
+        dialog = TaskEditorDialog(
+            "twitch.get_user_info",
+            variable_registry=self.variables(),
+        )
+        target = dialog.field_widgets["twitch.get_user_info"]["target"]
+
+        self.assertIsInstance(target, QLineEdit)
+        self.assertEqual(target.text(), "{user.id}")
+        self.assertEqual(
+            TaskEditorDialog.TEMPLATED_FIELDS["twitch.get_user_info"],
             ("target",),
         )
 

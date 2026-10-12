@@ -151,6 +151,11 @@ class AutomationServiceTests(unittest.TestCase):
         assert get_clip is not None
         self.assertEqual(get_clip.variable_inputs, ("target",))
         self.assertIn("normal clip url", get_clip.help_text.casefold())
+        get_user_info = registry.metadata("twitch.get_user_info")
+        assert get_user_info is not None
+        self.assertEqual(get_user_info.variable_inputs, ("target",))
+        self.assertIn("automation.user", get_user_info.help_text)
+        self.assertIn("triggering user", " ".join(get_user_info.notes).casefold())
         self.assertIsNone(registry.metadata("twitch.get_channel_information"))
 
         wait = registry.metadata("core.wait")

@@ -580,6 +580,24 @@ def test_generated_task_outputs_have_typed_temporary_metadata() -> None:
         for item in clip_outputs
     )
 
+    user_info_outputs = generated_output_definitions("twitch.get_user_info", {})
+    assert {item.name for item in user_info_outputs} == {
+        "automation.user.id",
+        "automation.user.login",
+        "automation.user.display_name",
+        "automation.user.description",
+        "automation.user.profile_image_url",
+        "automation.user.broadcaster_type",
+        "automation.user.game_id",
+        "automation.user.game_name",
+        "automation.user.stream_title",
+        "automation.user.channel_url",
+    }
+    assert all(
+        item.availability is VariableAvailability.TEMPORARY
+        for item in user_info_outputs
+    )
+
     screenshot_outputs = generated_output_definitions("obs.take_screenshot", {})
     assert tuple(item.name for item in screenshot_outputs) == (
         "automation.screenshot_path",

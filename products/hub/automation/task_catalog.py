@@ -49,6 +49,10 @@ _SHORT_DESCRIPTIONS = {
         "Fetches clips for a target Twitch user and selects one clip for later "
         "tasks through routine-scoped automation.* outputs."
     ),
+    "twitch.get_user_info": (
+        "Looks up a Twitch user and their channel metadata for later tasks through "
+        "routine-scoped automation.user.* outputs."
+    ),
     "twitch.get_stream_information": (
         "Retrieves the channel's current Twitch stream details. The results become "
         "routine-scoped automation.* outputs for later tasks."
@@ -294,6 +298,7 @@ VARIABLE_INPUT_FIELDS: dict[str, tuple[str, ...]] = {
     "twitch.resolve_user": ("reference",),
     "twitch.shoutout_user": ("target",),
     "twitch.get_user_clip": ("target",),
+    "twitch.get_user_info": ("target",),
     "twitch.get_follow_relationship": ("user_id",),
     "core.create_global_variable": ("value",),
     "core.create_session_variable": ("value",),
@@ -356,6 +361,11 @@ _HELP_TEXT = {
         "Resolves the target Twitch user, fetches that broadcaster's clips, and "
         "selects one by the configured mode. The normal clip URL and clip details "
         "are available to following tasks in the same root routine execution."
+    ),
+    "twitch.get_user_info": (
+        "Resolves the target through Twitch, then retrieves official user and channel "
+        "metadata. The looked-up account is published under automation.user.* without "
+        "changing the triggering user.* context."
     ),
     "twitch.moderate_user": (
         "Runs one explicit moderation action. Timeout, ban, unban, and message "
@@ -463,6 +473,9 @@ _INPUT_HELP: dict[str, dict[str, str]] = {
     "twitch.get_user_clip": {
         "target": "A Twitch user ID, login, @login, or any Variable that resolves to one.",
         "selection_mode": "Random, featured-only random, newest returned, or highest viewed.",
+    },
+    "twitch.get_user_info": {
+        "target": "A Twitch user ID, login, @login, or any Variable that resolves to one.",
     },
     "twitch.moderate_user": {
         "user": "The stable Twitch user ID or login to moderate.",
@@ -628,6 +641,11 @@ _NOTES = {
         "Random Featured fails when the target has no featured clips; it never falls back to other clips.",
         "Outputs are available only to later tasks in the same root routine execution.",
     ),
+    "twitch.get_user_info": (
+        "The triggering user context ({user.*}) is never changed by this lookup.",
+        "Outputs are available only to later tasks in the same root routine execution.",
+        "Category and title reflect Twitch's current or last configured channel information.",
+    ),
     "twitch.send_pinned_message": ("Pinned messages may not be available for every channel.",),
     "twitch.run_commercial": ("Twitch cooldowns and channel eligibility still apply.",),
     "twitch.snooze_ad": ("The task fails if no snooze is currently available.",),
@@ -674,6 +692,9 @@ _EXAMPLES = {
     ),
     "twitch.get_user_clip": (
         "First Message → User Is In Group → Twitch — Get User Clip {user.id} → use {automation.clip_url} in a later task.",
+    ),
+    "twitch.get_user_info": (
+        "Look up {user.id}, then send: Go check out {automation.user.display_name} at {automation.user.channel_url}!",
     ),
     "twitch.send_chat_message": ("Send: Thanks for the follow, {user.display_name}!",),
     "twitch.resolve_user": ("Resolve {command.data}, then use {automation.target_user_id} in a later task.",),

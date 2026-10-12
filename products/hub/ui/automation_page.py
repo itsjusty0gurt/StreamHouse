@@ -1271,6 +1271,9 @@ class TaskEditorDialog(QDialog):
             {"key": "target", "label": "Target User", "kind": "text", "default": "{user.id}", "required": True, "placeholder": "Twitch login, user ID, or Variable"},
             {"key": "selection_mode", "label": "Selection", "kind": "choice", "default": "random", "choices": (("Random", "random"), ("Random Featured", "random_featured"), ("Recent", "recent"), ("Most Viewed", "most_viewed"))},
         ),
+        "twitch.get_user_info": (
+            {"key": "target", "label": "Target User", "kind": "text", "default": "{user.id}", "required": True, "placeholder": "Twitch login, user ID, or Variable"},
+        ),
         "twitch.get_stream_information": (),
         "twitch.get_follow_relationship": (
             {"key": "user_id", "label": "Target user ID", "kind": "text", "default": "{automation.target_user_id}", "required": True},
@@ -2599,6 +2602,14 @@ class TaskEditorDialog(QDialog):
                     widget.addItems(clean_values)
                     widget.setCurrentText(current)
                     widget.blockSignals(False)
+
+    def accept(self) -> None:
+        try:
+            self.values()
+        except (TypeError, ValueError) as error:
+            QMessageBox.warning(self, "Invalid Task", str(error))
+            return
+        super().accept()
 
     def values(self) -> dict[str, object]:
         task_type = self.task_type

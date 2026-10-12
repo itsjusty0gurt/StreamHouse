@@ -962,6 +962,9 @@ but never executes it. Explicit submission runs on a worker and routes through
 Chatters/Users context menu, plus chat settings, clear, raids, announcements, and
 shoutouts. The Shoutout User task and `/shoutout` share the same
 `TwitchService.send_shoutout()` user-resolution and Helix action boundary.
+The Get User Info task resolves a target through `TwitchService`, combines the
+official user and channel-information responses, and publishes temporary
+`automation.user.*` outputs without mutating the triggering `user.*` context.
 Unknown slash text is not sent blindly to Twitch.
 
 Python-script tasks expose trigger context only through `STREAMHOUSE_*`

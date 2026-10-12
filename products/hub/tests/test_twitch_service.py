@@ -29,6 +29,53 @@ class TwitchServiceTests(unittest.TestCase):
         Events.clear()
         Logger._logger = self.original_logger
 
+    def test_get_user_information_uses_user_and_channel_helix_helpers(self) -> None:
+        token = TwitchToken(
+            "access",
+            "refresh",
+            999,
+            [],
+            user_id="broadcaster-1",
+            login="broadcaster",
+        )
+        helix = Mock()
+        helix.get_user.return_value = {"id": "target-1", "login": "targetlogin"}
+        helix.get_user_by_id.return_value = {"id": "target-2", "login": "byid"}
+        helix.get_channel_information.side_effect = [
+            {"game_name": "Science & Technology"},
+            {"game_name": "Just Chatting"},
+        ]
+        service = TwitchService(auth=Mock(token=token), helix=helix)
+
+        by_login = service.get_user_information("@TargetLogin")
+        by_id = service.get_user_information("2")
+
+        self.assertEqual(by_login[0]["id"], "target-1")
+        self.assertEqual(by_id[0]["id"], "target-2")
+        helix.get_user.assert_called_once_with("TargetLogin", token)
+        helix.get_user_by_id.assert_called_once_with("2", token)
+        self.assertEqual(
+            helix.get_channel_information.call_args_list,
+            [
+                unittest.mock.call("target-1", token),
+                unittest.mock.call("target-2", token),
+            ],
+        )
+
+    def test_get_user_information_requires_valid_user_and_channel_metadata(self) -> None:
+        token = TwitchToken("access", "refresh", 999, [], user_id="broadcaster-1")
+        helix = Mock()
+        service = TwitchService(auth=Mock(token=token), helix=helix)
+
+        helix.get_user.return_value = {}
+        with self.assertRaisesRegex(ValueError, "invalid user"):
+            service.get_user_information("missing")
+
+        helix.get_user.return_value = {"id": "target-1", "login": "target"}
+        helix.get_channel_information.return_value = None
+        with self.assertRaisesRegex(ValueError, "channel information"):
+            service.get_user_information("target")
+
     def test_connect_emits_state_changes_and_normalizes_channel(self) -> None:
         states: list[tuple[TwitchConnectionState, str]] = []
 
