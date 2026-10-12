@@ -4,6 +4,7 @@ import random
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import Mock
 
 from products.hub.automation.file_tasks import ReadRandomLineTask, register_file_tasks
 from products.hub.automation.models import TaskDefinition, TriggerEvent
@@ -40,6 +41,48 @@ class FileTaskTests(unittest.TestCase):
         self.assertTrue(result.succeeded)
         self.assertEqual(self.context["automation.file_text"], "Hello Streamhouse!")
 
+    def test_read_text_trims_then_renders_canonical_variables(self) -> None:
+        path = self.root / "welcome.txt"
+        path.write_text(
+            "  Welcome {user.display_name}! Uses: {command.uses}; "
+            "previous: {automation.previous}.  \n",
+            encoding="utf-8",
+        )
+        self.context.update(
+            {
+                "user.display_name": "TestViewer",
+                "command.uses": "3",
+                "automation.previous": "ready",
+            }
+        )
+
+        result = self.execute(
+            "core.file_read",
+            {"path": str(path), "variable": "file_text", "trim": True},
+        )
+
+        self.assertTrue(result.succeeded)
+        self.assertEqual(
+            self.context["automation.file_text"],
+            "Welcome TestViewer! Uses: 3; previous: ready.",
+        )
+        self.assertNotIn("file_text", self.context)
+
+    def test_read_text_keeps_unavailable_variable_literal(self) -> None:
+        path = self.root / "unavailable.txt"
+        path.write_text("Hello {user.display_name}!", encoding="utf-8")
+
+        result = self.execute(
+            "core.file_read",
+            {"path": str(path), "variable": "file_text"},
+        )
+
+        self.assertTrue(result.succeeded)
+        self.assertEqual(
+            self.context["automation.file_text"],
+            "Hello {user.display_name}!",
+        )
+
     def test_random_line_ignores_blanks(self) -> None:
         path = self.root / "responses.txt"
         path.write_text("\nOnly line\n\n", encoding="utf-8")
@@ -59,10 +102,43 @@ class FileTaskTests(unittest.TestCase):
         self.assertTrue(result.succeeded)
         self.assertEqual(self.context["automation.response"], "Only line")
 
+    def test_random_line_selects_eligible_line_before_rendering(self) -> None:
+        path = self.root / "responses.txt"
+        path.write_text(
+            "\nHello {user.display_name}\nLiteral response\n",
+            encoding="utf-8",
+        )
+        self.context["user.display_name"] = "TestViewer"
+        rng = Mock()
+        rng.choice.return_value = "Hello {user.display_name}"
+        task = TaskDefinition(
+            "random",
+            "core.file_random_line",
+            "Random",
+            {
+                "path": str(path),
+                "variable": "response",
+                "ignore_blank_lines": True,
+            },
+        )
+
+        result = ReadRandomLineTask(rng).execute(task, self.trigger)
+
+        self.assertTrue(result.succeeded)
+        rng.choice.assert_called_once_with(
+            ["Hello {user.display_name}", "Literal response"]
+        )
+        self.assertEqual(self.context["automation.response"], "Hello TestViewer")
+
     def test_specific_line_renders_line_number_variable(self) -> None:
         path = self.root / "lines.txt"
-        path.write_text("first\nsecond\nthird", encoding="utf-8")
+        path.write_text(
+            "first\nHello {user.display_name}: {automation.previous}\nthird",
+            encoding="utf-8",
+        )
         self.context["automation.wanted_line"] = "2"
+        self.context["automation.previous"] = "ready"
+        self.context["user.display_name"] = "TestViewer"
 
         result = self.execute(
             "core.file_specific_line",
@@ -74,7 +150,10 @@ class FileTaskTests(unittest.TestCase):
         )
 
         self.assertTrue(result.succeeded)
-        self.assertEqual(self.context["automation.selected"], "second")
+        self.assertEqual(
+            self.context["automation.selected"],
+            "Hello TestViewer: ready",
+        )
 
     def test_write_can_overwrite_and_append_rendered_text(self) -> None:
         path = self.root / "activity.txt"

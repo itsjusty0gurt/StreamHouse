@@ -81,6 +81,7 @@ class ReadTextFileTask:
             value = _read_text(path)
             if bool(task.config.get("trim", False)):
                 value = value.strip()
+            value = render_placeholders(value, context)
             context[variable] = value
             return _result(task, True, f'Read {len(value)} character(s) into "{variable}".')
         except (OSError, TypeError, ValueError, UnicodeError) as error:
@@ -104,7 +105,7 @@ class ReadRandomLineTask:
             )
             if not lines:
                 raise ValueError("The text file has no eligible lines.")
-            value = self.rng.choice(lines)
+            value = render_placeholders(self.rng.choice(lines), context)
             context[variable] = value
             return _result(task, True, f'Read a random line into "{variable}".')
         except (OSError, TypeError, ValueError, UnicodeError) as error:
@@ -133,7 +134,7 @@ class ReadSpecificLineTask:
                 raise ValueError(
                     f"Line {line_number} does not exist; the file has {len(lines)} line(s)."
                 )
-            context[variable] = lines[line_number - 1]
+            context[variable] = render_placeholders(lines[line_number - 1], context)
             return _result(task, True, f'Read line {line_number} into "{variable}".')
         except (OSError, TypeError, ValueError, UnicodeError) as error:
             return _failure(task, error)

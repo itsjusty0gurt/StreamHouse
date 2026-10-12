@@ -187,15 +187,18 @@ _SHORT_DESCRIPTIONS = {
     ),
     "core.file_read": (
         "Reads text from a file into a routine-scoped automation.* output for "
-        "later tasks."
+        "later tasks. Canonical Variables in the file text are resolved before "
+        "the output is stored."
     ),
     "core.file_random_line": (
         "Reads a random line from a text file into a routine-scoped automation.* "
-        "output."
+        "output. Canonical Variables in the selected line are resolved before "
+        "the output is stored."
     ),
     "core.file_specific_line": (
         "Reads a selected line from a text file into a routine-scoped automation.* "
-        "output."
+        "output. Canonical Variables in the selected line are resolved before "
+        "the output is stored."
     ),
     "core.file_write": (
         "Writes or appends text to a local file. The path and text support Variables."
