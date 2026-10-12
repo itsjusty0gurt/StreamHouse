@@ -20,6 +20,7 @@ from products.hub.automation.tasks import (
     TaskMetadata,
     TaskReferenceResolver,
 )
+from products.hub.automation.task_config import COUNTER_SCOPE_OPTIONS
 from products.hub.automation.variable_tasks import VARIABLE_MANAGEMENT_TASK_TYPES
 from products.hub.counters.tasks import COUNTER_TASK_LABELS
 from products.hub.obs_service.tasks import OBS_TASK_LABELS
@@ -904,6 +905,24 @@ def _generic_card_summary(config: Mapping[str, Any]) -> str:
     return " · ".join(_summary_text(value, 60) for _key, value in ordered[:2])
 
 
+def _with_counter_scopes(summary: str, config: Mapping[str, Any]) -> str:
+    labels = {scope: label for label, scope in COUNTER_SCOPE_OPTIONS}
+    raw_scopes = config.get("scopes")
+    if isinstance(raw_scopes, (list, tuple)):
+        scopes = raw_scopes
+    elif raw_scopes:
+        scopes = (raw_scopes,)
+    else:
+        legacy_scope = config.get("scope")
+        scopes = (legacy_scope,) if legacy_scope else ()
+    scope_summary = ", ".join(
+        labels.get(str(scope), str(scope).replace("_", " ").title())
+        for scope in scopes
+        if str(scope).strip()
+    )
+    return f"{summary} · {scope_summary}" if scope_summary else summary
+
+
 def _card_summary(
     task_type: str,
     config: Mapping[str, Any],
@@ -917,6 +936,16 @@ def _card_summary(
     if task_type in {"twitch.send_chat_message", "twitch.send_pinned_message"}:
         message = _summary_text(config.get("message", ""))
         return f'“{message}”' if message else ""
+    if task_type == "twitch.get_user_info":
+        return _summary_text(config.get("target", ""))
+    if task_type == "twitch.get_user_clip":
+        target = _summary_text(config.get("target", ""))
+        mode = (
+            _summary_text(config.get("selection_mode", "random"))
+            .replace("_", " ")
+            .title()
+        )
+        return " · ".join(value for value in (target, mode) if value)
     if task_type == "obs.set_scene_item_enabled":
         scene = _summary_text(config.get("scene", ""))
         source = _summary_text(config.get("source", ""))
@@ -927,13 +956,14 @@ def _card_summary(
         counter = _resolved(config, "counter_id", "counter", resolver) or "Counter"
         amount = _summary_text(config.get("amount", "1")).lstrip("+-")
         sign = "+" if task_type == "counter.increase" else "−"
-        return f"{counter} {sign}{amount}"
+        return _with_counter_scopes(f"{counter} {sign}{amount}", config)
     if task_type == "counter.set_value":
         counter = _resolved(config, "counter_id", "counter", resolver) or "Counter"
-        return f"{counter} → {_summary_text(config.get('value', ''))}".rstrip()
+        operation = f"{counter} → {_summary_text(config.get('value', ''))}".rstrip()
+        return _with_counter_scopes(operation, config)
     if task_type == "counter.reset":
         counter = _resolved(config, "counter_id", "counter", resolver) or "Counter"
-        return f"{counter} → Reset"
+        return _with_counter_scopes(f"{counter} → Reset", config)
     if task_type == "core.run_routine":
         return _resolved(config, "routine_id", "routine", resolver)
     if task_type == "core.end_routine":
@@ -942,12 +972,51 @@ def _card_summary(
         return _condition_summary(config, resolver)
     if task_type in {"obs.set_program_scene", "obs.set_preview_scene"}:
         return _summary_text(config.get("scene", ""))
+    if task_type == "obs.set_browser_source_url":
+        target = _summary_text(config.get("input", ""))
+        url = _summary_text(config.get("url", ""), 60)
+        return f"{target} → {url}".strip(" →")
+    if task_type == "obs.set_source_transform":
+        return " / ".join(
+            value
+            for value in (
+                _summary_text(config.get("scene", "")),
+                _summary_text(config.get("source", "")),
+            )
+            if value
+        )
+    if task_type == "obs.take_screenshot":
+        target_type = _summary_text(config.get("target_type", "source")).title()
+        target = _summary_text(config.get("target", ""))
+        path = _summary_text(config.get("file", ""), 60)
+        subject = " ".join(value for value in (target_type, target) if value)
+        return f"{subject} → {path}".strip(" →")
     if task_type in {"obs.set_source_filter_state", "obs.set_scene_filter_state"}:
         owner = _summary_text(config.get("source", config.get("scene", "")))
         filter_name = _summary_text(config.get("filter", ""))
         action = _summary_text(config.get("action", "enable")).title()
         target = " / ".join(value for value in (owner, filter_name) if value)
         return f"{target} → {action}" if target else action
+    if task_type in {
+        "core.create_global_variable",
+        "core.create_session_variable",
+        "core.create_routine_variable",
+    }:
+        name = _summary_text(config.get("name", ""))
+        value = _summary_text(config.get("value", ""), 60)
+        return f"{name} → {value}".strip(" →")
+    if task_type in {
+        "core.delete_variable",
+        "core.adjust_variable",
+        "core.toggle_variable",
+    }:
+        name = _summary_text(config.get("name", ""))
+        amount = (
+            _summary_text(config.get("amount", ""))
+            if task_type == "core.adjust_variable"
+            else ""
+        )
+        return " · ".join(value for value in (name, amount) if value)
     return _generic_card_summary(config)
 
 

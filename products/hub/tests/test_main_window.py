@@ -1310,9 +1310,18 @@ class MainWindowTests(unittest.TestCase):
         card = page.task_list.itemWidget(item)
 
         self.assertIsInstance(card, TaskCardWidget)
-        self.assertEqual(card.name_label.text(), "Core — Wait")
+        self.assertEqual(card.name_label.full_text, "Core — Wait")
         self.assertEqual(card.summary_label.full_text, "1.5 sec")
         self.assertEqual(card.accent_bar.styleSheet().find(task_category_accent("Core")) >= 0, True)
+        task_tab_layout = page.editor_tabs.widget(1).layout()
+        toolbar = task_tab_layout.itemAt(0).layout()
+        self.assertFalse(
+            any(
+                isinstance(toolbar.itemAt(index).widget(), QLabel)
+                for index in range(toolbar.count())
+            )
+        )
+        self.assertTrue(page.task_hint_label.isHidden())
         page.task_list.setCurrentRow(0)
         self.assertTrue(card.property("selected"))
 
@@ -2020,21 +2029,21 @@ class MainWindowTests(unittest.TestCase):
             for index in range(page.trigger_list.count())
         ]
         self.assertTrue(all(isinstance(card, TriggerCardWidget) for card in cards))
+        self.assertIs(page.editor_tabs.widget(0).layout().itemAt(0).widget(), page.trigger_list)
+        self.assertFalse(hasattr(page, "trigger_detail_label"))
         self.assertEqual(cards[0].title_label.full_text, "Twitch — Command")
-        self.assertEqual(cards[0].summary_label.full_text, "!hello")
+        self.assertEqual(
+            cards[0].summary_label.full_text,
+            "!hello · Everyone · 10s global / 30s viewer",
+        )
         self.assertEqual(cards[1].title_label.full_text, "Twitch — Incoming Raid")
         self.assertEqual(cards[1].summary_label.full_text, "From @friend")
         self.assertNotIn("from_broadcaster_user_login", cards[1].accessibleName())
         self.assertEqual(cards[2].title_label.full_text, "Core — Application Started")
         page._select_trigger("event", event_trigger.trigger_id)
         self.assertTrue(cards[1].property("selected"))
-        self.assertIn("channel.raid", page.trigger_detail_label.text())
-        self.assertIn(
-            "from_broadcaster_user_login=friend",
-            page.trigger_detail_label.text(),
-        )
         page._select_trigger("core", core_trigger.trigger_id)
-        self.assertIn("Application Started", page.trigger_detail_label.text())
+        self.assertTrue(cards[2].property("selected"))
 
     def test_trigger_cards_summarize_keyword_reward_obs_and_timers(self) -> None:
         store = self.twitch_command_trigger_store.routine_store
@@ -2085,7 +2094,13 @@ class MainWindowTests(unittest.TestCase):
             for index in range(page.trigger_list.count())
         ]
         contents = {(card.title_label.full_text, card.summary_label.full_text): card for card in cards}
-        self.assertIn(("Keyword / Phrase", "Contains “discord”"), contents)
+        self.assertIn(
+            (
+                "Keyword / Phrase",
+                "Contains “discord” · Ignore case · Whole word",
+            ),
+            contents,
+        )
         self.assertIn(("Twitch — Channel Point Redemption", "Hydrate"), contents)
         self.assertIn(
             ("Twitch — Channel Point Redemption", "Any Custom Reward"),

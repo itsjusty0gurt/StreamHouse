@@ -3589,9 +3589,6 @@ class AutomationPage(QWidget):
     def _build_trigger_editor(self) -> None:
         tab = QWidget()
         layout = QVBoxLayout(tab)
-        self.trigger_detail_label = QLabel()
-        self.trigger_detail_label.setWordWrap(True)
-        layout.addWidget(self.trigger_detail_label)
         self.trigger_list = QListWidget()
         self.trigger_list.setAlternatingRowColors(False)
         self.trigger_list.setSpacing(5)
@@ -3629,7 +3626,6 @@ class AutomationPage(QWidget):
         tab = QWidget()
         layout = QVBoxLayout(tab)
         toolbar = QHBoxLayout()
-        toolbar.addWidget(QLabel("Tasks run from top to bottom. Drag to reorder."))
         toolbar.addStretch()
         self.test_task_button = QPushButton("Test Selected")
         self.test_task_button.setEnabled(False)
@@ -3654,8 +3650,7 @@ class AutomationPage(QWidget):
         self.task_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         layout.addWidget(self.task_list, 1)
         self.task_hint_label = QLabel(
-            "Right-click a task or empty space to add, edit, duplicate, move, "
-            "enable, or delete tasks."
+            "No tasks yet. Use + Add Task or right-click here to build the routine."
         )
         self.task_hint_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(self.task_hint_label)
@@ -4237,10 +4232,6 @@ class AutomationPage(QWidget):
         self.trigger_list.blockSignals(False)
         self.editor_tabs.setTabText(0, f"Triggers ({self.trigger_list.count()})")
         if self.trigger_list.count() == 0:
-            self.trigger_detail_label.setText(
-                "No service trigger is attached. This routine can still be run "
-                "manually with Test Run."
-            )
             self.edit_trigger_button.setEnabled(False)
             self.remove_trigger_button.setEnabled(False)
             return
@@ -4265,9 +4256,25 @@ class AutomationPage(QWidget):
     @staticmethod
     def _command_trigger_card_content(command) -> TriggerCardContent:
         issues = () if command.name.strip() else ("Command is not configured.",)
+        summary_parts = [
+            f"!{command.name}" if command.name.strip() else "Missing command",
+            command.permission.replace("_", " ").title(),
+        ]
+        if command.aliases:
+            summary_parts.append(
+                f"{len(command.aliases)} "
+                f"{'alias' if len(command.aliases) == 1 else 'aliases'}"
+            )
+        cooldowns = []
+        if command.global_cooldown_seconds:
+            cooldowns.append(f"{command.global_cooldown_seconds}s global")
+        if command.user_cooldown_seconds:
+            cooldowns.append(f"{command.user_cooldown_seconds}s viewer")
+        if cooldowns:
+            summary_parts.append(" / ".join(cooldowns))
         return TriggerCardContent(
             title="Twitch — Command",
-            summary=f"!{command.name}" if command.name.strip() else "Missing command",
+            summary=" · ".join(summary_parts),
             family="Twitch",
             enabled=command.enabled,
             issues=issues,
@@ -4285,7 +4292,12 @@ class AutomationPage(QWidget):
                 trigger.filters.get("match_type", "contains"),
                 "Contains",
             )
-            summary = f'{match} “{phrase}”' if phrase else "Missing phrase"
+            summary_parts = [f'{match} “{phrase}”' if phrase else "Missing phrase"]
+            if trigger.filters.get("ignore_case", "true") == "true":
+                summary_parts.append("Ignore case")
+            if trigger.filters.get("whole_word", "true") == "true":
+                summary_parts.append("Whole word")
+            summary = " · ".join(summary_parts)
             if not phrase:
                 issues = ("Keyword or phrase is not configured.",)
             title = "Keyword / Phrase"
@@ -4433,10 +4445,9 @@ class AutomationPage(QWidget):
         self.test_task_button.setEnabled(False)
         self.editor_tabs.setTabText(1, f"Tasks ({len(routine.tasks)})")
         self.task_hint_label.setText(
-            "No tasks yet. Right-click here or use + Add Task to build the routine."
-            if not routine.tasks
-            else "Tasks run from top to bottom. Drag to reorder; right-click for more options."
+            "No tasks yet. Use + Add Task or right-click here to build the routine."
         )
+        self.task_hint_label.setVisible(not routine.tasks)
 
     def _refresh_settings(self, routine) -> None:
         self.settings_name_edit.setText(routine.name)
@@ -5157,7 +5168,7 @@ class AutomationPage(QWidget):
                 break
 
     def _trigger_selection_changed(self) -> None:
-        kind, trigger_id = self._selected_trigger()
+        _, trigger_id = self._selected_trigger()
         current = self.trigger_list.currentItem()
         for index in range(self.trigger_list.count()):
             item = self.trigger_list.item(index)
@@ -5166,88 +5177,6 @@ class AutomationPage(QWidget):
                 card.set_selected(item is current)
         self.edit_trigger_button.setEnabled(bool(trigger_id))
         self.remove_trigger_button.setEnabled(bool(trigger_id))
-        if kind == "command":
-            command = self.trigger_store.get(trigger_id)
-            if command is None:
-                return
-            alternates = ", ".join(f"!{value}" for value in command.aliases) or "None"
-            self.trigger_detail_label.setText(
-                f"Twitch chat command: !{command.name}\n"
-                f"Alternate commands: {alternates}\n"
-                f"Permission: {command.permission.title()}\n"
-                f"Cooldowns: {command.global_cooldown_seconds}s global, "
-                f"{command.user_cooldown_seconds}s per viewer"
-            )
-        elif kind == "keyword":
-            trigger = self.event_trigger_store.get(trigger_id)
-            if trigger is None:
-                return
-            match_type = KEYWORD_MATCH_TYPES.get(
-                trigger.filters.get("match_type", "contains"), "Contains"
-            )
-            self.trigger_detail_label.setText(
-                f"Twitch chat Keyword / Phrase: {trigger.filters.get('phrase', '')}\n"
-                f"Match: {match_type}\n"
-                f"Ignore case: {trigger.filters.get('ignore_case', 'true').title()}\n"
-                f"Whole word: {trigger.filters.get('whole_word', 'true').title()}\n"
-                f"State: {'Enabled' if trigger.enabled else 'Disabled'}"
-            )
-        elif kind == "event":
-            trigger = self.event_trigger_store.get(trigger_id)
-            if trigger is None:
-                return
-            if trigger.event_type == CHANNEL_POINT_REDEMPTION_EVENT_TYPE:
-                reward = trigger.reward_title or trigger.reward_id or "Any Custom Reward"
-                self.trigger_detail_label.setText(
-                    f"Twitch Channel Point Redemption\n"
-                    f"Reward: {reward}\n"
-                    f"State: {'Enabled' if trigger.enabled else 'Disabled'}"
-                )
-                return
-            filters = ", ".join(
-                f"{key}={value}" for key, value in trigger.filters.items()
-            ) or "None — every event of this type"
-            self.trigger_detail_label.setText(
-                f"Twitch EventSub event: {trigger.event_type}\n"
-                f"Field filters: {filters}\n"
-                f"State: {'Enabled' if trigger.enabled else 'Disabled'}"
-            )
-        elif kind == "core":
-            trigger = self.core_trigger_store.get(trigger_id)
-            if trigger is None:
-                return
-            if trigger.event_type == "timer":
-                self.trigger_detail_label.setText(
-                    f"Core Timer\n"
-                    f"Schedule: {self.core_trigger_store.timer_description(trigger)}\n"
-                    f"State: {'Enabled' if trigger.enabled else 'Disabled'}"
-                )
-                return
-            self.trigger_detail_label.setText(
-                f"Core program event: "
-                f"{CORE_TRIGGER_TYPES.get(trigger.event_type, trigger.event_type)}\n"
-                f"Event key: {trigger.event_type}\n"
-                f"State: {'Enabled' if trigger.enabled else 'Disabled'}"
-            )
-        elif kind == "obs":
-            trigger = self.obs_trigger_store.get(trigger_id)
-            if trigger is None:
-                return
-            filters = ", ".join(f"{k}={v}" for k, v in trigger.filters.items()) or "None — every event of this type"
-            self.trigger_detail_label.setText(
-                f"OBS event: {OBS_TRIGGER_TYPES.get(trigger.event_type, trigger.event_type)}\n"
-                f"Field filters: {filters}\n"
-                f"State: {'Enabled' if trigger.enabled else 'Disabled'}"
-            )
-        elif kind == "music":
-            trigger = self.music_trigger_store.get(trigger_id)
-            if trigger is None:
-                return
-            self.trigger_detail_label.setText(
-                f"Music event: {MUSIC_TRIGGER_TYPES.get(trigger.event_type, trigger.event_type)}\n"
-                f"Event key: {trigger.event_type}\n"
-                f"State: {'Enabled' if trigger.enabled else 'Disabled'}"
-            )
 
     def _edit_trigger(self) -> None:
         routine = self.routine_store.get(self._selected_routine_id)

@@ -432,14 +432,11 @@ class TaskCardWidget(QFrame):
         row.setContentsMargins(9 if not nested else 7, 5, 9, 5)
         row.setSpacing(8)
         category = task_category_display(content.category)
-        self.name_label = QLabel(f"{category} — {content.task_name}", self)
+        self.name_label = ElidingLabel(f"{category} — {content.task_name}", self)
         self.name_label.setObjectName("automationTaskName")
         self.name_label.setStyleSheet("font-weight:650; color:#efeff1;")
-        self.name_label.setMinimumWidth(150)
-        self.name_label.setSizePolicy(
-            self.name_label.sizePolicy().horizontalPolicy(),
-            self.name_label.sizePolicy().verticalPolicy(),
-        )
+        self.name_label.setMinimumWidth(120)
+        self.name_label.setMaximumWidth(245)
         row.addWidget(self.name_label)
 
         self.summary_label = ElidingLabel(content.summary, self)

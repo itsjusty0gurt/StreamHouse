@@ -46,7 +46,37 @@ def test_common_task_summaries_are_metadata_driven() -> None:
             {"message": "Welcome {user.display_name}!"},
             "“Welcome {user.display_name}!”",
         ),
+        ("twitch.get_user_info", {"target": "@friend"}, "@friend"),
+        (
+            "twitch.get_user_clip",
+            {"target": "{user.id}", "selection_mode": "random_featured"},
+            "{user.id} · Random Featured",
+        ),
         ("counter.increase", {"counter_id": "deaths", "amount": "1"}, "Deaths +1"),
+        (
+            "counter.increase",
+            {
+                "counter_id": "deaths",
+                "amount": "1",
+                "scopes": ["viewer_total", "channel_total"],
+            },
+            "Deaths +1 · User, Lifetime",
+        ),
+        (
+            "obs.set_browser_source_url",
+            {"input": "Shoutout Clip", "url": "{automation.clip_url}"},
+            "Shoutout Clip → {automation.clip_url}",
+        ),
+        (
+            "obs.set_source_transform",
+            {"scene": "Live", "source": "Camera", "position_x": "20"},
+            "Live / Camera",
+        ),
+        (
+            "core.create_routine_variable",
+            {"name": "winner", "value": "{user.display_name}"},
+            "winner → {user.display_name}",
+        ),
         ("core.run_routine", {"routine_id": "raid"}, "Incoming Raid"),
         ("core.end_routine", {}, "End this routine here"),
     )
@@ -79,7 +109,7 @@ def test_category_accents_are_central_and_category_text_remains_visible() -> Non
     assert task_category_accent("Unknown")
     card = TaskCardWidget(TaskCardContent("OBS", "Change scene", "BRB"))
 
-    assert card.name_label.text() == "OBS — Change scene"
+    assert card.name_label.full_text == "OBS — Change scene"
     assert TASK_CATEGORY_ACCENTS["OBS"] in card.accent_bar.styleSheet()
     assert "OBS" in card.accessibleName()
     card.close()
@@ -99,6 +129,28 @@ def test_long_summary_elides_without_changing_font_or_full_text() -> None:
     assert label.toolTip() == label.full_text
     assert label.font().pointSizeF() == original_size
     label.close()
+    app.processEvents()
+
+
+def test_task_card_elides_title_and_summary_at_narrow_width() -> None:
+    app = _app()
+    card = TaskCardWidget(
+        TaskCardContent(
+            "Twitch",
+            "A deliberately long configured task name",
+            "A deliberately long target and selection summary",
+        )
+    )
+    card.resize(280, 38)
+    card.show()
+    app.processEvents()
+
+    assert card.minimumHeight() == 38
+    assert card.name_label.full_text.startswith("Twitch — A deliberately")
+    assert card.summary_label.full_text.startswith("A deliberately long target")
+    assert card.name_label.text().endswith("…")
+    assert card.summary_label.text().endswith("…")
+    card.close()
     app.processEvents()
 
 
