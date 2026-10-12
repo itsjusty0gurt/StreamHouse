@@ -7,7 +7,7 @@ import unittest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtWidgets import QApplication, QComboBox
+from PySide6.QtWidgets import QApplication, QComboBox, QPushButton
 from unittest.mock import patch
 
 from products.hub.automation.routines import RoutineStore
@@ -17,6 +17,7 @@ from products.hub.counters.service import CounterService
 from products.hub.counters.store import CounterStore
 from products.hub.ui.automation_page import CounterScopesEditor, TaskEditorDialog
 from products.hub.ui.counters_page import CounterDefinitionDialog, CountersPage
+from products.hub.ui.page_header import PageHeader
 
 
 class CountersPageTests(unittest.TestCase):
@@ -47,6 +48,41 @@ class CountersPageTests(unittest.TestCase):
         self.page.refresh(); self.assertEqual(self.page.viewer_table.rowCount(), 1)
         self.page.viewer_search.setText("nobody"); self.assertEqual(self.page.viewer_table.rowCount(), 0)
         self.page.search.setText("bonks"); self.assertEqual(self.page.list.count(), 0)
+
+    def test_header_matches_shared_page_proportions(self) -> None:
+        margins = self.page.layout().contentsMargins()
+        self.assertEqual(
+            (margins.left(), margins.top(), margins.right(), margins.bottom()),
+            (12, 10, 12, 12),
+        )
+        self.assertEqual(
+            self.page.page_header.subtitle_label.text(),
+            "Track shared, stream, and viewer totals.",
+        )
+
+        reference = PageHeader(
+            "Automation",
+            "Manage routines, triggers, tasks, queues, and run history.",
+        )
+        reference.add_action(QPushButton("New Routine"))
+        try:
+            available_width = 780
+            self.page.page_header.set_compact(False)
+            reference.set_compact(False)
+            self.assertLessEqual(
+                self.page.page_header.heightForWidth(available_width),
+                reference.heightForWidth(available_width),
+            )
+            self.assertEqual(
+                self.page.page_header.title_label.font().pointSize(),
+                reference.title_label.font().pointSize(),
+            )
+            self.assertEqual(
+                self.page.page_header.title_label.font().bold(),
+                reference.title_label.font().bold(),
+            )
+        finally:
+            reference.deleteLater()
 
     def test_new_counter_tasks_default_to_every_configured_scope(self) -> None:
         for task_type in (

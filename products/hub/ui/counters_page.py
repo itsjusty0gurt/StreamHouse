@@ -133,9 +133,10 @@ class CountersPage(QWidget):
         super().__init__(parent)
         self.service = service; self.stream_id_provider = stream_id_provider; self.routine_store = routine_store
         root = QVBoxLayout(self)
+        root.setContentsMargins(12, 10, 12, 12)
         self.page_header = PageHeader(
             "Counters",
-            "Track shared, stream, and viewer totals for routines and commands.",
+            "Track shared, stream, and viewer totals.",
             self,
         )
         self.new_button = QPushButton("+ New Counter")
