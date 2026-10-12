@@ -5,6 +5,7 @@ from collections.abc import Callable
 from random import choice
 from typing import Mapping
 from urllib.error import HTTPError, URLError
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from products.hub.automation.models import TaskDefinition, TaskExecutionResult, TriggerEvent
 from products.hub.automation.variable_outputs import automation_output_name, output_id
@@ -181,6 +182,44 @@ def _output(context: Mapping[str, str], name: str, default: str = "") -> str:
 
 def _set_output(context: dict[str, str], name: str, value: object) -> None:
     context[automation_output_name(name)] = str(value)
+
+
+def _obs_clip_embed_url(clip: Mapping[str, object]) -> str:
+    clip_id = str(clip.get("id", "")).strip()
+    embed_url = str(clip.get("embed_url", "")).strip()
+    if not clip_id or not embed_url:
+        raise ValueError("Twitch returned incomplete clip embed information.")
+    try:
+        parsed = urlsplit(embed_url)
+        parameters = parse_qsl(parsed.query, keep_blank_values=True)
+    except ValueError as error:
+        raise ValueError("Twitch returned an invalid clip embed URL.") from error
+    if (
+        parsed.scheme.casefold() != "https"
+        or parsed.netloc.casefold() != "clips.twitch.tv"
+        or parsed.path != "/embed"
+    ):
+        raise ValueError("Twitch returned an invalid clip embed URL.")
+    embedded_clip_ids = [
+        value for key, value in parameters if key.casefold() == "clip"
+    ]
+    if embedded_clip_ids != [clip_id]:
+        raise ValueError("Twitch returned mismatched clip embed information.")
+    controlled = {"clip", "parent", "autoplay", "muted"}
+    normalized_parameters = [
+        (key, value)
+        for key, value in parameters
+        if key.casefold() not in controlled
+    ]
+    normalized_parameters.extend(
+        (
+            ("clip", clip_id),
+            ("parent", "localhost"),
+            ("autoplay", "true"),
+            ("muted", "false"),
+        )
+    )
+    return urlunsplit(parsed._replace(query=urlencode(normalized_parameters)))
 
 
 USER_INFO_OUTPUTS = (
@@ -546,10 +585,10 @@ class TwitchAutomationTask:
                 selected = max(clips, key=lambda clip: str(clip.get("created_at", "")))
             else:
                 selected = max(clips, key=lambda clip: int(clip.get("view_count", 0)))
-            clip_url = str(selected.get("url", "")).strip()
             clip_id = str(selected.get("id", "")).strip()
-            if not clip_url or not clip_id:
+            if not clip_id:
                 raise ValueError("Twitch returned invalid clip information.")
+            clip_url = _obs_clip_embed_url(selected)
             _publish(
                 _mutable_context(trigger),
                 {

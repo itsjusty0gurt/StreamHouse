@@ -41,6 +41,7 @@ class CaptureTwitchService:
             {
                 "id": "clip-1",
                 "url": "https://clips.twitch.tv/clip-1",
+                "embed_url": "https://clips.twitch.tv/embed?clip=clip-1",
                 "title": "A useful clip",
                 "duration": 14.2,
                 "thumbnail_url": "https://example.test/clip.jpg",
@@ -214,7 +215,13 @@ class AutomationVariableTests(unittest.TestCase):
         result = self.service.run_routine(routine.routine_id, supplied_context)
 
         self.assertTrue(result.succeeded)
-        self.assertEqual(twitch.messages, ["Clip: https://clips.twitch.tv/clip-1"])
+        self.assertEqual(
+            twitch.messages,
+            [
+                "Clip: https://clips.twitch.tv/embed?clip=clip-1&parent=localhost"
+                "&autoplay=true&muted=false"
+            ],
+        )
         self.assertNotIn("automation.clip_url", supplied_context)
 
     def test_user_info_outputs_are_scoped_and_do_not_replace_trigger_user(self) -> None:

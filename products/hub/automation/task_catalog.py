@@ -46,8 +46,8 @@ _SHORT_DESCRIPTIONS = {
         "Sends a real Twitch shoutout to a user ID, login, or resolved Variable."
     ),
     "twitch.get_user_clip": (
-        "Fetches clips for a target Twitch user and selects one clip for later "
-        "tasks through routine-scoped automation.* outputs."
+        "Fetches clips for a target Twitch user and provides one OBS-ready Twitch "
+        "clip embed URL through routine-scoped automation.* outputs."
     ),
     "twitch.get_user_info": (
         "Looks up a Twitch user and their channel metadata for later tasks through "
@@ -359,8 +359,8 @@ _HELP_TEXT = {
     ),
     "twitch.get_user_clip": (
         "Resolves the target Twitch user, fetches that broadcaster's clips, and "
-        "selects one by the configured mode. The normal clip URL and clip details "
-        "are available to following tasks in the same root routine execution."
+        "selects one by the configured mode. The OBS-ready clip embed URL and clip "
+        "details are available to following tasks in the same root routine execution."
     ),
     "twitch.get_user_info": (
         "Resolves the target through Twitch, then retrieves official user and channel "
@@ -639,6 +639,7 @@ _NOTES = {
     ),
     "twitch.get_user_clip": (
         "Random Featured fails when the target has no featured clips; it never falls back to other clips.",
+        "{automation.clip_url} includes parent=localhost, autoplay=true, and muted=false for an OBS Browser Source.",
         "Outputs are available only to later tasks in the same root routine execution.",
     ),
     "twitch.get_user_info": (

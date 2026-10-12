@@ -150,7 +150,7 @@ class AutomationServiceTests(unittest.TestCase):
         get_clip = registry.metadata("twitch.get_user_clip")
         assert get_clip is not None
         self.assertEqual(get_clip.variable_inputs, ("target",))
-        self.assertIn("normal clip url", get_clip.help_text.casefold())
+        self.assertIn("obs-ready clip embed url", get_clip.help_text.casefold())
         get_user_info = registry.metadata("twitch.get_user_info")
         assert get_user_info is not None
         self.assertEqual(get_user_info.variable_inputs, ("target",))

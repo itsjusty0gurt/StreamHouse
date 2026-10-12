@@ -4,6 +4,7 @@ import unittest
 import tempfile
 from pathlib import Path
 from unittest.mock import Mock, patch
+from urllib.parse import parse_qsl, urlsplit
 
 from products.hub.automation.models import TaskDefinition, TriggerEvent
 from products.hub.automation.tasks import TaskRegistry
@@ -53,6 +54,7 @@ class FakeTwitchService:
             {
                 "id": "older-popular",
                 "url": "https://clips.twitch.tv/older-popular",
+                "embed_url": "https://clips.twitch.tv/embed?clip=older-popular",
                 "title": "Popular clip",
                 "duration": 12.9,
                 "thumbnail_url": "https://example.test/popular.jpg",
@@ -63,6 +65,7 @@ class FakeTwitchService:
             {
                 "id": "newer",
                 "url": "https://clips.twitch.tv/newer",
+                "embed_url": "https://clips.twitch.tv/embed?clip=newer",
                 "title": "New clip",
                 "duration": 8.4,
                 "thumbnail_url": "https://example.test/new.jpg",
@@ -301,6 +304,10 @@ class TwitchTaskTests(unittest.TestCase):
                 )
                 self.service.calls.pop()
                 self.assertEqual(
+                    self.trigger.context["automation.clip_url"],
+                    f"{selected['embed_url']}&parent=localhost&autoplay=true&muted=false",
+                )
+                self.assertNotEqual(
                     self.trigger.context["automation.clip_url"], selected["url"]
                 )
                 self.assertEqual(
@@ -314,6 +321,82 @@ class TwitchTaskTests(unittest.TestCase):
                     self.trigger.context["automation.clip_thumbnail"],
                     selected["thumbnail_url"],
                 )
+
+    def test_get_user_clip_normalizes_embed_query_without_duplicates(self) -> None:
+        self.service.get_user_clips = Mock(
+            return_value=[
+                {
+                    "id": "clip-1",
+                    "url": "https://www.twitch.tv/example/clip/clip-1",
+                    "embed_url": (
+                        "https://clips.twitch.tv/embed?theme=dark&parent=old.example"
+                        "&autoplay=false&muted=true&parent=second.example&clip=clip-1"
+                    ),
+                    "title": "Clip title",
+                    "duration": 7.5,
+                    "thumbnail_url": "https://example.test/clip.jpg",
+                    "created_at": "2026-01-01T00:00:00Z",
+                    "view_count": 1,
+                }
+            ]
+        )
+
+        result = self.registry.execute(
+            TaskDefinition(
+                "clip-query",
+                "twitch.get_user_clip",
+                "Get clip",
+                {"target": "viewer", "selection_mode": "recent"},
+            ),
+            self.trigger,
+        )
+
+        self.assertTrue(result.succeeded, result.detail)
+        output = self.trigger.context["automation.clip_url"]
+        parameters = parse_qsl(urlsplit(output).query, keep_blank_values=True)
+        self.assertEqual(parameters.count(("clip", "clip-1")), 1)
+        self.assertEqual(parameters.count(("parent", "localhost")), 1)
+        self.assertEqual(parameters.count(("autoplay", "true")), 1)
+        self.assertEqual(parameters.count(("muted", "false")), 1)
+        self.assertEqual(parameters.count(("theme", "dark")), 1)
+        self.assertEqual(
+            len([key for key, _value in parameters if key == "parent"]), 1
+        )
+
+    def test_get_user_clip_rejects_missing_or_invalid_embed_url(self) -> None:
+        cases = (
+            ("missing", "", "incomplete clip embed"),
+            ("page-url", "https://www.twitch.tv/example/clip/clip-1", "invalid clip embed"),
+            ("wrong-host", "https://example.test/embed?clip=clip-1", "invalid clip embed"),
+            ("wrong-id", "https://clips.twitch.tv/embed?clip=other", "mismatched clip embed"),
+        )
+        for name, embed_url, expected in cases:
+            with self.subTest(name=name):
+                self.service.get_user_clips = Mock(
+                    return_value=[
+                        {
+                            "id": "clip-1",
+                            "url": "https://www.twitch.tv/example/clip/clip-1",
+                            "embed_url": embed_url,
+                            "title": "Clip title",
+                            "duration": 7.5,
+                            "thumbnail_url": "https://example.test/clip.jpg",
+                            "created_at": "2026-01-01T00:00:00Z",
+                            "view_count": 1,
+                        }
+                    ]
+                )
+                result = self.registry.execute(
+                    TaskDefinition(
+                        f"clip-{name}",
+                        "twitch.get_user_clip",
+                        "Get clip",
+                        {"target": "viewer", "selection_mode": "recent"},
+                    ),
+                    self.trigger,
+                )
+                self.assertFalse(result.succeeded)
+                self.assertIn(expected, result.detail.casefold())
 
     def test_get_user_clip_reports_empty_results_without_fallback(self) -> None:
         self.service.get_user_clips = Mock(return_value=[])

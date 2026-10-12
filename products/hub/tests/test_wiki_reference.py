@@ -166,7 +166,10 @@ def test_get_user_clip_reference_is_derived_from_task_metadata() -> None:
     )
     text = entry.search_text()
 
-    assert "normal clip url" in text
+    assert "obs-ready clip embed url" in text
+    assert "parent=localhost" in text
+    assert "autoplay=true" in text
+    assert "muted=false" in text
     assert "random featured" in text
     assert "{automation.clip_url}" in text
     assert "same root routine execution" in text

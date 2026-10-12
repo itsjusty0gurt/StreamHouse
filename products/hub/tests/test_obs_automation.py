@@ -513,7 +513,12 @@ class ObsTaskTests(unittest.TestCase):
             "manual",
             "test",
             "manual",
-            {"automation.clip_url": "https://clips.twitch.tv/selected-clip"},
+            {
+                "automation.clip_url": (
+                    "https://clips.twitch.tv/embed?clip=selected-clip"
+                    "&parent=localhost&autoplay=true&muted=false"
+                )
+            },
         )
         self.assertTrue(
             self.run_task(
@@ -538,7 +543,10 @@ class ObsTaskTests(unittest.TestCase):
                     {
                         "inputName": "Clip Player",
                         "inputSettings": {
-                            "url": "https://clips.twitch.tv/selected-clip"
+                            "url": (
+                                "https://clips.twitch.tv/embed?clip=selected-clip"
+                                "&parent=localhost&autoplay=true&muted=false"
+                            )
                         },
                         "overlay": True,
                     },

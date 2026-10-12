@@ -965,6 +965,9 @@ shoutouts. The Shoutout User task and `/shoutout` share the same
 The Get User Info task resolves a target through `TwitchService`, combines the
 official user and channel-information responses, and publishes temporary
 `automation.user.*` outputs without mutating the triggering `user.*` context.
+The Get User Clip task keeps Twitch's selected clip metadata but normalizes its
+official `embed_url` into the temporary `automation.clip_url` OBS Browser Source
+contract with `parent=localhost`, autoplay enabled, and initial audio unmuted.
 Unknown slash text is not sent blindly to Twitch.
 
 Python-script tasks expose trigger context only through `STREAMHOUSE_*`
