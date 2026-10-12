@@ -6,6 +6,8 @@ import re
 from typing import Any, ClassVar, Mapping
 from uuid import uuid4
 
+from products.hub.automation.task_config import normalize_task_config
+
 
 DEFAULT_AUTOMATION_QUEUE_ID = "streamhouse.default.queue"
 DEFAULT_AUTOMATION_QUEUE_NAME = "Default Queue"
@@ -49,6 +51,9 @@ class TaskDefinition:
     managed_key: str = ""
     then_tasks: list[TaskDefinition] = field(default_factory=list)
     else_tasks: list[TaskDefinition] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        self.config = normalize_task_config(self.task_type, self.config)
 
     @classmethod
     def from_dict(cls, values: Mapping[str, Any]) -> TaskDefinition:

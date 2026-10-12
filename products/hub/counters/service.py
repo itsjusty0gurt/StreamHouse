@@ -225,11 +225,22 @@ class CounterService:
         return False
 
     def set_value(self, counter_id: str, scope: str, value: Any, *, user_id: str = "", login: str = "", display_name: str = "", stream_id: str = "") -> CounterOperation:
+        return self.set_values(
+            counter_id,
+            (scope,),
+            value,
+            user_id=user_id,
+            login=login,
+            display_name=display_name,
+            stream_id=stream_id,
+        )
+
+    def set_values(self, counter_id: str, scopes: Iterable[str], value: Any, *, user_id: str = "", login: str = "", display_name: str = "", stream_id: str = "") -> CounterOperation:
         definition = self.get_counter(counter_id)
         if definition is None:
             return CounterOperation("missing_counter", detail=f'Counter "{counter_id}" does not exist.')
         try:
-            selected = self._validate_scopes((scope,))
+            selected = self._validate_scopes(scopes)
             value = parse_counter_number(value, definition.numeric_type)
         except (TypeError, ValueError) as error:
             return CounterOperation("invalid_value", detail=str(error))
@@ -239,38 +250,64 @@ class CounterService:
         identity = {"viewer_id": user_id, "viewer_login": login, "viewer_display_name": display_name, "stream_id": stream_id}
         if not definition.enabled:
             return CounterOperation("disabled_counter", before, skipped_scopes=selected, detail="Counter is disabled.", **identity)
-        if not definition.tracks(scope):
-            return CounterOperation("invalid_configuration", before, skipped_scopes=selected, detail="The selected scope is not tracked by this counter.", **identity)
-        if scope.startswith("viewer_") and not user_id:
-            return CounterOperation("missing_viewer", before, skipped_scopes=selected, detail="A Twitch viewer ID is required for this scope.", **identity)
-        if "stream" in scope and not stream_id:
-            return CounterOperation("stream_unavailable", before, skipped_scopes=selected, detail="No confirmed active Twitch stream is available.", **identity)
         if value < definition.minimum:
             return CounterOperation("invalid_value", before, skipped_scopes=selected, detail=f"Value cannot be below {definition.minimum}.", **identity)
+
+        skipped = tuple(
+            scope
+            for scope in selected
+            if not definition.tracks(scope)
+            or (scope.startswith("viewer_") and not user_id)
+            or ("stream" in scope and not stream_id)
+        )
+        valid = tuple(scope for scope in selected if scope not in skipped)
+        if not valid:
+            status = (
+                "missing_viewer"
+                if any(scope.startswith("viewer_") for scope in skipped) and not user_id
+                else "stream_unavailable"
+                if any("stream" in scope for scope in skipped) and not stream_id
+                else "invalid_configuration"
+            )
+            return CounterOperation(
+                status,
+                before,
+                skipped_scopes=skipped,
+                detail=self._skipped_detail(skipped, user_id, stream_id),
+                **identity,
+            )
 
         def mutate(payload: dict[str, Any]) -> CounterValues:
             viewer = self._viewer(
                 payload,
                 user_id,
-                create=scope.startswith("viewer_"),
+                create=any(scope.startswith("viewer_") for scope in valid),
                 reset_value=definition.reset_value,
                 numeric_type=definition.numeric_type,
             ) if user_id else None
             if viewer is not None:
                 viewer["login"] = login.strip() or viewer.get("login", "")
                 viewer["display_name"] = display_name.strip() or viewer.get("display_name", "") or login.strip()
-            stored = counter_number_to_storage(value, definition.numeric_type)
-            if scope == "channel_total": payload["channel_total"] = stored
-            elif scope == "viewer_total" and viewer is not None: viewer["total"] = stored
-            else:
-                container = payload if scope == "stream_total" else viewer
-                if container is not None: container["current_stream"] = {"stream_id": stream_id, "value": stored}
+            for scope in valid:
+                stored = counter_number_to_storage(value, definition.numeric_type)
+                if scope == "channel_total": payload["channel_total"] = stored
+                elif scope == "viewer_total" and viewer is not None: viewer["total"] = stored
+                else:
+                    container = payload if scope == "stream_total" else viewer
+                    if container is not None: container["current_stream"] = {"stream_id": stream_id, "value": stored}
             return self._values_from_payload(payload, user_id, stream_id)
         try:
             values = self.store.mutate_data(counter_id, mutate)
         except (OSError, ValueError) as error:
             return CounterOperation("persistence_failed", before, skipped_scopes=selected, detail=f"Counter value was not saved: {error}", **identity)
-        return CounterOperation("success", values, selected, **identity)
+        return CounterOperation(
+            "partial_success" if skipped else "success",
+            values,
+            valid,
+            skipped,
+            self._skipped_detail(skipped, user_id, stream_id) if skipped else "",
+            **identity,
+        )
 
     def reset(self, counter_id: str, scopes: Iterable[str], *, user_id: str = "", stream_id: str = "", all_viewers: bool = False, all_viewer_scopes: Iterable[str] = ()) -> CounterOperation:
         definition = self.get_counter(counter_id)

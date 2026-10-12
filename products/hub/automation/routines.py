@@ -12,6 +12,7 @@ from products.hub.automation.models import (
     RoutineGroup,
     TaskDefinition,
 )
+from products.hub.automation.task_config import normalize_task_config
 from shared.streamhouse_runtime.json_store import (
     UnsupportedJsonSchemaError,
     atomic_write_json,
@@ -41,12 +42,12 @@ class RoutineStore:
             self.groups = []
             self.routines = []
             return []
-        groups, routines, normalized_queues = load_validated_json(
+        groups, routines, normalized_data = load_validated_json(
             self.path, self._parse_payload
         )
         self.groups = groups
         self.routines = routines
-        if normalized_queues:
+        if normalized_data:
             self._write(groups, routines)
         return list(self.routines)
 
@@ -78,8 +79,41 @@ class RoutineStore:
             and not str(value.get("queue_id", "")).strip()
             for value in values
         )
+        normalized_task_configs = self._persisted_tasks_need_normalization(values)
+        self._normalize_routine_task_configs(routines)
         self._validate_state(groups, routines)
-        return groups, routines, normalized_queues
+        return groups, routines, normalized_queues or normalized_task_configs
+
+    @classmethod
+    def _persisted_tasks_need_normalization(cls, routines: list[dict[str, Any]]) -> bool:
+        def changed(tasks: object) -> bool:
+            if not isinstance(tasks, list):
+                return False
+            for task in tasks:
+                if not isinstance(task, dict):
+                    continue
+                task_type = str(task.get("task_type", ""))
+                config = task.get("config", {})
+                if isinstance(config, dict) and normalize_task_config(task_type, config) != config:
+                    return True
+                if changed(task.get("then_tasks", [])) or changed(task.get("else_tasks", [])):
+                    return True
+            return False
+
+        return any(changed(routine.get("tasks", [])) for routine in routines)
+
+    @classmethod
+    def _normalize_routine_task_configs(
+        cls, routines: Iterable[RoutineDefinition]
+    ) -> None:
+        def normalize(tasks: Iterable[TaskDefinition]) -> None:
+            for task in tasks:
+                task.config = normalize_task_config(task.task_type, task.config)
+                normalize(task.then_tasks)
+                normalize(task.else_tasks)
+
+        for routine in routines:
+            normalize(routine.tasks)
 
     @classmethod
     def _validate_persisted_structure(
@@ -119,6 +153,7 @@ class RoutineStore:
             cls._validate_persisted_tasks(task.get("else_tasks", []))
 
     def save(self) -> None:
+        self._normalize_routine_task_configs(self.routines)
         self._validate_state(self.groups, self.routines)
         self._write(self.groups, self.routines)
 
@@ -141,6 +176,7 @@ class RoutineStore:
         groups: list[RoutineGroup],
         routines: list[RoutineDefinition],
     ) -> None:
+        self._normalize_routine_task_configs(routines)
         self._validate_state(groups, routines)
         self._write(groups, routines)
         self.groups = groups

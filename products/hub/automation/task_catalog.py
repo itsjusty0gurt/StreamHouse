@@ -90,18 +90,18 @@ _SHORT_DESCRIPTIONS = {
         "Marks a Channel Point redemption as fulfilled or refunded."
     ),
     "counter.increase": (
-        "Adds an amount to the selected Counter. The amount may be a number or "
-        "a Variable."
+        "Adds an amount to the selected Counter scopes. New tasks select every "
+        "scope tracked by that Counter. The amount may be a number or a Variable."
     ),
     "counter.decrease": (
-        "Subtracts an amount from the selected Counter. The amount may be a "
-        "number or a Variable."
+        "Subtracts an amount from the selected Counter scopes. New tasks select "
+        "every scope tracked by that Counter. The amount may be a number or a Variable."
     ),
     "counter.set_value": (
-        "Replaces the selected Counter's value with a number or resolved Variable."
+        "Replaces the selected Counter scopes with a number or resolved Variable."
     ),
     "counter.reset": (
-        "Restores the selected Counter to its configured reset value."
+        "Restores the selected Counter scopes to its configured reset value."
     ),
     "core.launch_application": (
         "Starts an application with optional arguments and working-directory "
@@ -470,19 +470,19 @@ _INPUT_HELP: dict[str, dict[str, str]] = {
         "message_id": "The Twitch message ID; used only for Delete message.",
     },
     "counter.increase": {
-        "scope": "Which stored value is changed: shared, current stream, or triggering viewer.",
+        "scopes": "Which configured values are changed. New tasks select every scope tracked by the Counter.",
         "amount": "The number to add. It may resolve from a Variable.",
     },
     "counter.decrease": {
-        "scope": "Which stored value is changed: shared, current stream, or triggering viewer.",
+        "scopes": "Which configured values are changed. New tasks select every scope tracked by the Counter.",
         "amount": "The number to subtract. It may resolve from a Variable.",
     },
     "counter.set_value": {
-        "scope": "Which stored value is replaced: shared, current stream, or triggering viewer.",
+        "scopes": "Which configured values are replaced with the same value.",
         "value": "The new numeric value. It may resolve from a Variable.",
     },
     "counter.reset": {
-        "scope": "Which stored value returns to the Counter's configured reset value.",
+        "scopes": "Which configured values return to the Counter's reset value.",
     },
     "core.wait": {
         "duration": "How long the routine waits before continuing.",

@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from decimal import Decimal
 from products.hub.automation.models import TaskDefinition, TaskExecutionResult, TriggerEvent
+from products.hub.automation.task_config import selected_counter_scopes
 from products.hub.automation.variable_registry import render_placeholders
 from products.hub.counters.models import parse_counter_number
 from products.hub.counters.service import CounterOperation, CounterService
@@ -82,7 +83,7 @@ class IncreaseCounterTask(CounterTask):
         return self.service.update_values(
             str(task.config.get("counter_id", "")),
             abs(self._number(task, context, "amount")),
-            (str(task.config.get("scope", "channel_total")),),
+            selected_counter_scopes(task.config),
             **self._identity(context),
         )
 
@@ -95,7 +96,7 @@ class DecreaseCounterTask(CounterTask):
         return self.service.update_values(
             str(task.config.get("counter_id", "")),
             -abs(self._number(task, context, "amount")),
-            (str(task.config.get("scope", "channel_total")),),
+            selected_counter_scopes(task.config),
             **self._identity(context),
         )
 
@@ -105,9 +106,9 @@ class SetCounterValueTask(CounterTask):
 
     def _run(self, task: TaskDefinition, trigger: TriggerEvent) -> CounterOperation:
         context = self._context(trigger)
-        return self.service.set_value(
+        return self.service.set_values(
             str(task.config.get("counter_id", "")),
-            str(task.config.get("scope", "channel_total")),
+            selected_counter_scopes(task.config),
             self._number(task, context, "value"),
             **self._identity(context),
         )
@@ -121,7 +122,7 @@ class ResetCounterTask(CounterTask):
         identity = self._identity(context)
         return self.service.reset(
             str(task.config.get("counter_id", "")),
-            (str(task.config.get("scope", "channel_total")),),
+            selected_counter_scopes(task.config),
             user_id=identity["user_id"],
             stream_id=identity["stream_id"],
         )

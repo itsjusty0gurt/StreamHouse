@@ -302,6 +302,187 @@ class CounterTaskTests(unittest.TestCase):
         self.assertTrue(self.registry.execute(reset, trigger).succeeded)
         self.assertEqual(self.service.get_values("farts").channel_total, 0)
 
+    def test_each_task_updates_all_selected_scopes_and_leaves_others_unchanged(self) -> None:
+        self.service.update_counter("farts", track_viewer_stream_total=True)
+        trigger = TriggerEvent(
+            "command",
+            "twitch",
+            "command",
+            {
+                "user.id": "111",
+                "user.login": "testviewer",
+                "user.display_name": "TestViewer",
+            },
+        )
+        selected = ["viewer_total", "viewer_stream_total", "channel_total"]
+        increase = TaskDefinition(
+            "increase",
+            "counter.increase",
+            "Increase",
+            {"counter_id": "farts", "scopes": selected, "amount": "2"},
+        )
+        self.assertTrue(self.registry.execute(increase, trigger).succeeded)
+        values = self.service.get_values("farts", user_id="111", stream_id="stream-1")
+        self.assertEqual(
+            (values.viewer_total, values.viewer_stream_total, values.channel_total),
+            (2, 2, 2),
+        )
+        self.assertEqual(values.stream_total, 0)
+
+        decrease = TaskDefinition(
+            "decrease",
+            "counter.decrease",
+            "Decrease",
+            {"counter_id": "farts", "scopes": selected, "amount": "0.5"},
+        )
+        result = self.registry.execute(decrease, trigger)
+        self.assertFalse(result.succeeded)
+        self.assertIn("whole number", result.detail)
+
+        set_task = TaskDefinition(
+            "set",
+            "counter.set_value",
+            "Set",
+            {"counter_id": "farts", "scopes": selected, "value": "7"},
+        )
+        self.assertTrue(self.registry.execute(set_task, trigger).succeeded)
+        values = self.service.get_values("farts", user_id="111", stream_id="stream-1")
+        self.assertEqual(
+            (values.viewer_total, values.viewer_stream_total, values.channel_total),
+            (7, 7, 7),
+        )
+
+        reset = TaskDefinition(
+            "reset",
+            "counter.reset",
+            "Reset",
+            {"counter_id": "farts", "scopes": selected},
+        )
+        self.assertTrue(self.registry.execute(reset, trigger).succeeded)
+        values = self.service.get_values("farts", user_id="111", stream_id="stream-1")
+        self.assertEqual(
+            (values.viewer_total, values.viewer_stream_total, values.channel_total),
+            (0, 0, 0),
+        )
+        self.assertEqual(values.stream_total, 0)
+
+    def test_decimal_increase_and_decrease_apply_to_multiple_scopes(self) -> None:
+        decimal_service = CounterService(CounterStore(Path(self.temp.name) / "multi-decimal"))
+        decimal_service.create_counter(
+            definition("coffee", numeric_type="decimal", display_precision=2)
+        )
+        registry = TaskRegistry()
+        register_counter_tasks(registry, decimal_service, lambda: "stream-1")
+        trigger = TriggerEvent(
+            "command",
+            "twitch",
+            "command",
+            {"user.id": "111"},
+        )
+        scopes = ["channel_total", "stream_total", "viewer_total"]
+        for task_type, amount in (("counter.increase", "1.25"), ("counter.decrease", "0.5")):
+            task = TaskDefinition(
+                task_type,
+                task_type,
+                task_type,
+                {"counter_id": "coffee", "scopes": scopes, "amount": amount},
+            )
+            self.assertTrue(registry.execute(task, trigger).succeeded)
+        values = decimal_service.get_values("coffee", user_id="111", stream_id="stream-1")
+        self.assertEqual(
+            (values.channel_total, values.stream_total, values.viewer_total),
+            (Decimal("0.75"), Decimal("0.75"), Decimal("0.75")),
+        )
+
+    def test_zero_scopes_is_rejected_and_viewer_stream_context_is_authoritative(self) -> None:
+        empty = TaskDefinition(
+            "empty",
+            "counter.increase",
+            "Empty",
+            {"counter_id": "farts", "scopes": [], "amount": "1"},
+        )
+        failed = self.registry.execute(
+            empty,
+            TriggerEvent("manual", "core", "manual", {}),
+        )
+        self.assertFalse(failed.succeeded)
+        self.assertIn("at least one counter scope", failed.detail)
+
+        self.service.update_counter("farts", track_viewer_stream_total=True)
+        scoped = TaskDefinition(
+            "scoped",
+            "counter.increase",
+            "Scoped",
+            {
+                "counter_id": "farts",
+                "scopes": ["viewer_total", "viewer_stream_total"],
+                "amount": "1",
+            },
+        )
+        missing_viewer = self.registry.execute(
+            scoped,
+            TriggerEvent("manual", "core", "manual", {}),
+        )
+        self.assertFalse(missing_viewer.succeeded)
+        self.assertIn("viewer", missing_viewer.detail.casefold())
+        good = self.registry.execute(
+            scoped,
+            TriggerEvent("command", "twitch", "command", {"user.id": "111"}),
+        )
+        self.assertTrue(good.succeeded)
+        values = self.service.get_values("farts", user_id="111", stream_id="stream-1")
+        self.assertEqual((values.viewer_total, values.viewer_stream_total), (1, 1))
+
+    def test_saved_single_scope_task_normalizes_once_without_broadening(self) -> None:
+        path = Path(self.temp.name) / "routines.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "version": 5,
+                    "groups": [],
+                    "routines": [
+                        {
+                            "routine_id": "routine-1",
+                            "name": "Legacy counter task",
+                            "trigger_id": "",
+                            "tasks": [
+                                {
+                                    "task_id": "task-1",
+                                    "task_type": "counter.increase",
+                                    "name": "Increase",
+                                    "config": {
+                                        "counter_id": "farts",
+                                        "scope": "viewer_total",
+                                        "amount": "1",
+                                    },
+                                }
+                            ],
+                            "queue_id": "streamhouse.default.queue",
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        routines = RoutineStore(path)
+        routines.load()
+        task = routines.routines[0].tasks[0]
+        self.assertEqual(task.config["scopes"], ["viewer_total"])
+        self.assertNotIn("scope", task.config)
+        persisted = json.loads(path.read_text(encoding="utf-8"))
+        persisted_config = persisted["routines"][0]["tasks"][0]["config"]
+        self.assertEqual(persisted_config["scopes"], ["viewer_total"])
+        self.assertNotIn("scope", persisted_config)
+
+        result = self.registry.execute(
+            task,
+            TriggerEvent("command", "twitch", "command", {"user.id": "111"}),
+        )
+        self.assertTrue(result.succeeded)
+        values = self.service.get_values("farts", user_id="111", stream_id="stream-1")
+        self.assertEqual(values.viewer_total, 1)
+        self.assertEqual(values.channel_total, 0)
+
     def test_missing_counter_and_missing_viewer_are_controlled(self) -> None:
         trigger = TriggerEvent("command", "twitch", "command", {})
         missing = TaskDefinition("1", "counter.increase", "Increase", {"counter_id": "gone", "scope": "channel_total", "amount": "1"})

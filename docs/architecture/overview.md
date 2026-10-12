@@ -859,7 +859,7 @@ Handlers are registered in `MainWindow` with one stable lowercase task type.
 | Files | `products/hub/automation/file_tasks.py` | read text/random/specific lines, write, existence, line count |
 | Control | `products/hub/automation/control_tasks.py` | enable/disable routines/tasks, pause/clear queues |
 | Twitch | `products/hub/twitch/tasks.py` | chat/pinned chat, shoutouts, ads, moderation, redemption results, user/stream/follow lookups, enabled-command lists, and social-message building |
-| Counters | `products/hub/counters/tasks.py` | four mutation tasks: Increase, Decrease, Set, and Reset; amounts/values accept numeric literals or modern Variables |
+| Counters | `products/hub/counters/tasks.py` | four multi-scope mutation tasks: Increase, Decrease, Set, and Reset; amounts/values accept numeric literals or modern Variables |
 | OBS | `products/hub/obs_service/tasks.py` | scenes, sources, inputs, filters, media, outputs, hotkeys, raw request |
 
 Counter definitions and values remain Hub implementation. A definition has an
@@ -887,9 +887,11 @@ return structured statuses (`success`, `partial_success`, `skipped_known_bot`,
 `persistence_failed`).
 
 Automation exposes a single **Counter** category with **Increase**,
-**Decrease**, **Set**, and **Reset**. Each task selects one tracked value;
-shared is the beginner default, while viewer/current-broadcast choices remain
-available when the definition tracks them. Increase/Decrease default to `1`.
+**Decrease**, **Set**, and **Reset**. A new task selects every scope enabled by
+its Counter definition by default; users may narrow it to any non-empty subset,
+and one execution applies the same operation to every selected scope. Saved
+single-scope tasks normalize to a one-item `scopes` list and therefore retain
+their exact behavior. Increase/Decrease default to `1`.
 Their Amount fields and Set's Value field accept an exact numeric literal or a
 single resolvable modern placeholder such as `{command.data}`,
 `{custom.some_number}`, or `{counter.other.total}`. Invalid, unavailable, or

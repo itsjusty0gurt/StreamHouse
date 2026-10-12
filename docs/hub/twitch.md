@@ -411,7 +411,9 @@ Counter actions do not require a counter-specific trigger system. The four
 registered Counter tasks—Increase, Decrease, Set, and Reset—may be placed in
 any routine reached by a Twitch chat command, supported EventSub trigger,
 OBS/Core trigger, or manual execution. Amount/Value fields accept literals or
-modern Variables. Thus `!counterset 4.5` plus Set value `{command.data}` and
+modern Variables. New tasks select every scope configured on the chosen Counter
+by default, while the editor permits any non-empty subset. One task applies its
+operation to every selected scope. Thus `!counterset 4.5` plus Set value `{command.data}` and
 `!coffee 0.5` plus Increase amount `{command.data}` are ordinary composed
 automations, not hardcoded Counter commands.
 

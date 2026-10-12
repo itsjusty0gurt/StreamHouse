@@ -64,6 +64,11 @@ from products.hub.automation.routines import RoutineDefinition, RoutineStore
 from products.hub.automation.service import AutomationService
 from products.hub.automation.tasks import TaskRegistry
 from products.hub.automation.task_catalog import VARIABLE_INPUT_FIELDS
+from products.hub.automation.task_config import (
+    COUNTER_SCOPE_OPTIONS,
+    COUNTER_TASK_TYPES,
+    normalize_task_config,
+)
 from products.hub.automation.variable_registry import VariableRegistry
 from products.hub.automation.core_tasks import CORE_TASK_LABELS, PlayAudioTask
 from products.hub.automation.variable_tasks import (
@@ -1185,6 +1190,50 @@ class NestedTaskListEditor(QGroupBox):
         )
 
 
+class CounterScopesEditor(QWidget):
+    def __init__(self, selected: object = (), parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(12)
+        selected_scopes = {
+            str(value).strip().casefold()
+            for value in selected
+            if str(value).strip()
+        } if isinstance(selected, (list, tuple)) else set()
+        self.checkboxes: dict[str, QCheckBox] = {}
+        for label, scope in COUNTER_SCOPE_OPTIONS:
+            checkbox = QCheckBox(label)
+            checkbox.setChecked(scope in selected_scopes)
+            checkbox.setVisible(False)
+            self.checkboxes[scope] = checkbox
+            layout.addWidget(checkbox)
+        layout.addStretch()
+
+    def set_counter_scopes(
+        self,
+        available: tuple[str, ...],
+        *,
+        select_all: bool,
+    ) -> None:
+        allowed = set(available)
+        for _label, scope in COUNTER_SCOPE_OPTIONS:
+            checkbox = self.checkboxes[scope]
+            checkbox.setVisible(scope in allowed)
+            if scope not in allowed:
+                checkbox.setChecked(False)
+            elif select_all:
+                checkbox.setChecked(True)
+
+    def value(self) -> list[str]:
+        return [
+            scope
+            for _label, scope in COUNTER_SCOPE_OPTIONS
+            if not self.checkboxes[scope].isHidden()
+            and self.checkboxes[scope].isChecked()
+        ]
+
+
 class TaskEditorDialog(QDialog):
     LABELS = {
         **TWITCH_TASK_LABELS,
@@ -1257,22 +1306,22 @@ class TaskEditorDialog(QDialog):
         ),
         "counter.increase": (
             {"key": "counter_id", "label": "Counter", "kind": "counter", "default": "", "required": True},
-            {"key": "scope", "label": "Value", "kind": "choice", "default": "channel_total", "choices": (("Shared counter", "channel_total"), ("Current broadcast", "stream_total"), ("Triggering viewer", "viewer_total"), ("Triggering viewer — current broadcast", "viewer_stream_total"))},
+            {"key": "scopes", "label": "Update", "kind": "counter_scopes", "default": ()},
             {"key": "amount", "label": "Amount", "kind": "text", "default": "1", "required": True, "placeholder": "1, 0.5, or {command.data}"},
         ),
         "counter.decrease": (
             {"key": "counter_id", "label": "Counter", "kind": "counter", "default": "", "required": True},
-            {"key": "scope", "label": "Value", "kind": "choice", "default": "channel_total", "choices": (("Shared counter", "channel_total"), ("Current broadcast", "stream_total"), ("Triggering viewer", "viewer_total"), ("Triggering viewer — current broadcast", "viewer_stream_total"))},
+            {"key": "scopes", "label": "Update", "kind": "counter_scopes", "default": ()},
             {"key": "amount", "label": "Amount", "kind": "text", "default": "1", "required": True, "placeholder": "1, 0.5, or {command.data}"},
         ),
         "counter.set_value": (
             {"key": "counter_id", "label": "Counter", "kind": "counter", "default": "", "required": True},
-            {"key": "scope", "label": "Value", "kind": "choice", "default": "channel_total", "choices": (("Shared counter", "channel_total"), ("Current broadcast", "stream_total"), ("Triggering viewer", "viewer_total"), ("Triggering viewer — current broadcast", "viewer_stream_total"))},
+            {"key": "scopes", "label": "Update", "kind": "counter_scopes", "default": ()},
             {"key": "value", "label": "Value", "kind": "text", "default": "0", "required": True, "placeholder": "4.5 or {command.data}"},
         ),
         "counter.reset": (
             {"key": "counter_id", "label": "Counter", "kind": "counter", "default": "", "required": True},
-            {"key": "scope", "label": "Value", "kind": "choice", "default": "channel_total", "choices": (("Shared counter", "channel_total"), ("Current broadcast", "stream_total"), ("Triggering viewer", "viewer_total"), ("Triggering viewer — current broadcast", "viewer_stream_total"))},
+            {"key": "scopes", "label": "Reset", "kind": "counter_scopes", "default": ()},
         ),
         "core.launch_application": (
             {"key": "executable", "label": "Application", "kind": "file", "default": "", "required": True},
@@ -1869,7 +1918,11 @@ class TaskEditorDialog(QDialog):
         page = QWidget()
         form = QFormLayout(page)
         fields: dict[str, QWidget] = {}
-        values = self.task.config if self.task and self.task.task_type == task_type else {}
+        values = (
+            normalize_task_config(task_type, self.task.config)
+            if self.task and self.task.task_type == task_type
+            else {}
+        )
         schema = self.SCHEMAS.get(task_type, ())
         if not schema:
             form.addRow(QLabel("This task provider has no editable settings."))
@@ -1880,8 +1933,35 @@ class TaskEditorDialog(QDialog):
             fields[key] = widget
             form.addRow(str(spec.get("label", "")), row_widget)
         self.field_widgets[task_type] = fields
+        if task_type in COUNTER_TASK_TYPES:
+            self._wire_counter_scope_editor(fields)
         self._add_generated_output_hint(form, task_type, fields, values)
         return page
+
+    def _wire_counter_scope_editor(self, fields: dict[str, QWidget]) -> None:
+        counter = fields.get("counter_id")
+        scopes = fields.get("scopes")
+        if not isinstance(counter, QComboBox) or not isinstance(scopes, CounterScopesEditor):
+            return
+
+        def refresh(_index: int = -1) -> None:
+            definition = (
+                self.counter_service.get_counter(str(counter.currentData() or ""))
+                if self.counter_service is not None
+                else None
+            )
+            available = tuple(
+                scope
+                for _label, scope in COUNTER_SCOPE_OPTIONS
+                if definition is not None and definition.tracks(scope)
+            )
+            scopes.set_counter_scopes(
+                available,
+                select_all=self.task is None,
+            )
+
+        counter.currentIndexChanged.connect(refresh)
+        refresh()
 
     def _add_generated_output_hint(
         self,
@@ -1995,6 +2075,9 @@ class TaskEditorDialog(QDialog):
             index = combo.findData(str(value or ""))
             combo.setCurrentIndex(max(index, 0))
             return combo, combo
+        if kind == "counter_scopes":
+            editor = CounterScopesEditor(value)
+            return editor, editor
         if kind == "user_group":
             combo = QComboBox()
             combo.addItem("Choose a user group…", "")
@@ -2536,6 +2619,8 @@ class TaskEditorDialog(QDialog):
                     value = text
             elif isinstance(widget, QCheckBox):
                 value = widget.isChecked()
+            elif isinstance(widget, CounterScopesEditor):
+                value = widget.value()
             elif isinstance(widget, QDoubleSpinBox):
                 value = widget.value()
             elif isinstance(widget, QComboBox):
@@ -2583,9 +2668,14 @@ class TaskEditorDialog(QDialog):
             definition = self.counter_service.get_counter(str(config.get("counter_id", ""))) if self.counter_service is not None else None
             if definition is None:
                 raise ValueError("Missing Counter: choose an existing counter.")
-            scope = str(config.get("scope", "channel_total"))
-            if not definition.tracks(scope):
-                raise ValueError(f"The counter does not track {scope.replace('_', ' ')}.")
+            scopes = config.get("scopes", [])
+            if not isinstance(scopes, list) or not scopes:
+                raise ValueError("Select at least one counter scope.")
+            unavailable = [scope for scope in scopes if not definition.tracks(str(scope))]
+            if unavailable:
+                raise ValueError(
+                    f"The counter does not track {str(unavailable[0]).replace('_', ' ')}."
+                )
         variable_key = output_config_key(task_type)
         if variable_key:
             config[variable_key] = output_id(str(config.get(variable_key, "")))

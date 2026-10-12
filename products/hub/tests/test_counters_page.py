@@ -15,7 +15,7 @@ from products.hub.automation.models import TaskDefinition
 from products.hub.counters.models import CounterDefinition
 from products.hub.counters.service import CounterService
 from products.hub.counters.store import CounterStore
-from products.hub.ui.automation_page import TaskEditorDialog
+from products.hub.ui.automation_page import CounterScopesEditor, TaskEditorDialog
 from products.hub.ui.counters_page import CounterDefinitionDialog, CountersPage
 
 
@@ -48,16 +48,121 @@ class CountersPageTests(unittest.TestCase):
         self.page.viewer_search.setText("nobody"); self.assertEqual(self.page.viewer_table.rowCount(), 0)
         self.page.search.setText("bonks"); self.assertEqual(self.page.list.count(), 0)
 
-    def test_task_editor_counter_dropdown_scope_and_variable_amount(self) -> None:
-        dialog = TaskEditorDialog("counter.increase", counter_service=self.service, variables={"user_id": "111"})
+    def test_new_counter_tasks_default_to_every_configured_scope(self) -> None:
+        for task_type in (
+            "counter.increase",
+            "counter.decrease",
+            "counter.set_value",
+            "counter.reset",
+        ):
+            with self.subTest(task_type=task_type):
+                dialog = TaskEditorDialog(
+                    task_type,
+                    counter_service=self.service,
+                    variables={"user_id": "111"},
+                )
+                fields = dialog.field_widgets[task_type]
+                self.assertIsInstance(fields["counter_id"], QComboBox)
+                self.assertIsInstance(fields["scopes"], CounterScopesEditor)
+                fields["counter_id"].setCurrentIndex(
+                    fields["counter_id"].findData("farts")
+                )
+                values = dialog.values()
+                self.assertEqual(values["config"]["counter_id"], "farts")
+                self.assertEqual(
+                    values["config"]["scopes"],
+                    ["viewer_total", "stream_total", "channel_total"],
+                )
+                self.assertNotIn("scope", values["config"])
+                dialog.deleteLater()
+
+    def test_counter_scope_choices_hide_untracked_and_allow_subset(self) -> None:
+        dialog = TaskEditorDialog(
+            "counter.increase",
+            counter_service=self.service,
+            variables={"user_id": "111"},
+        )
         fields = dialog.field_widgets["counter.increase"]
-        self.assertIsInstance(fields["counter_id"], QComboBox)
         fields["counter_id"].setCurrentIndex(fields["counter_id"].findData("farts"))
+        scopes = fields["scopes"]
+        self.assertIsInstance(scopes, CounterScopesEditor)
+        self.assertTrue(scopes.checkboxes["viewer_stream_total"].isHidden())
+        scopes.checkboxes["stream_total"].setChecked(False)
+        scopes.checkboxes["channel_total"].setChecked(False)
         fields["amount"].setText("{command.data}")
+
         values = dialog.values()
-        self.assertEqual(values["config"]["counter_id"], "farts")
-        self.assertEqual(values["config"]["scope"], "channel_total")
+
+        self.assertEqual(values["config"]["scopes"], ["viewer_total"])
         self.assertEqual(values["config"]["amount"], "{command.data}")
+        dialog.deleteLater()
+
+    def test_counter_change_defaults_new_task_but_does_not_broaden_existing_task(self) -> None:
+        self.service.create_counter(
+            CounterDefinition(
+                "stream_only",
+                "Stream Only",
+                "",
+                "",
+                track_channel_total=False,
+                track_stream_total=True,
+                track_viewer_total=False,
+                track_viewer_stream_total=True,
+            )
+        )
+        new_dialog = TaskEditorDialog("counter.reset", counter_service=self.service)
+        new_fields = new_dialog.field_widgets["counter.reset"]
+        new_fields["counter_id"].setCurrentIndex(
+            new_fields["counter_id"].findData("farts")
+        )
+        new_fields["scopes"].checkboxes["viewer_total"].setChecked(False)
+        new_fields["counter_id"].setCurrentIndex(
+            new_fields["counter_id"].findData("stream_only")
+        )
+        self.assertEqual(
+            new_fields["scopes"].value(),
+            ["viewer_stream_total", "stream_total"],
+        )
+
+        existing = TaskDefinition(
+            "task-1",
+            "counter.reset",
+            "Reset",
+            {"counter_id": "farts", "scope": "stream_total"},
+        )
+        edit_dialog = TaskEditorDialog(
+            "counter.reset",
+            task=existing,
+            counter_service=self.service,
+        )
+        edit_fields = edit_dialog.field_widgets["counter.reset"]
+        self.assertEqual(edit_fields["scopes"].value(), ["stream_total"])
+        edit_fields["counter_id"].setCurrentIndex(
+            edit_fields["counter_id"].findData("stream_only")
+        )
+        self.assertEqual(edit_fields["scopes"].value(), ["stream_total"])
+        new_dialog.deleteLater()
+        edit_dialog.deleteLater()
+
+    def test_counter_task_rejects_zero_selected_scopes(self) -> None:
+        dialog = TaskEditorDialog("counter.increase", counter_service=self.service)
+        fields = dialog.field_widgets["counter.increase"]
+        fields["counter_id"].setCurrentIndex(fields["counter_id"].findData("farts"))
+        for checkbox in fields["scopes"].checkboxes.values():
+            checkbox.setChecked(False)
+        with self.assertRaisesRegex(ValueError, "at least one counter scope"):
+            dialog.values()
+        dialog.deleteLater()
+
+    def test_counter_task_keeps_stable_id_after_counter_rename(self) -> None:
+        dialog = TaskEditorDialog("counter.set_value", counter_service=self.service)
+        fields = dialog.field_widgets["counter.set_value"]
+        fields["counter_id"].setCurrentIndex(fields["counter_id"].findData("farts"))
+        self.service.update_counter("farts", display_name="Renamed Counter")
+
+        values = dialog.values()
+
+        self.assertEqual(values["config"]["counter_id"], "farts")
         dialog.deleteLater()
 
     def test_fresh_page_shows_empty_state_without_creating_storage(self) -> None:
