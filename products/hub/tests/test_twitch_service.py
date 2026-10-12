@@ -202,6 +202,88 @@ class TwitchServiceTests(unittest.TestCase):
         finally:
             service.disconnect()
 
+    @patch("products.hub.twitch.service.TwitchEventSubSocket")
+    def test_reconnected_sockets_use_refreshed_tokens_for_pinned_identities(
+        self, socket_type: Mock
+    ) -> None:
+        broadcaster = TwitchToken(
+            "expired-broadcaster-access",
+            "refresh",
+            999,
+            ["channel:manage:redemptions"],
+            user_id="channel-1",
+            login="streamer",
+        )
+        bot = TwitchToken(
+            "expired-bot-access",
+            "refresh",
+            999,
+            ["user:read:chat", "user:bot"],
+            user_id="bot-1",
+            login="testbot",
+        )
+        broadcaster_auth = Mock(token=broadcaster)
+        bot_auth = Mock(token=bot)
+        helix = Mock()
+        helix.get_user.return_value = {"id": "channel-1"}
+        helix.get_badge_urls.return_value = {}
+        service = TwitchService(
+            auth=broadcaster_auth,
+            bot_auth=bot_auth,
+            helix=helix,
+        )
+
+        try:
+            self.assertTrue(service.connect("streamer"))
+            refreshed_broadcaster = TwitchToken(
+                "fresh-broadcaster-access",
+                "refresh-2",
+                1999,
+                ["channel:manage:redemptions"],
+                user_id="channel-1",
+                login="streamer",
+            )
+            refreshed_bot = TwitchToken(
+                "fresh-bot-access",
+                "refresh-2",
+                1999,
+                ["user:read:chat", "user:bot"],
+                user_id="bot-1",
+                login="testbot",
+            )
+            broadcaster_auth.token = refreshed_broadcaster
+            bot_auth.token = refreshed_bot
+
+            service._receive_live_welcome("chat-session-2")
+            service._receive_activity_welcome("activity-session-2")
+
+            helix.create_chat_subscriptions.assert_called_once_with(
+                "chat-session-2", "channel-1", "bot-1", refreshed_bot
+            )
+            helix.create_activity_subscriptions.assert_called_once_with(
+                "activity-session-2",
+                "channel-1",
+                "channel-1",
+                refreshed_broadcaster,
+            )
+        finally:
+            service.disconnect()
+
+    def test_activity_subscription_unauthorized_requests_token_recovery(self) -> None:
+        auth = Mock()
+        auth.recover_unauthorized.return_value = True
+        service = TwitchService(auth=auth, helix=Mock())
+
+        service._log_activity_warnings(
+            (
+                "channel.channel_points_custom_reward_redemption.add: "
+                'Twitch rejected EventSub subscription with HTTP 401: '
+                'Invalid OAuth token',
+            )
+        )
+
+        auth.recover_unauthorized.assert_called_once_with()
+
     def test_ads_actions_require_broadcaster_ads_scopes(self) -> None:
         token = TwitchToken(
             "access",

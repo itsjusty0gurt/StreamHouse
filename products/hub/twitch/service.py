@@ -9,7 +9,7 @@ from products.hub.core.events import Events
 from shared.streamhouse_runtime.logger import Logger
 from shared.streamhouse_runtime.redaction import redact_secret_text
 from products.hub.twitch.eventsub import EventSubWebhookProcessor, LocalEventSubListener
-from products.hub.twitch.auth import TwitchAuthService
+from products.hub.twitch.auth import TwitchAuthService, TwitchToken
 from products.hub.twitch.live import TwitchEventSubSocket, TwitchHelixClient
 from products.hub.twitch.models import (
     TwitchChatNotice,
@@ -206,8 +206,10 @@ class TwitchService:
         return True
 
     def _receive_live_welcome(self, session_id: str) -> None:
-        broadcaster_token = self._activity_token
-        chat_token = self._live_chat_token
+        broadcaster_token = self._current_token_for(self._activity_token)
+        chat_token = self._current_token_for(self._live_chat_token)
+        self._activity_token = broadcaster_token
+        self._live_chat_token = chat_token
         if chat_token is None or not chat_token.user_id:
             self._report_error("The Twitch sign-in is missing its user identity.")
             return
@@ -238,7 +240,8 @@ class TwitchService:
         )
 
     def _receive_activity_welcome(self, session_id: str) -> None:
-        token = self._activity_token
+        token = self._current_token_for(self._activity_token)
+        self._activity_token = token
         if token is None or not token.user_id:
             Logger.warning(
                 "Channel activity EventSub is missing broadcaster identity.",
@@ -260,15 +263,44 @@ class TwitchService:
             return
         self._log_activity_warnings(warnings)
 
-    @staticmethod
-    def _log_activity_warnings(warnings: object) -> None:
+    def _log_activity_warnings(self, warnings: object) -> None:
         if not isinstance(warnings, (tuple, list)):
             return
+        unauthorized = False
         for warning in warnings:
+            warning_text = str(warning)
             Logger.warning(
-                f"Optional Twitch activity subscription unavailable: {warning}",
+                f"Optional Twitch activity subscription unavailable: {warning_text}",
                 source="TWITCH",
             )
+            unauthorized = unauthorized or (
+                "HTTP 401" in warning_text
+                or "invalid oauth token" in warning_text.casefold()
+            )
+        if (
+            unauthorized
+            and self.auth is not None
+            and self.auth.recover_unauthorized()
+        ):
+            Logger.info(
+                "Refreshing Twitch login after activity subscriptions were rejected.",
+                source="TWITCH",
+            )
+
+    def _current_token_for(
+        self,
+        selected_token: TwitchToken | None,
+    ) -> TwitchToken | None:
+        """Refresh a socket's pinned identity without retaining an expired token."""
+
+        if selected_token is None:
+            return None
+        selected_user_id = str(selected_token.user_id)
+        for auth in (self.auth, self.bot_auth):
+            current = auth.token if auth is not None else None
+            if current is not None and str(current.user_id) == selected_user_id:
+                return current
+        return selected_token
 
     @staticmethod
     def _receive_activity_error(message: str) -> None:
