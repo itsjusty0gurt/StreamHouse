@@ -6,6 +6,7 @@ from pathlib import Path
 
 from products.hub.core.diagnostics import DiagnosticsService
 from products.hub.core.single_instance import HubInstanceLock, InstanceLockError
+from products.hub.version import HUB_VERSION
 from shared.streamhouse_runtime.logger import Logger
 from shared.streamhouse_runtime.paths import smoke_test_enabled, user_data_root
 
@@ -49,6 +50,7 @@ def main(
         Logger.setup(
             session_id=diagnostics.session_id,
             product_name="StreamhouseHub",
+            product_version=HUB_VERSION,
             log_directory=diagnostics.logs_directory,
             retained_sessions=diagnostics.NORMAL_LOG_RETENTION,
         )

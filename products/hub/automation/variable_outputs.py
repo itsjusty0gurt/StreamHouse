@@ -25,6 +25,15 @@ INTEGER_SUFFIXES = frozenset(
 BOOLEAN_SUFFIXES = frozenset({"accepted", "available", "exists", "is_live", "is_following"})
 DATETIME_SUFFIXES = frozenset({"created_at", "started_at", "followed_at"})
 
+OUTPUT_DESCRIPTIONS = {
+    "automation.clip_url": "Normal shareable Twitch clip URL produced during this routine.",
+    "automation.clip_embed_url": "Normalized Twitch iframe/embed URL produced during this routine.",
+    "automation.clip_media_url": (
+        "Temporary best-effort Twitch CDN MP4 URL produced during this routine; "
+        "empty when direct resolution is unavailable."
+    ),
+}
+
 
 def output_id(value: object) -> str:
     clean = str(value).strip().casefold().removeprefix("automation.")
@@ -71,8 +80,9 @@ def generated_output_definitions(
             VariableDefinition(
                 name=name,
                 display_name=display_name,
-                description=(
-                    f"{display_name} produced by {task_source} {lifetime_text}."
+                description=OUTPUT_DESCRIPTIONS.get(
+                    name,
+                    f"{display_name} produced by {task_source} {lifetime_text}.",
                 ),
                 data_type=data_type,
                 source=task_source,
@@ -165,6 +175,8 @@ STATIC_OUTPUTS = {
     "twitch.build_command_list": ("command_list", "command_list_status"),
     "twitch.get_user_clip": (
         "clip_url",
+        "clip_embed_url",
+        "clip_media_url",
         "clip_id",
         "clip_title",
         "clip_duration",

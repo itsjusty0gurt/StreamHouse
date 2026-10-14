@@ -21,7 +21,7 @@ from shared.streamhouse_runtime.redaction import (
     is_secret_key,
     redact_secret_text,
 )
-from shared.streamhouse_runtime.version import VERSION
+from products.hub.version import HUB_VERSION
 
 def sanitize_support_text(value: object, *, home: Path | None = None) -> str:
     """Redact likely credentials and local user-home paths from a copied artifact."""
@@ -181,7 +181,7 @@ class DiagnosticsService:
                 f"Session: {self.session_id}\n"
                 f"Started: {self.started_at.isoformat()}\n"
                 f"Process ID: {os.getpid()}\n"
-                f"Hub Version: {VERSION}\n"
+                f"Hub Version: {HUB_VERSION}\n"
                 "Initial Capture Status: No in-process exception captured yet.\n"
                 f"Checkpoint: diagnostics initialized at {self._now().isoformat()}\n",
                 durable=True,
@@ -405,7 +405,7 @@ class DiagnosticsService:
             "Streamhouse Hub Crash Report\n"
             f"Session: {self.session_id}\n"
             f"Timestamp: {self._now().isoformat()}\n"
-            f"Hub Version: {VERSION}\n"
+            f"Hub Version: {HUB_VERSION}\n"
             f"Type: {label}\n"
             f"Session Log: {log_path.name if log_path else 'Unavailable'}\n"
         )
@@ -414,7 +414,7 @@ class DiagnosticsService:
         data: dict[str, Any] = {
             "application": {
                 "name": "Streamhouse Hub",
-                "version": VERSION,
+                "version": HUB_VERSION,
                 "build": (
                     "Packaged Windows build"
                     if getattr(sys, "frozen", False)

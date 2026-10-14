@@ -34,7 +34,7 @@ from products.hub.twitch.commands import TwitchCommandTriggerStore
 from products.hub.twitch.user_groups import UserGroupStore
 from shared.streamhouse_runtime.paths import user_data_root
 from shared.streamhouse_runtime.redaction import is_secret_key, redact_secret_text
-from shared.streamhouse_runtime.version import VERSION
+from products.hub.version import HUB_VERSION
 
 
 class BackupError(ValueError):
@@ -302,7 +302,7 @@ class BackupManager:
         manifest = {
             "backup_format_version": self.FORMAT_VERSION,
             "product": "Streamhouse Hub",
-            "hub_version": VERSION,
+            "hub_version": HUB_VERSION,
             "build": (
                 "Packaged Windows build"
                 if getattr(sys, "frozen", False)

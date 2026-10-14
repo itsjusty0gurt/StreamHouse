@@ -965,9 +965,14 @@ shoutouts. The Shoutout User task and `/shoutout` share the same
 The Get User Info task resolves a target through `TwitchService`, combines the
 official user and channel-information responses, and publishes temporary
 `automation.user.*` outputs without mutating the triggering `user.*` context.
-The Get User Clip task keeps Twitch's selected clip metadata but normalizes its
-official `embed_url` into the temporary `automation.clip_url` OBS Browser Source
-contract with `parent=localhost`, autoplay enabled, and initial audio unmuted.
+The Get User Clip task keeps Twitch's selected clip metadata and publishes
+separate routine-scoped outputs: `automation.clip_url` is Twitch's normal share
+URL, `automation.clip_embed_url` is its normalized OBS/browser-source iframe
+fallback, and `automation.clip_media_url` is a best-effort temporary direct
+Twitch CDN MP4 URL. One lazy, MainWindow-owned hidden Qt WebEngine page serializes
+direct-media resolution, validates the CDN boundary, and is stopped during Hub
+shutdown. Resolution failure leaves the media URL empty without failing clip
+selection or removing the embed fallback.
 Unknown slash text is not sent blindly to Twitch.
 
 Python-script tasks expose trigger context only through `STREAMHOUSE_*`
@@ -1925,6 +1930,10 @@ Release archives and checksums:
 The script produces `StreamhouseHub-<version>-windows-x64.zip` and
 `StreamhouseAI-<version>-windows-x64.zip`, each with a matching `.sha256` file.
 Do not merge them: Hub-only users should not download the model/AI application.
+Hub's authoritative public, Windows numeric, and installer artifact versions
+live in `products/hub/version.py`; Hub runtime, diagnostics, backups, and Hub
+release tooling consume that product-owned metadata. The monorepo package and
+Streamhouse AI retain separate version ownership.
 
 Approved Streamhouse artwork lives under `shared/assets/streamhouse-icons/`.
 Hub uses the `H` product icon and Streamhouse AI uses the `AI` product icon for

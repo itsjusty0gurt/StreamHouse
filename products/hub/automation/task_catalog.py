@@ -47,8 +47,8 @@ _SHORT_DESCRIPTIONS = {
         "Sends a real Twitch shoutout to a user ID, login, or resolved Variable."
     ),
     "twitch.get_user_clip": (
-        "Fetches clips for a target Twitch user and provides one OBS-ready Twitch "
-        "clip embed URL through routine-scoped automation.* outputs."
+        "Fetches clips for a target Twitch user and provides share, embed, and "
+        "best-effort direct media URLs through routine-scoped automation.* outputs."
     ),
     "twitch.get_user_info": (
         "Looks up a Twitch user and their channel metadata for later tasks through "
@@ -360,8 +360,9 @@ _HELP_TEXT = {
     ),
     "twitch.get_user_clip": (
         "Resolves the target Twitch user, fetches that broadcaster's clips, and "
-        "selects one by the configured mode. The OBS-ready clip embed URL and clip "
-        "details are available to following tasks in the same root routine execution."
+        "selects one by the configured mode. Its share URL, normalized embed URL, "
+        "temporary direct Twitch CDN media URL when available, and clip details are "
+        "available to following tasks in the same root routine execution."
     ),
     "twitch.get_user_info": (
         "Resolves the target through Twitch, then retrieves official user and channel "
@@ -583,7 +584,7 @@ _INPUT_HELP: dict[str, dict[str, str]] = {
     },
     "obs.set_browser_source_url": {
         "input": "The existing OBS Browser Source input to update.",
-        "url": "A literal URL or canonical Variable such as {automation.clip_url}.",
+        "url": "A literal URL or canonical Variable such as {automation.clip_media_url} or {automation.clip_embed_url}.",
     },
     "obs.set_media_source_file": {
         "input": "The existing OBS Media Source input to update.",
@@ -640,7 +641,10 @@ _NOTES = {
     ),
     "twitch.get_user_clip": (
         "Random Featured fails when the target has no featured clips; it never falls back to other clips.",
-        "{automation.clip_url} includes parent=localhost, autoplay=true, and muted=false for an OBS Browser Source.",
+        "{automation.clip_url} is Twitch's normal shareable clip page URL.",
+        "{automation.clip_embed_url} is the iframe fallback with parent=localhost, autoplay=true, and muted=false.",
+        "{automation.clip_media_url} is a temporary direct Twitch CDN MP4 URL when resolution succeeds; it is empty when Twitch does not expose one.",
+        "Direct media resolution is best-effort, and the embed URL remains available as the reliable fallback.",
         "Outputs are available only to later tasks in the same root routine execution.",
     ),
     "twitch.get_user_info": (
@@ -693,7 +697,7 @@ _EXAMPLES = {
         "Shout out {command.data}, {user.name}, or {user.id}.",
     ),
     "twitch.get_user_clip": (
-        "First Message → User Is In Group → Twitch — Get User Clip {user.id} → use {automation.clip_url} in a later task.",
+        "First Message → User Is In Group → Twitch — Get User Clip {user.id} → prefer {automation.clip_media_url}, with {automation.clip_embed_url} as the fallback.",
     ),
     "twitch.get_user_info": (
         "Look up {user.id}, then send: Go check out {automation.user.display_name} at {automation.user.channel_url}!",
@@ -729,7 +733,7 @@ _EXAMPLES = {
     "obs.set_text_source": ("Set a text source to Now playing: {stream.category}.",),
     "obs.set_image_source": ("Change an image source file, then show that source.",),
     "obs.set_browser_source_url": (
-        "Twitch — Get User Clip → OBS — Set Browser Source URL using {automation.clip_url}.",
+        "Twitch — Get User Clip → OBS — Set Browser Source URL using {automation.clip_media_url}, or {automation.clip_embed_url} when direct resolution is unavailable.",
     ),
     "obs.set_media_source_file": ("Set a Media Source file to {automation.media_file}.",),
     "obs.set_source_audio_track": ("Enable Track 2 for a selected OBS source.",),

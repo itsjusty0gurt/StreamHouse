@@ -38,7 +38,7 @@ from products.hub.twitch.user_groups import (
     UserGroupService,
     UserGroupStore,
 )
-from shared.streamhouse_runtime.version import VERSION
+from products.hub.version import HUB_VERSION
 
 
 def write_json(path: Path, payload: object) -> None:
@@ -1175,7 +1175,7 @@ class BackupManagerTests(unittest.TestCase):
         )
         inspection = self.manager.inspect(archive)
         self.assertEqual(inspection.schemas["hub_settings"], SettingsStore.VERSION)
-        self.assertEqual(inspection.hub_version, VERSION)
+        self.assertEqual(inspection.hub_version, HUB_VERSION)
 
 
 if __name__ == "__main__":

@@ -147,6 +147,7 @@ class Logger:
     _session_id: ClassVar[str] = ""
     _session_log_path: ClassVar[Path | None] = None
     _product_name: ClassVar[str] = "Streamhouse"
+    _product_version: ClassVar[str] = VERSION
 
     @classmethod
     def setup(
@@ -156,6 +157,7 @@ class Logger:
         *,
         session_id: str = "",
         product_name: str = "Streamhouse",
+        product_version: str = VERSION,
         log_directory: Path | None = None,
         retained_sessions: int = 10,
     ) -> None:
@@ -176,6 +178,7 @@ class Logger:
         latest_log_path = logs_directory / "latest.log"
         cls._session_id = session_id.strip() or uuid4().hex
         cls._product_name = product_name.strip() or "Streamhouse"
+        cls._product_version = product_version.strip() or VERSION
         safe_product = "".join(
             character for character in product_name if character.isalnum() or character in "-_"
         ) or "Streamhouse"
@@ -551,7 +554,7 @@ class Logger:
             f"\n{separator}\n"
             f" {cls._product_name}\n"
             "\n"
-            f" Version : {VERSION}\n"
+            f" Version : {cls._product_version}\n"
             f" Session : {cls._session_id or 'Unavailable'}\n"
             f" Python  : {platform.python_version()}\n"
             f" Platform: {platform.system()} {platform.release()}\n"

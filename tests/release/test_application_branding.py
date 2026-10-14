@@ -12,6 +12,7 @@ from products.ai import ai_main
 from products.hub import hub_main
 from products.ai import streamhouse_ai
 from products.hub import streamhouse_hub
+from products.hub.version import HUB_VERSION
 from shared import streamhouse_shared
 from shared.streamhouse_runtime.qt_settings import (
     AI_APPLICATION_NAME,
@@ -41,6 +42,7 @@ class ApplicationBrandingTests(unittest.TestCase):
         configure_hub(self.application)
         self.assertEqual(self.application.applicationName(), HUB_APPLICATION_NAME)
         self.assertEqual(self.application.organizationName(), ORGANIZATION_NAME)
+        self.assertEqual(self.application.applicationVersion(), HUB_VERSION)
 
     def test_ai_qt_metadata_uses_streamhouse_brand(self) -> None:
         configure_ai(self.application)

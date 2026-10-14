@@ -115,12 +115,17 @@ class TwitchTaskTests(unittest.TestCase):
             Path(self.temporary.name) / "channel-information.json"
         )
         self.channel_information.load()
+        self.clip_media_resolver = Mock()
+        self.clip_media_resolver.resolve.return_value = (
+            "https://production.assets.clips.twitchcdn.net/clip.mp4?sig=test"
+        )
         self.registry = TaskRegistry()
         register_twitch_tasks(
             self.registry,
             self.service,
             channel_information_provider=lambda: self.channel_information,
             ads_service=self.ads_service,
+            clip_media_resolver=self.clip_media_resolver,
         )
         self.trigger = TriggerEvent(
             "event",
@@ -305,10 +310,15 @@ class TwitchTaskTests(unittest.TestCase):
                 self.service.calls.pop()
                 self.assertEqual(
                     self.trigger.context["automation.clip_url"],
+                    selected["url"],
+                )
+                self.assertEqual(
+                    self.trigger.context["automation.clip_embed_url"],
                     f"{selected['embed_url']}&parent=localhost&autoplay=true&muted=false",
                 )
-                self.assertNotEqual(
-                    self.trigger.context["automation.clip_url"], selected["url"]
+                self.assertEqual(
+                    self.trigger.context["automation.clip_media_url"],
+                    "https://production.assets.clips.twitchcdn.net/clip.mp4?sig=test",
                 )
                 self.assertEqual(
                     self.trigger.context["automation.clip_title"], selected["title"]
@@ -352,7 +362,7 @@ class TwitchTaskTests(unittest.TestCase):
         )
 
         self.assertTrue(result.succeeded, result.detail)
-        output = self.trigger.context["automation.clip_url"]
+        output = self.trigger.context["automation.clip_embed_url"]
         parameters = parse_qsl(urlsplit(output).query, keep_blank_values=True)
         self.assertEqual(parameters.count(("clip", "clip-1")), 1)
         self.assertEqual(parameters.count(("parent", "localhost")), 1)
@@ -362,6 +372,56 @@ class TwitchTaskTests(unittest.TestCase):
         self.assertEqual(
             len([key for key, _value in parameters if key == "parent"]), 1
         )
+
+    def test_get_user_clip_succeeds_when_direct_media_resolution_fails(self) -> None:
+        for failure in ("", RuntimeError("WebEngine unavailable")):
+            with self.subTest(failure=type(failure).__name__):
+                if isinstance(failure, Exception):
+                    self.clip_media_resolver.resolve.side_effect = failure
+                else:
+                    self.clip_media_resolver.resolve.side_effect = None
+                    self.clip_media_resolver.resolve.return_value = failure
+                result = self.registry.execute(
+                    TaskDefinition(
+                        "clip-fallback",
+                        "twitch.get_user_clip",
+                        "Get clip",
+                        {"target": "viewer", "selection_mode": "recent"},
+                    ),
+                    self.trigger,
+                )
+
+                self.assertTrue(result.succeeded, result.detail)
+                self.assertEqual(
+                    self.trigger.context["automation.clip_url"],
+                    "https://clips.twitch.tv/newer",
+                )
+                self.assertIn(
+                    "https://clips.twitch.tv/embed?",
+                    self.trigger.context["automation.clip_embed_url"],
+                )
+                self.assertEqual(
+                    self.trigger.context["automation.clip_media_url"], ""
+                )
+
+    def test_get_user_clip_clears_stale_outputs_before_failure(self) -> None:
+        self.trigger.context["automation.clip_media_url"] = "https://stale.invalid/a.mp4"
+        self.service.get_user_clips = Mock(side_effect=ValueError("Twitch failed"))
+
+        result = self.registry.execute(
+            TaskDefinition(
+                "clip-failure",
+                "twitch.get_user_clip",
+                "Get clip",
+                {"target": "viewer", "selection_mode": "recent"},
+            ),
+            self.trigger,
+        )
+
+        self.assertFalse(result.succeeded)
+        self.assertEqual(self.trigger.context["automation.clip_media_url"], "")
+        self.assertEqual(self.trigger.context["automation.clip_embed_url"], "")
+        self.assertEqual(self.trigger.context["automation.clip_url"], "")
 
     def test_get_user_clip_rejects_missing_or_invalid_embed_url(self) -> None:
         cases = (
@@ -397,6 +457,41 @@ class TwitchTaskTests(unittest.TestCase):
                 )
                 self.assertFalse(result.succeeded)
                 self.assertIn(expected, result.detail.casefold())
+
+    def test_get_user_clip_rejects_missing_or_invalid_share_url(self) -> None:
+        cases = (
+            ("missing", "", "incomplete clip information"),
+            ("insecure", "http://clips.twitch.tv/clip-1", "invalid clip url"),
+            ("wrong-host", "https://example.test/clip-1", "invalid clip url"),
+        )
+        for name, share_url, expected in cases:
+            with self.subTest(name=name):
+                self.service.get_user_clips = Mock(
+                    return_value=[
+                        {
+                            "id": "clip-1",
+                            "url": share_url,
+                            "embed_url": "https://clips.twitch.tv/embed?clip=clip-1",
+                            "title": "Clip title",
+                            "duration": 7.5,
+                            "thumbnail_url": "https://example.test/clip.jpg",
+                            "created_at": "2026-01-01T00:00:00Z",
+                            "view_count": 1,
+                        }
+                    ]
+                )
+                result = self.registry.execute(
+                    TaskDefinition(
+                        f"clip-share-{name}",
+                        "twitch.get_user_clip",
+                        "Get clip",
+                        {"target": "viewer", "selection_mode": "recent"},
+                    ),
+                    self.trigger,
+                )
+                self.assertFalse(result.succeeded)
+                self.assertIn(expected, result.detail.casefold())
+                self.assertEqual(self.trigger.context["automation.clip_url"], "")
 
     def test_get_user_clip_reports_empty_results_without_fallback(self) -> None:
         self.service.get_user_clips = Mock(return_value=[])

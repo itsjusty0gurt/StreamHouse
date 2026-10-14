@@ -14,7 +14,7 @@ from products.hub.ui.dashboard_page import (
     summarize_obs_connection,
     summarize_twitch_connection,
 )
-from shared.streamhouse_runtime.version import VERSION
+from products.hub.version import HUB_VERSION
 
 
 class DashboardPageTests(unittest.TestCase):
@@ -26,7 +26,7 @@ class DashboardPageTests(unittest.TestCase):
         page = DashboardPage(build_description="Test build")
 
         self.assertEqual(page.page_header.title_label.text(), "Dashboard")
-        self.assertEqual(page.version_label.text(), f"Version {VERSION}")
+        self.assertEqual(page.version_label.text(), f"Version {HUB_VERSION}")
         self.assertEqual(page.build_label.text(), "Test build")
         visible_text = " ".join(
             label.text() for label in page.findChildren(QLabel)
@@ -109,7 +109,7 @@ class DashboardPageTests(unittest.TestCase):
 
         title = page.findChild(QLabel, "dashboardAlphaNotesTitle")
         self.assertIsNotNone(title)
-        self.assertEqual(title.text(), "Alpha 0.1 Notes")
+        self.assertEqual(title.text(), "Alpha 0.2 Notes")
         notes = page.alpha_notes_label.text()
         self.assertIn("Touch Portal integration is local-only", notes)
         self.assertIn("currently supports Run Routine", notes)

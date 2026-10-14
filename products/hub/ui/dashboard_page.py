@@ -32,7 +32,7 @@ from products.hub.obs_service.models import ObsConnectionState
 from products.hub.twitch.auth import TwitchAuthState
 from products.hub.twitch.service import TwitchConnectionState
 from products.hub.ui.page_header import PageHeader
-from shared.streamhouse_runtime.version import VERSION
+from products.hub.version import HUB_VERSION
 
 
 class DashboardStatus(StrEnum):
@@ -149,7 +149,7 @@ class DashboardPage(QWidget):
         self,
         parent: QWidget | None = None,
         *,
-        version: str = VERSION,
+        version: str = HUB_VERSION,
         build_description: str | None = None,
         project_url: str = PROJECT_URL,
         issue_tracker_url: str = ISSUE_TRACKER_URL,
@@ -348,7 +348,7 @@ class DashboardPage(QWidget):
         layout.setContentsMargins(12, 10, 12, 10)
         layout.setSpacing(6)
 
-        title = QLabel("Alpha 0.1 Notes", panel)
+        title = QLabel("Alpha 0.2 Notes", panel)
         title.setObjectName("dashboardAlphaNotesTitle")
         title.setStyleSheet("font-weight:700; color:#d8d8df;")
         self.alpha_notes_label = QLabel(

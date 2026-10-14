@@ -217,10 +217,7 @@ class AutomationVariableTests(unittest.TestCase):
         self.assertTrue(result.succeeded)
         self.assertEqual(
             twitch.messages,
-            [
-                "Clip: https://clips.twitch.tv/embed?clip=clip-1&parent=localhost"
-                "&autoplay=true&muted=false"
-            ],
+            ["Clip: https://clips.twitch.tv/clip-1"],
         )
         self.assertNotIn("automation.clip_url", supplied_context)
 

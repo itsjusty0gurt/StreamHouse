@@ -28,6 +28,7 @@ from products.hub.integrations.music_player import (
     MusicPlayerService,
     MusicVariableProvider,
 )
+from products.hub.version import HUB_VERSION
 
 
 class _FakeSocket(QObject):
@@ -132,7 +133,7 @@ def _connect(service: MusicPlayerService, socket: _FakeSocket, commands=None) ->
     hello = socket.sent[-1]
     assert hello["type"] == "hello"
     assert hello["protocol_versions"] == [MUSIC_PROTOCOL_VERSION]
-    assert hello["client"] == {"name": "Streamhouse Hub", "version": "0.1.0"}
+    assert hello["client"] == {"name": "Streamhouse Hub", "version": HUB_VERSION}
     assert hello["auth"] == {"token": "local-secret-that-is-long-enough-123"}
     _hello(socket, commands)
     assert service.connected

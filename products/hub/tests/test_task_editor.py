@@ -196,7 +196,7 @@ class TaskEditorTests(unittest.TestCase):
         dialog = TaskEditorDialog("obs.set_browser_source_url")
         fields = dialog.field_widgets["obs.set_browser_source_url"]
 
-        self.assertEqual(fields["url"].text(), "{automation.clip_url}")
+        self.assertEqual(fields["url"].text(), "{automation.clip_embed_url}")
         self.assertEqual(
             TaskEditorDialog.TEMPLATED_FIELDS["obs.set_browser_source_url"],
             ("url",),

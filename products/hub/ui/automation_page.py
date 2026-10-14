@@ -1543,7 +1543,7 @@ class TaskEditorDialog(QDialog):
         ),
         "obs.set_browser_source_url": (
             {"key": "input", "label": "Browser Source", "kind": "obs_input", "default": "", "required": True},
-            {"key": "url", "label": "URL", "kind": "text", "default": "{automation.clip_url}", "required": True, "placeholder": "https://example.com or {automation.clip_url}"},
+            {"key": "url", "label": "URL", "kind": "text", "default": "{automation.clip_embed_url}", "required": True, "placeholder": "https://example.com or {automation.clip_embed_url}"},
         ),
         "obs.set_media_source_file": (
             {"key": "input", "label": "Media Source", "kind": "obs_input", "default": "", "required": True},

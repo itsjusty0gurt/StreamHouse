@@ -22,7 +22,7 @@ from shared.streamhouse_runtime.qt_settings import (
     streamhouse_qsettings,
 )
 from products.hub.core.window_state import WindowStateStore
-from shared.streamhouse_runtime.version import VERSION
+from products.hub.version import HUB_VERSION
 
 
 def register_events() -> None:
@@ -74,7 +74,7 @@ def shutdown_application() -> None:
 def configure_application(application: QApplication) -> None:
     application.setApplicationName(HUB_APPLICATION_NAME)
     application.setOrganizationName(ORGANIZATION_NAME)
-    application.setApplicationVersion(VERSION)
+    application.setApplicationVersion(HUB_VERSION)
     application.setWindowIcon(
         QIcon(
             str(

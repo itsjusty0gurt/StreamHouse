@@ -24,7 +24,7 @@ from shared.streamhouse_runtime.qt_settings import (
     HUB_APPLICATION_NAME,
     streamhouse_qsettings,
 )
-from shared.streamhouse_runtime.version import VERSION
+from products.hub.version import HUB_VERSION
 
 
 MUSIC_PROTOCOL_VERSION = 1
@@ -456,7 +456,7 @@ class MusicPlayerService(QObject):
                 {
                     "type": "hello",
                     "protocol_versions": [MUSIC_PROTOCOL_VERSION],
-                    "client": {"name": "Streamhouse Hub", "version": VERSION},
+                    "client": {"name": "Streamhouse Hub", "version": HUB_VERSION},
                     "auth": {"token": self._token},
                 },
                 separators=(",", ":"),

@@ -1,5 +1,7 @@
 #define AppName "Streamhouse Hub"
-#define AppVersion "0.1.0-alpha"
+#define AppVersion "0.2.0-alpha"
+#define AppNumericVersion "0.2.0.0"
+#define AppInstallerBasename "StreamhouseHub-0.2.0-alpha-Setup"
 #define AppExeName "StreamhouseHub.exe"
 
 [Setup]
@@ -29,15 +31,15 @@ UninstallLogging=yes
 UninstallDisplayIcon={app}\{#AppExeName}
 UninstallDisplayName={#AppName}
 OutputDir=..\..\release
-OutputBaseFilename=StreamhouseHub-0.1.0-alpha-Setup
+OutputBaseFilename={#AppInstallerBasename}
 SetupIconFile=..\..\shared\assets\streamhouse-icons\windows\streamhouse-hub.ico
 VersionInfoCompany=Streamhouse
-VersionInfoDescription=Streamhouse Hub Alpha 0.1 Installer
-VersionInfoOriginalFileName=StreamhouseHub-0.1.0-alpha-Setup.exe
+VersionInfoDescription=Streamhouse Hub Alpha 0.2 Installer
+VersionInfoOriginalFileName={#AppInstallerBasename}.exe
 VersionInfoProductName={#AppName}
-VersionInfoProductVersion=0.1.0.0
+VersionInfoProductVersion={#AppNumericVersion}
 VersionInfoProductTextVersion={#AppVersion}
-VersionInfoVersion=0.1.0.0
+VersionInfoVersion={#AppNumericVersion}
 
 [Tasks]
 Name: "desktopicon"; Description: "Create a &desktop shortcut"; GroupDescription: "Additional shortcuts:"; Flags: unchecked

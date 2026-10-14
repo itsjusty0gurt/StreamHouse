@@ -2,10 +2,10 @@ $ErrorActionPreference = "Stop"
 
 $projectRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $releaseDirectory = Join-Path $projectRoot "release"
-$versionSource = Get-Content -Raw -LiteralPath (Join-Path $projectRoot "shared\streamhouse_runtime\version.py")
-$versionMatch = [regex]::Match($versionSource, 'VERSION\s*=\s*"([^"]+)"')
+$versionSource = Get-Content -Raw -LiteralPath (Join-Path $projectRoot "products\hub\version.py")
+$versionMatch = [regex]::Match($versionSource, 'HUB_VERSION\s*=\s*"([^"]+)"')
 if (-not $versionMatch.Success) {
-    throw "Could not read VERSION from shared\streamhouse_runtime\version.py."
+    throw "Could not read HUB_VERSION from products\hub\version.py."
 }
 $version = $versionMatch.Groups[1].Value
 $bundle = Join-Path $projectRoot "dist\StreamhouseHub"

@@ -12,6 +12,7 @@ from unittest.mock import Mock, patch
 from zipfile import ZipFile
 
 from products.hub.core.diagnostics import DiagnosticsService, sanitize_support_text
+from products.hub.version import HUB_VERSION
 from shared.streamhouse_runtime.logger import Logger
 
 
@@ -60,6 +61,7 @@ class DiagnosticsServiceTests(unittest.TestCase):
         Logger.setup(
             session_id=diagnostics.session_id,
             product_name="StreamhouseHub",
+            product_version=HUB_VERSION,
             log_directory=diagnostics.logs_directory,
             retained_sessions=10,
         )
@@ -69,6 +71,10 @@ class DiagnosticsServiceTests(unittest.TestCase):
         current = Logger.session_log_path()
         self.assertIn(diagnostics.session_id[:8], current.name)
         self.assertIn(diagnostics.session_id, current.read_text(encoding="utf-8"))
+        self.assertIn(
+            f"Version : {HUB_VERSION}",
+            current.read_text(encoding="utf-8"),
+        )
         self.assertLessEqual(
             len(list(diagnostics.logs_directory.glob("StreamhouseHub-*.log"))),
             10,
@@ -474,6 +480,7 @@ class DiagnosticsServiceTests(unittest.TestCase):
         summary = diagnostics.diagnostic_summary()
 
         self.assertIn("Streamhouse Hub Support Diagnostics", summary)
+        self.assertIn(f"Hub Version: {HUB_VERSION}", summary)
         self.assertIn(diagnostics.session_id, summary)
         self.assertIn("Chat: Connected", summary)
         self.assertIn("Routines: 12", summary)
