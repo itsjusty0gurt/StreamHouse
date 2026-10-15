@@ -28,10 +28,6 @@ DATETIME_SUFFIXES = frozenset({"created_at", "started_at", "followed_at"})
 OUTPUT_DESCRIPTIONS = {
     "automation.clip_url": "Normal shareable Twitch clip URL produced during this routine.",
     "automation.clip_embed_url": "Normalized Twitch iframe/embed URL produced during this routine.",
-    "automation.clip_media_url": (
-        "Temporary best-effort Twitch CDN MP4 URL produced during this routine; "
-        "empty when direct resolution is unavailable."
-    ),
 }
 
 
@@ -176,7 +172,6 @@ STATIC_OUTPUTS = {
     "twitch.get_user_clip": (
         "clip_url",
         "clip_embed_url",
-        "clip_media_url",
         "clip_id",
         "clip_title",
         "clip_duration",

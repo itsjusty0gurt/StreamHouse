@@ -167,15 +167,14 @@ def test_get_user_clip_reference_is_derived_from_task_metadata() -> None:
     text = entry.search_text()
 
     assert "normal shareable clip page url" in text
-    assert "temporary direct twitch cdn mp4 url" in text
-    assert "best-effort" in text
+    assert "obs/browser-source iframe url" in text
     assert "parent=localhost" in text
     assert "autoplay=true" in text
     assert "muted=false" in text
     assert "random featured" in text
     assert "{automation.clip_url}" in text
     assert "{automation.clip_embed_url}" in text
-    assert "{automation.clip_media_url}" in text
+    assert "{automation.clip_media_url}" not in text
     assert "same root routine execution" in text
 
 
@@ -205,7 +204,6 @@ def test_obs_browser_source_url_reference_is_derived_from_task_metadata() -> Non
 
     assert "selected obs browser source" in text
     assert "canonical variable" in text
-    assert "{automation.clip_media_url}" in text
     assert "{automation.clip_embed_url}" in text
     assert "active obs connection" in text
 

@@ -18,7 +18,6 @@ from products.hub.automation.variable_registry import (
     validate_placeholders,
 )
 from products.hub.twitch.channel_information import ChannelInformationStore
-from products.hub.twitch.clip_media import direct_clip_media_url
 from products.hub.twitch.service import TwitchService
 from shared.streamhouse_runtime.logger import Logger
 
@@ -513,12 +512,10 @@ class TwitchAutomationTask:
         variable_resolver: Callable[
             [str, Mapping[str, str]], Mapping[str, str]
         ] | None = None,
-        clip_media_resolver: object | None = None,
     ) -> None:
         self.service = service
         self.task_type = task_type
         self.variable_resolver = variable_resolver
-        self.clip_media_resolver = clip_media_resolver
 
     def execute(
         self, task: TaskDefinition, trigger: TriggerEvent
@@ -584,7 +581,6 @@ class TwitchAutomationTask:
                 {
                     "clip_url": "",
                     "clip_embed_url": "",
-                    "clip_media_url": "",
                     "clip_id": "",
                     "clip_title": "",
                     "clip_duration": "",
@@ -624,25 +620,11 @@ class TwitchAutomationTask:
                 raise ValueError("Twitch returned invalid clip information.")
             clip_url = _normal_clip_url(selected)
             clip_embed_url = _obs_clip_embed_url(selected)
-            clip_media_url = ""
-            resolve_media = getattr(self.clip_media_resolver, "resolve", None)
-            if callable(resolve_media):
-                try:
-                    clip_media_url = direct_clip_media_url(
-                        resolve_media(clip_id, clip_embed_url)
-                    )
-                except Exception as error:
-                    Logger.debug(
-                        "Twitch clip direct media resolution failed; using embed "
-                        f"fallback ({type(error).__name__}).",
-                        source="TWITCH",
-                    )
             _publish(
                 context,
                 {
                     "clip_url": clip_url,
                     "clip_embed_url": clip_embed_url,
-                    "clip_media_url": clip_media_url,
                     "clip_id": clip_id,
                     "clip_title": selected.get("title", ""),
                     "clip_duration": selected.get("duration", 0),
@@ -713,7 +695,6 @@ def register_twitch_tasks(
     channel_information_provider: Callable[[], ChannelInformationStore] | None = None,
     variable_registry: VariableRegistry | None = None,
     ads_service: object | None = None,
-    clip_media_resolver: object | None = None,
 ) -> None:
     registry.register(SendTwitchChatMessageTask(service, variable_registry))
     registry.register(ResolveTwitchUserTask(service))
@@ -738,10 +719,5 @@ def register_twitch_tasks(
                 else service
             )
             registry.register(
-                TwitchAutomationTask(
-                    task_service,
-                    task_type,
-                    variable_resolver,
-                    clip_media_resolver,
-                )
+                TwitchAutomationTask(task_service, task_type, variable_resolver)
             )

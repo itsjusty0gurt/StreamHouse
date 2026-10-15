@@ -570,7 +570,6 @@ def test_generated_task_outputs_have_typed_temporary_metadata() -> None:
     assert set(clip_by_name) == {
         "automation.clip_url",
         "automation.clip_embed_url",
-        "automation.clip_media_url",
         "automation.clip_id",
         "automation.clip_title",
         "automation.clip_duration",
@@ -579,7 +578,6 @@ def test_generated_task_outputs_have_typed_temporary_metadata() -> None:
     assert clip_by_name["automation.clip_duration"].data_type is VariableDataType.NUMBER
     assert "shareable" in clip_by_name["automation.clip_url"].description
     assert "iframe/embed" in clip_by_name["automation.clip_embed_url"].description
-    assert "Temporary best-effort" in clip_by_name["automation.clip_media_url"].description
     assert all(
         item.availability is VariableAvailability.TEMPORARY
         for item in clip_outputs

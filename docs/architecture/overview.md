@@ -967,12 +967,9 @@ official user and channel-information responses, and publishes temporary
 `automation.user.*` outputs without mutating the triggering `user.*` context.
 The Get User Clip task keeps Twitch's selected clip metadata and publishes
 separate routine-scoped outputs: `automation.clip_url` is Twitch's normal share
-URL, `automation.clip_embed_url` is its normalized OBS/browser-source iframe
-fallback, and `automation.clip_media_url` is a best-effort temporary direct
-Twitch CDN MP4 URL. One lazy, MainWindow-owned hidden Qt WebEngine page serializes
-direct-media resolution, validates the CDN boundary, and is stopped during Hub
-shutdown. Resolution failure leaves the media URL empty without failing clip
-selection or removing the embed fallback.
+URL, while `automation.clip_embed_url` is its normalized OBS/browser-source
+iframe URL. Clip selection does not create a hidden WebEngine player or attempt
+to resolve Twitch's temporary CDN media URLs.
 Unknown slash text is not sent blindly to Twitch.
 
 Python-script tasks expose trigger context only through `STREAMHOUSE_*`

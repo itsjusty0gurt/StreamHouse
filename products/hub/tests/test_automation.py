@@ -172,7 +172,7 @@ class AutomationServiceTests(unittest.TestCase):
         assert browser_url is not None
         self.assertEqual(browser_url.variable_inputs, ("url",))
         self.assertIn("only the url setting", browser_url.help_text.casefold())
-        self.assertIn("automation.clip_media_url", " ".join(browser_url.examples))
+        self.assertIn("automation.clip_embed_url", " ".join(browser_url.examples))
 
     def test_registry_rejects_incomplete_visible_help_metadata(self) -> None:
         registry = TaskRegistry()

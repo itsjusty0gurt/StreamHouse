@@ -514,16 +514,16 @@ class ObsTaskTests(unittest.TestCase):
             "test",
             "manual",
             {
-                "automation.clip_media_url": (
-                    "https://production.assets.clips.twitchcdn.net/selected.mp4"
-                    "?sig=temporary"
+                "automation.clip_embed_url": (
+                    "https://clips.twitch.tv/embed?clip=selected-clip"
+                    "&parent=localhost&autoplay=true&muted=false"
                 )
             },
         )
         self.assertTrue(
             self.run_task(
                 "obs.set_browser_source_url",
-                {"input": "Clip Player", "url": "{automation.clip_media_url}"},
+                {"input": "Clip Player", "url": "{automation.clip_embed_url}"},
             )
         )
 
@@ -544,8 +544,8 @@ class ObsTaskTests(unittest.TestCase):
                         "inputName": "Clip Player",
                         "inputSettings": {
                             "url": (
-                                "https://production.assets.clips.twitchcdn.net/selected.mp4"
-                                "?sig=temporary"
+                                "https://clips.twitch.tv/embed?clip=selected-clip"
+                                "&parent=localhost&autoplay=true&muted=false"
                             )
                         },
                         "overlay": True,

@@ -143,7 +143,6 @@ from products.hub.twitch.activity_history import (
     PersistedActivity,
 )
 from products.hub.twitch.chatter_history import ChatterHistoryStore
-from products.hub.twitch.clip_media import TwitchClipMediaResolver
 from products.hub.twitch.user_groups import (
     UserGroupService,
     UserGroupStore,
@@ -412,7 +411,6 @@ class MainWindow(QMainWindow):
         soundboard_relay_config_store: SoundboardRelayConfigStore | None = None,
         soundboard_relay_client: SoundboardRelayClient | None = None,
         diagnostics_service: DiagnosticsService | None = None,
-        clip_media_resolver: TwitchClipMediaResolver | None = None,
         auto_upgrade_permissions: bool = True,
     ) -> None:
         super().__init__()
@@ -423,7 +421,6 @@ class MainWindow(QMainWindow):
         )
 
         self.twitch_service = twitch_service or TwitchService()
-        self.clip_media_resolver = clip_media_resolver or TwitchClipMediaResolver(self)
         self.ads_service = AdsService(self.twitch_service)
         self.twitch_auth = twitch_auth or TwitchAuthService()
         self.twitch_bot_auth = twitch_bot_auth or TwitchAuthService(
@@ -609,7 +606,6 @@ class MainWindow(QMainWindow):
             lambda: self.channel_information_store,
             self.variable_registry,
             self.ads_service,
-            self.clip_media_resolver,
         )
         self.task_registry.register(LaunchApplicationTask())
         self.task_registry.register(CloseApplicationTask())
@@ -8737,7 +8733,6 @@ class MainWindow(QMainWindow):
         self._shutting_down = True
         self.activity_age_timer.stop()
         self._activity_rows.clear()
-        self.clip_media_resolver.shutdown()
         self.local_integration.shutdown()
         self.music_player_service.shutdown()
         self.chat_user_page.shutdown()
