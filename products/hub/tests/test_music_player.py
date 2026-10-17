@@ -463,6 +463,82 @@ def test_command_result_is_correlated_and_state_is_not_optimistically_changed() 
     service.shutdown()
 
 
+def test_transport_commands_round_trip_from_hello_to_outbound_payload() -> None:
+    service, socket = _service()
+    commands = [
+        "play",
+        "pause",
+        "play_pause",
+        "next",
+        "previous",
+        "set_volume",
+        "set_muted",
+    ]
+    _connect(service, socket, commands)
+    assert service.capabilities == frozenset(commands)
+
+    dispatched: list[str] = []
+
+    def accept(payload: dict[str, object]) -> None:
+        if payload.get("type") != "command":
+            return
+        dispatched.append(str(payload["command"]))
+        socket.textMessageReceived.emit(
+            json.dumps(
+                {
+                    "type": "command_result",
+                    "protocol_version": 1,
+                    "request_id": payload["request_id"],
+                    "ok": True,
+                }
+            )
+        )
+
+    socket.on_send = accept
+    assert service.send_command("play").succeeded
+    assert service.send_command("pause").succeeded
+    assert service.send_command("play_pause").succeeded
+    assert service.send_command("next").succeeded
+    assert service.send_command("previous").succeeded
+    assert service.send_command("set_volume", {"volume": 55}).succeeded
+    assert service.send_command("set_muted", {"muted": True}).succeeded
+    assert dispatched == commands
+    service.shutdown()
+
+
+def test_unsupported_transport_commands_fail_without_sending() -> None:
+    service, socket = _service()
+    _connect(service, socket, ["play", "pause", "set_volume", "set_muted"])
+    sent_before = len(socket.sent)
+
+    next_result = service.send_command("next")
+    previous_result = service.send_command("previous")
+
+    assert not next_result.succeeded
+    assert next_result.detail == "Music player does not support next."
+    assert not previous_result.succeeded
+    assert previous_result.detail == "Music player does not support previous."
+    assert len(socket.sent) == sent_before
+    service.shutdown()
+
+
+def test_reconnect_refreshes_transport_capabilities_from_new_hello() -> None:
+    service, socket = _service()
+    _connect(service, socket, ["next", "previous"])
+    assert service.capabilities == frozenset({"next", "previous"})
+
+    socket.disconnected.emit()
+    assert service.capabilities == frozenset()
+    service._reconnect_timer.stop()
+    service._open_socket()
+    socket.connected.emit()
+    _hello(socket, ["next", "previous"])
+
+    assert service.connected
+    assert service.capabilities == frozenset({"next", "previous"})
+    service.shutdown()
+
+
 def test_command_failure_timeout_and_disconnect_are_clean() -> None:
     service, socket = _service()
     _connect(service, socket, ["play", "pause", "next"])
@@ -560,6 +636,25 @@ def test_music_tasks_resolve_volume_and_send_protocol_booleans() -> None:
         trigger,
     )
     assert not invalid_muted.succeeded
+
+
+def test_music_transport_tasks_send_protocol_command_names() -> None:
+    registry = VariableRegistry()
+    service = _TaskService()
+    trigger = TriggerEvent("test", "core", "manual", {})
+
+    next_task = MusicCommandTask("music.next", "next", service, registry)
+    previous_task = MusicCommandTask(
+        "music.previous", "previous", service, registry
+    )
+
+    assert next_task.execute(
+        TaskDefinition("next", "music.next", "Next", {}), trigger
+    ).succeeded
+    assert previous_task.execute(
+        TaskDefinition("previous", "music.previous", "Previous", {}), trigger
+    ).succeeded
+    assert service.calls == [("next", {}), ("previous", {})]
 
 
 def test_shutdown_stops_reconnect_and_rejects_late_commands() -> None:
