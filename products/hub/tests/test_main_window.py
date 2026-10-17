@@ -8,6 +8,7 @@ from time import monotonic
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import Mock, patch
+from uuid import uuid4
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -48,6 +49,7 @@ from products.hub.twitch.user_groups import (
 from products.hub.twitch.activity_history import PersistedActivity
 from products.hub.automation.routines import RoutineStore
 from products.hub.automation.custom_variables import CustomVariableStore
+from products.hub.counters.models import CounterDefinition
 from products.hub.automation.models import (
     DEFAULT_AUTOMATION_QUEUE_ID,
     END_ROUTINE_ACTION,
@@ -4410,6 +4412,62 @@ class MainWindowTests(unittest.TestCase):
         self.assertFalse(hasattr(self.window, "ad_schedule_progress"))
         self.assertTrue(self.window.run_ad_button.isEnabled())
         self.assertTrue(self.window.snooze_ad_button.isEnabled())
+
+    def test_counters_page_refreshes_for_stream_and_counter_changes(self) -> None:
+        page = self.window.counters_page
+        counter_id = f"refresh_{uuid4().hex}"
+        self.window.counter_service.create_counter(
+            CounterDefinition(counter_id, "Coffee", "ml", "ml")
+        )
+        self.addCleanup(self.window.counter_service.delete_counter, counter_id)
+        page._select_counter(counter_id)
+        self.assertIn("Stream offline", page.list.currentItem().text())
+        self.assertFalse(page.set_stream.isEnabled())
+
+        now = datetime.now(timezone.utc)
+        self.window._apply_channel_snapshot(
+            ChannelSnapshotResult(
+                request_id=self.window.channel_snapshot_request_id,
+                snapshot={
+                    "stream": {
+                        "id": "coffee-stream",
+                        "viewer_count": 4,
+                        "started_at": now.isoformat(),
+                    }
+                },
+            )
+        )
+
+        self.assertEqual(self.window.current_memory_stream_id, "coffee-stream")
+        self.assertIn("Current Twitch stream: 0 ml", page.summary.text())
+        self.assertTrue(page.set_stream.isEnabled())
+
+        worker = Thread(
+            target=self.window.counter_service.update_values,
+            args=(counter_id, 25, ("channel_total", "stream_total")),
+            kwargs={"stream_id": "coffee-stream"},
+        )
+        worker.start()
+        worker.join(timeout=2)
+        self.assertFalse(worker.is_alive())
+        self.application.processEvents()
+        self.assertIn("25 ml", page.list.currentItem().text())
+        self.assertIn("Current Twitch stream: 25 ml", page.summary.text())
+
+        self.window.counter_service.set_value(counter_id, "channel_total", 50)
+        self.assertIn("Coffee    50 ml", page.list.currentItem().text())
+        self.assertIn("Current Twitch stream: 25 ml", page.summary.text())
+
+        self.window._apply_channel_snapshot(
+            ChannelSnapshotResult(
+                request_id=self.window.channel_snapshot_request_id,
+                snapshot={"stream": None},
+            )
+        )
+        self.assertEqual(self.window.current_memory_stream_id, "")
+        self.assertIn("Stream offline", page.list.currentItem().text())
+        self.assertIn("Channel lifetime: 50 ml", page.summary.text())
+        self.assertFalse(page.set_stream.isEnabled())
 
     def test_ads_live_snapshot_from_real_worker_enables_controls(self) -> None:
         now = datetime.now(timezone.utc)

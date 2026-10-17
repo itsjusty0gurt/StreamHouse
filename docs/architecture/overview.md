@@ -909,7 +909,11 @@ or numbered argument Variables exist.
 The Counters management page is presented inside Hub's Twitch workspace. This
 is a navigation ownership choice only: definitions, named value files,
 transactional updates, and automation providers remain in
-`products/hub/counters/`.
+`products/hub/counters/`. Successful `CounterService` mutations notify a
+MainWindow-owned Qt bridge so worker-thread Automation changes repaint the page
+on the UI thread. Twitch stream online/offline and channel-snapshot transitions
+use that same bridge after the authoritative current stream ID is updated; the
+page does not cache a separate stream/session identity or poll for changes.
 
 The Users workspace reads viewer identity, observed bot status,
 observed Twitch roles, and first/last seen from the chatter-history store. Stable Twitch

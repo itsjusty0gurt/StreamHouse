@@ -49,6 +49,36 @@ class CountersPageTests(unittest.TestCase):
         self.page.viewer_search.setText("nobody"); self.assertEqual(self.page.viewer_table.rowCount(), 0)
         self.page.search.setText("bonks"); self.assertEqual(self.page.list.count(), 0)
 
+    def test_page_created_while_live_uses_current_stream_values(self) -> None:
+        self.service.update_values(
+            "farts",
+            7,
+            ("channel_total", "stream_total"),
+            stream_id="stream-1",
+        )
+
+        page = CountersPage(self.service, lambda: "stream-1", self.routines)
+        try:
+            self.assertIn("7 farts", page.list.item(0).text())
+            self.assertIn("Current Twitch stream: 7 farts", page.summary.text())
+            self.assertTrue(page.set_stream.isEnabled())
+        finally:
+            page.deleteLater()
+
+    def test_service_reports_successful_value_and_manual_changes(self) -> None:
+        changed: list[str] = []
+        self.service.subscribe_changes(changed.append)
+
+        self.service.update_values(
+            "farts",
+            1,
+            ("channel_total", "stream_total"),
+            stream_id="stream-1",
+        )
+        self.service.set_value("farts", "channel_total", 5)
+
+        self.assertEqual(changed, ["farts", "farts"])
+
     def test_header_matches_shared_page_proportions(self) -> None:
         margins = self.page.layout().contentsMargins()
         self.assertEqual(

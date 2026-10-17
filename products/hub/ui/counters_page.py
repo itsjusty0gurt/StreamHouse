@@ -184,7 +184,7 @@ class CountersPage(QWidget):
         item = self.list.currentItem(); return str(item.data(Qt.ItemDataRole.UserRole) or "") if item else ""
 
     def refresh(self) -> None:
-        selected = self.selected_id(); query = self.search.text().strip().casefold(); self.list.clear()
+        selected = self.selected_id(); query = self.search.text().strip().casefold(); stream_id = self.stream_id_provider(); self.list.clear()
         try:
             definitions = self.service.list_counters()
         except (OSError, TypeError, ValueError) as error:
@@ -196,10 +196,10 @@ class CountersPage(QWidget):
         self.search.setEnabled(bool(definitions))
         for definition in definitions:
             if query and query not in definition.display_name.casefold() and query not in definition.counter_id: continue
-            values = self.service.get_values(definition.counter_id, stream_id=self.stream_id_provider())
+            values = self.service.get_values(definition.counter_id, stream_id=stream_id)
             state = "" if definition.enabled else " · Disabled"
             shared = self.service.format_value(definition.counter_id, values.channel_total)
-            stream_text = self.service.format_value(definition.counter_id, values.stream_total) + " this stream" if self.stream_id_provider() else "Stream offline"
+            stream_text = self.service.format_value(definition.counter_id, values.stream_total) + " this stream" if stream_id else "Stream offline"
             item = QListWidgetItem(f"{definition.display_name}    {shared} · {stream_text}{state}"); item.setData(Qt.ItemDataRole.UserRole, definition.counter_id); self.list.addItem(item)
             if definition.counter_id == selected: self.list.setCurrentItem(item)
         if self.list.currentItem() is None and self.list.count(): self.list.setCurrentRow(0)

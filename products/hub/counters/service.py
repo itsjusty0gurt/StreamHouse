@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from decimal import Decimal
+from threading import RLock
 from typing import Any, Callable, Iterable
 
 from products.hub.counters.models import (
@@ -31,6 +32,27 @@ class CounterService:
     def __init__(self, store: CounterStore, *, bot_checker: Callable[[str], bool] | None = None) -> None:
         self.store = store
         self.bot_checker = bot_checker or (lambda _user_id: False)
+        self._change_listeners: set[Callable[[str], None]] = set()
+        self._change_listener_lock = RLock()
+
+    def subscribe_changes(self, callback: Callable[[str], None]) -> None:
+        with self._change_listener_lock:
+            self._change_listeners.add(callback)
+
+    def unsubscribe_changes(self, callback: Callable[[str], None]) -> None:
+        with self._change_listener_lock:
+            self._change_listeners.discard(callback)
+
+    def _notify_changed(self, counter_id: str) -> None:
+        with self._change_listener_lock:
+            callbacks = tuple(self._change_listeners)
+        for callback in callbacks:
+            try:
+                callback(counter_id)
+            except (RuntimeError, TypeError):
+                # UI listeners can disappear during shutdown. A successful
+                # counter write must not be turned into a task failure.
+                continue
 
     def list_counters(self) -> tuple[CounterDefinition, ...]:
         return tuple(self.store.list_definitions())
@@ -41,15 +63,18 @@ class CounterService:
 
     def create_counter(self, definition: CounterDefinition) -> CounterDefinition:
         self.store.create(definition)
+        self._notify_changed(definition.counter_id)
         return definition
 
     def update_counter(self, counter_id: str, **changes: Any) -> CounterDefinition:
         updated = self._require(counter_id).updated(**changes)
         self.store.update_definition(updated)
+        self._notify_changed(updated.counter_id)
         return updated
 
     def delete_counter(self, counter_id: str) -> None:
         self.store.delete(counter_id)
+        self._notify_changed(str(counter_id).strip().casefold())
 
     def set_enabled(self, counter_id: str, enabled: bool) -> CounterDefinition:
         return self.update_counter(counter_id, enabled=bool(enabled))
@@ -177,6 +202,7 @@ class CounterService:
             detail = self._skipped_detail(skipped, user_id, stream_id)
         elif clamped:
             detail = "One or more values reached the configured minimum."
+        self._notify_changed(definition.counter_id)
         return CounterOperation(
             status,
             values,
@@ -300,6 +326,7 @@ class CounterService:
             values = self.store.mutate_data(counter_id, mutate)
         except (OSError, ValueError) as error:
             return CounterOperation("persistence_failed", before, skipped_scopes=selected, detail=f"Counter value was not saved: {error}", **identity)
+        self._notify_changed(definition.counter_id)
         return CounterOperation(
             "partial_success" if skipped else "success",
             values,
@@ -376,6 +403,7 @@ class CounterService:
             return CounterOperation("persistence_failed", before, skipped_scopes=requested, detail=f"Counter reset was not saved: {error}", **identity)
         status = "partial_success" if skipped else "success"
         detail = self._skipped_detail(skipped, user_id, stream_id) if skipped else ""
+        self._notify_changed(definition.counter_id)
         return CounterOperation(status, values, valid, tuple(skipped), detail=detail, **identity)
 
     def viewer_rows(self, counter_id: str, *, stream_id: str = "") -> list[dict[str, Any]]:
@@ -388,7 +416,10 @@ class CounterService:
         self._require(counter_id)
         def mutate(payload: dict[str, Any]) -> bool:
             return payload.get("viewers", {}).pop(user_id, None) is not None
-        return bool(self.store.mutate_data(counter_id, mutate))
+        removed = bool(self.store.mutate_data(counter_id, mutate))
+        if removed:
+            self._notify_changed(str(counter_id).strip().casefold())
+        return removed
 
     def leaderboard(self, counter_id: str, *, stream_id: str = "", current_stream: bool = False, limit: int = 5, include_zero: bool = False) -> list[dict[str, Any]]:
         definition = self._require(counter_id)

@@ -11,7 +11,7 @@ from datetime import datetime, time, timedelta, timezone
 from html import escape
 from pathlib import Path
 
-from PySide6.QtCore import QThreadPool, QTime, QTimer, Qt, Slot, QUrl
+from PySide6.QtCore import QThreadPool, QTime, QTimer, Qt, Signal, Slot, QUrl
 from PySide6.QtGui import QCloseEvent, QColor, QCursor, QDesktopServices, QFont
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -385,6 +385,8 @@ class ActivityFeedCard(QFrame):
 
 
 class MainWindow(QMainWindow):
+    counter_refresh_requested = Signal()
+
     def __init__(
         self,
         twitch_service: TwitchService | None = None,
@@ -566,6 +568,9 @@ class MainWindow(QMainWindow):
             self.counter_store,
             bot_checker=self.user_groups.is_bot,
         )
+        self._counter_change_callback = self._handle_counter_service_change
+        self.counter_service.subscribe_changes(self._counter_change_callback)
+        self.counter_refresh_requested.connect(self._refresh_counters_page)
         self.variable_registry = VariableRegistry()
         self.variable_registry.register(context_provider())
         self.variable_registry.register(
@@ -2948,6 +2953,17 @@ class MainWindow(QMainWindow):
         self.counters_page.counters_changed.connect(self.automation_page.refresh)
         self.channel_tabs.addTab(self.counters_page, "Counters")
         self._build_chat_user_page()
+
+    def _handle_counter_service_change(self, _counter_id: str) -> None:
+        # Counter tasks can finish on an Automation worker thread. Emitting a
+        # Qt signal here queues the widget refresh onto MainWindow's thread.
+        self.counter_refresh_requested.emit()
+
+    @Slot()
+    def _refresh_counters_page(self) -> None:
+        page = getattr(self, "counters_page", None)
+        if page is not None:
+            page.refresh()
 
     def _build_chat_user_page(self) -> None:
         self.chat_user_page = QWidget(self.channel_tabs)
@@ -5693,6 +5709,7 @@ class MainWindow(QMainWindow):
             else:
                 self.current_memory_stream_id = ""
                 self.training_notice_attempt_context = ""
+            self.counter_refresh_requested.emit()
             self.refresh_channel_snapshot()
             return
         entry = format_twitch_activity(twitch_event)
@@ -7222,6 +7239,7 @@ class MainWindow(QMainWindow):
         if isinstance(stream, dict):
             self._maybe_announce_training_capture()
         self._apply_stream_live_state(stream)
+        self.counter_refresh_requested.emit()
         followers = snapshot.get("followers")
         self.stream_followers_label.setText(
             "—"
@@ -8731,6 +8749,7 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event: QCloseEvent) -> None:
         self._shutting_down = True
+        self.counter_service.unsubscribe_changes(self._counter_change_callback)
         self.activity_age_timer.stop()
         self._activity_rows.clear()
         self.local_integration.shutdown()
