@@ -93,6 +93,7 @@ class TwitchChatView(QWebEngineView):
         message: TwitchMessage,
         *,
         badge_urls: tuple[str, ...] = (),
+        cheermote_assets: dict[tuple[str, int], tuple[str, str]] | None = None,
         username_color: str = "#bf94ff",
         show_timestamp: bool = True,
         emote_size: int = 20,
@@ -100,6 +101,7 @@ class TwitchChatView(QWebEngineView):
         entry = TwitchChatEntry.from_message(message)
         self._options[entry.entry_id] = {
             "badge_urls": badge_urls,
+            "cheermote_assets": dict(cheermote_assets or {}),
             "username_color": username_color,
             "show_timestamp": show_timestamp,
             "emote_size": max(16, int(emote_size)),
@@ -329,16 +331,44 @@ class TwitchChatView(QWebEngineView):
         else:
             parts: list[str] = []
             size = int(options.get("emote_size", 20))
+            cheermote_assets = options.get("cheermote_assets", {})
             for fragment in message.fragments:
-                if fragment.emote is None:
-                    parts.append(self._linkify(fragment.text))
-                else:
+                if fragment.emote is not None:
                     animated = "animated" in fragment.emote.formats
                     url = twitch_emote_url(fragment.emote.id, animated)
                     parts.append(
                         f"<img src='{escape(url)}' width='{size}' height='{size}' "
                         f"alt='{escape(fragment.text)}' />"
                     )
+                elif fragment.cheermote is not None:
+                    key = (
+                        fragment.cheermote.prefix.strip().casefold(),
+                        fragment.cheermote.tier,
+                    )
+                    asset = (
+                        cheermote_assets.get(key, ("", ""))
+                        if isinstance(cheermote_assets, dict)
+                        else ("", "")
+                    )
+                    url, color = asset
+                    if url:
+                        safe_color = (
+                            color
+                            if re.fullmatch(r"#[0-9a-fA-F]{6}", color)
+                            else "#efeff1"
+                        )
+                        parts.append(
+                            f"<img class='chat-cheermote' src='{escape(url)}' "
+                            f"width='{size}' height='{size}' "
+                            f"alt='{escape(fragment.text)}' />"
+                            f"<span class='chat-cheer-bits' "
+                            f"style='color:{safe_color};'>"
+                            f"{fragment.cheermote.bits}</span>"
+                        )
+                    else:
+                        parts.append(self._linkify(fragment.text))
+                else:
+                    parts.append(self._linkify(fragment.text))
             body = "".join(parts) or self._linkify(message.text)
         context_url = "streamhouse-chat-context://message?" + urlencode(
             {"entry_id": entry.entry_id}

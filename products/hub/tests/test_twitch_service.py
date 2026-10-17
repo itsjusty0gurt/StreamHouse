@@ -17,6 +17,30 @@ from products.hub.twitch.slash_commands import (
 
 
 class TwitchServiceTests(unittest.TestCase):
+    def test_cheermote_asset_cache_uses_prefix_tier_and_rejects_stale_load(
+        self,
+    ) -> None:
+        token = TwitchToken("access", "refresh", 999, [])
+        helix = Mock()
+        helix.get_cheermote_assets.return_value = {
+            ("cheer", 100): ("https://cdn.example/cheer100.gif", "#9c3ee8")
+        }
+        service = TwitchService(helix=helix)
+        service.broadcaster_user_id = "channel-1"
+        service._cheermote_load_generation = 2
+
+        service._load_cheermote_assets(2, "channel-1", token)
+
+        self.assertEqual(
+            service.cheermote_asset("Cheer", 100),
+            ("https://cdn.example/cheer100.gif", "#9c3ee8"),
+        )
+        helix.get_cheermote_assets.return_value = {
+            ("cheer", 1): ("https://cdn.example/stale.gif", "#979797")
+        }
+        service._load_cheermote_assets(1, "channel-1", token)
+        self.assertEqual(service.cheermote_asset("cheer", 1), ("", ""))
+
     def setUp(self) -> None:
         self.original_logger = Logger._logger
         Logger._logger = logging.Logger("TwitchServiceTest", logging.DEBUG)

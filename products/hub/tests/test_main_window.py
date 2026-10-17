@@ -72,6 +72,7 @@ from products.hub.twitch.service import TwitchConnectionState
 from products.hub.twitch.session_history import StreamSession
 from products.hub.twitch.models import (
     TwitchChatNotice,
+    TwitchCheermote,
     TwitchEmote,
     TwitchEvent,
     TwitchEventTransport,
@@ -4782,6 +4783,39 @@ class MainWindowTests(unittest.TestCase):
         self.assertIn("width='20'", rendered_html)
         self.assertIn("data-user-id='viewer-1'", rendered_html)
         self.assertIn("data-message-id='message-1'", rendered_html)
+
+    def test_twitch_cheermote_uses_structured_fragment_and_cached_asset(self) -> None:
+        self.window.twitch_service.cheermote_assets = {
+            ("cheer", 100): (
+                "https://cdn.example/cheer100.gif",
+                "#9c3ee8",
+            )
+        }
+        message = TwitchMessage(
+            username="viewer",
+            text="Amazing Cheer100!",
+            received_at=datetime.now(timezone.utc),
+            message_id="cheer-message",
+            user_id="viewer-1",
+            bits=100,
+            fragments=(
+                TwitchMessageFragment(TwitchFragmentType.TEXT, "Amazing "),
+                TwitchMessageFragment(
+                    TwitchFragmentType.CHEERMOTE,
+                    "Cheer100",
+                    cheermote=TwitchCheermote("Cheer", 100, 100),
+                ),
+                TwitchMessageFragment(TwitchFragmentType.TEXT, "!"),
+            ),
+        )
+
+        self.window.handle_twitch_message(message)
+
+        rendered_html = self.window.ui.twitchChatOutput.toHtml()
+        self.assertIn("Amazing ", rendered_html)
+        self.assertIn("https://cdn.example/cheer100.gif", rendered_html)
+        self.assertIn("class='chat-cheermote'", rendered_html)
+        self.assertEqual(rendered_html.count("class='chat-cheermote'"), 1)
 
     def test_first_message_stream_trigger_runs_once_per_viewer(self) -> None:
         routine = self.twitch_command_trigger_store.routine_store.add(

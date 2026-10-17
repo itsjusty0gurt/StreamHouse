@@ -34,6 +34,7 @@ class TwitchHelixClient:
     PINS_URL = "https://api.twitch.tv/helix/chat/pins"
     GLOBAL_BADGES_URL = "https://api.twitch.tv/helix/chat/badges/global"
     CHANNEL_BADGES_URL = "https://api.twitch.tv/helix/chat/badges"
+    CHEERMOTES_URL = "https://api.twitch.tv/helix/bits/cheermotes"
     STREAMS_URL = "https://api.twitch.tv/helix/streams"
     FOLLOWED_STREAMS_URL = "https://api.twitch.tv/helix/streams/followed"
     CHANNELS_URL = "https://api.twitch.tv/helix/channels"
@@ -673,6 +674,50 @@ class TwitchHelixClient:
                             version.get("image_url_1x", "")
                         )
         return badges
+
+    def get_cheermote_assets(
+        self,
+        broadcaster_user_id: str,
+        token: TwitchToken,
+    ) -> dict[tuple[str, int], tuple[str, str]]:
+        query = urlencode({"broadcaster_id": broadcaster_user_id})
+        payload = self._read_json(
+            Request(
+                f"{self.CHEERMOTES_URL}?{query}",
+                headers=self._headers(token),
+            )
+        )
+        assets: dict[tuple[str, int], tuple[str, str]] = {}
+        for definition in payload.get("data", []):
+            if not isinstance(definition, dict):
+                continue
+            prefix = str(definition.get("prefix", "")).strip().casefold()
+            if not prefix:
+                continue
+            for tier in definition.get("tiers", []):
+                if not isinstance(tier, dict):
+                    continue
+                try:
+                    tier_id = int(tier.get("id", 0))
+                except (TypeError, ValueError):
+                    continue
+                images = tier.get("images", {})
+                dark = images.get("dark", {}) if isinstance(images, dict) else {}
+                animated = (
+                    dark.get("animated", {}) if isinstance(dark, dict) else {}
+                )
+                static = dark.get("static", {}) if isinstance(dark, dict) else {}
+                url = ""
+                if isinstance(animated, dict):
+                    url = str(animated.get("1", "")).strip()
+                if not url and isinstance(static, dict):
+                    url = str(static.get("1", "")).strip()
+                if tier_id > 0 and url.startswith("https://"):
+                    assets[(prefix, tier_id)] = (
+                        url,
+                        str(tier.get("color", "")).strip(),
+                    )
+        return assets
 
     def search_categories(
         self,

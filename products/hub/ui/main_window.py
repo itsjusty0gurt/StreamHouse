@@ -4211,12 +4211,24 @@ class MainWindow(QMainWindow):
             url = self.twitch_service.badge_url(badge.set_id, badge.id)
             if url:
                 badge_urls.append(url)
+        cheermote_assets: dict[tuple[str, int], tuple[str, str]] = {}
+        for fragment in chat_message.fragments:
+            if fragment.cheermote is None:
+                continue
+            key = (
+                fragment.cheermote.prefix.strip().casefold(),
+                fragment.cheermote.tier,
+            )
+            asset = self.twitch_service.cheermote_asset(*key)
+            if asset[0]:
+                cheermote_assets[key] = asset
 
         if not self.twitch_chat_has_content:
             self.ui.twitchChatOutput.clear()
         self.ui.twitchChatOutput.append_message(
             chat_message,
             badge_urls=tuple(badge_urls),
+            cheermote_assets=cheermote_assets,
             username_color=(
                 chat_message.color
                 or self._twitch_username_color(chat_message.username)

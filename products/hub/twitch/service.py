@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from enum import StrEnum
 from secrets import token_hex
+from threading import Thread
 from urllib.error import HTTPError, URLError
 
 from products.hub.config.twitch import TWITCH_REDEMPTION_SCOPES
@@ -71,6 +72,8 @@ class TwitchService:
         self.broadcaster_user_id = ""
         self.broadcaster_display_name = ""
         self.badge_urls: dict[tuple[str, str], str] = {}
+        self.cheermote_assets: dict[tuple[str, int], tuple[str, str]] = {}
+        self._cheermote_load_generation = 0
 
     @property
     def listener_url(self) -> str:
@@ -166,6 +169,8 @@ class TwitchService:
                 f"Twitch badges could not be loaded: {error}",
                 source="TWITCH",
             )
+
+        self._start_cheermote_asset_load(token)
 
         self.live_socket = TwitchEventSubSocket(
             on_welcome=self._receive_live_welcome,
@@ -402,6 +407,49 @@ class TwitchService:
 
     def badge_url(self, set_id: str, badge_id: str) -> str:
         return self.badge_urls.get((set_id, badge_id), "")
+
+    def cheermote_asset(self, prefix: str, tier: int) -> tuple[str, str]:
+        try:
+            tier_id = int(tier)
+        except (TypeError, ValueError):
+            return ("", "")
+        return self.cheermote_assets.get(
+            (str(prefix).strip().casefold(), tier_id),
+            ("", ""),
+        )
+
+    def _start_cheermote_asset_load(self, token: TwitchToken) -> None:
+        self._cheermote_load_generation += 1
+        self.cheermote_assets.clear()
+        generation = self._cheermote_load_generation
+        broadcaster_id = self.broadcaster_user_id
+        Thread(
+            target=self._load_cheermote_assets,
+            args=(generation, broadcaster_id, token),
+            name="TwitchCheermoteAssets",
+            daemon=True,
+        ).start()
+
+    def _load_cheermote_assets(
+        self,
+        generation: int,
+        broadcaster_id: str,
+        token: TwitchToken,
+    ) -> None:
+        try:
+            assets = self.helix.get_cheermote_assets(broadcaster_id, token)
+        except (HTTPError, URLError, OSError, ValueError) as error:
+            Logger.warning(
+                f"Twitch cheermotes could not be loaded: {error}",
+                source="TWITCH",
+            )
+            return
+        if (
+            generation == self._cheermote_load_generation
+            and broadcaster_id == self.broadcaster_user_id
+            and isinstance(assets, dict)
+        ):
+            self.cheermote_assets = assets
 
     def _broadcaster_credentials(self, required_scope: str = ""):
         token = self.auth.token if self.auth is not None else None
@@ -902,6 +950,8 @@ class TwitchService:
         self.broadcaster_user_id = ""
         self.broadcaster_display_name = ""
         self.badge_urls.clear()
+        self._cheermote_load_generation += 1
+        self.cheermote_assets.clear()
         self._set_state(TwitchConnectionState.DISCONNECTED)
         Logger.info(
             f'Disconnected from Twitch channel "{previous_channel}".',

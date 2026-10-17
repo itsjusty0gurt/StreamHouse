@@ -49,7 +49,9 @@ def signed_headers(
 
 class TwitchMessageParserTests(unittest.TestCase):
     def test_parses_badges_emotes_mentions_cheers_and_replies(self) -> None:
-        payload = create_chat_notification("channel", "Viewer", "Kappa @mod")
+        payload = create_chat_notification(
+            "channel", "Viewer", "Kappa Cheer100 @mod"
+        )
         event = payload["event"]
         event["color"] = "#00FF7F"
         event["badges"] = [
@@ -77,6 +79,24 @@ class TwitchMessageParserTests(unittest.TestCase):
                 "mention": None,
             },
             {
+                "type": "cheermote",
+                "text": "Cheer100",
+                "emote": None,
+                "cheermote": {
+                    "prefix": "Cheer",
+                    "bits": 100,
+                    "tier": 100,
+                },
+                "mention": None,
+            },
+            {
+                "type": "text",
+                "text": " ",
+                "emote": None,
+                "cheermote": None,
+                "mention": None,
+            },
+            {
                 "type": "mention",
                 "text": "@mod",
                 "emote": None,
@@ -88,6 +108,7 @@ class TwitchMessageParserTests(unittest.TestCase):
                 },
             },
         ]
+        event["cheer"] = {"bits": 100}
         event["reply"] = {
             "parent_message_id": "parent",
             "parent_message_body": "Earlier message",
@@ -110,7 +131,12 @@ class TwitchMessageParserTests(unittest.TestCase):
         self.assertEqual(message.fragments[0].type, TwitchFragmentType.EMOTE)
         self.assertEqual(message.fragments[0].emote.id, "25")
         self.assertIn("animated", message.fragments[0].emote.formats)
-        self.assertEqual(message.fragments[2].mention.user_login, "mod")
+        self.assertEqual(message.fragments[2].type, TwitchFragmentType.CHEERMOTE)
+        self.assertEqual(message.fragments[2].cheermote.prefix, "Cheer")
+        self.assertEqual(message.fragments[2].cheermote.bits, 100)
+        self.assertEqual(message.fragments[2].cheermote.tier, 100)
+        self.assertEqual(message.fragments[4].mention.user_login, "mod")
+        self.assertEqual(message.bits, 100)
         self.assertEqual(message.reply.parent_message_body, "Earlier message")
 
     def test_official_catalog_contains_current_event_families(self) -> None:

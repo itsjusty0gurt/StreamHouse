@@ -33,6 +33,82 @@ class _JsonResponse:
 
 class TwitchHelixClientTests(unittest.TestCase):
     @patch("products.hub.twitch.live.urlopen")
+    def test_get_cheermote_assets_uses_twitch_tiers_and_dark_images(
+        self, open_url
+    ) -> None:
+        open_url.return_value = _JsonResponse(
+            {
+                "data": [
+                    {
+                        "prefix": "Cheer",
+                        "tiers": [
+                            {
+                                "id": "1",
+                                "color": "#979797",
+                                "images": {
+                                    "dark": {
+                                        "animated": {
+                                            "1": "https://cdn.example/cheer1.gif"
+                                        },
+                                        "static": {
+                                            "1": "https://cdn.example/cheer1.png"
+                                        },
+                                    }
+                                },
+                            },
+                            {
+                                "id": "100",
+                                "color": "#9c3ee8",
+                                "images": {
+                                    "dark": {
+                                        "animated": {},
+                                        "static": {
+                                            "1": "https://cdn.example/cheer100.png"
+                                        },
+                                    }
+                                },
+                            },
+                        ],
+                    },
+                    {
+                        "prefix": "Custom",
+                        "tiers": [
+                            {
+                                "id": "1",
+                                "color": "#ffffff",
+                                "images": {
+                                    "dark": {
+                                        "animated": {
+                                            "1": "http://unsafe.example/custom.gif"
+                                        }
+                                    }
+                                },
+                            }
+                        ],
+                    },
+                ]
+            }
+        )
+        token = TwitchToken("access", "refresh", 999, [])
+
+        assets = TwitchHelixClient().get_cheermote_assets("channel-1", token)
+
+        self.assertEqual(
+            assets,
+            {
+                ("cheer", 1): (
+                    "https://cdn.example/cheer1.gif",
+                    "#979797",
+                ),
+                ("cheer", 100): (
+                    "https://cdn.example/cheer100.png",
+                    "#9c3ee8",
+                ),
+            },
+        )
+        self.assertIn("broadcaster_id=channel-1", open_url.call_args.args[0].full_url)
+
+    @patch("products.hub.twitch.live.urlopen")
     def test_followed_streams_paginate_deduplicate_and_keep_only_live(
         self, open_url
     ) -> None:

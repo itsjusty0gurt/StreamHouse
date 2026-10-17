@@ -9,7 +9,12 @@ from PySide6.QtCore import QPoint, QUrl
 from PySide6.QtGui import QContextMenuEvent
 from PySide6.QtWidgets import QApplication
 
-from products.hub.twitch.models import TwitchMessage
+from products.hub.twitch.models import (
+    TwitchCheermote,
+    TwitchFragmentType,
+    TwitchMessage,
+    TwitchMessageFragment,
+)
 from products.hub.ui.structured_twitch_chat_view import TwitchChatView
 
 
@@ -49,6 +54,78 @@ class TwitchChatViewTests(unittest.TestCase):
         self.assertIn("chat-context-target", view.toHtml())
         request.setAccepted.assert_called_once_with(True)
         self.assertTrue(event.isAccepted())
+        view.close()
+
+    def test_structured_cheermotes_render_with_mixed_text_and_multiple_prefixes(
+        self,
+    ) -> None:
+        view = TwitchChatView()
+        view.append_message(
+            TwitchMessage(
+                "Viewer",
+                "Wow Cheer1 and Custom100!",
+                datetime.now(timezone.utc),
+                fragments=(
+                    TwitchMessageFragment(TwitchFragmentType.TEXT, "Wow "),
+                    TwitchMessageFragment(
+                        TwitchFragmentType.CHEERMOTE,
+                        "Cheer1",
+                        cheermote=TwitchCheermote("Cheer", 1, 1),
+                    ),
+                    TwitchMessageFragment(TwitchFragmentType.TEXT, " and "),
+                    TwitchMessageFragment(
+                        TwitchFragmentType.CHEERMOTE,
+                        "Custom100",
+                        cheermote=TwitchCheermote("Custom", 100, 100),
+                    ),
+                    TwitchMessageFragment(TwitchFragmentType.TEXT, "!"),
+                ),
+            ),
+            cheermote_assets={
+                ("cheer", 1): ("https://cdn.example/cheer1.gif", "#979797"),
+                ("custom", 100): (
+                    "https://cdn.example/custom100.gif",
+                    "#9c3ee8",
+                ),
+            },
+        )
+
+        rendered = view.toHtml()
+        self.assertIn("Wow ", rendered)
+        self.assertIn("https://cdn.example/cheer1.gif", rendered)
+        self.assertIn("https://cdn.example/custom100.gif", rendered)
+        self.assertEqual(rendered.count("class='chat-cheermote'"), 2)
+        self.assertEqual(rendered.count("class='chat-cheer-bits'"), 2)
+        view.close()
+
+    def test_cheermote_requires_structured_metadata_and_falls_back_to_text(
+        self,
+    ) -> None:
+        view = TwitchChatView()
+        view.append_message(
+            TwitchMessage(
+                "Viewer",
+                "Cheer1 Cheer100",
+                datetime.now(timezone.utc),
+                fragments=(
+                    TwitchMessageFragment(TwitchFragmentType.TEXT, "Cheer1 "),
+                    TwitchMessageFragment(
+                        TwitchFragmentType.CHEERMOTE,
+                        "Cheer100",
+                        cheermote=TwitchCheermote("Cheer", 100, 100),
+                    ),
+                ),
+            ),
+            cheermote_assets={
+                ("cheer", 1): ("https://cdn.example/cheer1.gif", "#979797")
+            },
+        )
+
+        rendered = view.toHtml()
+        self.assertIn("Cheer1 ", rendered)
+        self.assertIn("Cheer100", rendered)
+        self.assertNotIn("class='chat-cheermote'", rendered)
+        self.assertNotIn("https://cdn.example/cheer1.gif", rendered)
         view.close()
 
     def test_append_updates_loaded_page_without_full_render(self) -> None:

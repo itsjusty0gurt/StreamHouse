@@ -958,6 +958,13 @@ removals preserve that reading state, while a full clear resets it. The view
 emits the selected structured entry, while reply/copy/user details and
 moderation are coordinated by `MainWindow`.
 
+EventSub already identifies cheermote fragments by prefix, Bits amount, and
+tier. `TwitchService` asynchronously caches the broadcaster/global definitions
+from Helix Get Cheermotes, and the renderer maps only those structured
+fragments to Twitch's dark animated (or static fallback) tier artwork. Ordinary
+text is never token-replaced; missing definitions retain Twitch's original
+fragment text. Artwork remains transient and is cached by the Chromium surface.
+
 `products/hub/twitch/slash_commands.py` owns the read-only metadata and parser
 for API-backed chat slash actions. The chat input uses that registry for local
 completion, while Wiki uses it for reference content. Selection prepares text
