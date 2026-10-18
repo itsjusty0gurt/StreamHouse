@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import tempfile
+from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -328,6 +329,32 @@ def test_full_state_replaces_current_and_stale_sequence_is_ignored() -> None:
     service.shutdown()
 
 
+def test_nested_nullable_metadata_publishes_available_title_and_artist() -> None:
+    service, socket = _service()
+    registry = VariableRegistry()
+    registry.register(MusicVariableProvider(service))
+    _connect(service, socket)
+    message = _state(1)
+    message["track"] = {
+        "title": "Nullable Details",
+        "artist": "Known Artist",
+        "album": None,
+        "media_id": None,
+        "artwork": {"url": None},
+    }
+
+    socket.textMessageReceived.emit(json.dumps(message))
+
+    assert service.playback_state is not None
+    assert service.playback_state.metadata_available is True
+    assert registry.resolve("music.title").display_value == "Nullable Details"
+    assert registry.resolve("music.artist").display_value == "Known Artist"
+    assert registry.resolve("music.album").available is False
+    assert registry.resolve("music.media_id").available is False
+    assert registry.resolve("music.artwork_url").available is False
+    service.shutdown()
+
+
 def test_frozen_protocol_initial_state_accepts_null_track_and_unknown_values() -> None:
     service, socket = _service()
     provider = MusicVariableProvider(service)
@@ -374,6 +401,29 @@ def test_malformed_messages_do_not_replace_valid_state() -> None:
     socket.textMessageReceived.emit(json.dumps(["not", "an", "object"]))
     socket.textMessageReceived.emit(json.dumps({"type": "state", "sequence": 2}))
     assert service.playback_state is valid
+    service.shutdown()
+
+
+def test_protocol_errors_do_not_log_player_token() -> None:
+    service, socket = _service()
+    _connect(service, socket)
+    token = service._token
+    with patch("products.hub.integrations.music_player.Logger.warning") as warning:
+        socket.textMessageReceived.emit(
+            json.dumps(
+                {
+                    "type": "error",
+                    "protocol_version": 1,
+                    "error": {
+                        "code": "request_failed",
+                        "message": f"request failed for {token}",
+                    },
+                }
+            )
+        )
+
+    assert warning.called
+    assert token not in " ".join(str(call) for call in warning.call_args_list)
     service.shutdown()
 
 
@@ -460,6 +510,40 @@ def test_command_result_is_correlated_and_state_is_not_optimistically_changed() 
     assert socket.sent[-1]["args"] == {"volume": 55}
     assert service.playback_state is original
     assert not service.send_command("previous").succeeded
+    service.shutdown()
+
+
+def test_state_messages_continue_after_command_result_and_malformed_message() -> None:
+    service, socket = _service()
+    _connect(service, socket, ["next"])
+    socket.textMessageReceived.emit(json.dumps(_state(1)))
+    socket.textMessageReceived.emit(
+        json.dumps(
+            {
+                "type": "command_result",
+                "protocol_version": 1,
+                "request_id": "already-completed",
+                "command": "next",
+                "ok": True,
+            }
+        )
+    )
+    socket.textMessageReceived.emit("not json")
+    changed = _state(2)
+    changed["track"] = {
+        "title": "After Result",
+        "artist": "Still Connected",
+        "album": None,
+        "media_id": "media-2",
+        "artwork": {"url": None},
+    }
+
+    socket.textMessageReceived.emit(json.dumps(changed))
+
+    assert service.connected
+    assert service.playback_state is not None
+    assert service.playback_state.sequence == 2
+    assert service.playback_state.title == "After Result"
     service.shutdown()
 
 

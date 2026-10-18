@@ -89,6 +89,66 @@ def test_track_identity_volume_mute_and_incomplete_metadata_are_normalized() -> 
     service.shutdown()
 
 
+def test_album_and_artwork_changes_do_not_change_track_identity() -> None:
+    service, socket = _service()
+    events: list[MusicPlayerEvent] = []
+    service.automation_event.connect(events.append)
+    _connect(service, socket)
+    initial = _state(1)
+    initial["track"] = {
+        "title": "Same Song",
+        "artist": "Same Artist",
+        "album": "First Album",
+        "media_id": None,
+        "artwork": {"url": "https://images.example/first.jpg"},
+    }
+    _emit(socket, initial)
+    changed_details = {
+        **initial,
+        "sequence": 2,
+        "reason": "state_refresh",
+        "track": {
+            **initial["track"],
+            "album": "Corrected Album",
+            "artwork": {"url": "https://images.example/second.jpg"},
+        },
+    }
+
+    _emit(socket, changed_details)
+
+    assert MUSIC_EVENT_TRACK_CHANGED not in [event.event_type for event in events]
+    service.shutdown()
+
+
+def test_nested_state_reaches_variables_and_track_trigger_pipeline() -> None:
+    service, socket = _service()
+    events: list[MusicPlayerEvent] = []
+    service.automation_event.connect(events.append)
+    provider = MusicVariableProvider(service)
+    _connect(service, socket)
+    _emit(socket, _state(1))
+    changed = _state(2)
+    changed["track"] = {
+        "title": "Pipeline Song",
+        "artist": "Pipeline Artist",
+        "album": None,
+        "media_id": None,
+        "artwork": {"url": None},
+    }
+
+    _emit(socket, changed)
+
+    track_events = [
+        event for event in events if event.event_type == MUSIC_EVENT_TRACK_CHANGED
+    ]
+    assert len(track_events) == 1
+    assert track_events[0].context["music.title"] == "Pipeline Song"
+    assert track_events[0].context["music.artist"] == "Pipeline Artist"
+    assert provider.resolve("music.title", {}).value == "Pipeline Song"
+    assert provider.resolve("music.artist", {}).value == "Pipeline Artist"
+    service.shutdown()
+
+
 def test_connection_loss_and_reconnect_are_edge_triggered() -> None:
     service, socket = _service()
     events: list[MusicPlayerEvent] = []

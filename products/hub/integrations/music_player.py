@@ -894,10 +894,9 @@ def _stable_track_identity(state: MusicPlayerState) -> tuple[str, ...] | None:
     media_id = state.media_id.strip().casefold() if state.media_id else ""
     title = " ".join(state.title.split()).casefold()
     artist = " ".join(state.artist.split()).casefold()
-    album = " ".join(state.album.split()).casefold()
     if not media_id and (not title or not artist):
         return None
-    return (media_id, title, artist, album)
+    return (media_id, title, artist)
 
 
 def _track_identities_differ(
@@ -907,7 +906,7 @@ def _track_identities_differ(
     current_media, *current_metadata = current
     if previous_media and current_media:
         return previous_media != current_media
-    if all(previous_metadata[:2]) and all(current_metadata[:2]):
+    if all(previous_metadata) and all(current_metadata):
         return previous_metadata != current_metadata
     return previous != current
 

@@ -777,6 +777,9 @@ class MainWindow(QMainWindow):
         self.music_player_service.automation_event.connect(
             self._handle_music_automation_event
         )
+        self.music_player_service.playback_state_changed.connect(
+            self._refresh_music_variable_values
+        )
         try:
             self.chatter_history.load()
         except (OSError, ValueError, json.JSONDecodeError) as error:
@@ -3115,6 +3118,12 @@ class MainWindow(QMainWindow):
                     f'Music automation failed for "{music_event.event_type}".',
                     source="AUTOMATION",
                 )
+
+    @Slot(object)
+    def _refresh_music_variable_values(self, _state: object) -> None:
+        variables_page = getattr(self.automation_page, "variables_page", None)
+        if variables_page is not None:
+            variables_page.refresh()
 
     @Slot()
     def fire_application_started_trigger(self) -> None:

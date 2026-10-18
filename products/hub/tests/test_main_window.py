@@ -82,7 +82,11 @@ from products.hub.twitch.models import (
     TwitchReply,
 )
 from products.hub.ui.main_window import MainWindow
-from products.hub.integrations.music_player import MusicConnectionState
+from products.hub.integrations.music_player import (
+    MUSIC_EVENT_TRACK_CHANGED,
+    MusicConnectionState,
+    MusicPlayerEvent,
+)
 from products.hub.integrations.music_triggers import MUSIC_TRIGGER_TYPES
 from products.hub.ui.automation_page import (
     RunHistoryDetailsDialog,
@@ -4190,6 +4194,44 @@ class MainWindowTests(unittest.TestCase):
         )
         self.assertFalse(self.window.music_player_connect_button.isEnabled())
         self.assertTrue(self.window.music_player_disconnect_button.isEnabled())
+
+    def test_variables_page_refreshes_when_music_state_changes(self) -> None:
+        page = self.window.automation_page.variables_page
+        page.refresh = Mock()
+
+        self.window.music_player_service.playback_state_changed.emit(object())
+
+        page.refresh.assert_called_once_with()
+
+    def test_music_service_event_reaches_normal_automation_dispatch(self) -> None:
+        routine = self.twitch_command_trigger_store.routine_store.add(
+            "Now playing"
+        )
+        trigger = self.window.music_trigger_store.add(
+            routine.routine_id,
+            MUSIC_EVENT_TRACK_CHANGED,
+        )
+        execution = Mock(succeeded=True, handled=True)
+        self.window.automation_service.publish_trigger = Mock(
+            return_value=execution
+        )
+        self.window.automation_page.record_execution = Mock()
+
+        self.window.music_player_service.automation_event.emit(
+            MusicPlayerEvent(
+                MUSIC_EVENT_TRACK_CHANGED,
+                {
+                    "__music_event_snapshot__": "true",
+                    "music.title": "Signal Song",
+                    "music.artist": "Signal Artist",
+                },
+            )
+        )
+
+        self.window.automation_service.publish_trigger.assert_called_once()
+        published = self.window.automation_service.publish_trigger.call_args.args[0]
+        self.assertEqual(published.trigger_id, trigger.trigger_id)
+        self.assertEqual(published.context["music.title"], "Signal Song")
 
     def test_connections_body_scrolls_instead_of_compressing_health_rows(self) -> None:
         scroll = self.window.connections_scroll_area
