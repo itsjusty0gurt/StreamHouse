@@ -113,6 +113,8 @@ class VariablesPage(QWidget):
         self.store = store
         self.routine_store = routine_store
         self._entries_by_key: dict[str, VariablePageEntry] = {}
+        self._row_items_by_key: dict[str, QTableWidgetItem] = {}
+        self._rendered_structure: tuple[tuple[object, ...], ...] = ()
         layout = QVBoxLayout(self)
         self.page_header = PageHeader(
             "Variables",
@@ -172,7 +174,19 @@ class VariablesPage(QWidget):
         self.refresh()
 
     def refresh(self) -> None:
+        self.rebuild_catalog()
+
+    def rebuild_catalog(self) -> None:
+        """Rebuild rows only when the Variable catalog or view structure changes."""
         entries = self._entries()
+        selected = self.selected_key()
+        had_selection = bool(selected)
+        vertical_scroll = self.table.verticalScrollBar().value()
+        horizontal_scroll = self.table.horizontalScrollBar().value()
+        header = self.table.horizontalHeader()
+        sorting_enabled = self.table.isSortingEnabled()
+        sort_column = header.sortIndicatorSection()
+        sort_order = header.sortIndicatorOrder()
         current_source = str(self.source_combo.currentData() or "")
         sources = sorted(
             {entry.snapshot.definition.source for entry in entries}
@@ -184,36 +198,24 @@ class VariablesPage(QWidget):
             self.source_combo.addItem(source, source)
         self.source_combo.setCurrentIndex(max(0, self.source_combo.findData(current_source)))
         self.source_combo.blockSignals(False)
-        selected = self.selected_key()
-        needle = self.search_edit.text().strip().casefold()
-        source = str(self.source_combo.currentData() or "")
-        self.table.setRowCount(0)
+        visible_entries = self._visible_entries(entries)
         self._entries_by_key = {entry.key: entry for entry in entries}
-        for entry in entries:
+        self._row_items_by_key = {}
+        self.table.setUpdatesEnabled(False)
+        self.table.blockSignals(True)
+        self.table.setSortingEnabled(False)
+        self.table.setRowCount(0)
+        for entry in visible_entries:
             snapshot = entry.snapshot
             definition = snapshot.definition
             reference = entry.output_reference
-            searchable = " ".join(
-                (
-                    definition.name,
-                    definition.display_name,
-                    definition.description,
-                    definition.source,
-                    definition.category,
-                    definition.context_label,
-                    reference.routine_name if reference else "",
-                    reference.task_name if reference else "",
-                )
-            ).casefold()
-            if needle and needle not in searchable:
-                continue
-            if source and definition.source != source:
-                continue
             row = self.table.rowCount()
             self.table.insertRow(row)
             item = QTableWidgetItem(f"{{{definition.name}}}")
             item.setData(Qt.ItemDataRole.UserRole, entry.key)
+            item.setData(Qt.ItemDataRole.UserRole + 1, definition.name)
             self.table.setItem(row, 0, item)
+            self._row_items_by_key[entry.key] = item
             self.table.setItem(
                 row,
                 1,
@@ -245,10 +247,124 @@ class VariablesPage(QWidget):
                     "Read/write" if definition.writable else "Read-only"
                 ),
             )
-            if entry.key == selected:
-                self.table.selectRow(row)
-        if self.table.rowCount() and self.table.currentRow() < 0:
+        self._rendered_structure = tuple(
+            self._entry_structure(entry) for entry in visible_entries
+        )
+        self.table.setSortingEnabled(sorting_enabled)
+        if sorting_enabled and sort_column >= 0:
+            self.table.sortItems(sort_column, sort_order)
+        else:
+            header.setSortIndicator(sort_column, sort_order)
+        selected_item = self._row_items_by_key.get(selected)
+        if selected_item is not None:
+            self.table.selectRow(selected_item.row())
+        elif not had_selection and self.table.rowCount():
             self.table.selectRow(0)
+        else:
+            self.table.clearSelection()
+        self.table.verticalScrollBar().setValue(vertical_scroll)
+        self.table.horizontalScrollBar().setValue(horizontal_scroll)
+        self.table.blockSignals(False)
+        self.table.setUpdatesEnabled(True)
+        self._selection_changed()
+
+    def refresh_values(self) -> None:
+        """Refresh live values without rebuilding an unchanged Variable catalog."""
+        entries = self._entries()
+        visible_entries = self._visible_entries(entries)
+        structure = tuple(self._entry_structure(entry) for entry in visible_entries)
+        sources = sorted({entry.snapshot.definition.source for entry in entries})
+        rendered_sources = [
+            str(self.source_combo.itemData(index) or "")
+            for index in range(1, self.source_combo.count())
+        ]
+        if structure != self._rendered_structure or sources != rendered_sources:
+            self.rebuild_catalog()
+            return
+
+        selected = self.selected_key()
+        vertical_scroll = self.table.verticalScrollBar().value()
+        horizontal_scroll = self.table.horizontalScrollBar().value()
+        self._entries_by_key = {entry.key: entry for entry in entries}
+        self.table.setUpdatesEnabled(False)
+        try:
+            for entry in visible_entries:
+                identity_item = self._row_items_by_key.get(entry.key)
+                if identity_item is None:
+                    self.rebuild_catalog()
+                    return
+                row = identity_item.row()
+                snapshot = entry.snapshot
+                value_item = self.table.item(row, 1)
+                status_item = self.table.item(row, 4)
+                if value_item is not None:
+                    value_item.setText(
+                        snapshot.display_value
+                        if snapshot.available
+                        else "Not currently available"
+                    )
+                if status_item is not None:
+                    status_item.setText(
+                        "Available"
+                        if snapshot.available
+                        else snapshot.detail or "Not currently available"
+                    )
+            selected_item = self._row_items_by_key.get(selected)
+            if selected_item is not None and not selected_item.isSelected():
+                self.table.selectRow(selected_item.row())
+            self.table.verticalScrollBar().setValue(vertical_scroll)
+            self.table.horizontalScrollBar().setValue(horizontal_scroll)
+            self._selection_changed()
+        finally:
+            self.table.setUpdatesEnabled(True)
+
+    def _visible_entries(
+        self, entries: tuple[VariablePageEntry, ...]
+    ) -> tuple[VariablePageEntry, ...]:
+        needle = self.search_edit.text().strip().casefold()
+        source = str(self.source_combo.currentData() or "")
+        visible: list[VariablePageEntry] = []
+        for entry in entries:
+            definition = entry.snapshot.definition
+            reference = entry.output_reference
+            searchable = " ".join(
+                (
+                    definition.name,
+                    definition.display_name,
+                    definition.description,
+                    definition.source,
+                    definition.category,
+                    definition.context_label,
+                    reference.routine_name if reference else "",
+                    reference.task_name if reference else "",
+                )
+            ).casefold()
+            if needle and needle not in searchable:
+                continue
+            if source and definition.source != source:
+                continue
+            visible.append(entry)
+        return tuple(visible)
+
+    @staticmethod
+    def _entry_structure(entry: VariablePageEntry) -> tuple[object, ...]:
+        definition = entry.snapshot.definition
+        reference = entry.output_reference
+        return (
+            entry.key,
+            definition.name,
+            definition.display_name,
+            definition.description,
+            definition.source,
+            definition.category,
+            definition.data_type,
+            definition.context_label,
+            definition.availability,
+            definition.writable,
+            entry.context_label,
+            reference.routine_name if reference else "",
+            reference.task_name if reference else "",
+        )
 
     def _entries(self) -> tuple[VariablePageEntry, ...]:
         entries = [
@@ -277,7 +393,8 @@ class VariablesPage(QWidget):
         return tuple(entries)
 
     def selected_key(self) -> str:
-        row = self.table.currentRow()
+        selected_rows = self.table.selectionModel().selectedRows()
+        row = selected_rows[0].row() if selected_rows else -1
         item = self.table.item(row, 0) if row >= 0 else None
         return str(item.data(Qt.ItemDataRole.UserRole) or "") if item else ""
 

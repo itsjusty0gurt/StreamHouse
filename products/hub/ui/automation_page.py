@@ -3776,7 +3776,7 @@ class AutomationPage(QWidget):
 
     def refresh(self, selected_routine_id: str = "") -> None:
         if hasattr(self, "variables_page"):
-            self.variables_page.refresh()
+            self.variables_page.refresh_values()
         selected_routine_id = selected_routine_id or self._selected_routine_id
         self._capture_group_expansion_state()
         query = self.search_edit.text().strip().casefold()

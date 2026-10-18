@@ -4198,10 +4198,22 @@ class MainWindowTests(unittest.TestCase):
     def test_variables_page_refreshes_when_music_state_changes(self) -> None:
         page = self.window.automation_page.variables_page
         page.refresh = Mock()
+        page.refresh_values = Mock()
 
         self.window.music_player_service.playback_state_changed.emit(object())
 
-        page.refresh.assert_called_once_with()
+        page.refresh_values.assert_called_once_with()
+        page.refresh.assert_not_called()
+
+    def test_automation_page_refresh_uses_incremental_variable_refresh(self) -> None:
+        variables_page = self.window.automation_page.variables_page
+        variables_page.refresh = Mock()
+        variables_page.refresh_values = Mock()
+
+        self.window.automation_page.refresh()
+
+        variables_page.refresh_values.assert_called_once_with()
+        variables_page.refresh.assert_not_called()
 
     def test_music_service_event_reaches_normal_automation_dispatch(self) -> None:
         routine = self.twitch_command_trigger_store.routine_store.add(

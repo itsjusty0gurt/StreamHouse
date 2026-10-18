@@ -3123,7 +3123,7 @@ class MainWindow(QMainWindow):
     def _refresh_music_variable_values(self, _state: object) -> None:
         variables_page = getattr(self.automation_page, "variables_page", None)
         if variables_page is not None:
-            variables_page.refresh()
+            variables_page.refresh_values()
 
     @Slot()
     def fire_application_started_trigger(self) -> None:

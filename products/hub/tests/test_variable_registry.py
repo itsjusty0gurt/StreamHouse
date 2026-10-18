@@ -8,6 +8,7 @@ import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication
 
 from products.hub.automation.custom_variables import CustomVariableStore
@@ -32,6 +33,7 @@ from products.hub.automation.variable_registry import (
     VariableDataType,
     VariableDefinition,
     VariableRegistry,
+    VariableSnapshot,
 )
 from products.hub.counters.models import CounterDefinition
 from products.hub.counters.service import CounterService
@@ -894,6 +896,121 @@ def test_variables_page_refreshes_dynamic_providers() -> None:
         channel_store.save(information)
         page.refresh()
         assert page.table.rowCount() == 11
+        page.close()
+    application.processEvents()
+
+
+def test_variables_page_value_refresh_preserves_rows_selection_and_scroll() -> None:
+    application = QApplication.instance() or QApplication([])
+
+    class MutableProvider:
+        source = "Live Test"
+
+        def __init__(self) -> None:
+            self.items = [
+                VariableDefinition(
+                    f"live.value_{index}",
+                    f"Live Value {index}",
+                    "A live test value.",
+                    VariableDataType.INTEGER,
+                    self.source,
+                    "Live",
+                )
+                for index in range(30)
+            ]
+            self.values = {item.name: index for index, item in enumerate(self.items)}
+
+        def definitions(self):
+            return tuple(self.items)
+
+        def resolve(self, name, _context):
+            definition = next(item for item in self.items if item.name == name)
+            return VariableSnapshot(definition, self.values[name], True)
+
+        def set_value(self, _name, _value):
+            raise PermissionError
+
+    with TemporaryDirectory() as temporary:
+        store = CustomVariableStore(Path(temporary) / "variables.json")
+        store.load()
+        provider = MutableProvider()
+        registry = VariableRegistry()
+        registry.register(provider)
+        page = VariablesPage(registry, store)
+        page.resize(900, 280)
+        page.show()
+        application.processEvents()
+
+        page.search_edit.setText("Live Value")
+        page.source_combo.setCurrentIndex(
+            page.source_combo.findData(provider.source)
+        )
+        page.table.setSortingEnabled(True)
+        page.table.sortItems(0, Qt.SortOrder.DescendingOrder)
+        target_item = next(
+            page.table.item(row, 0)
+            for row in range(page.table.rowCount())
+            if page.table.item(row, 0).data(Qt.ItemDataRole.UserRole + 1)
+            == "live.value_20"
+        )
+        page.table.selectRow(target_item.row())
+        selected_key = page.selected_key()
+        original_item = target_item
+        scrollbar = page.table.verticalScrollBar()
+        scrollbar.setValue(scrollbar.maximum())
+        scroll_value = scrollbar.value()
+        assert scroll_value > 0
+
+        for value in (100, 150, 200):
+            provider.values["live.value_20"] = value
+            page.refresh_values()
+            application.processEvents()
+            assert original_item.row() >= 0
+            assert page.selected_key() == selected_key
+            assert scrollbar.value() == scroll_value
+
+        assert page.table.item(original_item.row(), 1).text() == "200"
+
+        provider.items.append(
+            VariableDefinition(
+                "live.added",
+                "Live Value Added",
+                "A newly registered live value.",
+                VariableDataType.INTEGER,
+                provider.source,
+                "Live",
+            )
+        )
+        provider.values["live.added"] = 31
+        page.refresh_values()
+
+        assert page.table.rowCount() == 31
+        rebuilt_item = next(
+            page.table.item(row, 0)
+            for row in range(page.table.rowCount())
+            if page.table.item(row, 0).data(Qt.ItemDataRole.UserRole + 1)
+            == "live.value_20"
+        )
+        assert rebuilt_item is not original_item
+        assert page.selected_name() == "live.value_20"
+        assert scrollbar.value() == scroll_value
+        assert page.search_edit.text() == "Live Value"
+        assert page.source_combo.currentData() == provider.source
+        assert page.table.isSortingEnabled()
+        assert page.table.horizontalHeader().sortIndicatorSection() == 0
+        assert (
+            page.table.horizontalHeader().sortIndicatorOrder()
+            == Qt.SortOrder.DescendingOrder
+        )
+
+        provider.items = [
+            item for item in provider.items if item.name != "live.value_20"
+        ]
+        provider.values.pop("live.value_20")
+        page.refresh_values()
+
+        assert page.selected_key() == ""
+        assert not page.table.selectedItems()
         page.close()
     application.processEvents()
 

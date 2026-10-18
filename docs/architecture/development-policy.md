@@ -169,6 +169,12 @@ context, previews, validation, picker entries, and task outputs must extend the
 registry/provider/typed-output architecture rather than create a parallel
 catalog or parser.
 
+Variables UI consumers must distinguish catalog structure from live provider
+values. Runtime value, availability, and detail changes update existing UI
+presentations in place; only definition/catalog changes justify rebuilding the
+presentation. High-frequency providers must not cause full UI reconstruction,
+and a necessary rebuild preserves the user's view state where practical.
+
 ## Product naming and ownership
 
 The current product model is:

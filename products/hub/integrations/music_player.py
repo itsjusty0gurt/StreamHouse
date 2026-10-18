@@ -243,6 +243,12 @@ class MusicPlayerState:
         artwork = track.get("artwork")
         artwork = artwork if isinstance(artwork, Mapping) else {}
         raw_media_id = track.get("media_id")
+        title = _optional_text(track.get("title"), 1000)
+        artist = _optional_text(track.get("artist"), 1000)
+        if message["metadata_available"] and (not title or not artist):
+            raise ValueError(
+                "State with available metadata requires a track title and artist."
+            )
         return cls(
             sequence=sequence,
             reason=str(message.get("reason", "")).strip()[:128],
@@ -252,8 +258,8 @@ class MusicPlayerState:
             position_ms=position_ms,
             position_sampled_at=str(playback.get("position_sampled_at", "")).strip()[:128],
             duration_ms=duration_ms,
-            title=_optional_text(track.get("title"), 1000),
-            artist=_optional_text(track.get("artist"), 1000),
+            title=title,
+            artist=artist,
             album=_optional_text(track.get("album"), 1000),
             media_id=(str(raw_media_id).strip()[:512] if raw_media_id is not None else None),
             artwork_url=_optional_text(artwork.get("url"), 2048),

@@ -329,6 +329,28 @@ def test_full_state_replaces_current_and_stale_sequence_is_ignored() -> None:
     service.shutdown()
 
 
+def test_invalid_available_metadata_does_not_replace_valid_canonical_state() -> None:
+    service, socket = _service()
+    _connect(service, socket)
+    socket.textMessageReceived.emit(json.dumps(_state(1)))
+    valid = service.playback_state
+
+    missing_title = _state(2)
+    missing_title["track"] = {
+        "title": "",
+        "artist": "An Artist",
+        "album": None,
+        "media_id": None,
+        "artwork": {"url": None},
+    }
+    socket.textMessageReceived.emit(json.dumps(missing_title))
+
+    assert service.playback_state is valid
+    assert service.playback_state.title == "A Song"
+    assert service.playback_state.artist == "An Artist"
+    service.shutdown()
+
+
 def test_nested_nullable_metadata_publishes_available_title_and_artist() -> None:
     service, socket = _service()
     registry = VariableRegistry()

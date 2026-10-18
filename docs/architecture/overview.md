@@ -769,6 +769,15 @@ the same registry metadata, supports source/category/search filtering, and is
 also available from templated task editors. Contextual definitions remain
 discoverable when unavailable and state their required context.
 
+`VariableRegistry` remains authoritative for both definitions and resolved
+values, while Variables UI consumers use separate update paths. Runtime value,
+availability, or detail changes update existing rows in place by stable
+Variable identity; they do not clear or reorder the table. Definition/catalog
+changes may rebuild rows, but the page restores its active search/source
+filter, sort state, selected Variable, and scroll position where those entries
+still exist. High-frequency provider updates such as music position therefore
+cannot drive full UI reconstruction.
+
 The flat variable catalog and flat placeholder path have been removed. Domain
 values use their provider namespace, stored values use `custom.<name>`, and
 routine-scoped task outputs use `automation.<name>`. Typed output definitions in
