@@ -4245,6 +4245,59 @@ class MainWindowTests(unittest.TestCase):
         self.assertEqual(published.trigger_id, trigger.trigger_id)
         self.assertEqual(published.context["music.title"], "Signal Song")
 
+    def test_music_task_failure_logs_safe_execution_identifiers_and_detail(self) -> None:
+        routine = self.twitch_command_trigger_store.routine_store.add(
+            "Update OBS"
+        )
+        trigger = self.window.music_trigger_store.add(
+            routine.routine_id,
+            MUSIC_EVENT_TRACK_CHANGED,
+        )
+        execution = AutomationExecutionResult(
+            event_id="music-event",
+            trigger_id=trigger.trigger_id,
+            routine_results=(
+                RoutineExecutionResult(
+                    routine_id=routine.routine_id,
+                    succeeded=False,
+                    task_results=(
+                        TaskExecutionResult(
+                            task_id="obs-task",
+                            task_type="obs.set_text_source",
+                            succeeded=False,
+                            detail="OBS is not connected. token=unsafe-value",
+                        ),
+                    ),
+                    detail="Routine stopped after a failed task.",
+                    queue_id=DEFAULT_AUTOMATION_QUEUE_ID,
+                ),
+            ),
+        )
+        self.window.automation_service.publish_trigger = Mock(return_value=execution)
+        self.window.automation_page.record_execution = Mock()
+
+        with patch.object(Logger, "warning") as warning:
+            self.window.music_player_service.automation_event.emit(
+                MusicPlayerEvent(
+                    MUSIC_EVENT_TRACK_CHANGED,
+                    {
+                        "__music_event_snapshot__": "true",
+                        "music.title": "Signal Song",
+                    },
+                )
+            )
+
+        message = warning.call_args.args[0]
+        self.assertIn(f'trigger_id="{trigger.trigger_id}"', message)
+        self.assertIn(f'routine_id="{routine.routine_id}"', message)
+        self.assertIn(f'queue_id="{DEFAULT_AUTOMATION_QUEUE_ID}"', message)
+        self.assertIn('task_id="obs-task"', message)
+        self.assertIn('task_type="obs.set_text_source"', message)
+        self.assertIn("OBS is not connected.", message)
+        self.assertIn("<REDACTED>", message)
+        self.assertNotIn("unsafe-value", message)
+        self.assertNotIn("Signal Song", message)
+
     def test_connections_body_scrolls_instead_of_compressing_health_rows(self) -> None:
         scroll = self.window.connections_scroll_area
         content = self.window.connections_content

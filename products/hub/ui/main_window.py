@@ -58,6 +58,7 @@ from products.hub.core.diagnostics import DiagnosticsService
 from products.hub.config.product import ISSUE_TRACKER_URL
 from shared.streamhouse_runtime.json_store import UnsupportedJsonSchemaError
 from shared.streamhouse_runtime.logger import Logger
+from shared.streamhouse_runtime.redaction import redact_secret_text
 from shared.streamhouse_ui import install_window_chrome
 from products.hub.core.settings import AppSettings, SettingsStore
 from products.hub.integrations.local_api import HubIntegrationController
@@ -72,7 +73,7 @@ from products.hub.integrations.music_player import (
 )
 from products.hub.integrations.music_triggers import MusicTriggerStore
 from products.hub.automation.service import AutomationService
-from products.hub.automation.models import TriggerEvent
+from products.hub.automation.models import AutomationExecutionResult, TriggerEvent
 from products.hub.automation.custom_variables import CustomVariableStore
 from products.hub.automation.variable_providers import (
     AdsVariableProvider,
@@ -3115,9 +3116,59 @@ class MainWindow(QMainWindow):
                 )
             elif execution.handled:
                 Logger.warning(
-                    f'Music automation failed for "{music_event.event_type}".',
+                    self._music_automation_failure_message(
+                        music_event.event_type,
+                        trigger.trigger_id,
+                        execution,
+                    ),
                     source="AUTOMATION",
                 )
+
+    @staticmethod
+    def _music_automation_failure_message(
+        event_type: str,
+        trigger_id: str,
+        execution: AutomationExecutionResult,
+    ) -> str:
+        """Describe returned Music routine failures without logging task inputs."""
+
+        failures: list[str] = []
+        for routine_result in execution.routine_results:
+            if routine_result.succeeded:
+                continue
+            base = (
+                f'trigger_id="{trigger_id}" '
+                f'routine_id="{routine_result.routine_id}" '
+                f'queue_id="{routine_result.queue_id or "unknown"}"'
+            )
+            failed_tasks = tuple(
+                result
+                for result in routine_result.task_results
+                if not result.succeeded
+            )
+            if not failed_tasks:
+                detail = redact_secret_text(
+                    routine_result.detail or "Routine failed without a task result."
+                )
+                failures.append(
+                    f'{base} failure_type="RoutineFailure" '
+                    f"error={json.dumps(detail)}"
+                )
+                continue
+            for task_result in failed_tasks:
+                detail = redact_secret_text(
+                    task_result.detail or "Task failed without an error message."
+                )
+                failures.append(
+                    f'{base} task_id="{task_result.task_id}" '
+                    f'task_type="{task_result.task_type}" '
+                    f'failure_type="TaskFailure" error={json.dumps(detail)}'
+                )
+        detail = "; ".join(failures) or (
+            f'trigger_id="{trigger_id}" failure_type="UnknownFailure" '
+            'error="Automation failed without a routine result."'
+        )
+        return f'Music automation failed for "{event_type}": {detail}'
 
     @Slot(object)
     def _refresh_music_variable_values(self, _state: object) -> None:

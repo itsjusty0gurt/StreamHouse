@@ -3,6 +3,11 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from products.hub.automation.models import (
+    TaskDefinition,
+    TaskExecutionResult,
+    TriggerEvent,
+)
 from products.hub.automation.routines import RoutineStore
 from products.hub.automation.queues import AutomationQueueManager, AutomationQueueStore
 from products.hub.automation.service import AutomationService
@@ -25,6 +30,27 @@ from products.hub.tests.test_music_player import _connect, _service, _state
 
 def _emit(socket, message: dict[str, object]) -> None:
     socket.textMessageReceived.emit(json.dumps(message))
+
+
+class _MusicContextTask:
+    task_type = "test.music_context"
+
+    def __init__(self, *, succeeded: bool = True) -> None:
+        self.succeeded = succeeded
+        self.contexts: list[dict[str, str]] = []
+
+    def execute(
+        self,
+        task: TaskDefinition,
+        trigger: TriggerEvent,
+    ) -> TaskExecutionResult:
+        self.contexts.append(dict(trigger.context))
+        return TaskExecutionResult(
+            task.task_id,
+            task.task_type,
+            self.succeeded,
+            "Captured Music context." if self.succeeded else "Test task failed.",
+        )
 
 
 def test_initial_snapshot_is_baseline_and_real_transitions_fire_once() -> None:
@@ -219,6 +245,94 @@ def test_store_persists_evaluates_and_causal_context_overrides_live_state(tmp_pa
     )
     assert not unavailable_album.available
     service.shutdown()
+
+
+def test_track_changed_preserves_complete_causal_music_context(tmp_path: Path) -> None:
+    routines = RoutineStore(tmp_path / "routines.json")
+    routine = routines.add("Now Playing")
+    store = MusicTriggerStore(tmp_path / "music_triggers.json", routines)
+    store.add(routine.routine_id, MUSIC_EVENT_TRACK_CHANGED)
+    context = {
+        "__music_event_snapshot__": "true",
+        "music.title": "Causal Song",
+        "music.artist": "Causal Artist",
+        "music.album": "Causal Album",
+        "music.media_id": "causal-media",
+        "music.artwork_url": "https://images.example/causal.jpg",
+        "music.duration": "3:42",
+        "music.status": "playing",
+    }
+
+    evaluated = store.evaluate(MusicPlayerEvent(MUSIC_EVENT_TRACK_CHANGED, context))
+
+    assert len(evaluated) == 1
+    assert all(evaluated[0].context[name] == value for name, value in context.items())
+
+
+def test_track_changed_runs_linked_routine_once_with_causal_context(
+    tmp_path: Path,
+) -> None:
+    routines = RoutineStore(tmp_path / "routines.json")
+    routine = routines.add("Now Playing")
+    task = _MusicContextTask()
+    registry = TaskRegistry()
+    registry.register(task)
+    routines.add_task(
+        routine.routine_id,
+        task_type=task.task_type,
+        name="Capture Music",
+    )
+    store = MusicTriggerStore(tmp_path / "music_triggers.json", routines)
+    store.add(routine.routine_id, MUSIC_EVENT_TRACK_CHANGED)
+    service = AutomationService(routines, registry)
+    event = MusicPlayerEvent(
+        MUSIC_EVENT_TRACK_CHANGED,
+        {
+            "__music_event_snapshot__": "true",
+            "music.title": "Causal Song",
+            "music.artist": "Causal Artist",
+            "music.media_id": "causal-media",
+        },
+    )
+
+    results = [service.publish_trigger(item) for item in store.evaluate(event)]
+
+    assert len(results) == 1
+    assert results[0].succeeded
+    assert len(task.contexts) == 1
+    assert task.contexts[0]["music.title"] == "Causal Song"
+    assert task.contexts[0]["music.artist"] == "Causal Artist"
+    assert task.contexts[0]["music.media_id"] == "causal-media"
+
+
+def test_store_rejects_missing_routine_reference_clearly(tmp_path: Path) -> None:
+    routines = RoutineStore(tmp_path / "routines.json")
+    path = tmp_path / "music_triggers.json"
+    path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "triggers": [
+                    {
+                        "trigger_id": "missing-trigger",
+                        "routine_id": "missing-routine",
+                        "event_type": MUSIC_EVENT_TRACK_CHANGED,
+                        "enabled": True,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    store = MusicTriggerStore(path, routines)
+
+    try:
+        store.load()
+    except ValueError as error:
+        assert "Music trigger has no linked routine." in str(error)
+    else:
+        raise AssertionError("A missing Music routine reference must be rejected.")
 
 
 def test_disabled_music_trigger_does_not_evaluate(tmp_path: Path) -> None:

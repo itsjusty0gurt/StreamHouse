@@ -449,6 +449,26 @@ def test_protocol_errors_do_not_log_player_token() -> None:
     service.shutdown()
 
 
+def test_connection_debug_diagnostics_are_sanitized_and_low_noise() -> None:
+    service, socket = _service()
+    with patch("products.hub.integrations.music_player.Logger.debug") as debug:
+        _connect(service, socket)
+        socket.textMessageReceived.emit(json.dumps(_state(42)))
+
+    messages = [str(call.args[0]) for call in debug.call_args_list]
+    discovery = next(item for item in messages if "discovery selected" in item)
+    hello = next(item for item in messages if "hello accepted" in item)
+
+    assert "endpoint=127.0.0.1:9123" in discovery
+    assert "pid=1234" in discovery
+    assert "protocol_versions=1" in discovery
+    assert "protocol_version=1" in hello
+    assert not any("raw decoded state" in message for message in messages)
+    assert not any("canonical state" in message for message in messages)
+    assert "local-secret-that-is-long-enough-123" not in " ".join(messages)
+    service.shutdown()
+
+
 def test_variables_are_discoverable_and_become_unavailable_on_disconnect() -> None:
     service, socket = _service()
     provider = MusicVariableProvider(service)

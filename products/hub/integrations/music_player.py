@@ -449,6 +449,13 @@ class MusicPlayerService(QObject):
         self._token = token
         self._hello_complete = False
         self._last_sequence = -1
+        Logger.debug(
+            "Music Player discovery selected "
+            f"endpoint={connection_info.endpoint} pid={connection_info.pid} "
+            "protocol_versions="
+            f"{','.join(str(version) for version in connection_info.protocol_versions)}.",
+            source="APP",
+        )
         self._set_connection_state(MusicConnectionState.CONNECTING, "Connecting…")
         self._socket.open(QUrl(f"ws://{connection_info.endpoint}"))
 
@@ -537,6 +544,13 @@ class MusicPlayerService(QObject):
         self._hello_complete = True
         self._handshake_timer.stop()
         self._reconnect_attempt = 0
+        endpoint = self._connection_info.endpoint if self._connection_info else "unknown"
+        pid = self._connection_info.pid if self._connection_info else "unknown"
+        Logger.debug(
+            "Music Player hello accepted "
+            f"endpoint={endpoint} pid={pid} protocol_version={version}.",
+            source="APP",
+        )
         self._set_connection_state(MusicConnectionState.CONNECTED, "Connected")
         if not self._automation_connected:
             self._automation_connected = True
