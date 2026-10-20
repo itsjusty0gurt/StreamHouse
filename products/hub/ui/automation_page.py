@@ -33,6 +33,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QRadioButton,
+    QScrollArea,
     QSpinBox,
     QSplitter,
     QTabWidget,
@@ -1278,6 +1279,9 @@ def _normalize_screenshot_save_path(
 
 
 class TaskEditorDialog(QDialog):
+    SOURCE_TRANSFORM_FIELD_MINIMUM_WIDTH = 180
+    SOURCE_TRANSFORM_CONTENT_MINIMUM_WIDTH = 460
+
     LABELS = {
         **TWITCH_TASK_LABELS,
         **CORE_TASK_LABELS,
@@ -1704,7 +1708,9 @@ class TaskEditorDialog(QDialog):
         self._obs_refresh_scheduled = False
         self.field_widgets: dict[str, dict[str, QWidget]] = {}
         self.setWindowTitle("Edit Task" if task else "Add Task")
-        self.setMinimumWidth(620)
+        self.setMinimumWidth(
+            360 if self.task_type == "obs.set_source_transform" else 620
+        )
         layout = QVBoxLayout(self)
         form = QFormLayout()
         task_label = QLabel(self.LABELS.get(self.task_type, self.task_type))
@@ -1962,6 +1968,12 @@ class TaskEditorDialog(QDialog):
     def _build_page(self, task_type: str) -> QWidget:
         page = QWidget()
         form = QFormLayout(page)
+        if task_type == "obs.set_source_transform":
+            form.setFieldGrowthPolicy(
+                QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow
+            )
+            form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.DontWrapRows)
+            page.setMinimumWidth(self.SOURCE_TRANSFORM_CONTENT_MINIMUM_WIDTH)
         fields: dict[str, QWidget] = {}
         values = (
             normalize_task_config(task_type, self.task.config)
@@ -1975,12 +1987,25 @@ class TaskEditorDialog(QDialog):
             key, kind = str(spec["key"]), str(spec["kind"])
             value = values.get(key, spec.get("default"))
             widget, row_widget = self._create_field(kind, spec, value)
+            if task_type == "obs.set_source_transform":
+                widget.setMinimumWidth(self.SOURCE_TRANSFORM_FIELD_MINIMUM_WIDTH)
             fields[key] = widget
             form.addRow(str(spec.get("label", "")), row_widget)
         self.field_widgets[task_type] = fields
         if task_type in COUNTER_TASK_TYPES:
             self._wire_counter_scope_editor(fields)
         self._add_generated_output_hint(form, task_type, fields, values)
+        if task_type == "obs.set_source_transform":
+            scroll = QScrollArea()
+            scroll.setObjectName("sourceTransformScrollArea")
+            scroll.setWidgetResizable(True)
+            scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+            scroll.setHorizontalScrollBarPolicy(
+                Qt.ScrollBarPolicy.ScrollBarAsNeeded
+            )
+            scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+            scroll.setWidget(page)
+            return scroll
         return page
 
     def _wire_counter_scope_editor(self, fields: dict[str, QWidget]) -> None:

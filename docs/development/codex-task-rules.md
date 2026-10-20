@@ -70,8 +70,10 @@ the authoritative compatibility policy in
 - Run focused tests first. Expand regression coverage when shared architecture,
   persistence, migration, threading, authentication, cross-store references,
   or another high-risk boundary changes.
-- Use the repository's safe Qt/offscreen/WebEngine test setup when needed. Do
-  not broadly alter product code to mask an unrelated native test-harness issue.
+- Run pytest through `tools/development/run_tests.ps1` so Python and pytest use
+  the ignored workspace-local temporary root in restricted sandboxes. Use the
+  repository's safe Qt/offscreen/WebEngine setup when needed. Do not broadly
+  alter product code to mask an unrelated native test-harness issue.
 - Run `git diff --check`. Do not commit or push unless explicitly instructed.
 
 ## Finish every task

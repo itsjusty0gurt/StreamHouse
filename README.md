@@ -51,7 +51,7 @@ python -m venv .venv
 Run tests and the development smoke test:
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest -q
+.\tools\development\run_tests.ps1 -q
 .\.venv\Scripts\python.exe -m tools.smoke.smoke_development
 ```
 

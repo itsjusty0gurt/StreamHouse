@@ -1915,12 +1915,15 @@ the Chromium-backed Twitch chat remains owned by Qt WebEngine.
 Preferred full suite:
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest -q
+.\tools\development\run_tests.ps1 -q
 ```
 
 Tests use dependency injection, temporary stores, `STREAMHOUSE_DATA_DIR`, mocked
-network clients, and offscreen Qt. Add focused tests beside the subsystem and
-run the full suite before packaging.
+network clients, and offscreen Qt. The runner redirects Python and pytest
+temporary files into the ignored workspace-local `.test-tmp/` directory so
+restricted development sandboxes do not make temporary-store tests fail with
+environmental permission errors. Add focused tests beside the subsystem and run
+the full suite before packaging.
 
 ### Windows bundles
 

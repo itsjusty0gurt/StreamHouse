@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMessageBox,
+    QScrollArea,
 )
 from PySide6.QtGui import QTextCursor
 
@@ -264,6 +265,64 @@ class TaskEditorTests(unittest.TestCase):
         fields["scene"].setCurrentText("Gameplay")
         transform._refresh_obs_sources("Gameplay")
         self.assertGreaterEqual(fields["source"].findText("Camera"), 0)
+
+    def test_source_transform_editor_preserves_usable_field_width_and_scrolls(self) -> None:
+        task = TaskDefinition(
+            "transform",
+            "obs.set_source_transform",
+            "Move camera",
+            {
+                "scene": "Gameplay",
+                "source": "Camera",
+                "position_x": "{automation.x}",
+                "position_y": "240",
+                "scale_x": "1.25",
+                "scale_y": "1.25",
+                "rotation": "15",
+                "crop_top": "2",
+                "crop_right": "4",
+                "crop_bottom": "6",
+                "crop_left": "8",
+            },
+        )
+        dialog = TaskEditorDialog(
+            task.task_type,
+            task=task,
+            obs_service=FakeObsService(),
+        )
+        scroll = dialog.findChild(QScrollArea, "sourceTransformScrollArea")
+        self.assertIsNotNone(scroll)
+        fields = dialog.field_widgets[task.task_type]
+        for field in fields.values():
+            self.assertGreaterEqual(
+                field.minimumWidth(),
+                TaskEditorDialog.SOURCE_TRANSFORM_FIELD_MINIMUM_WIDTH,
+            )
+
+        dialog.resize(760, 900)
+        dialog.show()
+        self.application.processEvents()
+        self.assertEqual(scroll.horizontalScrollBar().maximum(), 0)
+        self.assertEqual(scroll.verticalScrollBar().maximum(), 0)
+
+        dialog.resize(dialog.minimumWidth(), 500)
+        self.application.processEvents()
+        self.assertGreater(scroll.horizontalScrollBar().maximum(), 0)
+        for field in fields.values():
+            self.assertGreaterEqual(
+                field.width(),
+                TaskEditorDialog.SOURCE_TRANSFORM_FIELD_MINIMUM_WIDTH,
+            )
+        self.assertEqual(dialog.values()["config"], task.config)
+        dialog.close()
+
+    def test_other_task_editor_does_not_gain_transform_scroll_area(self) -> None:
+        dialog = TaskEditorDialog("obs.set_input_mute")
+
+        self.assertIsNone(
+            dialog.findChild(QScrollArea, "sourceTransformScrollArea")
+        )
+        self.assertEqual(dialog.minimumWidth(), 620)
 
     def test_screenshot_browse_uses_save_dialog_and_default_filename(self) -> None:
         dialog = TaskEditorDialog("obs.take_screenshot", obs_service=FakeObsService())

@@ -1,4 +1,5 @@
 .venv/
+.pytest_cache/
 __pycache__/
 *.pyc
 .env
@@ -16,6 +17,7 @@ __pycache__/
 /build/
 /release/
 /exports/
+.test-tmp/
 *.spec
 
 # Local planning notes
