@@ -1234,6 +1234,49 @@ class CounterScopesEditor(QWidget):
         ]
 
 
+OBS_SCREENSHOT_PNG_FILTER = "PNG images (*.png)"
+OBS_SCREENSHOT_JPEG_FILTER = "JPEG images (*.jpg *.jpeg)"
+OBS_SCREENSHOT_FILE_FILTER = (
+    f"{OBS_SCREENSHOT_PNG_FILTER};;{OBS_SCREENSHOT_JPEG_FILTER}"
+)
+OBS_SCREENSHOT_EXTENSIONS = frozenset({".png", ".jpg", ".jpeg"})
+
+
+def _screenshot_filter_for_path(path: str) -> str:
+    return (
+        OBS_SCREENSHOT_JPEG_FILTER
+        if Path(str(path)).suffix.casefold() in {".jpg", ".jpeg"}
+        else OBS_SCREENSHOT_PNG_FILTER
+    )
+
+
+def _normalize_screenshot_save_path(
+    filename: str,
+    selected_filter: str,
+    original_path: str = "",
+) -> str:
+    """Apply the selected screenshot filter without overriding a typed format."""
+
+    clean = str(filename).strip()
+    if not clean:
+        return ""
+    selected_extension = (
+        ".jpg"
+        if selected_filter == OBS_SCREENSHOT_JPEG_FILTER
+        else ".png"
+    )
+    suffix = Path(clean).suffix.casefold()
+    original_suffix = Path(str(original_path)).suffix.casefold()
+    selected_format_changed = (
+        selected_filter != _screenshot_filter_for_path(original_path)
+    )
+    if suffix not in OBS_SCREENSHOT_EXTENSIONS or (
+        selected_format_changed and suffix == original_suffix
+    ):
+        return str(Path(clean).with_suffix(selected_extension))
+    return clean
+
+
 class TaskEditorDialog(QDialog):
     LABELS = {
         **TWITCH_TASK_LABELS,
@@ -1567,8 +1610,7 @@ class TaskEditorDialog(QDialog):
         "obs.take_screenshot": (
             {"key": "target_type", "label": "Target type", "kind": "choice", "default": "source", "choices": (("Source", "source"), ("Scene", "scene"))},
             {"key": "target", "label": "Target name", "kind": "obs_screenshot_target", "default": "", "required": True},
-            {"key": "file", "label": "Output file", "kind": "file", "default": "", "required": True},
-            {"key": "image_format", "label": "Image format", "kind": "choice", "default": "auto", "choices": (("From file extension", "auto"), ("PNG", "png"), ("JPEG", "jpeg"))},
+            {"key": "file", "label": "Output file", "kind": "screenshot_file", "default": "", "required": True},
         ),
         "obs.set_source_transform": (
             {"key": "scene", "label": "Scene", "kind": "obs_scene", "default": "", "required": True},
@@ -2006,7 +2048,14 @@ class TaskEditorDialog(QDialog):
     def _create_field(
         self, kind: str, spec: dict[str, object], value: object
     ) -> tuple[QWidget, QWidget]:
-        if kind in {"text", "file", "folder", "target", "python_file"}:
+        if kind in {
+            "text",
+            "file",
+            "folder",
+            "target",
+            "python_file",
+            "screenshot_file",
+        }:
             edit = QLineEdit(str(value or ""))
             edit.setPlaceholderText(str(spec.get("placeholder", "")))
             if kind == "text":
@@ -2025,7 +2074,9 @@ class TaskEditorDialog(QDialog):
             else:
                 button = QPushButton("Browse…")
                 button.clicked.connect(
-                    (lambda: self._choose_file(edit))
+                    (lambda: self._choose_screenshot_file(edit))
+                    if kind == "screenshot_file"
+                    else (lambda: self._choose_file(edit))
                     if kind == "file"
                     else (
                         lambda: self._choose_file(
@@ -2352,6 +2403,27 @@ class TaskEditorDialog(QDialog):
         if filename:
             edit.setText(filename)
 
+    def _choose_screenshot_file(self, edit: QLineEdit) -> None:
+        original_path = edit.text().strip()
+        suggested_path = original_path or "screenshot.png"
+        selected_filter = _screenshot_filter_for_path(suggested_path)
+        filename, chosen_filter = QFileDialog.getSaveFileName(
+            self,
+            "Save OBS Screenshot",
+            suggested_path,
+            OBS_SCREENSHOT_FILE_FILTER,
+            selected_filter,
+        )
+        if not filename:
+            return
+        edit.setText(
+            _normalize_screenshot_save_path(
+                filename,
+                chosen_filter or selected_filter,
+                suggested_path,
+            )
+        )
+
     def _choose_folder(self, edit: QLineEdit) -> None:
         folder = QFileDialog.getExistingDirectory(self, "Choose Folder", edit.text())
         if folder:
@@ -2673,6 +2745,16 @@ class TaskEditorDialog(QDialog):
                 registry=self.variable_registry,
                 extra_definitions=self._output_definitions,
             )
+        if task_type == "obs.take_screenshot":
+            output_path = str(config.get("file", "")).strip()
+            check_path = PLACEHOLDER_PATTERN.sub("variable", output_path)
+            suffix = Path(check_path).suffix.casefold()
+            if suffix not in OBS_SCREENSHOT_EXTENSIONS and not (
+                not suffix and PLACEHOLDER_PATTERN.search(output_path)
+            ):
+                raise ValueError(
+                    "Screenshot output must use a PNG, JPG, or JPEG extension."
+                )
         if task_type.startswith("counter."):
             if config.get("counter_id") == "__create__":
                 raise ValueError("Choose or create a counter.")

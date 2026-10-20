@@ -718,7 +718,6 @@ class ObsTaskTests(unittest.TestCase):
                 "target_type": "source",
                 "target": "Camera",
                 "file": "{automation.capture_folder}/camera.png",
-                "image_format": "auto",
             },
         )
         scene_result = self.run_result(
@@ -727,7 +726,6 @@ class ObsTaskTests(unittest.TestCase):
                 "target_type": "scene",
                 "target": "Gameplay",
                 "file": "C:/captures/gameplay.jpg",
-                "image_format": "auto",
             },
         )
 
@@ -772,7 +770,7 @@ class ObsTaskTests(unittest.TestCase):
         self.assertFalse(empty.succeeded)
         self.assertIn("output file path", empty.detail)
         self.assertFalse(invalid.succeeded)
-        self.assertIn("PNG or JPEG", invalid.detail)
+        self.assertIn("PNG, JPG, or JPEG", invalid.detail)
         self.assertEqual(self.service.requests, [])
         self.assertNotIn("automation.screenshot_path", self.trigger.context)
 

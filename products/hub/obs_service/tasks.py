@@ -223,15 +223,11 @@ class ObsTask:
             ).strip()
             if not output_path:
                 raise ValueError("OBS task requires a screenshot output file path.")
-            image_format = str(c.get("image_format", "auto")).strip().casefold()
-            if image_format == "auto":
-                suffix = output_path.rpartition(".")[2].casefold()
-                image_format = "jpeg" if suffix in {"jpg", "jpeg"} else suffix
-            if image_format == "jpg":
-                image_format = "jpeg"
+            suffix = output_path.rpartition(".")[2].casefold()
+            image_format = "jpeg" if suffix in {"jpg", "jpeg"} else suffix
             if image_format not in {"png", "jpeg"}:
                 raise ValueError(
-                    "OBS screenshot format must be PNG or JPEG, or match the output file extension."
+                    "OBS screenshot output must use a PNG, JPG, or JPEG extension."
                 )
             return "SaveSourceScreenshot", {
                 "sourceName": self._required(c, "target"),

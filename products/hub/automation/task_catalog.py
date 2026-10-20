@@ -608,8 +608,7 @@ _INPUT_HELP: dict[str, dict[str, str]] = {
     "obs.take_screenshot": {
         "target_type": "Choose whether the target name identifies an OBS source or scene.",
         "target": "The existing OBS source or scene to capture.",
-        "file": "A local output path or canonical Variable. Use a PNG, JPG, or JPEG extension when format is automatic.",
-        "image_format": "Use the output extension or explicitly choose PNG or JPEG.",
+        "file": "A local PNG or JPEG output path, or a canonical Variable that resolves to one.",
     },
     "obs.set_source_transform": {
         "scene": "The OBS scene containing the source item.",

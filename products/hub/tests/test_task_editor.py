@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDialog,
+    QFileDialog,
     QLabel,
     QLineEdit,
     QMessageBox,
@@ -22,7 +23,11 @@ from products.hub.automation.routines import RoutineStore
 from products.hub.automation.variable_providers import context_provider, runtime_provider
 from products.hub.automation.variable_registry import VariableRegistry
 from products.hub.automation.variable_outputs import generated_output_definitions
-from products.hub.ui.automation_page import TaskEditorDialog
+from products.hub.ui.automation_page import (
+    OBS_SCREENSHOT_JPEG_FILTER,
+    OBS_SCREENSHOT_PNG_FILTER,
+    TaskEditorDialog,
+)
 
 
 class FakeSignal:
@@ -259,6 +264,105 @@ class TaskEditorTests(unittest.TestCase):
         fields["scene"].setCurrentText("Gameplay")
         transform._refresh_obs_sources("Gameplay")
         self.assertGreaterEqual(fields["source"].findText("Camera"), 0)
+
+    def test_screenshot_browse_uses_save_dialog_and_default_filename(self) -> None:
+        dialog = TaskEditorDialog("obs.take_screenshot", obs_service=FakeObsService())
+        output = dialog.field_widgets["obs.take_screenshot"]["file"]
+
+        with patch.object(QFileDialog, "getSaveFileName", return_value=("", "")) as save:
+            dialog._choose_screenshot_file(output)
+
+        self.assertEqual(save.call_args.args[1], "Save OBS Screenshot")
+        self.assertEqual(save.call_args.args[2], "screenshot.png")
+        self.assertIn("*.png", save.call_args.args[3])
+        self.assertIn("*.jpg *.jpeg", save.call_args.args[3])
+        self.assertEqual(save.call_args.args[4], OBS_SCREENSHOT_PNG_FILTER)
+        self.assertEqual(output.text(), "")
+
+    def test_screenshot_save_dialog_normalizes_selected_extension(self) -> None:
+        dialog = TaskEditorDialog("obs.take_screenshot", obs_service=FakeObsService())
+        output = dialog.field_widgets["obs.take_screenshot"]["file"]
+        cases = (
+            ("", "C:/captures/new-shot", OBS_SCREENSHOT_PNG_FILTER, "C:/captures/new-shot.png"),
+            ("C:/captures/shot.png", "C:/captures/shot.png", OBS_SCREENSHOT_JPEG_FILTER, "C:/captures/shot.jpg"),
+            ("C:/captures/shot.png", "C:/captures/custom.jpeg", OBS_SCREENSHOT_PNG_FILTER, "C:/captures/custom.jpeg"),
+            ("", "C:/captures/custom.gif", OBS_SCREENSHOT_PNG_FILTER, "C:/captures/custom.png"),
+        )
+        for original, selected, selected_filter, expected in cases:
+            with self.subTest(selected=selected, selected_filter=selected_filter):
+                output.setText(original)
+                with patch.object(
+                    QFileDialog,
+                    "getSaveFileName",
+                    return_value=(selected, selected_filter),
+                ):
+                    dialog._choose_screenshot_file(output)
+                self.assertEqual(Path(output.text()), Path(expected))
+
+    def test_screenshot_save_dialog_accepts_existing_file_and_cancel_preserves_value(self) -> None:
+        dialog = TaskEditorDialog("obs.take_screenshot", obs_service=FakeObsService())
+        output = dialog.field_widgets["obs.take_screenshot"]["file"]
+        with tempfile.TemporaryDirectory() as directory:
+            existing = Path(directory) / "existing.png"
+            existing.write_bytes(b"existing")
+            with patch.object(
+                QFileDialog,
+                "getSaveFileName",
+                return_value=(str(existing), OBS_SCREENSHOT_PNG_FILTER),
+            ):
+                dialog._choose_screenshot_file(output)
+            self.assertEqual(output.text(), str(existing))
+
+        output.setText("C:/captures/keep.jpg")
+        with patch.object(QFileDialog, "getSaveFileName", return_value=("", "")):
+            dialog._choose_screenshot_file(output)
+        self.assertEqual(output.text(), "C:/captures/keep.jpg")
+
+    def test_screenshot_editor_uses_path_as_format_authority_and_supports_variables(self) -> None:
+        task = TaskDefinition(
+            "screenshot",
+            "obs.take_screenshot",
+            "Capture gameplay",
+            {
+                "target_type": "scene",
+                "target": "Gameplay",
+                "file": "C:/captures/gameplay.jpg",
+            },
+        )
+        dialog = TaskEditorDialog(
+            task.task_type,
+            task=task,
+            obs_service=FakeObsService(),
+        )
+        self.assertNotIn("image_format", dialog.field_widgets[task.task_type])
+        self.assertEqual(dialog.values()["config"], task.config)
+
+        fields = dialog.field_widgets[task.task_type]
+        fields["file"].setText("{automation.screenshot_output}")
+        self.assertEqual(
+            dialog.values()["config"]["file"],
+            "{automation.screenshot_output}",
+        )
+
+        fields["file"].setText("C:/captures/gameplay.webp")
+        with self.assertRaisesRegex(ValueError, "PNG, JPG, or JPEG"):
+            dialog.values()
+
+    def test_non_screenshot_file_field_still_uses_open_dialog(self) -> None:
+        dialog = TaskEditorDialog("obs.set_image_source", obs_service=FakeObsService())
+        output = dialog.field_widgets["obs.set_image_source"]["file"]
+        with (
+            patch.object(
+                QFileDialog,
+                "getOpenFileName",
+                return_value=("C:/images/overlay.png", "All Files (*)"),
+            ) as open_file,
+            patch.object(QFileDialog, "getSaveFileName") as save_file,
+        ):
+            dialog._choose_file(output)
+        open_file.assert_called_once()
+        save_file.assert_not_called()
+        self.assertEqual(output.text(), "C:/images/overlay.png")
 
     def test_obs_task_without_discovery_hides_refresh_toolbar(self) -> None:
         service = FakeObsService()
