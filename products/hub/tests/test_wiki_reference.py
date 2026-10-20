@@ -404,6 +404,9 @@ def test_all_current_obs_triggers_have_exact_ui_names_and_event_descriptions() -
         entry = entries[f"trigger:{event_type}"]
         assert entry.title == f"OBS — {label}"
         assert expected_summaries[event_type] in entry.search_text()
+        assert "friendly scene, input, source, and state controls" in entry.search_text()
+        assert "remain editable while obs is disconnected" in entry.search_text()
+        assert "advanced filters preserve canonical obs event-data field names" in entry.search_text()
 
 
 def test_wiki_search_is_local_case_insensitive_and_does_not_mutate_sources() -> None:

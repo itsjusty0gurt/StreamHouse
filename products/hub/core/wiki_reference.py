@@ -417,7 +417,9 @@ def _trigger_entry(
         configuration = ("Any custom reward or one selected reward.",)
     elif trigger_id in OBS_TRIGGER_TYPES:
         configuration = (
-            "Optional OBS event-field filters such as scene, source, or input name.",
+            "Common OBS filters use friendly scene, input, source, and state controls populated from connected OBS when available.",
+            "The controls remain editable while OBS is disconnected; choose Any to leave a field unfiltered.",
+            "Advanced filters preserve canonical OBS event-data field names for less common cases.",
         )
     elif trigger_id in MUSIC_TRIGGER_TYPES:
         configuration = (

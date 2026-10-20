@@ -114,8 +114,10 @@ from products.hub.automation.variable_registry import (
 from products.hub.obs_service.tasks import OBS_TASK_LABELS
 from products.hub.obs_service.service import ObsWebSocketService
 from products.hub.obs_service.triggers import (
+    OBS_TRIGGER_FILTER_DEFINITIONS,
     OBS_TRIGGER_TYPES,
     ObsAutomationTrigger,
+    ObsTriggerFilterDefinition,
     ObsTriggerStore,
 )
 from products.hub.soundboard.store import SoundboardStore
@@ -597,7 +599,6 @@ class KeywordPhraseTriggerDialog(QDialog):
             "enabled": self.enabled_check.isChecked(),
         }
 
-
 class AdsTriggerDialog(QDialog):
     def __init__(
         self,
@@ -822,8 +823,15 @@ class ObsTriggerDialog(QDialog):
         self,
         parent: QWidget | None = None,
         trigger: ObsAutomationTrigger | None = None,
+        obs_service: ObsWebSocketService | None = None,
+        initial_event_type: str = "",
     ) -> None:
         super().__init__(parent)
+        self.obs_service = obs_service
+        self._active_event_type = ""
+        self._filter_seed = dict(trigger.filters) if trigger is not None else {}
+        self._discovery_generation = 0
+        self.filter_widgets: dict[str, QComboBox] = {}
         self.setWindowTitle("Edit OBS Trigger" if trigger else "Add OBS Trigger")
         self.setMinimumWidth(520)
         layout = QVBoxLayout(self)
@@ -831,31 +839,316 @@ class ObsTriggerDialog(QDialog):
         self.event_combo = QComboBox()
         for event_type, label in OBS_TRIGGER_TYPES.items():
             self.event_combo.addItem(label, event_type)
-        self.filters_edit = QLineEdit()
-        self.filters_edit.setPlaceholderText("sceneName=Gameplay, inputName=Mic/Aux")
         self.enabled_check = QCheckBox("Enabled")
         self.enabled_check.setChecked(trigger.enabled if trigger else True)
-        if trigger:
-            self.event_combo.setCurrentIndex(max(self.event_combo.findData(trigger.event_type), 0))
-            self.filters_edit.setText(", ".join(f"{k}={v}" for k, v in trigger.filters.items()))
+        selected_event_type = (
+            trigger.event_type if trigger is not None else initial_event_type
+        )
+        if selected_event_type:
+            self.event_combo.setCurrentIndex(
+                max(self.event_combo.findData(selected_event_type), 0)
+            )
         form.addRow("OBS event", self.event_combo)
-        form.addRow("Optional field filters", self.filters_edit)
         form.addRow("", self.enabled_check)
         layout.addLayout(form)
-        help_label = QLabel("Filters use the field names supplied by OBS WebSocket. Leave blank to match every event of this type.")
-        help_label.setWordWrap(True)
-        layout.addWidget(help_label)
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
-        buttons.accepted.connect(self.accept)
+
+        self.filter_group = QGroupBox("Filters")
+        self.filter_form = QFormLayout(self.filter_group)
+        layout.addWidget(self.filter_group)
+
+        discovery_row = QHBoxLayout()
+        self.discovery_status = QLabel("")
+        self.refresh_button = QPushButton("Refresh OBS Lists")
+        self.refresh_button.clicked.connect(self._refresh_discovery)
+        discovery_row.addWidget(self.discovery_status, 1)
+        discovery_row.addWidget(self.refresh_button)
+        layout.addLayout(discovery_row)
+
+        self.advanced_toggle = QPushButton("Advanced filters ▸")
+        self.advanced_toggle.setCheckable(True)
+        self.advanced_toggle.setFlat(True)
+        self.advanced_toggle.toggled.connect(self._set_advanced_visible)
+        layout.addWidget(self.advanced_toggle)
+        self.advanced_container = QWidget()
+        advanced_form = QFormLayout(self.advanced_container)
+        self.filters_edit = QLineEdit()
+        self.filters_edit.setPlaceholderText("fieldName=value, otherField=value")
+        advanced_form.addRow("Raw field filters", self.filters_edit)
+        advanced_help = QLabel(
+            "Advanced filters use canonical OBS event-data field names. Unknown "
+            "saved fields are preserved here."
+        )
+        advanced_help.setWordWrap(True)
+        advanced_form.addRow("", advanced_help)
+        self.advanced_container.setVisible(False)
+        layout.addWidget(self.advanced_container)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Save
+            | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self._accept_values)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
+        self.event_combo.currentIndexChanged.connect(self._event_changed)
+        self.finished.connect(lambda _result: self._invalidate_discovery())
+        self._event_changed()
 
     def values(self) -> dict[str, object]:
+        filters = _parse_event_filters(self.filters_edit.text())
+        for definition in self._definitions():
+            value = self._filter_value(definition.key)
+            if value:
+                filters[definition.key] = value
         return {
             "event_type": str(self.event_combo.currentData()),
-            "filters": _parse_event_filters(self.filters_edit.text()),
+            "filters": filters,
             "enabled": self.enabled_check.isChecked(),
         }
+
+    def _accept_values(self) -> None:
+        try:
+            self.values()
+        except ValueError as error:
+            QMessageBox.warning(self, "Invalid OBS Filters", str(error))
+            return
+        self.accept()
+
+    def _definitions(self) -> tuple[ObsTriggerFilterDefinition, ...]:
+        return OBS_TRIGGER_FILTER_DEFINITIONS.get(
+            str(self.event_combo.currentData()), ()
+        )
+
+    def _event_changed(self, _index: int = -1) -> None:
+        if self._active_event_type:
+            self._filter_seed = self._current_filters()
+        self._active_event_type = str(self.event_combo.currentData())
+        definitions = self._definitions()
+        while self.filter_form.rowCount():
+            self.filter_form.removeRow(0)
+        self.filter_widgets = {}
+        recognized: set[str] = set()
+        for definition in definitions:
+            combo = QComboBox()
+            combo.setObjectName(f"obsTriggerFilter_{definition.key}")
+            combo.addItem("Any", "")
+            if definition.choices:
+                for label, value in definition.choices:
+                    combo.addItem(label, value)
+            else:
+                combo.setEditable(True)
+            current = self._filter_seed.get(definition.key, "")
+            supported_values = {value for _label, value in definition.choices}
+            current_is_supported = not definition.choices or current in supported_values
+            if current and current_is_supported:
+                match = combo.findData(current)
+                if match < 0:
+                    combo.addItem(current, current)
+                    match = combo.count() - 1
+                combo.setCurrentIndex(match)
+            if not current or current_is_supported:
+                recognized.add(definition.key)
+            self.filter_widgets[definition.key] = combo
+            self.filter_form.addRow(definition.label, combo)
+        unknown = {
+            key: value
+            for key, value in self._filter_seed.items()
+            if key not in recognized
+        }
+        self.filters_edit.setText(
+            ", ".join(f"{key}={value}" for key, value in unknown.items())
+        )
+        self.filter_group.setVisible(bool(definitions))
+        has_discovery = any(definition.discovery for definition in definitions)
+        self.refresh_button.setVisible(has_discovery)
+        self.discovery_status.setVisible(has_discovery)
+        self.advanced_toggle.setChecked(bool(unknown))
+        self._wire_dependent_scene_filter(definitions)
+        self._refresh_discovery()
+
+    def _current_filters(self) -> dict[str, str]:
+        try:
+            filters = _parse_event_filters(self.filters_edit.text())
+        except ValueError:
+            filters = dict(self._filter_seed)
+        for definition in OBS_TRIGGER_FILTER_DEFINITIONS.get(
+            self._active_event_type, ()
+        ):
+            value = self._filter_value(definition.key)
+            if value:
+                filters[definition.key] = value
+        return filters
+
+    def _filter_value(self, key: str) -> str:
+        combo = self.filter_widgets.get(key)
+        if combo is None:
+            return ""
+        if combo.isEditable():
+            text = combo.currentText().strip()
+            if not text or text.casefold() == "any":
+                return ""
+            if (
+                combo.currentIndex() >= 0
+                and combo.itemText(combo.currentIndex()) == text
+            ):
+                data = combo.currentData()
+                if data is not None:
+                    return str(data).strip()
+            return text
+        if combo.currentIndex() >= 0:
+            data = combo.currentData()
+            if data is not None:
+                return str(data).strip()
+        text = combo.currentText().strip()
+        return "" if text.casefold() == "any" else text
+
+    def _set_advanced_visible(self, visible: bool) -> None:
+        self.advanced_container.setVisible(visible)
+        self.advanced_toggle.setText(
+            "Advanced filters ▾" if visible else "Advanced filters ▸"
+        )
+
+    def _wire_dependent_scene_filter(
+        self, definitions: tuple[ObsTriggerFilterDefinition, ...]
+    ) -> None:
+        if not any(item.discovery == "scene_source" for item in definitions):
+            return
+        scene = self.filter_widgets.get("sceneName")
+        if scene is None:
+            return
+        scene.activated.connect(lambda _index: self._scene_filter_changed())
+        if scene.lineEdit() is not None:
+            scene.lineEdit().editingFinished.connect(self._scene_filter_changed)
+
+    def _scene_filter_changed(self) -> None:
+        source = self.filter_widgets.get("sceneItemId")
+        if source is not None:
+            source.setCurrentIndex(0)
+        self._refresh_discovery()
+
+    def _refresh_discovery(self) -> None:
+        definitions = self._definitions()
+        discoveries = {item.discovery for item in definitions if item.discovery}
+        generation = self._invalidate_discovery()
+        if not discoveries:
+            self.discovery_status.clear()
+            return
+        if self.obs_service is None or not self.obs_service.connected:
+            self.discovery_status.setText(
+                "OBS is disconnected; saved values remain editable."
+            )
+            return
+        self.discovery_status.setText("Loading OBS choices…")
+        if "scene" in discoveries:
+            self._request_discovery("GetSceneList", {}, generation)
+        if discoveries & {"input", "media_input"}:
+            self._request_discovery("GetInputList", {}, generation)
+        if "scene_source" in discoveries:
+            scene_name = self._filter_value("sceneName")
+            if scene_name:
+                self._request_discovery(
+                    "GetSceneItemList",
+                    {"sceneName": scene_name},
+                    generation,
+                )
+
+    def _request_discovery(
+        self,
+        request_type: str,
+        request_data: dict[str, object],
+        generation: int,
+    ) -> None:
+        if self.obs_service is None:
+            return
+
+        def completed(result: object) -> None:
+            if generation != self._discovery_generation:
+                return
+            if not bool(getattr(result, "succeeded", False)):
+                self.discovery_status.setText("OBS choices are temporarily unavailable.")
+                return
+            response = getattr(result, "response_data", {})
+            if not isinstance(response, dict):
+                return
+            if request_type == "GetSceneList":
+                values = [
+                    (str(item.get("sceneName", "")).strip(),) * 2
+                    for item in response.get("scenes", [])
+                    if isinstance(item, dict)
+                    and str(item.get("sceneName", "")).strip()
+                ]
+                self._populate_filter("sceneName", values)
+            elif request_type == "GetInputList":
+                inputs = [
+                    item
+                    for item in response.get("inputs", [])
+                    if isinstance(item, dict)
+                    and str(item.get("inputName", "")).strip()
+                ]
+                all_inputs = [
+                    (str(item["inputName"]).strip(),) * 2 for item in inputs
+                ]
+                media_inputs = [
+                    (str(item["inputName"]).strip(),) * 2
+                    for item in inputs
+                    if str(item.get("inputKind", "")).casefold()
+                    in {"ffmpeg_source", "vlc_source"}
+                ]
+                wants_media = any(
+                    item.discovery == "media_input" for item in self._definitions()
+                )
+                self._populate_filter(
+                    "inputName", media_inputs if wants_media else all_inputs
+                )
+            elif request_type == "GetSceneItemList":
+                values = [
+                    (
+                        str(item.get("sourceName", "")).strip(),
+                        str(item.get("sceneItemId", "")).strip(),
+                    )
+                    for item in response.get("sceneItems", [])
+                    if isinstance(item, dict)
+                    and str(item.get("sourceName", "")).strip()
+                    and str(item.get("sceneItemId", "")).strip()
+                ]
+                self._populate_filter("sceneItemId", values)
+            self.discovery_status.clear()
+
+        try:
+            self.obs_service.send_request(
+                request_type,
+                request_data,
+                callback=completed,
+            )
+        except ValueError:
+            if generation == self._discovery_generation:
+                self.discovery_status.setText(
+                    "OBS choices are temporarily unavailable."
+                )
+
+    def _populate_filter(
+        self, key: str, values: list[tuple[str, str]]
+    ) -> None:
+        combo = self.filter_widgets.get(key)
+        if combo is None:
+            return
+        current = self._filter_value(key)
+        combo.blockSignals(True)
+        combo.clear()
+        combo.addItem("Any", "")
+        for label, value in sorted(set(values), key=lambda item: item[0].casefold()):
+            combo.addItem(label, value)
+        if current:
+            index = combo.findData(current)
+            if index < 0:
+                combo.addItem(current, current)
+                index = combo.count() - 1
+            combo.setCurrentIndex(index)
+        combo.blockSignals(False)
+
+    def _invalidate_discovery(self) -> int:
+        self._discovery_generation += 1
+        return self._discovery_generation
 
 
 class MusicTriggerDialog(QDialog):
@@ -5221,13 +5514,14 @@ class AutomationPage(QWidget):
         routine = self.routine_store.get(self._selected_routine_id)
         if routine is None:
             return
-        if event_type is None:
-            dialog = ObsTriggerDialog(self)
-            if dialog.exec() != QDialog.DialogCode.Accepted:
-                return
-            values = dialog.values()
-        else:
-            values = {"event_type": event_type, "filters": {}, "enabled": True}
+        dialog = ObsTriggerDialog(
+            self,
+            obs_service=self.obs_service,
+            initial_event_type=event_type or "",
+        )
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        values = dialog.values()
         try:
             trigger = self.obs_trigger_store.add(routine.routine_id, **values)
         except (OSError, TypeError, ValueError) as error:
@@ -5449,7 +5743,7 @@ class AutomationPage(QWidget):
     def _edit_obs_trigger(
         self, routine_id: str, trigger: ObsAutomationTrigger
     ) -> None:
-        dialog = ObsTriggerDialog(self, trigger)
+        dialog = ObsTriggerDialog(self, trigger, self.obs_service)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         try:

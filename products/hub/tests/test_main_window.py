@@ -1088,7 +1088,7 @@ class MainWindowTests(unittest.TestCase):
         self.assertEqual(triggers[0].filters, {})
         self.assertTrue(triggers[0].enabled)
 
-    def test_obs_menu_adds_selected_trigger_directly(self) -> None:
+    def test_obs_menu_opens_selected_trigger_editor_before_adding(self) -> None:
         routine = self.twitch_command_trigger_store.routine_store.add(
             "Direct OBS trigger"
         )
@@ -1098,12 +1098,26 @@ class MainWindowTests(unittest.TestCase):
         add_menu = page._add_trigger_submenu(menu)
         obs_menu = add_menu.actions()[1].menu()
 
-        obs_menu.actions()[2].trigger()
+        with (
+            patch(
+                "products.hub.ui.automation_page.ObsTriggerDialog.exec",
+                return_value=QDialog.DialogCode.Accepted,
+            ),
+            patch(
+                "products.hub.ui.automation_page.ObsTriggerDialog.values",
+                return_value={
+                    "event_type": "CurrentProgramSceneChanged",
+                    "filters": {"sceneName": "Gameplay"},
+                    "enabled": True,
+                },
+            ),
+        ):
+            obs_menu.actions()[2].trigger()
 
         triggers = page.obs_trigger_store.for_routine(routine.routine_id)
         self.assertEqual(len(triggers), 1)
         self.assertEqual(triggers[0].event_type, "CurrentProgramSceneChanged")
-        self.assertEqual(triggers[0].filters, {})
+        self.assertEqual(triggers[0].filters, {"sceneName": "Gameplay"})
         self.assertTrue(triggers[0].enabled)
 
     def test_music_menu_adds_selected_trigger_directly(self) -> None:

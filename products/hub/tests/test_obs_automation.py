@@ -389,6 +389,62 @@ class ObsTriggerStoreTests(unittest.TestCase):
         self.assertEqual(unmuted["muted"], "false")
         self.assertNotIn("mute", unmuted)
 
+    def test_boolean_and_output_state_filters_match_canonical_obs_values(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            routines = RoutineStore(root / "routines.json")
+            routine = routines.add("Filtered OBS events")
+            store = ObsTriggerStore(root / "triggers.json", routines)
+            muted = store.add(
+                routine.routine_id,
+                "InputMuteStateChanged",
+                filters={"inputMuted": "true"},
+            )
+            hidden = store.add(
+                routine.routine_id,
+                "SceneItemEnableStateChanged",
+                filters={"sceneItemEnabled": "false"},
+            )
+            started = store.add(
+                routine.routine_id,
+                "StreamStateChanged",
+                filters={"outputState": "OBS_WEBSOCKET_OUTPUT_STARTED"},
+            )
+
+            self.assertEqual(
+                [
+                    event.trigger_id
+                    for event in store.evaluate(
+                        ObsEvent("InputMuteStateChanged", {"inputMuted": True})
+                    )
+                ],
+                [muted.trigger_id],
+            )
+            self.assertEqual(
+                [
+                    event.trigger_id
+                    for event in store.evaluate(
+                        ObsEvent(
+                            "SceneItemEnableStateChanged",
+                            {"sceneItemEnabled": False},
+                        )
+                    )
+                ],
+                [hidden.trigger_id],
+            )
+            self.assertEqual(
+                [
+                    event.trigger_id
+                    for event in store.evaluate(
+                        ObsEvent(
+                            "StreamStateChanged",
+                            {"outputState": "OBS_WEBSOCKET_OUTPUT_STARTED"},
+                        )
+                    )
+                ],
+                [started.trigger_id],
+            )
+
 
 class ObsTaskTests(unittest.TestCase):
     def setUp(self) -> None:

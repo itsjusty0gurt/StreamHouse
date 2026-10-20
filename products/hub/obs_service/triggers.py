@@ -52,6 +52,87 @@ OBS_TRIGGER_SLUGS = {
 }
 
 
+@dataclass(frozen=True, slots=True)
+class ObsTriggerFilterDefinition:
+    """User-facing editor metadata for one canonical OBS event-data filter."""
+
+    key: str
+    label: str
+    discovery: str = ""
+    choices: tuple[tuple[str, str], ...] = ()
+
+
+_OUTPUT_STATES = (
+    ("Unknown", "OBS_WEBSOCKET_OUTPUT_UNKNOWN"),
+    ("Starting", "OBS_WEBSOCKET_OUTPUT_STARTING"),
+    ("Started", "OBS_WEBSOCKET_OUTPUT_STARTED"),
+    ("Stopping", "OBS_WEBSOCKET_OUTPUT_STOPPING"),
+    ("Stopped", "OBS_WEBSOCKET_OUTPUT_STOPPED"),
+)
+_STREAM_STATES = _OUTPUT_STATES + (
+    ("Reconnecting", "OBS_WEBSOCKET_OUTPUT_RECONNECTING"),
+    ("Reconnected", "OBS_WEBSOCKET_OUTPUT_RECONNECTED"),
+)
+_RECORD_STATES = _OUTPUT_STATES + (
+    ("Paused", "OBS_WEBSOCKET_OUTPUT_PAUSED"),
+    ("Resumed", "OBS_WEBSOCKET_OUTPUT_RESUMED"),
+)
+
+
+OBS_TRIGGER_FILTER_DEFINITIONS: dict[
+    str, tuple[ObsTriggerFilterDefinition, ...]
+] = {
+    "CurrentProgramSceneChanged": (
+        ObsTriggerFilterDefinition("sceneName", "Scene", "scene"),
+    ),
+    "CurrentPreviewSceneChanged": (
+        ObsTriggerFilterDefinition("sceneName", "Scene", "scene"),
+    ),
+    "StreamStateChanged": (
+        ObsTriggerFilterDefinition("outputState", "State", choices=_STREAM_STATES),
+    ),
+    "RecordStateChanged": (
+        ObsTriggerFilterDefinition("outputState", "State", choices=_RECORD_STATES),
+    ),
+    "ReplayBufferStateChanged": (
+        ObsTriggerFilterDefinition("outputState", "State", choices=_OUTPUT_STATES),
+    ),
+    "SceneItemEnableStateChanged": (
+        ObsTriggerFilterDefinition("sceneName", "Scene", "scene"),
+        ObsTriggerFilterDefinition("sceneItemId", "Source", "scene_source"),
+        ObsTriggerFilterDefinition(
+            "sceneItemEnabled",
+            "State",
+            choices=(("Visible", "true"), ("Hidden", "false")),
+        ),
+    ),
+    "InputMuteStateChanged": (
+        ObsTriggerFilterDefinition("inputName", "Input", "input"),
+        ObsTriggerFilterDefinition(
+            "inputMuted",
+            "State",
+            choices=(("Muted", "true"), ("Unmuted", "false")),
+        ),
+    ),
+    "InputVolumeChanged": (
+        ObsTriggerFilterDefinition("inputName", "Input", "input"),
+    ),
+    "MediaInputPlaybackStarted": (
+        ObsTriggerFilterDefinition("inputName", "Media Source", "media_input"),
+    ),
+    "MediaInputPlaybackEnded": (
+        ObsTriggerFilterDefinition("inputName", "Media Source", "media_input"),
+    ),
+    "StudioModeStateChanged": (
+        ObsTriggerFilterDefinition(
+            "studioModeEnabled",
+            "State",
+            choices=(("Enabled", "true"), ("Disabled", "false")),
+        ),
+    ),
+}
+
+
 @dataclass(slots=True)
 class ObsAutomationTrigger:
     trigger_id: str
