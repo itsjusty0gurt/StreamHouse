@@ -232,6 +232,11 @@ class TaskEditorTests(unittest.TestCase):
         fields = audio.field_widgets["obs.set_source_audio_track"]
         self.assertEqual(fields["track"].count(), 6)
         self.assertEqual(fields["action"].count(), 3)
+        self.assertEqual(audio.LABELS["obs.set_source_audio_track"], "OBS — Set Source Audio Track Routing")
+        self.assertEqual(
+            [fields["action"].itemText(index) for index in range(3)],
+            ["Enable on track", "Disable on track", "Toggle on track"],
+        )
 
     def test_obs_batch_two_forms_support_variables_and_contextual_discovery(self) -> None:
         self.assertEqual(

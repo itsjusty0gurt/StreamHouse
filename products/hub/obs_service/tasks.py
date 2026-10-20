@@ -22,7 +22,7 @@ OBS_TASK_LABELS = {
     "obs.set_image_source": "OBS — Set image source",
     "obs.set_browser_source_url": "OBS — Set Browser Source URL",
     "obs.set_media_source_file": "OBS — Set Media Source File",
-    "obs.set_source_audio_track": "OBS — Set Source Audio Track",
+    "obs.set_source_audio_track": "OBS — Set Source Audio Track Routing",
     "obs.set_color_source_color": "OBS — Set Color Source Color",
     "obs.restart_media_source": "OBS — Restart Media Source",
     "obs.set_transition": "OBS — Set Transition",

@@ -262,7 +262,7 @@ _SHORT_DESCRIPTIONS = {
         "Changes the local file used by an OBS Media Source. The path supports Variables."
     ),
     "obs.set_source_audio_track": (
-        "Enables, disables, or toggles one OBS source audio track."
+        "Enables, disables, or toggles a source on one OBS audio output track."
     ),
     "obs.set_color_source_color": (
         "Changes an OBS Color Source using a #RRGGBB color value."
@@ -424,8 +424,10 @@ _HELP_TEXT = {
         "of the selected OBS Media Source."
     ),
     "obs.set_source_audio_track": (
-        "Changes one of the selected source's six OBS audio-track assignments. "
-        "Toggle reads the current track state before applying the opposite value."
+        "Changes whether the selected source is routed to one of OBS's six audio "
+        "output tracks, as configured in Advanced Audio Properties. A source can "
+        "be routed to multiple tracks at the same time. Toggle reads the selected "
+        "track state before applying the opposite value."
     ),
     "obs.set_color_source_color": (
         "Resolves and validates a #RRGGBB value, then updates only the selected "
@@ -592,8 +594,8 @@ _INPUT_HELP: dict[str, dict[str, str]] = {
     },
     "obs.set_source_audio_track": {
         "input": "The existing OBS source/input whose audio routing should change.",
-        "track": "The OBS audio track, from Track 1 through Track 6.",
-        "action": "Enable and Disable are deterministic; Toggle reverses the current state.",
+        "track": "The OBS audio output track, from Track 1 through Track 6.",
+        "action": "Enable or disable this source on the selected track; Toggle reverses that track's current state.",
     },
     "obs.set_color_source_color": {
         "input": "The existing OBS Color Source input to update.",
@@ -733,7 +735,9 @@ _EXAMPLES = {
         "Twitch — Get User Clip → OBS — Set Browser Source URL using {automation.clip_embed_url}.",
     ),
     "obs.set_media_source_file": ("Set a Media Source file to {automation.media_file}.",),
-    "obs.set_source_audio_track": ("Enable Track 2 for a selected OBS source.",),
+    "obs.set_source_audio_track": (
+        "Enable a selected OBS source on audio output Track 2.",
+    ),
     "obs.set_color_source_color": ("Set an OBS Color Source to #7A4DFF.",),
     "obs.restart_media_source": ("Restart an alert Media Source from the beginning.",),
     "obs.set_transition": ("Select Fade as the current OBS transition.",),

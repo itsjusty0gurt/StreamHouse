@@ -211,15 +211,19 @@ def test_obs_browser_source_url_reference_is_derived_from_task_metadata() -> Non
 def test_obs_batch_one_references_are_derived_from_task_metadata() -> None:
     tasks, variables = _reference_sources()
     entries = {
-        item.entry_id: item.search_text()
+        item.entry_id: item
         for item in build_wiki_entries(tasks, variables)
     }
 
-    assert "local-file setting" in entries["task:obs.set_media_source_file"]
-    assert "track 1 through track 6" in entries["task:obs.set_source_audio_track"]
-    assert "#rrggbb" in entries["task:obs.set_color_source_color"]
-    assert "restart" in entries["task:obs.restart_media_source"]
-    assert "scene transition" in entries["task:obs.set_transition"]
+    assert "local-file setting" in entries["task:obs.set_media_source_file"].search_text()
+    audio_routing = entries["task:obs.set_source_audio_track"]
+    assert audio_routing.title == "Set Source Audio Track Routing"
+    assert "track 1 through track 6" in audio_routing.search_text()
+    assert "advanced audio properties" in audio_routing.search_text()
+    assert "multiple tracks" in audio_routing.search_text()
+    assert "#rrggbb" in entries["task:obs.set_color_source_color"].search_text()
+    assert "restart" in entries["task:obs.restart_media_source"].search_text()
+    assert "scene transition" in entries["task:obs.set_transition"].search_text()
 
 
 def test_obs_batch_two_references_are_derived_from_task_metadata() -> None:

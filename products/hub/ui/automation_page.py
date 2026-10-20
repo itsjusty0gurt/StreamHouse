@@ -1598,8 +1598,8 @@ class TaskEditorDialog(QDialog):
         ),
         "obs.set_source_audio_track": (
             {"key": "input", "label": "Source", "kind": "obs_input", "default": "", "required": True},
-            {"key": "track", "label": "Audio track", "kind": "choice", "default": 1, "choices": tuple((f"Track {track}", track) for track in range(1, 7))},
-            {"key": "action", "label": "Action", "kind": "choice", "default": "toggle", "choices": (("Enable", "enable"), ("Disable", "disable"), ("Toggle", "toggle"))},
+            {"key": "track", "label": "Audio output track", "kind": "choice", "default": 1, "choices": tuple((f"Track {track}", track) for track in range(1, 7))},
+            {"key": "action", "label": "Routing action", "kind": "choice", "default": "toggle", "choices": (("Enable on track", "enable"), ("Disable on track", "disable"), ("Toggle on track", "toggle"))},
         ),
         "obs.set_color_source_color": (
             {"key": "input", "label": "Color Source", "kind": "obs_input", "default": "", "required": True},
