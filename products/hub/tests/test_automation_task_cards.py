@@ -150,6 +150,12 @@ def test_task_card_elides_title_and_summary_at_narrow_width() -> None:
     assert card.summary_label.full_text.startswith("A deliberately long target")
     assert card.name_label.text().endswith("…")
     assert card.summary_label.text().endswith("…")
+
+    card.resize(1200, 38)
+    app.processEvents()
+
+    assert card.name_label.text() == card.name_label.full_text
+    assert card.summary_label.text() == card.summary_label.full_text
     card.close()
     app.processEvents()
 

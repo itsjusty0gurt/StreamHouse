@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QSize, Qt
 from PySide6.QtGui import QFontMetrics, QResizeEvent
 from PySide6.QtWidgets import (
     QFrame,
@@ -68,7 +68,26 @@ class ElidingLabel(QLabel):
     def setText(self, text: str) -> None:  # noqa: N802 - Qt API name
         self._full_text = str(text)
         self.setToolTip(self._full_text)
-        self._apply_elision()
+        QLabel.setText(self, self._full_text)
+        self.updateGeometry()
+        if self.isVisible():
+            self._apply_elision()
+
+    def sizeHint(self) -> QSize:  # noqa: N802 - Qt API name
+        hint = super().sizeHint()
+        margins = self.contentsMargins()
+        hint.setWidth(
+            QFontMetrics(self.font()).horizontalAdvance(self._full_text)
+            + margins.left()
+            + margins.right()
+            + (self.margin() * 2)
+        )
+        return hint
+
+    def minimumSizeHint(self) -> QSize:  # noqa: N802 - Qt API name
+        hint = super().minimumSizeHint()
+        hint.setWidth(0)
+        return hint
 
     def resizeEvent(self, event: QResizeEvent) -> None:  # noqa: N802 - Qt API name
         super().resizeEvent(event)
@@ -432,11 +451,12 @@ class TaskCardWidget(QFrame):
         row.setContentsMargins(9 if not nested else 7, 5, 9, 5)
         row.setSpacing(8)
         category = task_category_display(content.category)
-        self.name_label = ElidingLabel(f"{category} — {content.task_name}", self)
+        title = f"{category} — {content.task_name}"
+        self.name_label = ElidingLabel(parent=self)
         self.name_label.setObjectName("automationTaskName")
         self.name_label.setStyleSheet("font-weight:650; color:#efeff1;")
         self.name_label.setMinimumWidth(120)
-        self.name_label.setMaximumWidth(245)
+        self.name_label.setText(title)
         row.addWidget(self.name_label)
 
         self.summary_label = ElidingLabel(content.summary, self)
