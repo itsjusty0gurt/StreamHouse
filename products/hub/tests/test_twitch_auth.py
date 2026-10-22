@@ -67,6 +67,11 @@ class TwitchAuthServiceTests(unittest.TestCase):
     def test_broadcaster_permissions_include_shoutout_management(self) -> None:
         self.assertIn("moderator:manage:shoutouts", TWITCH_SCOPES)
 
+    def test_broadcaster_permissions_include_moderation_event_scopes(self) -> None:
+        self.assertIn("channel:moderate", TWITCH_SCOPES)
+        self.assertIn("moderation:read", TWITCH_SCOPES)
+        self.assertIn("moderator:read:unban_requests", TWITCH_SCOPES)
+
     @staticmethod
     def _device_error(reason: str, description: str = "") -> HTTPError:
         payload = {"status": 400, "message": reason}

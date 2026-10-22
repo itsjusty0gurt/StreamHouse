@@ -149,6 +149,46 @@ def test_subscription_and_raid_context_definitions_are_typed_and_contextual() ->
     assert not registry.resolve("raid.target.name", subscription).available
 
 
+def test_moderation_context_definitions_are_typed_and_contextual() -> None:
+    registry = VariableRegistry()
+    registry.register(context_provider())
+    context = {
+        "user.id": "viewer-1",
+        "moderator.id": "mod-1",
+        "moderator.login": "channelmod",
+        "moderator.display_name": "ChannelMod",
+        "event.reason": "Repeated spam",
+        "event.is_permanent": "false",
+        "event.banned_at": "2026-10-21T12:00:00Z",
+        "event.ends_at": "2026-10-21T12:10:00Z",
+        "event.timeout_seconds": "600",
+        "event.request_id": "request-1",
+        "event.request_text": "Please reconsider",
+        "event.created_at": "2026-10-21T12:00:00Z",
+        "event.resolution_text": "Approved after review",
+        "event.status": "approved",
+    }
+
+    assert registry.resolve("moderator.login", context).value == "channelmod"
+    assert registry.resolve("event.is_permanent", context).value is False
+    assert registry.resolve("event.timeout_seconds", context).value == "600"
+    assert registry.resolve("event.request_id", context).value == "request-1"
+    assert registry.resolve("event.status", context).value == "approved"
+    assert (
+        registry.definition("event.timeout_seconds").data_type
+        == VariableDataType.INTEGER
+    )
+    assert (
+        registry.definition("event.banned_at").data_type
+        == VariableDataType.DATETIME
+    )
+    assert (
+        registry.definition("moderator.id").context_label
+        == "Twitch moderation event"
+    )
+    assert not registry.resolve("moderator.id", {}).available
+
+
 def test_channel_information_definitions_always_exist_and_follow_committed_state() -> None:
     with TemporaryDirectory() as temporary:
         store = ChannelInformationStore(Path(temporary) / "channel-information.json")

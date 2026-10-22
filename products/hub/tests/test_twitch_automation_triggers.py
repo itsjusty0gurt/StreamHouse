@@ -308,6 +308,178 @@ class TwitchEventTriggerStoreTests(unittest.TestCase):
         self.assertEqual(results[0].context["reward_cost"], "500")
         self.assertEqual(self.store.evaluate(other), ())
 
+    def test_channel_ban_fires_exactly_one_ban_or_timeout_trigger(self) -> None:
+        banned_routine = self.routines.add("Permanent ban")
+        timeout_routine = self.routines.add("Temporary timeout")
+        banned = self.store.add(
+            banned_routine.routine_id,
+            "channel.ban.permanent",
+        )
+        timed_out = self.store.add(
+            timeout_routine.routine_id,
+            "channel.ban.timeout",
+        )
+        base_event = {
+            "user_id": "viewer-1",
+            "user_login": "viewer",
+            "user_name": "Viewer",
+            "moderator_user_id": "mod-1",
+            "moderator_user_login": "channelmod",
+            "moderator_user_name": "ChannelMod",
+            "reason": "Repeated spam",
+            "banned_at": "2026-10-21T12:00:00Z",
+        }
+
+        permanent = self.store.evaluate(
+            twitch_event(
+                "channel.ban",
+                {**base_event, "is_permanent": True, "ends_at": ""},
+            )
+        )
+        timeout = self.store.evaluate(
+            twitch_event(
+                "channel.ban",
+                {
+                    **base_event,
+                    "is_permanent": False,
+                    "ends_at": "2026-10-21T12:10:00Z",
+                },
+            )
+        )
+
+        self.assertEqual(
+            [item.trigger_id for item in permanent],
+            [banned.trigger_id],
+        )
+        self.assertEqual(
+            [item.trigger_id for item in timeout],
+            [timed_out.trigger_id],
+        )
+        context = timeout[0].context
+        self.assertEqual(context["user_id"], "viewer-1")
+        self.assertEqual(context["user_login"], "viewer")
+        self.assertEqual(context["moderator.id"], "mod-1")
+        self.assertEqual(context["event.reason"], "Repeated spam")
+        self.assertEqual(context["event.is_permanent"], "false")
+        self.assertEqual(context["event.timeout_seconds"], "600")
+
+    def test_moderation_events_expose_context_and_apply_friendly_filters(self) -> None:
+        cases = (
+            ("channel.unban", "viewer"),
+            ("channel.moderator.add", "newmod"),
+            ("channel.moderator.remove", "newmod"),
+            ("channel.unban_request.create", "viewer"),
+        )
+        for event_type, user_login in cases:
+            with self.subTest(event_type=event_type):
+                routine = self.routines.add(event_type)
+                trigger = self.store.add(
+                    routine.routine_id,
+                    event_type,
+                    filters={"user_login": user_login},
+                )
+                event = {
+                    "user_id": "user-1",
+                    "user_login": user_login,
+                    "user_name": "Viewer",
+                    "moderator_user_id": "mod-1",
+                    "moderator_user_login": "channelmod",
+                    "moderator_user_name": "ChannelMod",
+                    "id": "request-1",
+                    "text": "Please reconsider",
+                    "created_at": "2026-10-21T12:00:00Z",
+                }
+
+                results = self.store.evaluate(twitch_event(event_type, event))
+
+                result = next(
+                    item for item in results if item.trigger_id == trigger.trigger_id
+                )
+                self.assertEqual(result.context["user_login"], user_login)
+                if event_type.startswith("channel.moderator."):
+                    self.assertEqual(result.context["moderator.login"], user_login)
+                if event_type == "channel.unban":
+                    self.assertEqual(result.context["moderator.login"], "channelmod")
+                if event_type == "channel.unban_request.create":
+                    self.assertEqual(result.context["event.request_id"], "request-1")
+                    self.assertEqual(
+                        result.context["event.request_text"],
+                        "Please reconsider",
+                    )
+
+    def test_unban_request_resolved_status_filter_and_context_round_trip(self) -> None:
+        routine = self.routines.add("Approved unban requests")
+        trigger = self.store.add(
+            routine.routine_id,
+            "channel.unban_request.resolve",
+            filters={"user_login": "viewer", "status": "approved"},
+        )
+        approved = twitch_event(
+            "channel.unban_request.resolve",
+            {
+                "id": "request-1",
+                "user_id": "viewer-1",
+                "user_login": "viewer",
+                "user_name": "Viewer",
+                "moderator_id": "mod-1",
+                "moderator_login": "channelmod",
+                "moderator_name": "ChannelMod",
+                "resolution_text": "Welcome back",
+                "status": "approved",
+            },
+        )
+        denied = twitch_event(
+            "channel.unban_request.resolve",
+            {**approved.payload["event"], "status": "denied"},
+        )
+
+        result = self.store.evaluate(approved)
+
+        self.assertEqual([item.trigger_id for item in result], [trigger.trigger_id])
+        self.assertEqual(self.store.evaluate(denied), ())
+        self.assertEqual(result[0].context["moderator.login"], "channelmod")
+        self.assertEqual(result[0].context["event.status"], "approved")
+        self.assertEqual(result[0].context["event.resolution_text"], "Welcome back")
+
+        loaded_routines = RoutineStore(self.routines.path)
+        loaded = TwitchEventTriggerStore(self.store.path, loaded_routines)
+        saved = loaded.load()[0]
+        self.assertEqual(saved.trigger_id, trigger.trigger_id)
+        self.assertEqual(saved.event_type, "channel.unban_request.resolve")
+        self.assertEqual(
+            saved.filters,
+            {"user_login": "viewer", "status": "approved"},
+        )
+
+    def test_all_moderation_trigger_types_round_trip_with_stable_ids(self) -> None:
+        event_types = (
+            "channel.ban.permanent",
+            "channel.ban.timeout",
+            "channel.unban",
+            "channel.moderator.add",
+            "channel.moderator.remove",
+            "channel.unban_request.create",
+            "channel.unban_request.resolve",
+        )
+        created = {}
+        for event_type in event_types:
+            routine = self.routines.add(event_type)
+            trigger = self.store.add(routine.routine_id, event_type)
+            created[event_type] = trigger.trigger_id
+
+        loaded_routines = RoutineStore(self.routines.path)
+        loaded = TwitchEventTriggerStore(self.store.path, loaded_routines)
+        saved = {trigger.event_type: trigger for trigger in loaded.load()}
+
+        self.assertEqual(set(saved), set(event_types))
+        self.assertEqual(
+            {
+                event_type: trigger.trigger_id
+                for event_type, trigger in saved.items()
+            },
+            created,
+        )
+
     def test_subscription_context_normalizes_gift_and_resub_fields(self) -> None:
         subscribe_routine = self.routines.add("Paid subscription")
         subscribe = self.store.add(

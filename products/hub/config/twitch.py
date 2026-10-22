@@ -8,6 +8,8 @@ TWITCH_SCOPES = (
     "moderator:read:chatters",
     "moderator:read:followers",
     "moderation:read",
+    "channel:moderate",
+    "moderator:read:unban_requests",
     "moderator:manage:banned_users",
     "moderator:manage:chat_messages",
     "moderator:manage:chat_settings",

@@ -1047,6 +1047,13 @@ class MainWindowTests(unittest.TestCase):
                 "Cheer",
                 "Incoming Raid",
                 "Outgoing Raid Completed",
+                "User Banned",
+                "User Timed Out",
+                "User Unbanned",
+                "Moderator Added",
+                "Moderator Removed",
+                "Unban Request Created",
+                "Unban Request Resolved",
                 "Stream › Online",
                 "Stream › Offline",
             ],
@@ -3485,6 +3492,62 @@ class MainWindowTests(unittest.TestCase):
             "Thanks for following, TestViewer!", as_bot=True
         )
         self.assertEqual(self.window.automation_page.history[0]["result"], "Completed")
+
+    def test_twitch_moderation_trigger_executes_with_canonical_context(self) -> None:
+        routine_store = self.twitch_command_trigger_store.routine_store
+        routine = routine_store.add("Report permanent ban")
+        routine_store.add_task(
+            routine.routine_id,
+            task_type="twitch.send_chat_message",
+            name="Report moderation",
+            config={
+                "message": (
+                    "{user.display_name} was banned by "
+                    "{moderator.display_name}: {event.reason}"
+                ),
+                "as_bot": True,
+            },
+        )
+        self.twitch_event_trigger_store.add(
+            routine.routine_id,
+            "channel.ban.permanent",
+        )
+        self.window.twitch_service.send_message = Mock(return_value=True)
+        event = TwitchEvent(
+            subscription_type="channel.ban",
+            version="1",
+            received_at=datetime.now(timezone.utc),
+            message_id="ban-automation",
+            broadcaster_user_id="42",
+            broadcaster_user_login="channel",
+            broadcaster_user_name="Channel",
+            transport=TwitchEventTransport.SIMULATOR,
+            payload={
+                "event": {
+                    "user_id": "viewer-1",
+                    "user_login": "viewer",
+                    "user_name": "TestViewer",
+                    "moderator_user_id": "mod-1",
+                    "moderator_user_login": "channelmod",
+                    "moderator_user_name": "ChannelMod",
+                    "reason": "Repeated spam",
+                    "banned_at": "2026-10-21T12:00:00Z",
+                    "ends_at": "",
+                    "is_permanent": True,
+                }
+            },
+        )
+
+        self.window.handle_twitch_activity(event)
+
+        self.window.twitch_service.send_message.assert_called_once_with(
+            "TestViewer was banned by ChannelMod: Repeated spam",
+            as_bot=True,
+        )
+        self.assertEqual(
+            self.window.automation_page.history[0]["result"],
+            "Completed",
+        )
 
     def test_obs_trigger_uses_mute_alias_and_twitch_channel_context(self) -> None:
         routine_store = self.twitch_command_trigger_store.routine_store

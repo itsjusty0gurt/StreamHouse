@@ -510,6 +510,108 @@ class TwitchHelixClientTests(unittest.TestCase):
             source="TWITCH",
         )
 
+    def test_activity_subscriptions_include_supported_moderation_events(self) -> None:
+        client = TwitchHelixClient()
+        client._create_subscription = Mock()
+        token = TwitchToken(
+            "access",
+            "refresh",
+            999,
+            [
+                "channel:moderate",
+                "moderation:read",
+                "moderator:read:unban_requests",
+            ],
+        )
+
+        warnings = client.create_activity_subscriptions(
+            "session-1",
+            "channel-1",
+            "moderator-1",
+            token,
+        )
+
+        calls = {
+            call.args[0]: (call.args[1], call.args[2])
+            for call in client._create_subscription.call_args_list
+            if call.args[0]
+            in {
+                "channel.ban",
+                "channel.unban",
+                "channel.moderator.add",
+                "channel.moderator.remove",
+                "channel.unban_request.create",
+                "channel.unban_request.resolve",
+            }
+        }
+        self.assertEqual(
+            calls,
+            {
+                "channel.ban": (
+                    "1",
+                    {"broadcaster_user_id": "channel-1"},
+                ),
+                "channel.unban": (
+                    "1",
+                    {"broadcaster_user_id": "channel-1"},
+                ),
+                "channel.moderator.add": (
+                    "1",
+                    {"broadcaster_user_id": "channel-1"},
+                ),
+                "channel.moderator.remove": (
+                    "1",
+                    {"broadcaster_user_id": "channel-1"},
+                ),
+                "channel.unban_request.create": (
+                    "1",
+                    {
+                        "broadcaster_user_id": "channel-1",
+                        "moderator_user_id": "moderator-1",
+                    },
+                ),
+                "channel.unban_request.resolve": (
+                    "1",
+                    {
+                        "broadcaster_user_id": "channel-1",
+                        "moderator_user_id": "moderator-1",
+                    },
+                ),
+            },
+        )
+        self.assertEqual(warnings, ())
+
+    def test_missing_moderation_scopes_skip_only_moderation_subscriptions(self) -> None:
+        client = TwitchHelixClient()
+        client._create_subscription = Mock()
+        token = TwitchToken("access", "refresh", 999, [])
+
+        warnings = client.create_activity_subscriptions(
+            "session-1",
+            "channel-1",
+            "moderator-1",
+            token,
+        )
+
+        event_types = [
+            call.args[0] for call in client._create_subscription.call_args_list
+        ]
+        self.assertIn("stream.online", event_types)
+        self.assertIn("stream.offline", event_types)
+        self.assertEqual(event_types.count("channel.raid"), 2)
+        self.assertFalse(
+            {
+                "channel.ban",
+                "channel.unban",
+                "channel.moderator.add",
+                "channel.moderator.remove",
+                "channel.unban_request.create",
+                "channel.unban_request.resolve",
+            }.intersection(event_types)
+        )
+        self.assertEqual(len(warnings), 6)
+        self.assertTrue(all("missing Twitch permission" in item for item in warnings))
+
     def test_ads_scope_enables_ad_break_begin_eventsub(self) -> None:
         client = TwitchHelixClient()
         client._create_subscription = Mock()

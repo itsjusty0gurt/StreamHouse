@@ -132,6 +132,8 @@ from products.hub.twitch.automation_triggers import (
     KEYWORD_MATCH_TYPES,
     KEYWORD_PHRASE_EVENT_TYPE,
     TWITCH_EVENT_AUTOMATION_TYPES,
+    TWITCH_STATUS_FILTER_TYPES,
+    TWITCH_USER_FILTER_TYPES,
     TwitchEventAutomationTrigger,
     TwitchEventTriggerStore,
     twitch_trigger_display_name,
@@ -168,6 +170,29 @@ def _parse_event_filters(text: str) -> dict[str, str]:
                 "Event filters use field=value pairs separated by commas."
             )
         filters[path.strip()] = value.strip()
+    return filters
+
+
+def _twitch_event_filters(
+    event_type: str,
+    raw_filters: str,
+    *,
+    user_login: str = "",
+    status: str = "",
+) -> dict[str, str]:
+    filters = _parse_event_filters(raw_filters)
+    if event_type in TWITCH_USER_FILTER_TYPES:
+        clean_login = user_login.strip().lstrip("@").casefold()
+        if clean_login:
+            filters["user_login"] = clean_login
+        else:
+            filters.pop("user_login", None)
+    if event_type in TWITCH_STATUS_FILTER_TYPES:
+        clean_status = status.strip().casefold()
+        if clean_status:
+            filters["status"] = clean_status
+        else:
+            filters.pop("status", None)
     return filters
 
 
@@ -261,6 +286,12 @@ class NewRoutineDialog(QDialog):
             "fields use dots, such as reward.id or reward.title."
         )
         event_help.setWordWrap(True)
+        self.event_user_filter_edit = QLineEdit()
+        self.event_user_filter_edit.setPlaceholderText("Any user")
+        self.event_status_filter_combo = QComboBox()
+        self.event_status_filter_combo.addItem("Any", "")
+        self.event_status_filter_combo.addItem("Approved", "approved")
+        self.event_status_filter_combo.addItem("Denied", "denied")
         self.event_reset_spin = QSpinBox()
         self.event_reset_spin.setRange(1, 180)
         self.event_reset_spin.setValue(15)
@@ -289,7 +320,9 @@ class NewRoutineDialog(QDialog):
         )
         self.event_raid_suppression_help.setWordWrap(True)
         event_form.addRow("Event", self.event_type_combo)
-        event_form.addRow("Field filters", self.event_filters_edit)
+        event_form.addRow("User", self.event_user_filter_edit)
+        event_form.addRow("Status", self.event_status_filter_combo)
+        event_form.addRow("Advanced field filters", self.event_filters_edit)
         event_form.addRow("Reset welcomes after", self.event_reset_spin)
         event_form.addRow("", self.event_raid_suppression_check)
         event_form.addRow(
@@ -371,6 +404,18 @@ class NewRoutineDialog(QDialog):
             reset_visible and self.event_raid_suppression_check.isChecked()
         )
         self.event_raid_suppression_help.setVisible(reset_visible)
+        event_type = str(self.event_type_combo.currentData())
+        for field, visible in (
+            (self.event_user_filter_edit, event_type in TWITCH_USER_FILTER_TYPES),
+            (
+                self.event_status_filter_combo,
+                event_type in TWITCH_STATUS_FILTER_TYPES,
+            ),
+        ):
+            field.setVisible(visible)
+            label = self.event_group.layout().labelForField(field)
+            if label is not None:
+                label.setVisible(visible)
         suppression_label = self.event_group.layout().labelForField(
             self.event_raid_suppression_spin
         )
@@ -399,7 +444,12 @@ class NewRoutineDialog(QDialog):
             "global_cooldown_seconds": self.global_cooldown_spin.value(),
             "user_cooldown_seconds": self.user_cooldown_spin.value(),
             "event_type": str(self.event_type_combo.currentData()),
-            "event_filters": _parse_event_filters(self.event_filters_edit.text()),
+            "event_filters": _twitch_event_filters(
+                str(self.event_type_combo.currentData()),
+                self.event_filters_edit.text(),
+                user_login=self.event_user_filter_edit.text(),
+                status=str(self.event_status_filter_combo.currentData() or ""),
+            ),
             "event_reset_minutes": self.event_reset_spin.value(),
             "event_raid_suppression_enabled": (
                 self.event_raid_suppression_check.isChecked()
@@ -439,10 +489,23 @@ class TwitchEventTriggerDialog(QDialog):
             )
         self.filters_edit = QLineEdit()
         self.filters_edit.setPlaceholderText("reward.id=abc123, tier=1000")
-        if trigger:
-            self.filters_edit.setText(
-                ", ".join(f"{key}={value}" for key, value in trigger.filters.items())
+        seeded_filters = dict(trigger.filters) if trigger else {}
+        self.user_filter_edit = QLineEdit()
+        self.user_filter_edit.setPlaceholderText("Any user")
+        if trigger and trigger.event_type in TWITCH_USER_FILTER_TYPES:
+            self.user_filter_edit.setText(seeded_filters.pop("user_login", ""))
+        self.status_filter_combo = QComboBox()
+        self.status_filter_combo.addItem("Any", "")
+        self.status_filter_combo.addItem("Approved", "approved")
+        self.status_filter_combo.addItem("Denied", "denied")
+        if trigger and trigger.event_type in TWITCH_STATUS_FILTER_TYPES:
+            status = seeded_filters.pop("status", "")
+            self.status_filter_combo.setCurrentIndex(
+                max(self.status_filter_combo.findData(status.casefold()), 0)
             )
+        self.filters_edit.setText(
+            ", ".join(f"{key}={value}" for key, value in seeded_filters.items())
+        )
         self.enabled_check = QCheckBox("Enabled")
         self.enabled_check.setChecked(trigger.enabled if trigger else True)
         self.reset_spin = QSpinBox()
@@ -465,7 +528,9 @@ class TwitchEventTriggerDialog(QDialog):
         )
         self.raid_suppression_help.setWordWrap(True)
         form.addRow("Event", self.event_type_combo)
-        form.addRow("Optional field filters", self.filters_edit)
+        form.addRow("User", self.user_filter_edit)
+        form.addRow("Status", self.status_filter_combo)
+        form.addRow("Advanced field filters", self.filters_edit)
         form.addRow("Reset welcomes after", self.reset_spin)
         form.addRow("", self.raid_suppression_check)
         form.addRow("Raid suppression duration", self.raid_suppression_spin)
@@ -497,7 +562,12 @@ class TwitchEventTriggerDialog(QDialog):
     def values(self) -> dict[str, object]:
         return {
             "event_type": str(self.event_type_combo.currentData()),
-            "filters": _parse_event_filters(self.filters_edit.text()),
+            "filters": _twitch_event_filters(
+                str(self.event_type_combo.currentData()),
+                self.filters_edit.text(),
+                user_login=self.user_filter_edit.text(),
+                status=str(self.status_filter_combo.currentData() or ""),
+            ),
             "enabled": self.enabled_check.isChecked(),
             "reset_minutes": self.reset_spin.value(),
             "raid_suppression_enabled": self.raid_suppression_check.isChecked(),
@@ -519,6 +589,15 @@ class TwitchEventTriggerDialog(QDialog):
             visible and self.raid_suppression_check.isChecked()
         )
         self.raid_suppression_help.setVisible(visible)
+        event_type = str(self.event_type_combo.currentData())
+        for field, field_visible in (
+            (self.user_filter_edit, event_type in TWITCH_USER_FILTER_TYPES),
+            (self.status_filter_combo, event_type in TWITCH_STATUS_FILTER_TYPES),
+        ):
+            field.setVisible(field_visible)
+            field_label = form.labelForField(field)
+            if field_label is not None:
+                field_label.setVisible(field_visible)
         suppression_label = form.labelForField(self.raid_suppression_spin)
         if suppression_label is not None:
             suppression_label.setVisible(

@@ -573,3 +573,31 @@ def test_music_trigger_reference_documents_v1_transitions_and_baseline() -> None
     assert "first state snapshot" in track_text
     assert "position synchronization does not fire" in track_text
     assert "{music.artist} - {music.title}" in track_text
+
+
+def test_twitch_moderation_trigger_reference_documents_types_context_and_filters() -> None:
+    tasks, variables = _reference_sources()
+    entries = {
+        item.entry_id: item for item in build_wiki_entries(tasks, variables)
+    }
+    expected = {
+        "channel.ban.permanent": "Twitch — User Banned",
+        "channel.ban.timeout": "Twitch — User Timed Out",
+        "channel.unban": "Twitch — User Unbanned",
+        "channel.moderator.add": "Twitch — Moderator Added",
+        "channel.moderator.remove": "Twitch — Moderator Removed",
+        "channel.unban_request.create": "Twitch — Unban Request Created",
+        "channel.unban_request.resolve": "Twitch — Unban Request Resolved",
+    }
+
+    for event_type, title in expected.items():
+        entry = entries[f"trigger:{event_type}"]
+        assert entry.title == title
+        text = entry.search_text()
+        assert "{user.id}" in text
+        if event_type != "channel.unban_request.create":
+            assert "{moderator.id}" in text
+        assert "user — leave as any" in text
+    resolved = entries["trigger:channel.unban_request.resolve"].search_text()
+    assert "status — any, approved, or denied" in resolved
+    assert "{event.resolution_text}" in resolved

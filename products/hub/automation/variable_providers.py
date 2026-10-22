@@ -394,6 +394,9 @@ CONTEXT_DEFINITIONS = (
     ("raid.target.login", "Raid Target Login", "Twitch login of the broadcaster receiving the raid.", VariableDataType.TEXT, ("raid.target.login",)),
     ("raid.target.name", "Raid Target Name", "Display name of the broadcaster receiving the raid.", VariableDataType.TEXT, ("raid.target.name",)),
     ("raid.viewers", "Raid Viewer Count", "Number of viewers in the raid.", VariableDataType.INTEGER, ("raid.viewers",)),
+    ("moderator.id", "Moderator ID", "Twitch ID of the moderator supplied by this event.", VariableDataType.TEXT, ("moderator.id",)),
+    ("moderator.login", "Moderator Login", "Twitch login of the moderator supplied by this event.", VariableDataType.TEXT, ("moderator.login",)),
+    ("moderator.display_name", "Moderator Display Name", "Display name of the moderator supplied by this event.", VariableDataType.TEXT, ("moderator.display_name",)),
     ("event.name", "Event Name", "Readable trigger event name.", VariableDataType.TEXT, ("event",)),
     ("event.type", "Event Type", "Owning service event type.", VariableDataType.TEXT, ("event_type",)),
     ("event.input", "Event Input", "Viewer input or event input name.", VariableDataType.TEXT, ("input",)),
@@ -408,6 +411,16 @@ CONTEXT_DEFINITIONS = (
     ("event.is_anonymous", "Anonymous Event", "Whether Twitch reported this event as anonymous.", VariableDataType.BOOLEAN, ("event.is_anonymous",)),
     ("event.stream_id", "Stream ID", "Stable Twitch stream ID supplied by Stream Online.", VariableDataType.TEXT, ("event.stream_id",)),
     ("event.started_at", "Event Started At", "Start time supplied by the triggering Twitch event.", VariableDataType.DATETIME, ("event.started_at",)),
+    ("event.reason", "Moderation Reason", "Reason supplied for this Twitch moderation event.", VariableDataType.TEXT, ("event.reason",)),
+    ("event.is_permanent", "Permanent Ban", "Whether Twitch reported a permanent ban rather than a timeout.", VariableDataType.BOOLEAN, ("event.is_permanent",)),
+    ("event.banned_at", "Banned At", "When Twitch recorded the ban or timeout.", VariableDataType.DATETIME, ("event.banned_at",)),
+    ("event.ends_at", "Timeout Ends At", "When the Twitch timeout ends, when available.", VariableDataType.DATETIME, ("event.ends_at",)),
+    ("event.timeout_seconds", "Timeout Duration", "Timeout duration in seconds derived from Twitch timestamps.", VariableDataType.INTEGER, ("event.timeout_seconds",)),
+    ("event.request_id", "Unban Request ID", "Stable ID of this Twitch unban request.", VariableDataType.TEXT, ("event.request_id",)),
+    ("event.request_text", "Unban Request Text", "Viewer text supplied with this unban request.", VariableDataType.TEXT, ("event.request_text",)),
+    ("event.created_at", "Event Created At", "When Twitch created this event request.", VariableDataType.DATETIME, ("event.created_at",)),
+    ("event.resolution_text", "Unban Resolution Text", "Moderator response supplied when resolving the unban request.", VariableDataType.TEXT, ("event.resolution_text",)),
+    ("event.status", "Event Status", "Status supplied for this Twitch event, such as approved or denied.", VariableDataType.TEXT, ("event.status",)),
     ("obs.scene", "OBS Scene", "Scene supplied by an OBS event.", VariableDataType.TEXT, ("scene",)),
     ("obs.source", "OBS Source", "Source supplied by an OBS event.", VariableDataType.TEXT, ("source",)),
     ("obs.input", "OBS Input", "Input supplied by an OBS event.", VariableDataType.TEXT, ("input",)),
@@ -441,12 +454,20 @@ CONTEXT_PREVIEW = {
     "raid.source.login": "raider", "raid.source.name": "Raider",
     "raid.target.id": "654321", "raid.target.login": "streamer",
     "raid.target.name": "Streamer", "raid.viewers": 25,
+    "moderator.id": "987654", "moderator.login": "channelmod",
+    "moderator.display_name": "ChannelMod",
     "event.name": "Follow", "event.type": "channel.follow", "event.input": "Viewer input",
     "event.amount": 100, "event.bits": 100, "event.viewers": 12, "event.tier": "1000",
     "event.reward": "Hydrate", "event.reward_id": "reward-123", "event.reward_cost": 500,
     "event.redemption_id": "redemption-123", "obs.scene": "Gameplay", "obs.source": "Camera",
     "event.is_anonymous": False, "event.stream_id": "stream-123",
     "event.started_at": "2026-08-31T12:00:00Z",
+    "event.reason": "Repeated spam", "event.is_permanent": False,
+    "event.banned_at": "2026-08-31T12:00:00Z",
+    "event.ends_at": "2026-08-31T12:10:00Z", "event.timeout_seconds": 600,
+    "event.request_id": "request-123", "event.request_text": "Please reconsider",
+    "event.created_at": "2026-08-31T12:00:00Z",
+    "event.resolution_text": "Approved after review", "event.status": "approved",
     "obs.input": "Microphone", "obs.output_state": "OBS_WEBSOCKET_OUTPUT_STARTED",
     "obs.enabled": True, "obs.muted": False, "obs.volume_db": -8.0, "obs.media": "Intro Video",
 }
@@ -463,6 +484,7 @@ def _context_presentation(name: str) -> tuple[str, str]:
         "channel_points": ("Channel Points", "Channel Point Redemption"),
         "subscription": ("Subscriptions", "Subscription event"),
         "raid": ("Raids", "Raid event"),
+        "moderator": ("Moderation", "Twitch moderation event"),
         "event": ("Twitch Event", "Matching Twitch event"),
         "obs": ("OBS", "Matching OBS event"),
     }.get(namespace, (namespace.title(), "Matching trigger context"))
@@ -488,13 +510,24 @@ def context_provider() -> CallbackVariableProvider:
 
     def resolve(name: str, context: Mapping[str, object]) -> tuple[bool, object, str]:
         for key in (name, *aliases[name]):
-            allow_empty = name.startswith("channel_points.") or name == "subscription.message"
+            allow_empty = (
+                name.startswith("channel_points.")
+                or name
+                in {
+                    "subscription.message",
+                    "event.reason",
+                    "event.ends_at",
+                    "event.request_text",
+                    "event.resolution_text",
+                }
+            )
             if key in context and (allow_empty or str(context[key]).strip() not in {"", "--"}):
                 value: object = context[key]
                 if name in {
                     "user.is_mod", "user.is_subscriber", "obs.enabled", "obs.muted",
                     "subscription.is_gift", "subscription.is_prime",
                     "subscription.is_anonymous", "event.is_anonymous",
+                    "event.is_permanent",
                 }:
                     value = str(value).strip().casefold() in {"1", "true", "yes", "on"}
                 return True, value, ""

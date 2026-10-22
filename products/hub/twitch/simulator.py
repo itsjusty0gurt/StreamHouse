@@ -126,6 +126,47 @@ def create_eventsub_notification(
             "to_broadcaster_user_name": channel,
             "viewers": 42,
         }
+    elif subscription_type in {"channel.ban", "channel.unban"}:
+        event = {
+            **viewer,
+            **broadcaster,
+            "moderator_user_id": "2000",
+            "moderator_user_login": channel,
+            "moderator_user_name": channel,
+        }
+        if subscription_type == "channel.ban":
+            event.update(
+                {
+                    "reason": "Simulated moderation event",
+                    "banned_at": now,
+                    "ends_at": "",
+                    "is_permanent": True,
+                }
+            )
+    elif subscription_type in {
+        "channel.moderator.add",
+        "channel.moderator.remove",
+    }:
+        event = {**viewer, **broadcaster}
+    elif subscription_type == "channel.unban_request.create":
+        event = {
+            "id": str(uuid4()),
+            **viewer,
+            **broadcaster,
+            "text": "Please reconsider",
+            "created_at": now,
+        }
+    elif subscription_type == "channel.unban_request.resolve":
+        event = {
+            "id": str(uuid4()),
+            **viewer,
+            **broadcaster,
+            "moderator_id": "2000",
+            "moderator_login": channel,
+            "moderator_name": channel,
+            "resolution_text": "Approved in the event simulator",
+            "status": "approved",
+        }
     elif subscription_type == "channel.channel_points_custom_reward_redemption.add":
         event = {
             "id": str(uuid4()),

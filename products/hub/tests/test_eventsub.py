@@ -251,6 +251,34 @@ class EventSubWebhookProcessorTests(unittest.TestCase):
         self.assertIn("followed_at", self.notifications[0][1]["event"])
         self.assertEqual(self.diagnostics[0].result, "Processed")
 
+    def test_moderation_simulator_uses_editable_official_event_fields(self) -> None:
+        ban = create_eventsub_notification("channel.ban", "1", "channel")
+        resolved = create_eventsub_notification(
+            "channel.unban_request.resolve",
+            "1",
+            "channel",
+        )
+
+        self.assertTrue(ban["event"]["is_permanent"])
+        self.assertEqual(ban["event"]["moderator_user_login"], "channel")
+        self.assertEqual(resolved["event"]["status"], "approved")
+        self.assertEqual(resolved["event"]["moderator_login"], "channel")
+
+    def test_duplicate_moderation_notification_is_forwarded_once(self) -> None:
+        payload = create_eventsub_notification("channel.ban", "1", "channel")
+        body = json.dumps(payload).encode()
+        headers = signed_headers(
+            body,
+            message_id="moderation-event-1",
+            subscription_type="channel.ban",
+        )
+
+        self.assertEqual(self.processor.process(headers, body).status, 204)
+        self.assertEqual(self.processor.process(headers, body).status, 204)
+
+        self.assertEqual(len(self.notifications), 1)
+        self.assertEqual(self.notifications[0][0], "channel.ban")
+
     def test_duplicate_outgoing_raid_confirmation_is_forwarded_once(self) -> None:
         payload = create_eventsub_notification("channel.raid", "1", "target")
         payload["subscription"]["condition"] = {
