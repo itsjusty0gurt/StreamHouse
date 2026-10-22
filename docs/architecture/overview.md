@@ -31,8 +31,8 @@ provide product behavior and policy detail:
 - `docs/shared/viewer-memories.md`
 - `docs/architecture/offline-design-checkpoint-2026-07-20.md`
 - `docs/architecture/release-checklist.md`
-- `docs/architecture/hub-0.3-foundation.md` (current milestone direction;
-  planned capabilities are not implemented contracts)
+- `docs/architecture/hub-0.3-foundation.md` (review-stage modular contracts;
+  Core/module ownership, contributions, lifecycle, and OBS extraction)
 
 Product-facing branding is defined in the
 [Streamhouse product-family reference](product-family.md). This implementation
