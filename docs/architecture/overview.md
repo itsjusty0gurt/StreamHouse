@@ -2,8 +2,8 @@
 
 > Canonical implementation map for maintainers and coding agents.
 >
-> Last verified: 2026-10-09 against current `develop` after the
-> `v0.1.0-alpha` baseline. This records an implementation audit, not a later
+> Last verified: 2026-10-21 against current `develop` after the
+> `v0.2.0-alpha` release. This records an implementation audit, not a later
 > released-version claim.
 > Update this file when a change moves ownership, adds a persisted format,
 > changes an inter-process contract, or introduces a new service/trigger/task.
@@ -31,6 +31,8 @@ provide product behavior and policy detail:
 - `docs/shared/viewer-memories.md`
 - `docs/architecture/offline-design-checkpoint-2026-07-20.md`
 - `docs/architecture/release-checklist.md`
+- `docs/architecture/hub-0.3-foundation.md` (current milestone direction;
+  planned capabilities are not implemented contracts)
 
 Product-facing branding is defined in the
 [Streamhouse product-family reference](product-family.md). This implementation
@@ -2113,8 +2115,9 @@ Keep public config free of local paths and routine internals.
   scaling would need shared storage and stronger operational controls.
 - UI layout is partly Designer-generated and partly dynamic, making structural
   changes span multiple files.
-- Version remains `0.1.0`; persisted store versions and Streamhouse AI protocol
-  version are independent of the product version.
+- Hub's active development version is `0.3.0-alpha` and remains owned by
+  `products/hub/version.py`; persisted store versions and the Streamhouse AI
+  protocol version are independent of the product version.
 - Twitch ban state and historical moderation records are not currently cached,
   so Hub cannot reliably suppress the unban action or show moderation history.
   Moderation API requests are service-owned, but the current coordinator call

@@ -1,7 +1,7 @@
 #define AppName "Streamhouse Hub"
-#define AppVersion "0.2.0-alpha"
-#define AppNumericVersion "0.2.0.0"
-#define AppInstallerBasename "StreamhouseHub-0.2.0-alpha-Setup"
+#define AppVersion "0.3.0-alpha"
+#define AppNumericVersion "0.3.0.0"
+#define AppInstallerBasename "StreamhouseHub-0.3.0-alpha-Setup"
 #define AppExeName "StreamhouseHub.exe"
 
 [Setup]
@@ -34,7 +34,7 @@ OutputDir=..\..\release
 OutputBaseFilename={#AppInstallerBasename}
 SetupIconFile=..\..\shared\assets\streamhouse-icons\windows\streamhouse-hub.ico
 VersionInfoCompany=Streamhouse
-VersionInfoDescription=Streamhouse Hub Alpha 0.2 Installer
+VersionInfoDescription=Streamhouse Hub Alpha 0.3 Installer
 VersionInfoOriginalFileName={#AppInstallerBasename}.exe
 VersionInfoProductName={#AppName}
 VersionInfoProductVersion={#AppNumericVersion}

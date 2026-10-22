@@ -17,11 +17,11 @@ class HubVersionTests(unittest.TestCase):
         cls.root = Path(__file__).resolve().parents[2]
 
     def test_hub_release_version_is_product_owned(self) -> None:
-        self.assertEqual(HUB_VERSION, "0.2.0-alpha")
-        self.assertEqual(HUB_WINDOWS_VERSION, "0.2.0.0")
+        self.assertEqual(HUB_VERSION, "0.3.0-alpha")
+        self.assertEqual(HUB_WINDOWS_VERSION, "0.3.0.0")
         self.assertEqual(
             HUB_INSTALLER_BASENAME,
-            "StreamhouseHub-0.2.0-alpha-Setup",
+            "StreamhouseHub-0.3.0-alpha-Setup",
         )
 
         package_hub = (
@@ -80,6 +80,9 @@ class HubVersionTests(unittest.TestCase):
             re.compile(r"0\.1\.0-alpha"),
             re.compile(r"0\.1\.0\.0"),
             re.compile(r"StreamhouseHub-0\.1\.0-alpha"),
+            re.compile(r"0\.2\.0-alpha"),
+            re.compile(r"0\.2\.0\.0"),
+            re.compile(r"StreamhouseHub-0\.2\.0-alpha"),
         )
         for path in active_files:
             contents = path.read_text(encoding="utf-8")
