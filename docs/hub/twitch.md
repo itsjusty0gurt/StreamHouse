@@ -254,6 +254,15 @@ The local HTTP listener validates Twitch-style signatures and routes simulated
 events through the same parser, normalized bus, Activity Feed, and diagnostics
 used by live traffic.
 
+Moderation triggers can be tested without moderating a real viewer. Open
+**Developer Tools > Event Simulator**, choose `channel.ban`, `channel.unban`,
+`channel.moderator.add`, `channel.moderator.remove`,
+`channel.unban_request.create`, or `channel.unban_request.resolve` with version
+`1`, then send the editable payload. The `channel.ban` preset is a permanent
+ban; set `is_permanent` to `false` and supply valid `banned_at` and `ends_at`
+timestamps to test **User Timed Out**. Hub's WebSocket EventSub transport uses
+this signed local simulator rather than Twitch CLI's webhook callback command.
+
 ## Health and persistence
 
 Connection health is modeled separately from page widgets. It tracks auth,
@@ -332,8 +341,26 @@ Twitch EventSub automation triggers persist at
 obsolete private-development formats are rejected rather than migrated. The
 live-ready set is follow, subscribe, subscription gift, subscription message,
 cheer, incoming and outgoing raid, custom channel point redemption, stream
-online, and stream offline. These correspond to the activity subscriptions Hub
-currently establishes with Twitch.
+online/offline, and the supported moderation events. Moderation includes User
+Banned, User Timed Out, User Unbanned, Moderator Added/Removed, and Unban Request
+Created/Resolved. These correspond to the activity subscriptions Hub currently
+establishes with Twitch.
+
+Hub subscribes to `channel.ban` and `channel.unban` v1 with
+`channel:moderate`, moderator add/remove v1 with `moderation:read`, and unban
+request create/resolve v1 with `moderator:read:unban_requests`. An existing token
+missing a permission leaves only those optional subscriptions unavailable and
+prompts normal broadcaster reauthorization; unrelated EventSub traffic remains
+connected. One `channel.ban` notification becomes exactly one friendly trigger:
+`is_permanent=true` maps to User Banned and `false` maps to User Timed Out.
+
+Moderation routines receive the affected account through `user.*`, the acting
+or affected moderator through `moderator.*` where Twitch supplies it, plus
+canonical `event.*` reason, timestamp, timeout, request, resolution, and status
+values appropriate to the event. Friendly User filters match Twitch login, and
+Unban Request Resolved also offers Any/Approved/Denied status choices. Raw
+EventSub filters remain an advanced option. EventSub message-ID deduplication
+continues to ensure one notification creates one trigger evaluation.
 
 A trigger may optionally match exact EventSub payload fields. Dot notation
 addresses nested fields, for example `reward.id` or `reward.title`. Matching is

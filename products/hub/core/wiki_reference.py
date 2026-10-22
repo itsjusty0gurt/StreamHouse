@@ -222,6 +222,12 @@ def _trigger_entries(variable_registry: VariableRegistry) -> tuple[WikiEntry, ..
             if any(item.name.startswith(prefix) for prefix in prefixes)
         )
 
+    def named_variables(*names: str) -> tuple[str, ...]:
+        requested = set(names)
+        return tuple(
+            item.placeholder for item in definitions if item.name in requested
+        )
+
     entries = [
         _trigger_entry(
             "command",
@@ -245,6 +251,53 @@ def _trigger_entries(variable_registry: VariableRegistry) -> tuple[WikiEntry, ..
             else f"Fires when Hub reports {label.lower()}."
         )
         entries.append(_trigger_entry(event_type, label, summary, (), ("core",)))
+    twitch_summaries = {
+        "channel.ban.permanent": "Runs when a viewer is permanently banned from Twitch chat.",
+        "channel.ban.timeout": "Runs when a viewer is temporarily timed out in Twitch chat.",
+        "channel.unban": "Runs when a viewer is unbanned from Twitch chat.",
+        "channel.moderator.add": "Runs when Twitch adds a moderator to the channel.",
+        "channel.moderator.remove": "Runs when Twitch removes a moderator from the channel.",
+        "channel.unban_request.create": "Runs when a viewer creates an unban request.",
+        "channel.unban_request.resolve": "Runs when a moderator approves or denies an unban request.",
+    }
+    moderation_types = frozenset(twitch_summaries)
+    affected_user = ("user.id", "user.login", "user.display_name")
+    moderator = ("moderator.id", "moderator.login", "moderator.display_name")
+    moderation_variables = {
+        "channel.ban.permanent": named_variables(
+            *affected_user,
+            *moderator,
+            "event.reason",
+            "event.is_permanent",
+            "event.banned_at",
+            "event.ends_at",
+        ),
+        "channel.ban.timeout": named_variables(
+            *affected_user,
+            *moderator,
+            "event.reason",
+            "event.is_permanent",
+            "event.banned_at",
+            "event.ends_at",
+            "event.timeout_seconds",
+        ),
+        "channel.unban": named_variables(*affected_user, *moderator),
+        "channel.moderator.add": named_variables(*affected_user, *moderator),
+        "channel.moderator.remove": named_variables(*affected_user, *moderator),
+        "channel.unban_request.create": named_variables(
+            *affected_user,
+            "event.request_id",
+            "event.request_text",
+            "event.created_at",
+        ),
+        "channel.unban_request.resolve": named_variables(
+            *affected_user,
+            *moderator,
+            "event.request_id",
+            "event.resolution_text",
+            "event.status",
+        ),
+    }
     for event_type in TWITCH_EVENT_AUTOMATION_TYPES:
         prefixes = ["event.", "user."]
         if "subscription" in event_type or event_type == "channel.subscribe":
@@ -253,13 +306,18 @@ def _trigger_entries(variable_registry: VariableRegistry) -> tuple[WikiEntry, ..
             prefixes.append("raid.")
         if "channel_points" in event_type:
             prefixes.append("channel_points.")
+        if event_type in moderation_types:
+            prefixes.append("moderator.")
         label = twitch_trigger_display_name(event_type)
         entries.append(
             _trigger_entry(
                 event_type,
                 f"Twitch — {label}",
-                f"Fires when Hub receives the supported {label.lower()} event.",
-                variables(*prefixes),
+                twitch_summaries.get(
+                    event_type,
+                    f"Fires when Hub receives the supported {label.lower()} event.",
+                ),
+                moderation_variables.get(event_type, variables(*prefixes)),
                 ("Twitch", "EventSub"),
             )
         )
@@ -415,6 +473,24 @@ def _trigger_entry(
         )
     elif "channel_points" in trigger_id:
         configuration = ("Any custom reward or one selected reward.",)
+    elif trigger_id in {
+        "channel.ban.permanent",
+        "channel.ban.timeout",
+        "channel.unban",
+        "channel.moderator.add",
+        "channel.moderator.remove",
+        "channel.unban_request.create",
+    }:
+        configuration = (
+            "User — leave as Any or match one Twitch login.",
+            "Advanced exact EventSub field filters remain available when needed.",
+        )
+    elif trigger_id == "channel.unban_request.resolve":
+        configuration = (
+            "User — leave as Any or match one Twitch login.",
+            "Status — Any, Approved, or Denied.",
+            "Advanced exact EventSub field filters remain available when needed.",
+        )
     elif trigger_id in OBS_TRIGGER_TYPES:
         configuration = (
             "Common OBS filters use friendly scene, input, source, and state controls populated from connected OBS when available.",

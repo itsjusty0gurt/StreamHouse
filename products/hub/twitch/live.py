@@ -271,6 +271,7 @@ class TwitchHelixClient:
 
         scopes = set(token.scopes)
         activity_specs = []
+        warnings = []
         if "moderator:read:followers" in scopes:
             activity_specs.append((
                 "channel.follow", "2",
@@ -297,6 +298,60 @@ class TwitchHelixClient:
                 "1",
                 {"broadcaster_user_id": broadcaster_user_id},
             ))
+        if "channel:moderate" in scopes:
+            for event_type in ("channel.ban", "channel.unban"):
+                activity_specs.append((
+                    event_type,
+                    "1",
+                    {"broadcaster_user_id": broadcaster_user_id},
+                ))
+        else:
+            for event_type in ("channel.ban", "channel.unban"):
+                warnings.append(
+                    f"{event_type}: missing Twitch permission channel:moderate"
+                )
+        if "moderation:read" in scopes:
+            for event_type in (
+                "channel.moderator.add",
+                "channel.moderator.remove",
+            ):
+                activity_specs.append((
+                    event_type,
+                    "1",
+                    {"broadcaster_user_id": broadcaster_user_id},
+                ))
+        else:
+            for event_type in (
+                "channel.moderator.add",
+                "channel.moderator.remove",
+            ):
+                warnings.append(
+                    f"{event_type}: missing Twitch permission moderation:read"
+                )
+        if scopes.intersection(
+            {"moderator:read:unban_requests", "moderator:manage:unban_requests"}
+        ):
+            for event_type in (
+                "channel.unban_request.create",
+                "channel.unban_request.resolve",
+            ):
+                activity_specs.append((
+                    event_type,
+                    "1",
+                    {
+                        "broadcaster_user_id": broadcaster_user_id,
+                        "moderator_user_id": chatter_user_id,
+                    },
+                ))
+        else:
+            for event_type in (
+                "channel.unban_request.create",
+                "channel.unban_request.resolve",
+            ):
+                warnings.append(
+                    f"{event_type}: missing Twitch permission "
+                    "moderator:read:unban_requests"
+                )
         activity_specs.extend(
             (
                 (
@@ -325,7 +380,6 @@ class TwitchHelixClient:
                 ),
             )
         )
-        warnings = []
         for event_type, version, condition in activity_specs:
             try:
                 self._create_subscription(

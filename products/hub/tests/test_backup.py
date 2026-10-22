@@ -426,7 +426,13 @@ class BackupManagerTests(unittest.TestCase):
     ) -> None:
         trigger_path = self.root / "twitch/event_triggers.json"
         trigger_payload = json.loads(trigger_path.read_text(encoding="utf-8"))
-        trigger_payload["triggers"][0]["event_type"] = "channel.raid.outgoing"
+        trigger_payload["triggers"][0]["event_type"] = (
+            "channel.unban_request.resolve"
+        )
+        trigger_payload["triggers"][0]["filters"] = {
+            "user_login": "viewer",
+            "status": "approved",
+        }
         write_json(trigger_path, trigger_payload)
         archive = self.manager.create("manual", preset=BackupPreset.RECOMMENDED)
         with ZipFile(archive) as source:
@@ -459,7 +465,14 @@ class BackupManagerTests(unittest.TestCase):
             [trigger.trigger_id for trigger in triggers],
             ["raid-trigger"],
         )
-        self.assertEqual(triggers[0].event_type, "channel.raid.outgoing")
+        self.assertEqual(
+            triggers[0].event_type,
+            "channel.unban_request.resolve",
+        )
+        self.assertEqual(
+            triggers[0].filters,
+            {"user_login": "viewer", "status": "approved"},
+        )
         self.assertIn("raid-trigger", routine_store.get("parent").trigger_ids)
 
     def test_exact_and_random_timers_backup_restore_with_stable_identity(self) -> None:

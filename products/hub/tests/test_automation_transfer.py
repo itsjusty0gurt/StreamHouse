@@ -257,6 +257,37 @@ class AutomationTransferTests(unittest.TestCase):
         self.assertEqual(triggers[0].event_type, "channel.raid.outgoing")
         self.assertNotEqual(triggers[0].trigger_id, original.trigger_id)
 
+    def test_moderation_trigger_round_trip_preserves_filters_and_enabled_state(self) -> None:
+        routine = self.stores["routine_store"].add("Approved unban request")
+        original = self.stores["event_store"].add(
+            routine.routine_id,
+            "channel.unban_request.resolve",
+            filters={"user_login": "viewer", "status": "approved"},
+            enabled=False,
+        )
+        payload = export_routine(routine, **self.stores)
+        destination = self.make_stores(self.root / "moderation-destination")
+
+        imported = import_routine(
+            payload,
+            group_id="",
+            task_registry=self.registry,
+            **destination,
+        )
+
+        triggers = destination["event_store"].for_routine(imported.routine_id)
+        self.assertEqual(len(triggers), 1)
+        self.assertEqual(
+            triggers[0].event_type,
+            "channel.unban_request.resolve",
+        )
+        self.assertEqual(
+            triggers[0].filters,
+            {"user_login": "viewer", "status": "approved"},
+        )
+        self.assertFalse(triggers[0].enabled)
+        self.assertNotEqual(triggers[0].trigger_id, original.trigger_id)
+
     def test_import_detects_command_conflict(self) -> None:
         command = self.stores["command_store"].add("hello", "Hello!")
         routine = self.stores["routine_store"].get(command.routine_id)

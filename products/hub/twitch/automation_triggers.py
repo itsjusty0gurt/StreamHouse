@@ -36,6 +36,13 @@ TWITCH_EVENT_AUTOMATION_TYPES = (
     "channel.cheer",
     "channel.raid",
     "channel.raid.outgoing",
+    "channel.ban.permanent",
+    "channel.ban.timeout",
+    "channel.unban",
+    "channel.moderator.add",
+    "channel.moderator.remove",
+    "channel.unban_request.create",
+    "channel.unban_request.resolve",
     "channel.channel_points_custom_reward_redemption.add",
     "stream.online",
     "stream.offline",
@@ -61,6 +68,13 @@ TWITCH_TRIGGER_DISPLAY_NAMES = {
     "channel.cheer": "Cheer",
     "channel.raid": "Incoming Raid",
     "channel.raid.outgoing": "Outgoing Raid Completed",
+    "channel.ban.permanent": "User Banned",
+    "channel.ban.timeout": "User Timed Out",
+    "channel.unban": "User Unbanned",
+    "channel.moderator.add": "Moderator Added",
+    "channel.moderator.remove": "Moderator Removed",
+    "channel.unban_request.create": "Unban Request Created",
+    "channel.unban_request.resolve": "Unban Request Resolved",
     "channel.channel_points_custom_reward_redemption.add": "Channel Point Redemption",
     "stream.online": "Stream Online",
     "stream.offline": "Stream Offline",
@@ -79,6 +93,18 @@ TWITCH_AUTOMATION_EVENT_TYPES = (
     KEYWORD_PHRASE_EVENT_TYPE,
     *ADS_TRIGGER_TYPES,
 )
+TWITCH_USER_FILTER_TYPES = frozenset(
+    {
+        "channel.ban.permanent",
+        "channel.ban.timeout",
+        "channel.unban",
+        "channel.moderator.add",
+        "channel.moderator.remove",
+        "channel.unban_request.create",
+        "channel.unban_request.resolve",
+    }
+)
+TWITCH_STATUS_FILTER_TYPES = frozenset({"channel.unban_request.resolve"})
 KEYWORD_MATCH_TYPES = {
     "contains": "Contains",
     "exact": "Exact Message",
@@ -1400,6 +1426,69 @@ class TwitchEventTriggerStore:
                     "raid.viewers": cls._first(event, "viewers"),
                 }
             )
+        if twitch_event.subscription_type in {
+            "channel.ban",
+            "channel.unban",
+            "channel.moderator.add",
+            "channel.moderator.remove",
+            "channel.unban_request.resolve",
+        }:
+            moderator_keys = (
+                ("user_id", "user_login", "user_name")
+                if twitch_event.subscription_type.startswith("channel.moderator.")
+                else (
+                    ("moderator_id", "moderator_user_id"),
+                    ("moderator_login", "moderator_user_login"),
+                    ("moderator_name", "moderator_user_name"),
+                )
+            )
+            moderator_values = tuple(
+                cls._first(event, *keys) if isinstance(keys, tuple)
+                else cls._first(event, keys)
+                for keys in moderator_keys
+            )
+            context.update(
+                {
+                    "moderator.id": moderator_values[0],
+                    "moderator.login": moderator_values[1],
+                    "moderator.display_name": moderator_values[2],
+                }
+            )
+        if twitch_event.subscription_type == "channel.ban":
+            context.update(
+                {
+                    "event.reason": cls._first(event, "reason"),
+                    "event.is_permanent": cls._bool_text(
+                        event.get("is_permanent")
+                    ),
+                    "event.banned_at": cls._first(event, "banned_at"),
+                    "event.ends_at": cls._first(event, "ends_at"),
+                }
+            )
+            timeout_seconds = cls._duration_seconds(
+                event.get("banned_at"),
+                event.get("ends_at"),
+            )
+            if timeout_seconds is not None:
+                context["event.timeout_seconds"] = str(timeout_seconds)
+        if twitch_event.subscription_type == "channel.unban_request.create":
+            context.update(
+                {
+                    "event.request_id": cls._first(event, "id"),
+                    "event.request_text": cls._first(event, "text"),
+                    "event.created_at": cls._first(event, "created_at"),
+                }
+            )
+        if twitch_event.subscription_type == "channel.unban_request.resolve":
+            context.update(
+                {
+                    "event.request_id": cls._first(event, "id"),
+                    "event.resolution_text": cls._first(
+                        event, "resolution_text"
+                    ),
+                    "event.status": cls._first(event, "status").casefold(),
+                }
+            )
         if twitch_event.subscription_type == "channel.cheer" and "is_anonymous" in event:
             context["event.is_anonymous"] = cls._bool_text(event.get("is_anonymous"))
         if twitch_event.subscription_type == "stream.online":
@@ -1449,6 +1538,18 @@ class TwitchEventTriggerStore:
 
     @staticmethod
     def _automation_event_type(twitch_event: TwitchEvent) -> str:
+        if twitch_event.subscription_type == "channel.ban":
+            event = twitch_event.payload.get("event", {})
+            permanent = (
+                TwitchEventTriggerStore._bool_text(event.get("is_permanent"))
+                if isinstance(event, Mapping)
+                else "false"
+            )
+            return (
+                "channel.ban.permanent"
+                if permanent == "true"
+                else "channel.ban.timeout"
+            )
         if twitch_event.subscription_type != "channel.raid":
             return twitch_event.subscription_type
         subscription = twitch_event.payload.get("subscription", {})
@@ -1463,6 +1564,18 @@ class TwitchEventTriggerStore:
             and condition.get("from_broadcaster_user_id")
             else "channel.raid"
         )
+
+    @staticmethod
+    def _duration_seconds(start: object, end: object) -> int | None:
+        if not isinstance(start, str) or not isinstance(end, str):
+            return None
+        try:
+            started = datetime.fromisoformat(start.replace("Z", "+00:00"))
+            ended = datetime.fromisoformat(end.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        seconds = int((ended - started).total_seconds())
+        return seconds if seconds >= 0 else None
 
     @staticmethod
     def _matches_reward(

@@ -1109,6 +1109,13 @@ Accepted chat becomes `TwitchMessage`; non-chat notifications become
 `TwitchEvent`. Raw diagnostic records remain separate from the human activity
 feed.
 
+The broadcaster-authorized EventSub socket also owns the dedicated Twitch
+moderation subscriptions. `TwitchEventTriggerStore` normalizes those events,
+including splitting one `channel.ban` notification into exactly one permanent
+ban or timeout Automation type. The trigger layer consumes the normalized
+event and canonical context; it does not create a second moderation socket,
+store moderation history, or parse notifications in UI widgets.
+
 The in-memory live Chat timeline retains Twitch message and user IDs so chat
 moderation notifications can remove one message, one user's visible messages,
 or the whole visible timeline authoritatively. This does not delete persistent
