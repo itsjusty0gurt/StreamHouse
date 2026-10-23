@@ -65,6 +65,21 @@ try {
     }
     Get-ChildItem -LiteralPath $internalRoot -Filter "icudt*.dll" -File | `
         Remove-Item -Force
+
+    # The Twitch Extension directory is included for its browser assets only.
+    # Keep development Python sources/caches and listing material out of every
+    # Hub artifact, including the ZIP release path as well as the installer.
+    $extensionApp = Join-Path $internalRoot "extensions\twitch\app"
+    if (Test-Path -LiteralPath $extensionApp) {
+        Get-ChildItem -LiteralPath $extensionApp -Filter "*.py" -File | `
+            Remove-Item -Force
+        foreach ($relative in ("__pycache__", "listing", "README.md")) {
+            $developmentItem = Join-Path $extensionApp $relative
+            if (Test-Path -LiteralPath $developmentItem) {
+                Remove-Item -LiteralPath $developmentItem -Recurse -Force
+            }
+        }
+    }
     Write-Host "Streamhouse Hub created at dist\StreamhouseHub\StreamhouseHub.exe"
 }
 finally {

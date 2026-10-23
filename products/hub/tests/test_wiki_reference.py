@@ -74,6 +74,105 @@ def test_generated_reference_has_unique_entries_and_exact_task_labels() -> None:
     }
 
 
+def test_getting_started_teaches_twitch_automation_and_variable_picker() -> None:
+    tasks, variables = _reference_sources()
+    entries = {
+        entry.entry_id: entry
+        for entry in build_wiki_entries(tasks, variables)
+    }
+    guide = entries["start:first-routine"].search_text()
+    page_guide = entries["start:wiki-vs-pages"].search_text()
+
+    assert "sign in with twitch" in guide
+    assert "bot account is optional" in guide
+    assert "trigger = what starts something" in guide
+    assert "routine = the automation being run" in guide
+    assert "task = something the routine does" in guide
+    assert "twitch — first message of stream" in guide
+    assert "twitch — send chat message" in guide
+    assert "{user.display_name}" in guide
+    assert "variable picker" in guide
+    for destination in (
+        "automation",
+        "variables",
+        "commands",
+        "channel points",
+        "counters",
+        "recipes",
+    ):
+        assert destination in page_guide
+
+
+def test_recipes_are_difficulty_labeled_and_use_current_ui_names() -> None:
+    tasks, variables = _reference_sources()
+    recipes = {
+        entry.entry_id: entry
+        for entry in build_wiki_entries(tasks, variables)
+        if entry.category == "Recipes"
+    }
+
+    assert "Examples" not in WIKI_CATEGORIES
+    assert "Recipes" in WIKI_CATEGORIES
+    difficulties = {
+        section.lines[0]
+        for entry in recipes.values()
+        for section in entry.sections
+        if section.title == "Difficulty"
+    }
+    assert difficulties == {
+        "Beginner",
+        "Intermediate",
+        "Advanced",
+    }
+    first_message = recipes["example:first-message-welcome"].search_text()
+    assert "twitch — first message of stream" in first_message
+    assert "twitch — send chat message" in first_message
+    assert "{user.display_name}" in first_message
+
+    channel_points = recipes["example:channel-point-response"].search_text()
+    assert "twitch — channel point redemption" in channel_points
+    assert "filtered to the chosen reward" in channel_points
+
+
+def test_counter_and_first_redemption_recipes_document_twitch_stream_limits() -> None:
+    tasks, variables = _reference_sources()
+    entries = {
+        entry.entry_id: entry.search_text()
+        for entry in build_wiki_entries(tasks, variables)
+    }
+
+    coffee = entries["example:coffee-counter"]
+    assert "limit per viewer per stream" in coffee
+    assert "not once per calendar day" in coffee
+    assert "per-viewer current-stream totals" in coffee
+    assert "channel all-time total" in coffee
+    assert "counter — increase" in coffee
+    assert "{counter.coffee.user.stream}" in coffee
+
+    first = entries["example:first-redemption"]
+    assert "limit per stream" in first
+    assert "set it to 1" in first
+    assert "twitch then enforces one redemption for that stream" in first
+    assert "no extra hub condition is needed" in first
+
+
+def test_advanced_recipe_composes_counter_condition_chat_and_obs() -> None:
+    tasks, variables = _reference_sources()
+    recipe = next(
+        entry
+        for entry in build_wiki_entries(tasks, variables)
+        if entry.entry_id == "example:redemption-milestone"
+    )
+    text = recipe.search_text()
+
+    assert recipe.title.startswith("Advanced —")
+    assert "counter — increase" in text
+    assert "core — if" in text
+    assert "twitch — send chat message" in text
+    assert "obs — show, hide, or toggle source" in text
+    assert "variable picker" in text
+
+
 def test_contextual_variables_are_documented_without_active_context() -> None:
     tasks, variables = _reference_sources()
     entries = build_wiki_entries(tasks, variables)

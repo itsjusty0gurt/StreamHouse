@@ -86,6 +86,16 @@ class PackageBoundaryTests(unittest.TestCase):
         self.assertIn('--exclude-module "PySide6.QtQuick"', build)
         self.assertIn('--exclude-module "PySide6.QtQml"', build)
 
+    def test_hub_build_removes_extension_development_files_from_artifacts(self) -> None:
+        build = (self.root / "tools" / "build" / "build_hub.ps1").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn('"extensions\\twitch\\app"', build)
+        self.assertIn('-Filter "*.py"', build)
+        for excluded in ("__pycache__", "listing", "README.md"):
+            self.assertIn(f'"{excluded}"', build)
+
 
 if __name__ == "__main__":
     unittest.main()
