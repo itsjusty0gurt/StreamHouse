@@ -1,6 +1,6 @@
 # Streamhouse Hub 0.3 modular foundation contracts
 
-Status: **design contract for review; not implemented**.
+Status: **Core foundation implemented; provider conversion not started**.
 
 Streamhouse Hub `0.2.0-alpha` is released and frozen at tag
 `v0.2.0-alpha`. Active development targets `0.3.0-alpha`. This document defines
@@ -11,6 +11,17 @@ plugin ecosystem.
 The words **Core** and **module** describe ownership boundaries inside the
 bundled Hub application. They do not imply downloaded code, a marketplace, or
 hot loading.
+
+The primary integration rule is:
+
+> Streamhouse Hub is the integration layer between modules. Modules expose
+> their capabilities and state to Hub Core, and other modules interact with
+> them through Core contracts instead of direct module-to-module dependencies.
+
+For example, the OBS module exposes OBS Variables, actions, and triggers to
+Core. A future Deck module reads Core Variables and runs Core routines; it does
+not import OBS implementation or establish a second OBS connection. Twitch,
+OBS, PRISM, Broadcaster, Deck, and later modules remain peers around Core.
 
 ## Current implementation baseline
 
@@ -66,6 +77,10 @@ These are migration inputs, not reasons to keep domain construction in
   separately reviewed migration is required.
 - Enabling or disabling a module requires restart in the initial foundation.
   Runtime hot unload is not supported.
+- Module installation/discovery has one known bundled location,
+  `products/hub/modules/bundled/`. Core scans that location but instantiates
+  only factories in its trusted first-party allowlist. Directory contents are
+  not dynamically imported.
 
 ### Deferred beyond this contract
 
@@ -76,8 +91,9 @@ These are migration inputs, not reasons to keep domain construction in
   broadcaster provider at runtime.
 - A user-facing module-management redesign beyond the minimum bundled-module
   enabled state.
-- Final Python package layout and exact concrete class names. The sketches below
-  describe contracts, not files that exist today.
+- Conversion of current providers to the module contracts. The Core foundation
+  exists under `products/hub/modules/`; OBS conversion is the next isolated
+  proof-of-concept branch.
 - Cross-module extension APIs beyond Core registries. A future need must be
   solved through a new Core-owned capability contract, not direct imports.
 - Migration of Twitch or Music after OBS. Their eventual extraction should use
@@ -175,6 +191,13 @@ not bypass queues or mutate routine stores. Settings and secrets are namespaced
 to `descriptor.module_id`. Secrets never enter ordinary settings, logs, Backup,
 or diagnostics.
 
+The implemented first slice exposes the existing event, Variable, Task, and new
+Action contracts plus registration commit/rollback callbacks. The remaining
+fields above are the target surface and are added only alongside a concrete
+Core registry adapter. The currently exposed fields receive concrete existing
+registries at composition time; no generic service map pretends an
+unimplemented contract exists.
+
 ### Module registry
 
 ```python
@@ -247,7 +270,19 @@ Broadcaster provider by registration/load order. Those providers remain peers.
 Generic routing is deferred; only provider-specific actions are required for the
 OBS proof of concept.
 
-### Tabs and docks
+### Navigation, tabs, and docks
+
+The shell navigation target has two vertical regions. The upper, scrollable
+region contains Dashboard/Core working pages, Automation, enabled module tabs,
+and other day-to-day pages. Users may drag these entries into a preferred order,
+which Core persists as presentation state only. That order never affects module
+discovery, registration, configuration, startup, or shutdown ordering.
+
+The bottom region is pinned, does not scroll away, and always appears in this
+order: **Modules**, **Settings**, **Wiki**. The Modules entry is a Core page; it
+is not contributed by an optional module. The 0.3 foundation records this shell
+contract but does not redesign the current navigation before a module actually
+contributes UI.
 
 ```python
 @dataclass(frozen=True, slots=True)
@@ -393,6 +428,13 @@ Secrets are excluded from logs, diagnostics, Support Bundles, and portable
 Backup unless an existing protected-credential policy explicitly permits that
 class.
 
+Core stores desired module enablement in a dedicated current-schema manifest,
+`config/modules.json`, rather than extending provider schemas or raw QSettings.
+The immutable descriptor supplies the default. A user change writes only the
+desired next-start override; the active process remains unchanged and reports
+that restart is required. Disabling a module never deletes its domain data.
+This new 0.3-only manifest is not a migration of a publicly shipped schema.
+
 ## Startup and shell target
 
 The target startup sequence is:
@@ -400,8 +442,9 @@ The target startup sequence is:
 1. acquire the Hub data-root/single-writer boundary and initialize diagnostics;
 2. create Qt and Core settings, event, Variable, Task, Action, Trigger, Backup,
    Automation, routine, and queue services;
-3. instantiate an explicit list of bundled modules—no dynamic discovery;
-4. validate descriptors and persisted enabled state;
+3. scan the known bundled module location and match entries against Core's
+   explicit trusted first-party factory allowlist;
+4. validate descriptors and the persisted next-start enabled state;
 5. atomically register contributions for all enabled compatible modules;
 6. configure module stores/settings and migrations;
 7. start enabled modules in deterministic order;
@@ -425,6 +468,10 @@ window state, shell-level status, and Qt signal wiring. It should stop:
 
 The application bootstrap plus `ModuleRegistry` becomes the composition root.
 This is an incremental target; it does not justify a single large rewrite.
+The current foundation implements descriptor validation, trusted bundled
+discovery, enablement persistence/restart semantics, deterministic lifecycle,
+registration commit/rollback hooks, and the Core `ActionRegistry`. It is not yet
+wired into product startup because no existing provider has been converted.
 
 ## OBS first-module extraction boundary
 
@@ -501,20 +548,23 @@ a separately reviewed migration plan and compatibility tests before code moves.
 ## Third-party boundary
 
 The 0.3 foundation registers only explicitly bundled, trusted modules shipped
-with Hub. It does not execute downloaded code and provides no marketplace,
-plugin folder scanning, install/update/uninstall workflow, permission consent
-UI, dependency resolution, sandbox, trust/signature model, or hot loading. Those
-are separate security/product projects and must not be implied by the internal
-module vocabulary.
+with Hub. Core may observe directory names in its known bundled location, but it
+never imports an unknown entry: executable factories remain an explicit Core
+allowlist. It does not execute downloaded code and provides no marketplace,
+external plugin-folder scanning, install/update/uninstall workflow, permission
+consent UI, dependency resolution, sandbox, trust/signature model, or hot
+loading. Those are separate security/product projects and must not be implied
+by the internal module vocabulary.
 
 ## Open questions for implementation review
 
-These are genuine decisions still required before runtime implementation:
+These are genuine decisions still required before provider conversion:
 
-1. Should module enabled state live in the current Hub settings schema or a
-   dedicated Core-owned manifest, and what is its Backup policy?
-2. What exact atomic registration mechanism best fits existing registries:
-   pre-validation plus commit, scoped staging registries, or reversible tokens?
+1. What portable Backup policy, if any, should apply to the machine/runtime
+   module enablement manifest once the Modules page exists?
+2. Which existing registries need staging adapters behind the implemented
+   registration commit/rollback hooks before OBS conversion can publish
+   contributions atomically?
 3. Should `TaskRegistry.register()` reject duplicate handlers as strictly as
    metadata does? The current handler registration overwrites by type.
 4. How should unavailable task/action/trigger references be represented in the
@@ -538,10 +588,10 @@ These are genuine decisions still required before runtime implementation:
 These questions are deferred intentionally; implementations must not answer them
 accidentally through ad hoc coupling.
 
-## Review gate before implementation
+## Implementation gate before OBS conversion
 
-Runtime work begins only after this contract is reviewed. The first code slice
-should introduce Core contract types and registry tests without moving provider
-behavior. OBS extraction should then proceed in small steps that preserve all
-public data contracts and keep each step testable and reversible in source
-control.
+The first code slice now provides Core contract types and registry tests without
+moving provider behavior. OBS extraction proceeds on its own branch in small
+steps that preserve all public data contracts and keep each step testable and
+reversible in source control. No provider conversion belongs in the foundation
+commit.

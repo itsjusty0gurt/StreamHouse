@@ -2,9 +2,9 @@
 
 > Canonical implementation map for maintainers and coding agents.
 >
-> Last verified: 2026-10-21 against current `develop` after the
-> `v0.2.0-alpha` release. This records an implementation audit, not a later
-> released-version claim.
+> Last verified: 2026-10-23 on the isolated 0.3 modular-foundation branch.
+> Provider conversion has not started. This records an implementation audit,
+> not a later released-version claim.
 > Update this file when a change moves ownership, adds a persisted format,
 > changes an inter-process contract, or introduces a new service/trigger/task.
 
@@ -31,8 +31,8 @@ provide product behavior and policy detail:
 - `docs/shared/viewer-memories.md`
 - `docs/architecture/offline-design-checkpoint-2026-07-20.md`
 - `docs/architecture/release-checklist.md`
-- `docs/architecture/hub-0.3-foundation.md` (review-stage modular contracts;
-  Core/module ownership, contributions, lifecycle, and OBS extraction)
+- `docs/architecture/hub-0.3-foundation.md` (implemented Core module foundation;
+  contribution/lifecycle contracts and the future OBS extraction boundary)
 
 Product-facing branding is defined in the
 [Streamhouse product-family reference](product-family.md). This implementation
@@ -339,6 +339,16 @@ but does not emit another signed-in transition or restart chat/EventSub.
   and first/last seen presentation through the Users workspace
 - soundboard configuration and local routine execution
 - deciding whether a draft may actually be sent
+
+Hub Core is the integration layer between optional modules. The initial
+foundation in `products/hub/modules/` owns stable module descriptors,
+allowlisted bundled discovery, desired enablement state, deterministic
+lifecycle/status, registration transaction hooks, and the provider-neutral
+`ActionRegistry`. It is intentionally not wired into startup yet: existing OBS,
+Twitch, Music, and other providers retain their current runtime ownership until
+converted individually. Modules must publish capabilities and state through
+Core registries; they must not import one another or create duplicate provider
+connections.
 
 ### Streamhouse AI owns
 
@@ -1981,6 +1991,16 @@ The output contains public assets only. Never include the Twitch Extension
 secret or broadcaster relay key.
 
 ## Change-routing guide
+
+### Changing the module foundation
+
+Start with `docs/architecture/hub-0.3-foundation.md`. Core contracts,
+allowlisted bundled discovery, enablement persistence, lifecycle, and actions
+live under `products/hub/modules/`; focused coverage lives in
+`products/hub/tests/test_module_foundation.py`. Provider conversion must retain
+public IDs, paths, schemas, and data meanings. Do not wire an optional module
+directly to another module, and do not turn bundled discovery into arbitrary
+code loading.
 
 ### Adding an automation task
 
