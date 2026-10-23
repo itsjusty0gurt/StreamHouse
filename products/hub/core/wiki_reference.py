@@ -41,7 +41,7 @@ WIKI_CATEGORIES = (
     "Twitch",
     "OBS",
     "Integrations",
-    "Examples",
+    "Recipes",
 )
 
 
@@ -739,40 +739,72 @@ def _getting_started_entries() -> tuple[WikiEntry, ...]:
         WikiEntry(
             "start:first-routine",
             "Getting Started",
-            "Build your first routine",
-            "Connect a service, create a routine, choose what starts it, then add the work it should perform.",
+            "Getting Started with Streamhouse Hub",
+            "Connect Twitch, learn the Automation basics, and build a useful first routine.",
             (
                 WikiSection(
-                    "Steps",
+                    "First launch and Twitch",
                     (
-                        "1. Connect Twitch and, if needed, OBS from Connections.",
-                        "2. Open Automation and create a Routine.",
-                        "3. Add a Trigger such as Command, Timer, Twitch event, or OBS event.",
-                        "4. Add Tasks in the order they should run.",
-                        "5. Use canonical Variable placeholders to carry trigger data into task inputs.",
-                        "6. Keep Default Queue or choose a custom queue, then test the routine.",
+                        "1. Open Connections, then choose Sign in with Twitch for the Main / Broadcaster Account.",
+                        "2. Sign in and approve the requested Twitch permissions. Hub handles its normal Twitch connection setup.",
+                        "3. A separate Bot Account is optional; the Main / Broadcaster Account is enough for normal use.",
+                    ),
+                ),
+                WikiSection(
+                    "Automation in plain language",
+                    (
+                        "Trigger = what starts something.",
+                        "Routine = the automation being run.",
+                        "Task = something the routine does.",
+                        "Together: When this happens → do these things.",
+                    ),
+                ),
+                WikiSection(
+                    "Your first automation",
+                    (
+                        "1. Open Automation → Routines and choose + New Routine.",
+                        "2. Add the Twitch — First Message Of Stream Trigger.",
+                        "3. Add the Twitch — Send Chat Message Task.",
+                        "4. Enter a welcome such as: Welcome {user.display_name}!",
+                        "5. Use the Variable Picker / Browse Variables button to insert user.display_name instead of memorizing it.",
+                        "6. Save and enable the routine. Each viewer can now receive the welcome on their first message of the current stream.",
+                    ),
+                ),
+                WikiSection(
+                    "Next",
+                    (
+                        "Open Recipes for complete Beginner, Intermediate, and Advanced examples.",
                     ),
                 ),
             ),
-            ("connect Twitch", "connect OBS", "routine", "test"),
+            (
+                "first launch",
+                "connect Twitch",
+                "First Message Of Stream",
+                "Send Chat Message",
+                "Variable Picker",
+                "user.display_name",
+            ),
         ),
         WikiEntry(
             "start:wiki-vs-pages",
             "Getting Started",
-            "Wiki, Variables, and Automation",
-            "The Wiki explains Hub; operational pages remain the place to inspect or change live configuration.",
+            "Where to find things",
+            "Use Hub's feature pages to build and manage your stream; use Wiki as the read-only guide.",
             (
                 WikiSection(
                     "Where to work",
                     (
-                        "Automation authors routines, triggers, tasks, and queues.",
-                        "Variables inspects current values and availability.",
-                        "Counters configures Counter definitions and values.",
-                        "Wiki is read-only reference documentation.",
+                        "Automation — build Routines from Triggers and Tasks.",
+                        "Variables and Variable Picker — find live values and insert canonical placeholders.",
+                        "Your Channel → Commands — manage chat commands and their linked routines.",
+                        "Your Channel → Channel Points — manage Twitch rewards.",
+                        "Your Channel → Counters — create totals for viewers, streams, and the channel.",
+                        "Wiki → Recipes — follow complete examples at several difficulty levels.",
                     ),
                 ),
             ),
-            ("manual", "reference", "inspector"),
+            ("Automation", "Variables", "Commands", "Channel Points", "Counters", "Recipes"),
         ),
     )
 
@@ -1046,66 +1078,211 @@ def _integration_entries() -> tuple[WikiEntry, ...]:
 
 
 def _example_entries() -> tuple[WikiEntry, ...]:
-    recipes = (
-        (
+    return (
+        _recipe_entry(
+            "first-message-welcome",
+            "Beginner",
+            "First Message Welcome",
+            "Welcome each viewer when they speak for the first time in the current stream.",
+            trigger="Twitch — First Message Of Stream",
+            tasks=("Twitch — Send Chat Message",),
+            setup=(
+                "Create a Routine and add the Trigger and Task shown above.",
+                "Set the message to: Welcome {user.display_name}!",
+                "Use Variable Picker / Browse Variables to insert user.display_name, then save and enable the routine.",
+            ),
+            variables=("{user.display_name} — the viewer who sent the first message.",),
+        ),
+        _recipe_entry(
+            "channel-point-response",
+            "Beginner",
+            "Simple Channel Point Response",
+            "Reply in chat when a viewer redeems one specific Twitch reward.",
+            trigger="Twitch — Channel Point Redemption, filtered to the chosen reward",
+            tasks=("Twitch — Send Chat Message",),
+            setup=(
+                "Create or choose the reward in Your Channel → Channel Points.",
+                "Add Channel Point Redemption to a Routine and select that reward in its filter.",
+                "Add Send Chat Message, write the response, then save and enable the routine.",
+            ),
+            variables=("Use Variable Picker to insert viewer or redemption values when useful.",),
+        ),
+        _recipe_entry(
             "command-data",
+            "Beginner",
             "Respond with command.data",
-            "Create a Command trigger, then add Send Chat Message with: You said {command.data}",
-            ("command.data", "Send Chat Message"),
+            "Echo the text a viewer supplies after a chat command.",
+            trigger="Command",
+            tasks=("Twitch — Send Chat Message",),
+            setup=(
+                "Create a Command and open its linked Routine.",
+                "Set the message to: You said {command.data}",
+            ),
+            variables=("{command.data} — all text after the command name.",),
         ),
-        (
+        _recipe_entry(
+            "coffee-counter",
+            "Intermediate",
+            "Coffee Redeem + Counter",
+            "Track Coffee reward redemptions for viewers, the current stream, and the channel.",
+            trigger="Twitch — Channel Point Redemption, filtered to Coffee",
+            tasks=("Counter — Increase", "Optional: Twitch — Send Chat Message"),
+            setup=(
+                "In Your Channel → Channel Points, create or manage Coffee. Optionally set Limit per viewer per stream to 1; Twitch applies that limit once per viewer for each Twitch stream, not once per calendar day.",
+                "In Your Channel → Counters, create Coffee and enable the useful scopes: Per-viewer current-stream totals, Per-viewer all-time totals, Current stream total, and Channel all-time total.",
+                "Create a Routine, add the Channel Point Redemption Trigger, and filter it to Coffee.",
+                "Add Counter — Increase, choose Coffee, select the task scopes User per stream, User, Per stream, and Lifetime as needed, and increase by 1.",
+                "Optionally add Send Chat Message. Use Variable Picker to insert the Coffee counter value you want to announce.",
+            ),
+            variables=(
+                "{counter.coffee.user.stream} — this viewer's Coffee total for the current stream.",
+                "{counter.coffee.user.total} — this viewer's lifetime Coffee total.",
+                "{counter.coffee.stream} — all Coffee redemptions in the current stream.",
+                "{counter.coffee.total} — channel lifetime Coffee total.",
+            ),
+        ),
+        _recipe_entry(
+            "first-redemption",
+            "Intermediate",
+            "First Redemption Of The Stream",
+            "Allow a reward named First! to be redeemed only once in each Twitch stream.",
+            trigger="Twitch — Channel Point Redemption, filtered to First!",
+            tasks=(
+                "Optional: Counter — Increase",
+                "Optional: Twitch — Send Chat Message, sound, or OBS Task",
+            ),
+            setup=(
+                "Create or manage First! in Your Channel → Channel Points.",
+                "Enable Limit per stream and set it to 1. Twitch then enforces one redemption for that stream.",
+                "Create a Routine with the filtered redemption Trigger and the response Tasks you want.",
+                "No extra Hub condition is needed for the once-per-stream limit.",
+            ),
+        ),
+        _recipe_entry(
             "viewer-counter",
+            "Intermediate",
             "Increment a viewer Counter",
-            "Create a Counter with viewer_total enabled, then use Increase Counter from a viewer-triggered routine.",
-            ("viewer_total", "Counter"),
+            "Update a viewer-owned total from any viewer-triggered Routine.",
+            trigger="Any Trigger that supplies viewer context",
+            tasks=("Counter — Increase",),
+            setup=(
+                "Create a Counter with Per-viewer all-time totals enabled.",
+                "Add Counter — Increase and select User. Hub uses the triggering viewer's stable Twitch identity.",
+            ),
         ),
-        (
+        _recipe_entry(
             "raid",
+            "Intermediate",
             "React to an incoming raid",
-            "Add the Twitch Incoming Raid trigger and use {raid.source.name} and {raid.viewers} in later tasks.",
-            ("raid", "Twitch"),
+            "Thank the raiding channel and include the confirmed viewer count.",
+            trigger="Twitch — Incoming Raid",
+            tasks=("Twitch — Send Chat Message",),
+            setup=(
+                "Add the incoming raid Trigger and a chat Task.",
+                "Use Variable Picker to insert the source channel and viewer count.",
+            ),
+            variables=(
+                "{raid.source.name} — raiding channel display name.",
+                "{raid.viewers} — confirmed raid viewer count.",
+            ),
         ),
-        (
+        _recipe_entry(
             "obs-scene",
+            "Intermediate",
             "Change an OBS scene",
-            "Connect OBS, add Set Program Scene to a routine, and choose the destination scene.",
-            ("OBS scene", "Set Program Scene"),
+            "Switch the live OBS program scene from a Routine.",
+            trigger="Any suitable Trigger",
+            tasks=("OBS — Change scene",),
+            setup=(
+                "Connect OBS from Connections.",
+                "Add Change scene and choose the destination scene.",
+            ),
         ),
-        (
+        _recipe_entry(
+            "redemption-milestone",
+            "Advanced",
+            "Redemption Counter Milestone + OBS",
+            "Combine a reward, Counter, condition, chat response, and OBS action.",
+            trigger="Twitch — Channel Point Redemption, filtered to your chosen reward",
+            tasks=(
+                "Counter — Increase",
+                "Core — If",
+                "Then: Twitch — Send Chat Message",
+                "Then: OBS — Show, hide, or toggle source",
+            ),
+            setup=(
+                "Create a Counter with Current stream total enabled, then increase its Per stream scope when the reward is redeemed.",
+                "Add Core — If and use Variable Picker to compare the Counter's current-stream Variable with your milestone.",
+                "Under Then, add the celebration chat message and set the OBS source action to Show or Toggle.",
+                "Leave Else empty or add a short progress message. The normal Routine queue keeps the steps in order.",
+            ),
+            variables=("Select the Counter's Stream Variable in Variable Picker; its exact name follows the Counter's stable ID.",),
+        ),
+        _recipe_entry(
             "if-else",
+            "Advanced",
             "Branch with If / Else",
-            "Place If after the task that produces the Variable, define the condition, and add tasks to each branch.",
-            ("If", "Else", "automation output"),
+            "Run different Tasks according to a condition.",
+            trigger="Any suitable Trigger",
+            tasks=("Core — If with nested Then / Else Tasks",),
+            setup=(
+                "Place Core — If after any Task that produces a Variable you need.",
+                "Define the condition, then add the appropriate Tasks to its Then and Else branches.",
+            ),
+            variables=("automation.* outputs are available only after their producer in the same root execution.",),
         ),
-        (
+        _recipe_entry(
             "nested-routine",
+            "Advanced",
             "Run a nested Routine",
-            "Use Run Routine to reuse another routine while retaining the current root execution context.",
-            ("nested routine", "Run Routine"),
+            "Reuse another Routine while retaining the current root execution context.",
+            trigger="Any suitable Trigger",
+            tasks=("Core — Run Routine",),
+            setup=("Choose the reusable Routine by name; Hub keeps the stable Routine ID.",),
         ),
-        (
+        _recipe_entry(
             "python-now-playing",
+            "Advanced",
             "Publish Python results to later tasks",
-            "In Run Python Script, call hub.set_output(\"artist\", artist) and hub.set_output(\"song\", song). A later OBS text task can use {automation.artist} - {automation.song}; no intermediate file or persistent Variable is needed.",
-            (
-                "Python Script Context",
-                "hub.set_output",
-                "hub.get_variable",
-                "hub.log",
-                "Now Playing",
-                "automation.artist",
-                "automation.song",
+            "Publish script results to later Tasks; no intermediate file or persistent Variable is needed.",
+            trigger="Any suitable Trigger",
+            tasks=("Core — Run Python Script", "A later OBS text Task"),
+            setup=(
+                "In Run Python Script, call hub.set_output(\"artist\", artist) and hub.set_output(\"song\", song).",
+                "In the later Task, use {automation.artist} - {automation.song}.",
+                "hub.get_variable() reads current Variables and hub.log() writes a normal script log message.",
+            ),
+            variables=(
+                "{automation.artist} and {automation.song} last only for the current root Routine execution.",
             ),
         ),
     )
-    return tuple(
-        WikiEntry(
-            f"example:{key}",
-            "Examples",
-            title,
-            detail,
-            (WikiSection("Recipe", (detail,)),),
-            keywords,
-        )
-        for key, title, detail, keywords in recipes
+
+
+def _recipe_entry(
+    key: str,
+    difficulty: str,
+    title: str,
+    summary: str,
+    *,
+    trigger: str,
+    tasks: tuple[str, ...],
+    setup: tuple[str, ...],
+    variables: tuple[str, ...] = (),
+) -> WikiEntry:
+    sections = [
+        WikiSection("Difficulty", (difficulty,)),
+        WikiSection("Trigger", (trigger,)),
+        WikiSection("Tasks", tasks),
+        WikiSection("Setup", setup),
+    ]
+    if variables:
+        sections.append(WikiSection("Useful Variables", variables))
+    return WikiEntry(
+        f"example:{key}",
+        "Recipes",
+        f"{difficulty} — {title}",
+        summary,
+        tuple(sections),
+        (difficulty, trigger, *tasks, *variables),
     )
