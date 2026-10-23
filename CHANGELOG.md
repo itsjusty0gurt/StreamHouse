@@ -68,6 +68,15 @@
 - Twitch EventSub diagnostics moved into Logs > Twitch Events, separate from
   the developer event simulator
 
+## 0.2.1-alpha - 2026-10-22
+
+- Added Twitch Automation triggers for bans, timeouts, unbans, moderator
+  changes, and unban-request creation and resolution.
+- Added a beginner-focused Getting Started path from Twitch sign-in through a
+  first First Message welcome routine.
+- Expanded the Wiki with practical Beginner, Intermediate, and Advanced
+  Automation recipes, including Channel Point limits and Counter workflows.
+
 ## 0.1.0 - 2026-07-12
 
 First release-readiness checkpoint.
