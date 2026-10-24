@@ -5,7 +5,7 @@ import json
 import os
 import re
 import sys
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
@@ -21,8 +21,7 @@ from products.hub.automation.models import DEFAULT_AUTOMATION_QUEUE_ID
 from products.hub.core.settings import SettingsStore
 from products.hub.counters.models import CounterDefinition
 from products.hub.counters.store import COUNTER_VERSION, INDEX_VERSION, CounterStore
-from products.hub.obs_service.config import ObsConnectionConfig
-from products.hub.obs_service.triggers import ObsTriggerStore
+from products.hub.modules.contributions import BackupContributorRegistry
 from products.hub.integrations.music_triggers import MusicTriggerStore
 from products.hub.twitch.automation_triggers import TwitchEventTriggerStore
 from products.hub.twitch.channel_information import ChannelInformationStore
@@ -35,6 +34,9 @@ from products.hub.twitch.user_groups import UserGroupStore
 from shared.streamhouse_runtime.paths import user_data_root
 from shared.streamhouse_runtime.redaction import is_secret_key, redact_secret_text
 from products.hub.version import HUB_VERSION
+
+
+_OBS_TRIGGER_SCHEMA_VERSION = 1
 
 
 class BackupError(ValueError):
@@ -169,6 +171,7 @@ class BackupManager:
         backup_directory: Path | None = None,
         *,
         now=None,
+        contributors: BackupContributorRegistry | None = None,
     ) -> None:
         self.project_root = Path(project_root or user_data_root())
         self.backup_directory = Path(
@@ -178,6 +181,7 @@ class BackupManager:
         self.automatic_directory = self.backup_directory / "automatic"
         self.safety_directory = self.backup_directory / "safety"
         self._now = now or (lambda: datetime.now(timezone.utc))
+        self.contributors = contributors
 
     @classmethod
     def components_for(
@@ -278,7 +282,7 @@ class BackupManager:
                             "commands": TwitchCommandTriggerStore.VERSION,
                             "twitch_triggers": TwitchEventTriggerStore.VERSION,
                             "core_triggers": CoreTriggerStore.VERSION,
-                            "obs_triggers": ObsTriggerStore.VERSION,
+                            "obs_triggers": _OBS_TRIGGER_SCHEMA_VERSION,
                             "music_triggers": MusicTriggerStore.VERSION,
                             "queues": AutomationQueueStore.VERSION,
                             "custom_variables": CustomVariableStore.VERSION,
@@ -639,7 +643,7 @@ class BackupManager:
                 "automation/core_triggers.json",
                 CoreTriggerStore.VERSION,
             ),
-            ("obs", "obs/triggers.json", ObsTriggerStore.VERSION),
+            ("obs", "obs/triggers.json", _OBS_TRIGGER_SCHEMA_VERSION),
             ("music", "automation/music_triggers.json", MusicTriggerStore.VERSION),
         )
         for label, relative, version in trigger_sources:
@@ -864,6 +868,18 @@ class BackupManager:
         }
 
     def _safe_obs_snapshot(self) -> dict[str, Any]:
+        contributor = (
+            self.contributors.get("obs.configuration")
+            if self.contributors is not None
+            else None
+        )
+        if contributor is not None:
+            try:
+                payload = dict(contributor.export(self.project_root))
+                contributor.validate(payload)
+            except (OSError, TypeError, ValueError) as error:
+                raise BackupError("OBS configuration is invalid.") from error
+            return payload
         payload = self._json_or_default(
             "obs/connection.json",
             {
@@ -875,7 +891,20 @@ class BackupManager:
             },
         )
         self._expect_schema(payload, 1, "OBS configuration", "version")
-        return {"version": 1, **asdict(ObsConnectionConfig.from_dict(payload))}
+        host = str(payload.get("host", "127.0.0.1")).strip() or "127.0.0.1"
+        if any(marker in host for marker in ("@", "/", "?", "#")):
+            host = "127.0.0.1"
+        try:
+            port = int(payload.get("port", 4455))
+        except (TypeError, ValueError):
+            port = 4455
+        return {
+            "version": 1,
+            "host": host[:255],
+            "port": min(max(port, 1), 65535),
+            "auto_connect": bool(payload.get("auto_connect", False)),
+            "default_mute_input": str(payload.get("default_mute_input", "")).strip()[:255],
+        }
 
     # Restore ----------------------------------------------------------
 
@@ -1328,6 +1357,33 @@ class BackupManager:
                 f'Backup source contains credential-like content at "{location}".'
             )
 
+    @staticmethod
+    def _validate_obs_triggers(path: Path, routines: RoutineStore) -> None:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict) or payload.get("version") != _OBS_TRIGGER_SCHEMA_VERSION:
+            raise ValueError("OBS trigger data does not use the current schema.")
+        triggers = payload.get("triggers")
+        if not isinstance(triggers, list):
+            raise ValueError("OBS trigger data must contain a trigger list.")
+        seen: set[str] = set()
+        for item in triggers:
+            if not isinstance(item, dict):
+                raise ValueError("OBS trigger data contains an invalid trigger.")
+            trigger_id = str(item.get("trigger_id", "")).strip()
+            routine_id = str(item.get("routine_id", "")).strip()
+            event_type = str(item.get("event_type", "")).strip()
+            filters = item.get("filters", {})
+            if (
+                not trigger_id
+                or trigger_id in seen
+                or not routine_id
+                or routines.get(routine_id) is None
+                or not event_type
+                or not isinstance(filters, dict)
+            ):
+                raise ValueError("OBS trigger data contains an invalid trigger.")
+            seen.add(trigger_id)
+
     def _validate_staged(self, writes: Mapping[Path, bytes]) -> None:
         self.backup_directory.mkdir(parents=True, exist_ok=True)
         with TemporaryDirectory(dir=self.backup_directory) as temporary:
@@ -1359,7 +1415,7 @@ class BackupManager:
                     CoreTriggerStore(core_path, routines).load()
                 obs_path = root / "obs/triggers.json"
                 if obs_path.exists():
-                    ObsTriggerStore(obs_path, routines).load()
+                    self._validate_obs_triggers(obs_path, routines)
                 music_path = root / "automation/music_triggers.json"
                 if music_path.exists():
                     MusicTriggerStore(music_path, routines).load()

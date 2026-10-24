@@ -539,21 +539,26 @@ def context_provider() -> CallbackVariableProvider:
 def runtime_provider(
     twitch_values: Callable[[], Mapping[str, object]],
     *,
-    obs_connected: Callable[[], bool],
-    obs_scene: Callable[[], str],
     hub_uptime: Callable[[], object],
+    obs_connected: Callable[[], bool] | None = None,
+    obs_scene: Callable[[], str] | None = None,
 ) -> CallbackVariableProvider:
-    definitions = (
+    definitions = [
         VariableDefinition("stream.title", "Stream Title", "Current cached Twitch title.", VariableDataType.TEXT, "Twitch", "Stream"),
         VariableDefinition("stream.channel", "Stream Channel", "Connected Twitch channel name.", VariableDataType.TEXT, "Twitch", "Stream"),
         VariableDefinition("stream.category", "Stream Category", "Current cached Twitch category.", VariableDataType.TEXT, "Twitch", "Stream"),
         VariableDefinition("stream.viewer_count", "Viewer Count", "Current cached live viewer count.", VariableDataType.INTEGER, "Twitch", "Stream"),
         VariableDefinition("stream.game_id", "Twitch Game ID", "Current cached Twitch category ID.", VariableDataType.TEXT, "Twitch", "Stream"),
-        VariableDefinition("obs.current_scene", "Current OBS Scene", "Most recently observed OBS program scene.", VariableDataType.TEXT, "OBS", "OBS"),
         VariableDefinition("hub.uptime", "Hub Uptime", "Time since this Hub process started.", VariableDataType.TEXT, "Hub", "Hub"),
         VariableDefinition("hub.connected_to_twitch", "Twitch Connected", "Whether Hub is connected to Twitch.", VariableDataType.BOOLEAN, "Hub", "Hub"),
-        VariableDefinition("hub.connected_to_obs", "OBS Connected", "Whether Hub is connected to OBS.", VariableDataType.BOOLEAN, "Hub", "Hub"),
-    )
+    ]
+    if obs_connected is not None and obs_scene is not None:
+        definitions.extend(
+            (
+                VariableDefinition("obs.current_scene", "Current OBS Scene", "Most recently observed OBS program scene.", VariableDataType.TEXT, "OBS", "OBS"),
+                VariableDefinition("hub.connected_to_obs", "OBS Connected", "Whether Hub is connected to OBS.", VariableDataType.BOOLEAN, "Hub", "Hub"),
+            )
+        )
 
     def resolve(name: str, _context: Mapping[str, object]) -> tuple[bool, object, str]:
         twitch = twitch_values()
@@ -562,9 +567,9 @@ def runtime_provider(
             value = twitch.get(key)
             return value not in {None, "", "--"}, value, "No cached Twitch value is available."
         if name == "obs.current_scene":
-            value = obs_scene()
+            value = obs_scene() if obs_scene is not None else ""
             return (
-                obs_connected() and bool(value),
+                bool(obs_connected and obs_connected()) and bool(value),
                 value,
                 "OBS is disconnected or no program scene has been observed yet.",
             )
@@ -573,7 +578,7 @@ def runtime_provider(
         if name == "hub.connected_to_twitch":
             return True, bool(twitch.get("connected", False)), ""
         if name == "hub.connected_to_obs":
-            return True, obs_connected(), ""
+            return True, bool(obs_connected and obs_connected()), ""
         return False, None, "Unavailable."
 
-    return CallbackVariableProvider("Hub Runtime", definitions, resolve)
+    return CallbackVariableProvider("Hub Runtime", tuple(definitions), resolve)

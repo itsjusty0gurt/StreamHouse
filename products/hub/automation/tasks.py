@@ -85,6 +85,7 @@ class TaskRegistry:
     def __init__(self, metadata: Iterable[TaskMetadata] = ()) -> None:
         self._handlers: dict[str, TaskHandler] = {}
         self._metadata: dict[str, TaskMetadata] = {}
+        self._provider_availability: dict[str, Callable[[], tuple[bool, str]]] = {}
         for definition in metadata:
             self.register_metadata(definition)
 
@@ -124,6 +125,23 @@ class TaskRegistry:
     def register(self, handler: TaskHandler) -> None:
         clean_type = self._task_type(handler.task_type)
         self._handlers[clean_type] = handler
+
+    def register_provider_availability(
+        self,
+        task_types: Iterable[str],
+        availability: Callable[[], tuple[bool, str]],
+    ) -> None:
+        for task_type in task_types:
+            clean_type = self._task_type(task_type)
+            if clean_type in self._provider_availability:
+                raise ValueError(
+                    f'Task provider availability for "{clean_type}" is already registered.'
+                )
+            self._provider_availability[clean_type] = availability
+
+    def availability(self, task_type: str) -> tuple[bool, str]:
+        probe = self._provider_availability.get(str(task_type).strip().casefold())
+        return probe() if probe is not None else (True, "")
 
     def unregister(self, task_type: str) -> bool:
         return self._handlers.pop(task_type.strip().casefold(), None) is not None
@@ -165,6 +183,15 @@ class TaskRegistry:
         task: TaskDefinition,
         trigger: TriggerEvent,
     ) -> TaskExecutionResult:
+        available, detail = self.availability(task.task_type)
+        if not available:
+            return TaskExecutionResult(
+                task_id=task.task_id,
+                task_type=task.task_type,
+                succeeded=True,
+                detail=detail or "Task provider is unavailable; task was skipped.",
+                skipped=True,
+            )
         handler = self._handlers.get(task.task_type.strip().casefold())
         if handler is None:
             return TaskExecutionResult(

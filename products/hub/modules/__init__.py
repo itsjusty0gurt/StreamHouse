@@ -16,6 +16,14 @@ from products.hub.modules.contracts import (
     ModuleStatus,
     RestartRequired,
 )
+from products.hub.modules.contributions import (
+    BackupContributor,
+    BackupContributorRegistry,
+    ModuleTabContribution,
+    ModuleTabRegistry,
+    TriggerProviderContribution,
+    TriggerProviderRegistry,
+)
 from products.hub.modules.discovery import (
     BUNDLED_MODULES_ROOT,
     BundledModuleDiscovery,
@@ -32,6 +40,8 @@ __all__ = [
     "ActionRegistry",
     "ActionResult",
     "Availability",
+    "BackupContributor",
+    "BackupContributorRegistry",
     "BUNDLED_MODULES_ROOT",
     "BundledModuleDiscovery",
     "BundledModuleSpec",
@@ -43,5 +53,9 @@ __all__ = [
     "ModuleLifecycle",
     "ModuleRegistry",
     "ModuleStatus",
+    "ModuleTabContribution",
+    "ModuleTabRegistry",
     "RestartRequired",
+    "TriggerProviderContribution",
+    "TriggerProviderRegistry",
 ]

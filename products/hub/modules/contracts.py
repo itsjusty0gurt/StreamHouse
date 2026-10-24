@@ -104,12 +104,32 @@ class ModuleContext:
     variables: object
     tasks: object
     actions: object
+    routine_store: object | None = None
+    automation: object | None = None
+    trigger_providers: object | None = None
+    tabs: object | None = None
+    backup: object | None = None
+    data_root: object | None = None
+    execution_recorder: Callable[[object, str], None] | None = field(
+        default=None,
+        repr=False,
+    )
+    trigger_context_enricher: Callable[[], dict[str, object]] | None = field(
+        default=None,
+        repr=False,
+    )
+    integration_status_changed: Callable[[str, object], None] | None = field(
+        default=None,
+        repr=False,
+    )
     commit_registration: Callable[[], None] = field(default=_no_op, repr=False)
     rollback_registration: Callable[[], None] = field(default=_no_op, repr=False)
 
 
 class HubModule(Protocol):
     descriptor: ModuleDescriptor
+
+    def register_catalog(self, context: ModuleContext) -> None: ...
 
     def register(self, context: ModuleContext) -> None: ...
 

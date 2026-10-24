@@ -138,6 +138,11 @@ class ObsWebSocketService(QObject):
     def connected(self) -> bool:
         return self.state is ObsConnectionState.CONNECTED and self._identified
 
+    def set_default_audio_input(self, input_name: str) -> None:
+        """Set the configured fallback used by default-input audio operations."""
+
+        self._primary_audio_input = str(input_name).strip()
+
     @property
     def current_program_scene(self) -> str:
         return self._current_program_scene

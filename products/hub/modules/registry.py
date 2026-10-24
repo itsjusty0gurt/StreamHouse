@@ -46,6 +46,7 @@ class _ModuleRecord:
     lifecycle: ModuleLifecycle
     detail: str = ""
     context: ModuleContext | None = None
+    catalog_registered: bool = False
 
 
 class ModuleRegistry:
@@ -146,6 +147,34 @@ class ModuleRegistry:
             "Module enablement will change after Hub restarts." if required else "",
         )
 
+    def register_catalogs(
+        self,
+        context_factory: Callable[[ModuleDescriptor], ModuleContext],
+    ) -> None:
+        """Register static metadata needed to preserve disabled module data."""
+
+        for module_id in sorted(self._records):
+            record = self._records[module_id]
+            if record.lifecycle is ModuleLifecycle.INCOMPATIBLE:
+                continue
+            context = context_factory(record.module.descriptor)
+            record.context = context
+            try:
+                register_catalog = getattr(record.module, "register_catalog", None)
+                if callable(register_catalog):
+                    register_catalog(context)
+                context.commit_registration()
+                record.catalog_registered = True
+            except Exception as error:
+                try:
+                    context.rollback_registration()
+                except Exception:
+                    Logger.exception(
+                        f'Module "{module_id}" catalog rollback failed.',
+                        source="MODULES",
+                    )
+                self._fail(record, "catalog registration", error)
+
     def register_enabled(
         self,
         context_factory: Callable[[ModuleDescriptor], ModuleContext],
@@ -154,7 +183,7 @@ class ModuleRegistry:
             record = self._records[module_id]
             if record.lifecycle is not ModuleLifecycle.DISCOVERED:
                 continue
-            context = context_factory(record.module.descriptor)
+            context = record.context or context_factory(record.module.descriptor)
             record.context = context
             try:
                 record.module.register(context)

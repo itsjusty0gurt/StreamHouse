@@ -163,6 +163,7 @@ class TaskExecutionResult:
     duration_ms: int = 0
     flow_action: str = ""
     cancelled: bool = False
+    skipped: bool = False
     nested_results: tuple[RoutineExecutionResult, ...] = ()
     child_results: tuple[TaskExecutionResult, ...] = ()
     selected_branch: str = ""
