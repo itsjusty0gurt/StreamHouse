@@ -31,7 +31,11 @@ bound only to `127.0.0.1:8765`.
 
 See [architecture](docs/architecture/overview.md) for ownership and change
 routing, and [product family](docs/architecture/product-family.md) for canonical
-product names and dependency rules. Streamhouse is pre-alpha; the
+product names and dependency rules. For session continuity, start with the
+[development handoff](docs/DEVELOPMENT_STATUS.md), then use the
+[master reference](docs/STREAMHOUSE_MASTER_REFERENCE.md) and concise
+[technical architecture](docs/ARCHITECTURE.md). Streamhouse Hub is in public
+Alpha; the
 [development and compatibility policy](docs/architecture/development-policy.md)
 defines the clean-architecture baseline and the point at which upgrade
 compatibility begins. Relay operators should use the
@@ -72,8 +76,8 @@ Independent outputs:
 
 - `dist\StreamhouseHub\StreamhouseHub.exe`
 - `dist\StreamhouseAI\StreamhouseAI.exe`
-- `release\StreamhouseHub-0.1.0-windows-x64.zip`
-- `release\StreamhouseAI-0.1.0-windows-x64.zip`
+- `release\StreamhouseHub-<version>-windows-x64.zip`
+- `release\StreamhouseAI-<version>-windows-x64.zip`
 
 Current user data lives under `%LOCALAPPDATA%\Streamhouse`. Development and
 smoke overrides use `STREAMHOUSE_DATA_DIR` and `STREAMHOUSE_SMOKE_TEST` only.

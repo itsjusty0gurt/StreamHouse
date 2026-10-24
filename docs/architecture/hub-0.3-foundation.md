@@ -3,8 +3,9 @@
 Status: **Core foundation implemented; OBS conversion ready for review on its
 isolated feature branch**.
 
-Streamhouse Hub `0.2.0-alpha` is released and frozen at tag
-`v0.2.0-alpha`. Active development targets `0.3.0-alpha`. This document defines
+Streamhouse Hub `0.2.1-alpha` is the latest released maintenance Alpha at tag
+`v0.2.1-alpha`; `v0.2.0-alpha` remains its frozen predecessor. Active
+development targets `0.3.0-alpha`. This document defines
 the minimum modular contracts needed to reduce `MainWindow` coupling without
 changing the current tab-first product experience or creating a third-party
 plugin ecosystem.

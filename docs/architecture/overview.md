@@ -2,9 +2,10 @@
 
 > Canonical implementation map for maintainers and coding agents.
 >
-> Last verified: 2026-10-23 on the isolated 0.3 modular-foundation branch.
-> Provider conversion has not started. This records an implementation audit,
-> not a later released-version claim.
+> Last verified: 2026-10-24 on the isolated OBS module-conversion branch.
+> The Core foundation and OBS conversion are implemented on that branch but are
+> not merged or released. This records an implementation audit, not a later
+> released-version claim.
 > Update this file when a change moves ownership, adds a persisted format,
 > changes an inter-process contract, or introduces a new service/trigger/task.
 
