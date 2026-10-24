@@ -166,11 +166,16 @@ from products.hub.twitch.tasks import (
     TWITCH_INFORMATION_TASK_TYPES,
     register_twitch_tasks,
 )
-from products.hub.obs_service.config import ObsConfigStore, ObsConnectionConfig
-from products.hub.obs_service.models import ObsConnectionState, ObsEvent
-from products.hub.obs_service.service import ObsWebSocketService
-from products.hub.obs_service.tasks import register_obs_tasks
-from products.hub.obs_service.triggers import ObsTriggerStore
+from products.hub.modules import (
+    ActionRegistry,
+    BackupContributorRegistry,
+    ModuleContext,
+    ModuleRegistry,
+    ModuleTabRegistry,
+    TriggerProviderRegistry,
+)
+from products.hub.modules.bootstrap import create_bundled_module_registry
+from products.hub.version import HUB_VERSION
 from products.hub.twitch.ads import AdsDomainEvent, AdsService
 from products.hub.twitch.automation_triggers import (
     TwitchEventTriggerStore,
@@ -405,9 +410,7 @@ class MainWindow(QMainWindow):
         channel_information_store: ChannelInformationStore | None = None,
         twitch_event_trigger_store: TwitchEventTriggerStore | None = None,
         core_trigger_store: CoreTriggerStore | None = None,
-        obs_service: ObsWebSocketService | None = None,
-        obs_config_store: ObsConfigStore | None = None,
-        obs_trigger_store: ObsTriggerStore | None = None,
+        module_registry: ModuleRegistry | None = None,
         music_trigger_store: MusicTriggerStore | None = None,
         soundboard_store: SoundboardStore | None = None,
         soundboard_server: SoundboardLocalServer | None = None,
@@ -556,14 +559,11 @@ class MainWindow(QMainWindow):
         self.automation_queue_manager = AutomationQueueManager(
             self.automation_queue_store
         )
-        self.obs_service = obs_service or ObsWebSocketService(self)
-        self.obs_config_store = obs_config_store or ObsConfigStore(
-            data_root / "obs" / "connection.json"
-        )
-        self.obs_trigger_store = obs_trigger_store or ObsTriggerStore(
-            data_root / "obs" / "triggers.json",
-            routine_store,
-        )
+        self.module_registry = module_registry or create_bundled_module_registry()
+        self.action_registry = ActionRegistry()
+        self.module_tab_registry = ModuleTabRegistry()
+        self.trigger_provider_registry = TriggerProviderRegistry()
+        self.backup_contributor_registry = BackupContributorRegistry()
         self.counter_store = CounterStore(data_root / "counters")
         self.counter_service = CounterService(
             self.counter_store,
@@ -577,8 +577,6 @@ class MainWindow(QMainWindow):
         self.variable_registry.register(
             runtime_provider(
                 self._variable_twitch_values,
-                obs_connected=lambda: self.obs_service.connected,
-                obs_scene=lambda: self.obs_service.current_program_scene,
                 hub_uptime=self._hub_uptime_text,
             )
         )
@@ -642,14 +640,9 @@ class MainWindow(QMainWindow):
         )
         self.task_registry.register(
             WaitForServiceTask(
-                lambda service: (
-                    self.obs_service.connected
-                    if service == "obs"
-                    else self.twitch_service.state is TwitchConnectionState.CONNECTED
-                )
+                self._service_connected
             )
         )
-        register_obs_tasks(self.task_registry, self.obs_service)
         register_music_tasks(
             self.task_registry,
             self.music_player_service,
@@ -669,6 +662,8 @@ class MainWindow(QMainWindow):
             self.automation_queue_manager,
             variable_registry=self.variable_registry,
         )
+        self._initialize_modules(data_root, routine_store)
+        self.release_controller.backups.contributors = self.backup_contributor_registry
         self.local_integration = HubIntegrationController(
             self.automation_service,
             parent=self,
@@ -759,14 +754,6 @@ class MainWindow(QMainWindow):
             self._handle_timer_automation_event,
             parent=self,
         )
-        try:
-            self.obs_trigger_store.load()
-        except (OSError, ValueError, json.JSONDecodeError) as error:
-            self.obs_trigger_store.triggers = []
-            Logger.warning(
-                f"Could not load OBS automation triggers: {error}",
-                source="OBS",
-            )
         try:
             self.music_trigger_store.load()
         except (OSError, ValueError, json.JSONDecodeError) as error:
@@ -921,6 +908,7 @@ class MainWindow(QMainWindow):
         self._build_ai_connection_runtime()
         self._build_ai_page()
         self._build_automation_page()
+        self._build_module_tabs()
         self._build_timers_page()
         self._build_wiki_page()
         self._build_counters_page()
@@ -944,6 +932,7 @@ class MainWindow(QMainWindow):
             self.connections_button,
             self.ui.logsButton,
             self.ui.settingsButton,
+            *self.module_navigation_buttons.values(),
         ):
             self.navigation_group.addButton(button)
 
@@ -1018,8 +1007,6 @@ class MainWindow(QMainWindow):
             self._flush_twitch_subscription_automation
         )
         self.twitch_subscription_correlation_timer.start()
-        Events.subscribe("obs_event", self._handle_obs_automation_event)
-
         self.ui.dashboardButton.clicked.connect(self.show_dashboard)
         self.ui.twitchButton.clicked.connect(self.show_twitch)
         self.automation_button.clicked.connect(self.show_automation)
@@ -1560,68 +1547,6 @@ class MainWindow(QMainWindow):
         twitch_connections_layout.setSpacing(10)
         self.ui.twitchConnectionGroup.setTitle("Main / Broadcaster Account")
         twitch_connections_layout.addWidget(self.ui.twitchConnectionGroup)
-        obs_group = QGroupBox("OBS Studio")
-        self.obs_connection_group = obs_group
-        obs_form = QFormLayout(obs_group)
-        self.obs_host_edit = QLineEdit("127.0.0.1")
-        self.obs_port_spin = QSpinBox()
-        self.obs_port_spin.setRange(1, 65535)
-        self.obs_port_spin.setValue(4455)
-        self.obs_password_edit = QLineEdit()
-        self.obs_password_edit.setEchoMode(QLineEdit.EchoMode.Password)
-        self.obs_auto_connect_check = QCheckBox(
-            "Connect automatically when Streamhouse Hub opens"
-        )
-        self.obs_auto_connect_check.setChecked(False)
-        self.obs_default_mute_input_edit = QLineEdit()
-        self.obs_default_mute_input_edit.setPlaceholderText("Optional, for example: Mic/Aux")
-        self.obs_default_mute_input_edit.setToolTip(
-            "Default OBS input for mute controls when an action does not name one."
-        )
-        self.obs_status_label = QLabel("Disconnected")
-        self.obs_connect_button = QPushButton("Connect")
-        self.obs_disconnect_button = QPushButton("Disconnect")
-        obs_actions = QHBoxLayout()
-        obs_actions.addWidget(self.obs_connect_button)
-        obs_actions.addWidget(self.obs_disconnect_button)
-        obs_form.addRow("Host", self.obs_host_edit)
-        obs_form.addRow("Port", self.obs_port_spin)
-        obs_form.addRow("WebSocket password", self.obs_password_edit)
-        obs_form.addRow("", self.obs_auto_connect_check)
-        obs_form.addRow("Default audio input", self.obs_default_mute_input_edit)
-        obs_form.addRow("Status", self.obs_status_label)
-        obs_form.addRow("", obs_actions)
-        try:
-            obs_config, obs_password = self.obs_config_store.load()
-        except (OSError, ValueError, json.JSONDecodeError) as error:
-            obs_config, obs_password = ObsConnectionConfig(), ""
-            Logger.warning(f"Could not load OBS connection settings: {error}", source="OBS")
-        self.obs_host_edit.setText(obs_config.host)
-        self.obs_port_spin.setValue(obs_config.port)
-        self.obs_password_edit.setText(obs_password)
-        self.obs_auto_connect_check.setChecked(obs_config.auto_connect)
-        self.obs_default_mute_input_edit.setText(obs_config.default_mute_input)
-        self.obs_service.configure(
-            obs_config.host,
-            obs_config.port,
-            obs_password,
-            auto_reconnect=True,
-        )
-        self.obs_service.state_changed.connect(self._handle_obs_status_changed)
-        self.obs_connect_button.clicked.connect(self._connect_obs)
-        self.obs_disconnect_button.clicked.connect(self.obs_service.disconnect)
-        self.obs_connection_save_timer = QTimer(self)
-        self.obs_connection_save_timer.setSingleShot(True)
-        self.obs_connection_save_timer.setInterval(500)
-        self.obs_connection_save_timer.timeout.connect(self._save_obs_connection)
-        self.obs_host_edit.textChanged.connect(self._schedule_obs_connection_save)
-        self.obs_port_spin.valueChanged.connect(self._schedule_obs_connection_save)
-        self.obs_password_edit.textChanged.connect(self._schedule_obs_connection_save)
-        self.obs_auto_connect_check.toggled.connect(self._schedule_obs_connection_save)
-        self.obs_default_mute_input_edit.textChanged.connect(
-            self._schedule_obs_connection_save
-        )
-        self._handle_obs_status_changed(self.obs_service.state, "Disconnected")
         music_group = QGroupBox("Local Music Player")
         self.music_player_connection_group = music_group
         music_form = QFormLayout(music_group)
@@ -1725,7 +1650,6 @@ class MainWindow(QMainWindow):
         twitch_connections_layout.addWidget(health_group)
         twitch_connections_layout.addWidget(self.ui.twitchErrorLabel)
         self.connections_content_layout.addWidget(self.twitch_connections_group)
-        self.connections_content_layout.addWidget(obs_group)
         self.connections_content_layout.addWidget(music_group)
         self.connections_content_layout.addStretch()
         self.ui.mainStack.addWidget(self.connections_page)
@@ -2903,11 +2827,10 @@ class MainWindow(QMainWindow):
             self.twitch_command_trigger_store,
             self.twitch_event_trigger_store,
             self.core_trigger_store,
-            self.obs_trigger_store,
             self.music_trigger_store,
             self.task_registry,
             self.automation_service,
-            obs_service=self.obs_service,
+            trigger_provider_registry=self.trigger_provider_registry,
             twitch_service=self.twitch_service,
             twitch_auth=self.twitch_auth,
             commands_changed=self._refresh_twitch_commands,
@@ -2920,6 +2843,74 @@ class MainWindow(QMainWindow):
         )
         self.ui.mainStack.addWidget(self.automation_page)
         self.automation_timer_scheduler.start()
+
+    def _initialize_modules(self, data_root: Path, routine_store) -> None:
+        def context_factory(_descriptor) -> ModuleContext:
+            return ModuleContext(
+                core_version=HUB_VERSION,
+                events=Events,
+                variables=self.variable_registry,
+                tasks=self.task_registry,
+                actions=self.action_registry,
+                routine_store=routine_store,
+                automation=self.automation_service,
+                trigger_providers=self.trigger_provider_registry,
+                tabs=self.module_tab_registry,
+                backup=self.backup_contributor_registry,
+                data_root=data_root,
+                execution_recorder=self._record_module_execution,
+                integration_status_changed=self._module_status_changed,
+                trigger_context_enricher=self._twitch_command_context,
+            )
+
+        self.module_registry.register_catalogs(context_factory)
+        self.module_registry.register_enabled(context_factory)
+        self.module_registry.configure_enabled()
+        self.module_registry.start_enabled()
+
+    def _build_module_tabs(self) -> None:
+        self.module_navigation_buttons: dict[str, QPushButton] = {}
+        self.module_pages: dict[str, QWidget] = {}
+        insert_at = 4
+        for contribution in self.module_tab_registry.contributions():
+            page = contribution.factory(self)
+            if not isinstance(page, QWidget):
+                raise TypeError(
+                    f'Module tab "{contribution.tab_id}" did not create a QWidget.'
+                )
+            button = QPushButton(contribution.label)
+            button.setCheckable(True)
+            button.clicked.connect(
+                lambda _checked=False, target=page: self.ui.mainStack.setCurrentWidget(
+                    target
+                )
+            )
+            self.ui.verticalLayout.insertWidget(insert_at, button)
+            self.ui.mainStack.addWidget(page)
+            self.module_navigation_buttons[contribution.tab_id] = button
+            self.module_pages[contribution.tab_id] = page
+            insert_at += 1
+
+    def _service_connected(self, service: str) -> bool:
+        if service == "obs":
+            provider = self.trigger_provider_registry.get("obs.automation")
+            integration = provider.editor_service if provider is not None else None
+            return bool(integration and getattr(integration, "connected", False))
+        return self.twitch_service.state is TwitchConnectionState.CONNECTED
+
+    def _record_module_execution(
+        self,
+        execution: AutomationExecutionResult,
+        label: str,
+    ) -> None:
+        page = getattr(self, "automation_page", None)
+        if page is not None:
+            page.record_execution(execution, label)
+
+    def _module_status_changed(self, module: str, state: object) -> None:
+        dashboard = getattr(self, "dashboard_page", None)
+        if dashboard is not None:
+            dashboard.update_integration(module, state)
 
     def _build_wiki_page(self) -> None:
         self.wiki_button = QPushButton("Wiki")
@@ -3021,87 +3012,6 @@ class MainWindow(QMainWindow):
             self.channel_tabs,
         )
         self.channel_tabs.addTab(self.chat_user_page, "Users")
-
-    def auto_connect_obs(self) -> None:
-        """Connect to OBS after the real application event loop has started."""
-        if self.obs_auto_connect_check.isChecked():
-            self._connect_obs()
-
-    def _save_obs_connection(self) -> bool:
-        self.obs_connection_save_timer.stop()
-        config = ObsConnectionConfig(
-            host=self.obs_host_edit.text().strip() or "127.0.0.1",
-            port=self.obs_port_spin.value(),
-            auto_connect=self.obs_auto_connect_check.isChecked(),
-            default_mute_input=self.obs_default_mute_input_edit.text().strip(),
-        )
-        password = self.obs_password_edit.text()
-        try:
-            self.obs_config_store.save(config, password)
-        except (OSError, ValueError) as error:
-            self.obs_status_label.setText(f"Could not save: {error}")
-            return False
-        self.obs_service.configure(
-            config.host,
-            config.port,
-            password,
-            auto_reconnect=True,
-        )
-        return True
-
-    def _schedule_obs_connection_save(self, *_args) -> None:
-        self.obs_connection_save_timer.start()
-
-    def _connect_obs(self) -> None:
-        if not self._save_obs_connection():
-            return
-        self.obs_service.connect()
-
-    @Slot(object, object)
-    def _handle_obs_status_changed(
-        self, state: ObsConnectionState, detail: str
-    ) -> None:
-        clean_detail = detail.strip()
-        self.obs_status_label.setText(
-            state.value
-            if not clean_detail or clean_detail.casefold() == state.value.casefold()
-            else f"{state.value}: {clean_detail}"
-        )
-        self.obs_connect_button.setEnabled(
-            state is not ObsConnectionState.CONNECTED
-        )
-        self.obs_connect_button.setText(
-            "Reconnect"
-            if state in {ObsConnectionState.CONNECTING, ObsConnectionState.ERROR}
-            else "Connect"
-        )
-        self.obs_disconnect_button.setEnabled(
-            state in {ObsConnectionState.CONNECTING, ObsConnectionState.CONNECTED, ObsConnectionState.ERROR}
-        )
-        self.dashboard_page.update_obs(state)
-
-    def _handle_obs_automation_event(self, obs_event: ObsEvent) -> None:
-        for trigger in self.obs_trigger_store.evaluate(obs_event):
-            context = dict(trigger.context)
-            for key, value in self._twitch_command_context().items():
-                if context.get(key, "--") in {"", "--"}:
-                    context[key] = value
-            trigger = replace(trigger, context=context)
-            execution = self.automation_service.publish_trigger(trigger)
-            self.automation_page.record_execution(
-                execution,
-                f"OBS {obs_event.event_type}",
-            )
-            if execution.succeeded:
-                Logger.info(
-                    f'Executed OBS automation for "{obs_event.event_type}".',
-                    source="AUTOMATION",
-                )
-            elif execution.handled:
-                Logger.warning(
-                    f'OBS automation failed for "{obs_event.event_type}".',
-                    source="AUTOMATION",
-                )
 
     @Slot(object)
     def _handle_music_automation_event(self, music_event: MusicPlayerEvent) -> None:
@@ -8685,7 +8595,10 @@ class MainWindow(QMainWindow):
         self.twitch_command_trigger_store.load()
         self.twitch_event_trigger_store.load()
         self.core_trigger_store.load()
-        self.obs_trigger_store.load()
+        for provider in self.trigger_provider_registry.contributions():
+            load = getattr(provider.store, "load", None)
+            if callable(load):
+                load()
         self.music_trigger_store.load()
         self.automation_queue_store.load()
         self.custom_variable_store.load()
@@ -8774,10 +8687,13 @@ class MainWindow(QMainWindow):
                 "eventsub": self.twitch_health.eventsub_state,
                 "missing_scope_count": len(self.twitch_health.missing_scopes),
             },
-            "obs": {
-                "configured": self.obs_config_store.path.exists(),
-                "connected": self.obs_service.connected,
-                "state": self.obs_service.state.value,
+            "modules": {
+                status.module_id: {
+                    "enabled": status.enabled,
+                    "state": status.lifecycle.value,
+                    "restart_required": status.restart_required,
+                }
+                for status in self.module_registry.statuses()
             },
             "music_player": {
                 "connected": self.music_player_service.connected,
@@ -8791,7 +8707,10 @@ class MainWindow(QMainWindow):
                     len(self.twitch_command_trigger_store.triggers)
                     + len(self.twitch_event_trigger_store.triggers)
                     + len(self.core_trigger_store.triggers)
-                    + len(self.obs_trigger_store.triggers)
+                    + sum(
+                        len(getattr(provider.store, "triggers", ()))
+                        for provider in self.trigger_provider_registry.contributions()
+                    )
                     + len(self.music_trigger_store.triggers)
                 ),
                 "commands": len(self.twitch_command_trigger_store.triggers),
@@ -8805,7 +8724,14 @@ class MainWindow(QMainWindow):
                 "commands": self.twitch_command_trigger_store.VERSION,
                 "event_triggers": self.twitch_event_trigger_store.VERSION,
                 "core_triggers": self.core_trigger_store.VERSION,
-                "obs_triggers": self.obs_trigger_store.VERSION,
+                **{
+                    f"{provider.provider_id}_triggers": getattr(
+                        provider.store,
+                        "VERSION",
+                        0,
+                    )
+                    for provider in self.trigger_provider_registry.contributions()
+                },
                 "music_triggers": self.music_trigger_store.VERSION,
                 "queues": self.automation_queue_store.VERSION,
                 "chatter": self.chatter_history.VERSION,
@@ -8834,10 +8760,7 @@ class MainWindow(QMainWindow):
             "Hub is shutting down."
         )
         self.wait_task.cancel_all()
-        self.obs_service.cancel_pending_requests(
-            "Hub is shutting down.",
-            stop_new=True,
-        )
+        self.module_registry.stop_started()
         if not self._core_closing_fired:
             self._core_closing_fired = True
             self._fire_core_automation_event("application.closing")
@@ -8881,9 +8804,7 @@ class MainWindow(QMainWindow):
         self.response_decision_thread_pool.waitForDone(2_000)
         self.response_decision_queue.clear()
         self.recent_ai_chat.clear()
-        self.obs_service.disconnect()
         self.twitch_service.disconnect()
-        Events.unsubscribe("obs_event", self._handle_obs_automation_event)
         Events.unsubscribe(
             "twitch_status_changed",
             self.twitch_bridge.handle_status_changed,

@@ -28,7 +28,6 @@ from products.hub.config.product import (
     PROJECT_URL,
 )
 from products.hub.core.resources import resource_path
-from products.hub.obs_service.models import ObsConnectionState
 from products.hub.twitch.auth import TwitchAuthState
 from products.hub.twitch.service import TwitchConnectionState
 from products.hub.ui.page_header import PageHeader
@@ -100,18 +99,19 @@ def summarize_twitch_connection(
     )
 
 
-def summarize_obs_connection(state: ObsConnectionState) -> ConnectionSummary:
-    if state is ObsConnectionState.CONNECTED:
+def summarize_obs_connection(state: object) -> ConnectionSummary:
+    state_value = str(getattr(state, "value", state)).strip().casefold()
+    if state_value == "connected":
         return ConnectionSummary(
             DashboardStatus.CONNECTED,
             "OBS WebSocket is ready.",
         )
-    if state is ObsConnectionState.CONNECTING:
+    if state_value == "connecting":
         return ConnectionSummary(
             DashboardStatus.PARTIAL,
             "OBS WebSocket is connecting.",
         )
-    if state is ObsConnectionState.ERROR:
+    if state_value == "error":
         return ConnectionSummary(
             DashboardStatus.NEEDS_ATTENTION,
             "The OBS connection reported an error.",
@@ -165,9 +165,7 @@ class DashboardPage(QWidget):
             DashboardStatus.NEEDS_ATTENTION,
             "Sign in or repair the broadcaster authorization.",
         )
-        self._obs_summary = summarize_obs_connection(
-            ObsConnectionState.DISCONNECTED
-        )
+        self._obs_summary = summarize_obs_connection("disconnected")
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -451,7 +449,7 @@ class DashboardPage(QWidget):
         )
         self._refresh_attention()
 
-    def update_obs(self, state: ObsConnectionState) -> None:
+    def update_obs(self, state: object) -> None:
         self._obs_summary = summarize_obs_connection(state)
         self._apply_summary(
             self.obs_status_label,
@@ -459,6 +457,10 @@ class DashboardPage(QWidget):
             self._obs_summary,
         )
         self._refresh_attention()
+
+    def update_integration(self, integration: str, state: object) -> None:
+        if integration.strip().casefold() == "obs":
+            self.update_obs(state)
 
     def _apply_summary(
         self,

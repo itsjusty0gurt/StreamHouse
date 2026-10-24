@@ -120,6 +120,7 @@ from products.hub.obs_service.triggers import (
     ObsTriggerFilterDefinition,
     ObsTriggerStore,
 )
+from products.hub.modules import TriggerProviderRegistry
 from products.hub.soundboard.store import SoundboardStore
 from products.hub.twitch.commands import (
     TwitchCommandPermission,
@@ -3507,12 +3508,11 @@ class AutomationPage(QWidget):
         trigger_store: TwitchCommandTriggerStore,
         event_trigger_store: TwitchEventTriggerStore,
         core_trigger_store: CoreTriggerStore,
-        obs_trigger_store: ObsTriggerStore,
         music_trigger_store: MusicTriggerStore,
         task_registry: TaskRegistry,
         automation_service: AutomationService,
         *,
-        obs_service: ObsWebSocketService | None = None,
+        trigger_provider_registry: TriggerProviderRegistry,
         twitch_service: TwitchService | None = None,
         twitch_auth: TwitchAuthService | None = None,
         commands_changed: Callable[[], None] | None = None,
@@ -3529,11 +3529,20 @@ class AutomationPage(QWidget):
         self.trigger_store = trigger_store
         self.event_trigger_store = event_trigger_store
         self.core_trigger_store = core_trigger_store
-        self.obs_trigger_store = obs_trigger_store
+        self.trigger_provider_registry = trigger_provider_registry
+        obs_provider = trigger_provider_registry.get("obs.automation")
+        if obs_provider is None or not isinstance(obs_provider.store, ObsTriggerStore):
+            raise ValueError("The OBS trigger provider catalog is unavailable.")
+        self.obs_provider = obs_provider
+        self.obs_trigger_store = obs_provider.store
         self.music_trigger_store = music_trigger_store
         self.task_registry = task_registry
         self.automation_service = automation_service
-        self.obs_service = obs_service
+        self.obs_service = (
+            obs_provider.editor_service
+            if isinstance(obs_provider.editor_service, ObsWebSocketService)
+            else None
+        )
         self.twitch_service = twitch_service
         self.twitch_auth = twitch_auth
         self.commands_changed = commands_changed or (lambda: None)
@@ -4459,6 +4468,10 @@ class AutomationPage(QWidget):
         issues: list[str] = []
         if task.task_type not in self.task_registry.registered_types():
             issues.append(f'Provider "{task.task_type}" is unavailable')
+        else:
+            available, detail = self.task_registry.availability(task.task_type)
+            if not available:
+                issues.append(detail or "The task provider is unavailable.")
         if (
             task.task_type.startswith("counter.")
             and self.counter_service is not None
@@ -4858,11 +4871,13 @@ class AutomationPage(QWidget):
             trigger.filters,
             defaults.get(trigger.event_type, "Any matching event"),
         )
+        availability = self.obs_provider.current_availability()
         return TriggerCardContent(
             title=f"OBS — {display}",
             summary=summary,
             family="OBS",
             enabled=trigger.enabled,
+            issues=(() if availability.available else (availability.detail,)),
         )
 
     @staticmethod
@@ -6535,6 +6550,8 @@ class AutomationPage(QWidget):
             "status": (
                 "Cancelled"
                 if task_result.cancelled
+                else "Skipped"
+                if task_result.skipped
                 else "Completed"
                 if task_result.succeeded
                 else "Failed"
@@ -6587,6 +6604,8 @@ class AutomationPage(QWidget):
             state = (
                 "Cancelled"
                 if task_result.cancelled
+                else "Skipped"
+                if task_result.skipped
                 else "Completed"
                 if task_result.succeeded
                 else "Failed"

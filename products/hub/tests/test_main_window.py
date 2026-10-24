@@ -385,10 +385,7 @@ class MainWindowTests(unittest.TestCase):
             TwitchConnectionState.CONNECTED,
             "testchannel",
         )
-        self.window._handle_obs_status_changed(
-            ObsConnectionState.CONNECTED,
-            "Connected",
-        )
+        self.window._module_status_changed("obs", ObsConnectionState.CONNECTED)
 
         self.assertEqual(
             self.window.dashboard_page.twitch_status_label.text(),
@@ -1148,7 +1145,7 @@ class MainWindowTests(unittest.TestCase):
         routine = self.twitch_command_trigger_store.routine_store.add(
             "OBS variables"
         )
-        self.window.obs_trigger_store.add(
+        self.window.automation_page.obs_trigger_store.add(
             routine.routine_id,
             "CurrentProgramSceneChanged",
         )
@@ -1693,7 +1690,7 @@ class MainWindowTests(unittest.TestCase):
             timer_maximum_unit="minutes",
         )
         obs_routine = store.add("BRB scene")
-        self.window.obs_trigger_store.add(
+        self.window.automation_page.obs_trigger_store.add(
             obs_routine.routine_id,
             "CurrentProgramSceneChanged",
             filters={"sceneName": "BRB"},
@@ -2093,7 +2090,7 @@ class MainWindowTests(unittest.TestCase):
             routine.routine_id,
             "channel.raid",
         )
-        self.window.obs_trigger_store.add(
+        self.window.automation_page.obs_trigger_store.add(
             routine.routine_id,
             "CurrentProgramSceneChanged",
             filters={"sceneName": "BRB"},
@@ -2400,6 +2397,7 @@ class MainWindowTests(unittest.TestCase):
             self.window.ui.dashboardPage,
             self.window.ui.twitchPage,
             self.window.automation_page,
+            self.window.module_pages["obs.workspace"],
             self.window.timers_page,
             self.window.connections_page,
             self.window.ui.logsPage,
@@ -2461,6 +2459,7 @@ class MainWindowTests(unittest.TestCase):
                 "Connections",
                 "Logs",
                 "Settings",
+                "OBS",
             ],
         )
         self.assertEqual(self.window.channel_tabs.count(), 8)
@@ -2502,7 +2501,7 @@ class MainWindowTests(unittest.TestCase):
         diagnostic_state = self.diagnostics_service.set_state_provider.call_args.args[0]()
         self.assertIn("displays", diagnostic_state)
         self.assertIn("twitch", diagnostic_state)
-        self.assertIn("obs", diagnostic_state)
+        self.assertIn("streamhouse.obs", diagnostic_state["modules"])
         self.assertIn("automation", diagnostic_state)
         self.assertIn("storage_schemas", diagnostic_state)
 
@@ -2724,9 +2723,10 @@ class MainWindowTests(unittest.TestCase):
                 "channel": {"game_name": "Science & Technology"},
             },
         )
-        self.window.obs_service._current_program_scene = "Gameplay"
-        self.window.obs_service.state = ObsConnectionState.CONNECTED
-        self.window.obs_service._identified = True
+        obs_service = self.window.automation_page.obs_service
+        obs_service._current_program_scene = "Gameplay"
+        obs_service.state = ObsConnectionState.CONNECTED
+        obs_service._identified = True
         self.window.twitch_service.send_message = Mock(return_value=True)
 
         self.window.handle_twitch_message(
@@ -3561,7 +3561,7 @@ class MainWindowTests(unittest.TestCase):
                 "as_bot": True,
             },
         )
-        self.window.obs_trigger_store.add(
+        self.window.automation_page.obs_trigger_store.add(
             routine.routine_id,
             "InputMuteStateChanged",
         )
@@ -3577,7 +3577,7 @@ class MainWindowTests(unittest.TestCase):
         )
         self.window.twitch_service.send_message = Mock(return_value=True)
 
-        self.window._handle_obs_automation_event(
+        self.window.module_pages["obs.workspace"].module._handle_event(
             ObsEvent(
                 "InputMuteStateChanged",
                 {"inputName": "Mic/Aux", "inputMuted": True},
@@ -4215,27 +4215,55 @@ class MainWindowTests(unittest.TestCase):
                     QHeaderView.ResizeMode.Interactive,
                 )
 
-    def test_obs_connection_is_below_twitch_group_and_saves_automatically(self) -> None:
-        layout = self.window.connections_content_layout
-        self.assertLess(
-            layout.indexOf(self.window.twitch_connections_group),
-            layout.indexOf(self.window.obs_connection_group),
-        )
-        self.assertFalse(hasattr(self.window, "obs_save_button"))
-        self.window.obs_config_store.save = Mock()
-        self.window.obs_connection_save_timer.setInterval(0)
-        self.window.obs_host_edit.setText("192.168.1.50")
+    def test_obs_connection_is_module_owned_and_saves_automatically(self) -> None:
+        page = self.window.module_pages["obs.workspace"]
+        self.assertFalse(hasattr(self.window, "obs_connection_group"))
+        page.module.save_connection = Mock()
+        page._save_timer.setInterval(0)
+        page.host_edit.setText("192.168.1.50")
         self.application.processEvents()
-        self.window.obs_config_store.save.assert_called_once()
-        config, _password = self.window.obs_config_store.save.call_args.args
+        page.module.save_connection.assert_called_once()
+        config, _password = page.module.save_connection.call_args.args
         self.assertEqual(config.host, "192.168.1.50")
+
+    def test_disabled_obs_provider_preserves_cards_as_unavailable(self) -> None:
+        routine_store = self.twitch_command_trigger_store.routine_store
+        routine = routine_store.add("Disabled OBS provider")
+        task = routine_store.add_task(
+            routine.routine_id,
+            task_type="obs.set_program_scene",
+            name="Change scene",
+            config={"scene": "Gameplay"},
+        )
+        trigger = self.window.automation_page.obs_trigger_store.add(
+            routine.routine_id,
+            "CurrentProgramSceneChanged",
+        )
+        module = self.window.module_pages["obs.workspace"].module
+
+        module._runtime_available = False
+        task_content = self.window.automation_page._task_card_content(task)
+        trigger_content = self.window.automation_page._obs_trigger_card_content(trigger)
+        self.assertTrue(any("unavailable" in issue for issue in task_content.issues))
+        self.assertTrue(any("unavailable" in issue for issue in trigger_content.issues))
+        self.assertIsNotNone(routine_store.get(routine.routine_id))
+        self.assertIsNotNone(
+            self.window.automation_page.obs_trigger_store.get(trigger.trigger_id)
+        )
+
+        module._runtime_available = True
+        self.assertEqual(
+            self.window.automation_page._task_card_content(task).issues,
+            (),
+        )
+        self.assertEqual(
+            self.window.automation_page._obs_trigger_card_content(trigger).issues,
+            (),
+        )
 
     def test_optional_music_player_connection_is_discovered_and_user_controlled(self) -> None:
         layout = self.window.connections_content_layout
-        self.assertLess(
-            layout.indexOf(self.window.obs_connection_group),
-            layout.indexOf(self.window.music_player_connection_group),
-        )
+        self.assertGreaterEqual(layout.indexOf(self.window.music_player_connection_group), 0)
         self.assertFalse(hasattr(self.window, "music_player_port_spin"))
         self.assertFalse(hasattr(self.window, "music_player_token_edit"))
         self.assertEqual(
@@ -4429,19 +4457,21 @@ class MainWindowTests(unittest.TestCase):
         self.assertEqual(scroll.horizontalScrollBar().maximum(), 0)
 
     def test_obs_default_audio_input_saves_and_resolves_muted_variable(self) -> None:
-        self.window.obs_config_store.save = Mock()
-        self.window.obs_connection_save_timer.setInterval(0)
-        self.window.obs_default_mute_input_edit.setText("Mic/Aux")
+        page = self.window.module_pages["obs.workspace"]
+        page.module.save_connection = Mock()
+        page._save_timer.setInterval(0)
+        page.default_audio_input_edit.setText("Mic/Aux")
         self.application.processEvents()
-        config, _password = self.window.obs_config_store.save.call_args.args
+        config, _password = page.module.save_connection.call_args.args
         self.assertEqual(config.default_mute_input, "Mic/Aux")
 
-        self.window.obs_service.current_mute_state = Mock(
+        obs_service = self.window.automation_page.obs_service
+        obs_service.current_mute_state = Mock(
             return_value=("Mic/Aux", True)
         )
 
         resolved = self.window._resolve_task_variables("Mic is {obs.muted}", {})
-        self.window.obs_service.current_mute_state.assert_not_called()
+        obs_service.current_mute_state.assert_not_called()
         self.assertEqual(resolved, {})
 
     def test_channel_snapshot_updates_stream_stats_and_chatters(self) -> None:
