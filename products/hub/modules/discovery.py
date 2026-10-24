@@ -44,9 +44,16 @@ class BundledModuleDiscovery:
     dynamically. This deliberately does not form a third-party plugin loader.
     """
 
-    def __init__(self, root: Path, specs: Iterable[BundledModuleSpec]) -> None:
+    def __init__(
+        self,
+        root: Path,
+        specs: Iterable[BundledModuleSpec],
+        *,
+        embedded: bool = False,
+    ) -> None:
         self.root = Path(root)
         self._specs = tuple(sorted(specs, key=lambda item: item.module_id))
+        self._embedded = embedded
         module_ids = [item.module_id for item in self._specs]
         directories = [item.directory_name for item in self._specs]
         if len(module_ids) != len(set(module_ids)) or len(directories) != len(set(directories)):
@@ -59,6 +66,12 @@ class BundledModuleDiscovery:
             for item in self.root.iterdir()
             if item.is_dir() and not item.name.startswith("_") and not item.name.startswith(".")
         } if self.root.is_dir() else set()
+        # PyInstaller embeds Python packages in its archive rather than
+        # materializing their source directories. The explicit first-party
+        # allowlist remains authoritative in that environment; arbitrary
+        # filesystem entries are still never imported.
+        if self._embedded:
+            present.update(trusted_directories)
 
         modules: list[HubModule] = []
         missing: list[str] = []

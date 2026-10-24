@@ -140,7 +140,7 @@ trigger and routine setup, but their stored records remain separate.
 | `products/hub/automation/` | Hub trigger/routine/task/queue execution, variables, logic, import/export |
 | `products/hub/config/` | Hub Twitch client/scopes and Extension constants |
 | `products/hub/core/` | Hub event bus, settings, DPAPI secrets, backup, diagnostics, and resources |
-| `products/hub/modules/` | Core module contracts, trusted discovery, lifecycle, actions, and contribution registries |
+| `products/hub/modules/` | Core module contracts, trusted discovery, lifecycle, actions, and contribution registries. Packaged discovery uses the explicit first-party allowlist because PyInstaller embeds Python packages without source directories. |
 | `products/hub/modules/bundled/obs/` | Bundled OBS module entry point, Variables provider, connection/status page, and lifecycle ownership |
 | `products/hub/obs_service/` | OBS module WebSocket transport, public-data configuration/store, triggers, and task handlers |
 | `products/hub/soundboard/` | Local soundboard models/store/server and hosted relay client |

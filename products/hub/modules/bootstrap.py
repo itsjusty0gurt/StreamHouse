@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import sys
+
 from products.hub.modules.bundled.catalog import trusted_bundled_module_specs
 from products.hub.modules.discovery import BUNDLED_MODULES_ROOT, BundledModuleDiscovery
 from products.hub.modules.registry import ModuleRegistry
@@ -29,6 +31,7 @@ def create_bundled_module_registry() -> ModuleRegistry:
     discovery = BundledModuleDiscovery(
         BUNDLED_MODULES_ROOT,
         trusted_bundled_module_specs(),
+        embedded=bool(getattr(sys, "frozen", False)),
     ).discover()
     for module in discovery.modules:
         registry.register(module)

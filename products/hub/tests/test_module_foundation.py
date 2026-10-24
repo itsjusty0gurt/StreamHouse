@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -20,6 +21,7 @@ from products.hub.modules import (
     ModuleLifecycle,
     ModuleRegistry,
 )
+from products.hub.modules import bootstrap as module_bootstrap
 
 
 @dataclass
@@ -169,6 +171,37 @@ def test_discovery_reports_missing_trusted_module_without_importing(tmp_path: Pa
     assert result.modules == ()
     assert result.missing_trusted == ("streamhouse.obs",)
     assert factory_called is False
+
+
+def test_embedded_discovery_loads_allowlisted_module_without_source_directory(
+    tmp_path: Path,
+) -> None:
+    module = _FakeModule(_descriptor("streamhouse.obs"))
+    result = BundledModuleDiscovery(
+        tmp_path,
+        (BundledModuleSpec("streamhouse.obs", "obs", lambda: module),),
+        embedded=True,
+    ).discover()
+
+    assert result.modules == (module,)
+    assert result.missing_trusted == ()
+
+
+def test_frozen_bootstrap_discovers_trusted_obs_without_source_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(module_bootstrap, "BUNDLED_MODULES_ROOT", tmp_path / "missing")
+    monkeypatch.setattr(
+        module_bootstrap,
+        "ModuleEnablementStore",
+        lambda: ModuleEnablementStore(tmp_path / "modules.json"),
+    )
+
+    registry = module_bootstrap.create_bundled_module_registry()
+
+    assert registry.descriptor("streamhouse.obs") is not None
 
 
 def test_enablement_change_is_persisted_for_next_restart_only(tmp_path: Path) -> None:

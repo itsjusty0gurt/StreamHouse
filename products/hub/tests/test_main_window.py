@@ -61,6 +61,15 @@ from products.hub.automation.models import (
 )
 from products.hub.obs_service.triggers import OBS_TRIGGER_TYPES
 from products.hub.obs_service.models import ObsConnectionState, ObsEvent
+from products.hub.modules import (
+    ModuleEnablementStore,
+    ModuleLifecycle,
+    ModuleRegistry,
+    TriggerProviderRegistry,
+)
+from products.hub.modules.bootstrap import CORE_MODULE_CAPABILITIES
+from products.hub.modules.bundled.obs import OBS_MODULE_ID, ObsModule
+from products.hub.version import HUB_VERSION
 from products.hub.soundboard.store import SoundboardStore
 from products.hub.twitch.commands import TwitchCommandTriggerStore
 from products.hub.twitch.channel_information import ChannelInformationStore
@@ -89,6 +98,7 @@ from products.hub.integrations.music_player import (
 )
 from products.hub.integrations.music_triggers import MUSIC_TRIGGER_TYPES
 from products.hub.ui.automation_page import (
+    AutomationPage,
     RunHistoryDetailsDialog,
     TaskEditorDialog,
     TwitchEventTriggerDialog,
@@ -188,6 +198,21 @@ class MainWindowTests(unittest.TestCase):
             command_root / "event_triggers.json",
             self.twitch_command_trigger_store.routine_store,
         )
+        module_registry = None
+        if self._testMethodName in {
+            "test_obs_catalog_precedes_enabled_main_window_ui",
+            "test_disabled_obs_catalog_precedes_main_window_ui_without_runtime",
+        }:
+            self.obs_module = ObsModule()
+            enablement = ModuleEnablementStore(command_root / "modules.json")
+            if self._testMethodName.startswith("test_disabled_obs"):
+                enablement.set_enabled(OBS_MODULE_ID, False)
+            module_registry = ModuleRegistry(
+                core_version=HUB_VERSION,
+                core_capabilities=CORE_MODULE_CAPABILITIES,
+                enablement_store=enablement,
+            )
+            module_registry.register(self.obs_module)
         if self._testMethodName == "test_startup_resets_obsolete_twitch_triggers":
             routine = self.twitch_command_trigger_store.routine_store.add(
                 "Obsolete Twitch trigger"
@@ -234,6 +259,7 @@ class MainWindowTests(unittest.TestCase):
                 command_root / "channel-information.json"
             ),
             twitch_event_trigger_store=self.twitch_event_trigger_store,
+            module_registry=module_registry,
             user_group_store=UserGroupStore(command_root / "user_groups.json"),
             soundboard_store=SoundboardStore(command_root / "soundboard.json"),
             auto_upgrade_permissions=False,
@@ -4225,6 +4251,54 @@ class MainWindowTests(unittest.TestCase):
         page.module.save_connection.assert_called_once()
         config, _password = page.module.save_connection.call_args.args
         self.assertEqual(config.host, "192.168.1.50")
+
+    def test_obs_catalog_precedes_enabled_main_window_ui(self) -> None:
+        provider = self.window.trigger_provider_registry.get("obs.automation")
+
+        self.assertIsNotNone(provider)
+        self.assertIs(self.window.automation_page.obs_provider, provider)
+        self.assertEqual(
+            self.window.module_registry.status(OBS_MODULE_ID).lifecycle,
+            ModuleLifecycle.STARTED,
+        )
+        self.assertIn("obs.workspace", self.window.module_pages)
+        self.assertEqual(
+            [
+                item.provider_id
+                for item in self.window.trigger_provider_registry.contributions()
+            ],
+            ["obs.automation"],
+        )
+
+    def test_disabled_obs_catalog_precedes_main_window_ui_without_runtime(self) -> None:
+        provider = self.window.trigger_provider_registry.get("obs.automation")
+
+        self.assertIsNotNone(provider)
+        self.assertIs(self.window.automation_page.obs_provider, provider)
+        self.assertEqual(
+            self.window.module_registry.status(OBS_MODULE_ID).lifecycle,
+            ModuleLifecycle.DISABLED,
+        )
+        self.assertFalse(self.obs_module._runtime_available)
+        self.assertNotIn("obs.workspace", self.window.module_pages)
+        self.assertIn(
+            "obs.set_program_scene",
+            self.window.task_registry.registered_types(),
+        )
+        self.assertFalse(provider.current_availability().available)
+
+    def test_automation_page_still_rejects_missing_obs_catalog(self) -> None:
+        with self.assertRaisesRegex(ValueError, "OBS trigger provider catalog"):
+            AutomationPage(
+                self.twitch_command_trigger_store.routine_store,
+                self.twitch_command_trigger_store,
+                self.twitch_event_trigger_store,
+                self.window.core_trigger_store,
+                self.window.music_trigger_store,
+                self.window.task_registry,
+                self.window.automation_service,
+                trigger_provider_registry=TriggerProviderRegistry(),
+            )
 
     def test_disabled_obs_provider_preserves_cards_as_unavailable(self) -> None:
         routine_store = self.twitch_command_trigger_store.routine_store
