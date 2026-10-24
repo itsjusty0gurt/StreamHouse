@@ -14,7 +14,8 @@
    tasks, triggers, Variables, tabs, and Backup data through Core contracts.
 3. **Current focus:** review the isolated OBS module conversion and prepare a
    safe integration decision for 0.3 without changing public OBS data contracts.
-4. **Active branch:** `feature/obs-module-conversion` at `2517ce9`.
+4. **Active branch:** `feature/obs-module-conversion`; this refresh started from
+   documentation baseline `43d2bb4` after the OBS startup fix at `2517ce9`.
 5. **Most important unresolved issues:** routine groups cannot be reordered;
    outgoing raids lack a distinct `Raid Out Started` trigger; raid landing
    navigation starts too late; normal Twitch reconnect/renewal can create
@@ -24,9 +25,10 @@
    MainWindow/package slice 295 passed plus 50 subtests; the remaining Hub/release
    partition produced 1,048 passes plus 326 subtests and one unrelated Windows
    mutex/crash-log failure. Packaged Hub startup exits 0 with OBS enabled and disabled.
-7. **Immediate next steps:** review this branch; investigate the independent
-   Windows forced-termination test; decide whether to remove remaining static
-   OBS editor/reference coupling before integration; do not merge automatically.
+7. **Immediate next steps:** complete manual review/acceptance of the OBS
+   conversion, including its remaining static presentation coupling; address
+   the four confirmed Hub issues below; investigate the independent Windows
+   forced-termination test; and merge only after the conversion is accepted.
 8. **Read next:** [master reference](STREAMHOUSE_MASTER_REFERENCE.md),
    [architecture](ARCHITECTURE.md), [0.3 foundation](architecture/hub-0.3-foundation.md),
    [implementation map](architecture/overview.md), and
@@ -38,7 +40,7 @@
 | --- | --- |
 | Date | 2026-10-24 (America/Edmonton) |
 | Branch | `feature/obs-module-conversion` |
-| HEAD | `2517ce9ee40f27aeeb04a419a9fb707af68dea9a` — `Fix module catalog startup ordering` |
+| Task-start HEAD | `43d2bb4ae82c1a86284384469ea370fe65687ded` — `docs: establish Streamhouse development reference` |
 | Upstream | synchronized with `origin/feature/obs-module-conversion` before this documentation task |
 | Working tree at task start | clean |
 | Hub development version | `0.3.0-alpha` / Windows `0.3.0.0` |
@@ -92,14 +94,15 @@ ValueError: The OBS trigger provider catalog is unavailable.
 MainWindow.__init__ -> _build_automation_page -> AutomationPage.__init__
 ```
 
-**Current status: FIXED and packaged-reproduced.** Source construction already
-called `ModuleRegistry.register_catalogs()` before `_build_automation_page()`.
-The packaged failure occurred earlier: PyInstaller embedded Python packages but
-did not materialize `products/hub/modules/bundled/obs`, so directory-based
-discovery returned no OBS module. Catalog registration therefore had nothing to
-register. Frozen discovery now instantiates only the explicit trusted first-party
-allowlist without requiring source folders. Development discovery remains
-directory-based and does not load arbitrary code.
+**Current status: FIXED and packaged-reproduced at commit
+`2517ce9ee40f27aeeb04a419a9fb707af68dea9a`.** The packaged failure occurred
+before catalog registration: PyInstaller embedded Python packages but did not
+materialize `products/hub/modules/bundled/obs`, so directory-based discovery
+returned no OBS module. Catalog registration therefore had nothing to register.
+Frozen startup now follows the verified order: trusted frozen discovery, OBS
+catalog registration, `AutomationPage` construction, then enabled contribution
+registration/configuration/startup. Development discovery remains directory-based
+and does not load arbitrary code.
 
 Reproduction/validation requirements:
 

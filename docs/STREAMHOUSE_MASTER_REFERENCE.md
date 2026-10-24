@@ -2,7 +2,7 @@
 
 > Long-term product and architecture continuity reference.
 >
-> Verified against `feature/obs-module-conversion` at commit `2517ce9` on
+> Verified against `feature/obs-module-conversion` at commit `43d2bb4` on
 > 2026-10-24. Use [DEVELOPMENT_STATUS.md](DEVELOPMENT_STATUS.md) for the
 > current working state and [ARCHITECTURE.md](ARCHITECTURE.md) for code-level
 > structure.
