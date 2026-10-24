@@ -1,6 +1,7 @@
 # Streamhouse Hub 0.3 modular foundation contracts
 
-Status: **Core foundation implemented; provider conversion not started**.
+Status: **Core foundation implemented; OBS conversion ready for review on its
+isolated feature branch**.
 
 Streamhouse Hub `0.2.0-alpha` is released and frozen at tag
 `v0.2.0-alpha`. Active development targets `0.3.0-alpha`. This document defines
@@ -27,13 +28,11 @@ OBS, PRISM, Broadcaster, Deck, and later modules remain peers around Core.
 
 The contracts below are grounded in the current implementation:
 
-- `streamhouse_hub.app` creates Qt, Twitch authentication/service, and
-  `MainWindow`, then schedules Core startup, Local API, Music, OBS, and
-  Soundboard connection work.
-- `MainWindow` is presently both composition root and a broad coordinator. It
-  constructs OBS and Music services and stores, registers Twitch/OBS/Music/Core
-  tasks and Variable providers, wires provider triggers into Automation, builds
-  provider settings/pages, and shuts providers down.
+- `streamhouse_hub.app` creates Qt, Twitch authentication/service, the trusted
+  bundled `ModuleRegistry`, and `MainWindow`.
+- `MainWindow` remains the Core composition root, but OBS construction,
+  configuration, triggers, Variables, connection UI, event subscriptions, and
+  shutdown now belong to `streamhouse.obs` and enter Core through registries.
 - `TaskRegistry`, `VariableRegistry`, `AutomationService`, the routine/queue
   stores, `TriggerEvent`, `Events`, `BackupManager`, and `WindowStateStore`
   already provide useful Core seams.
@@ -42,8 +41,9 @@ The contracts below are grounded in the current implementation:
 - Navigation uses the existing main stack/button model. `QMainWindow` already
   persists window state and hosts one developer-tools `QDockWidget`, but there
   is no general dock-contribution contract.
-- Backup is Core-owned and currently knows a fixed set of component types,
-  including OBS configuration. It does not yet accept contributors.
+- Backup orchestration remains Core-owned and accepts the OBS module's safe
+  configuration contributor while preserving the published component and
+  archive contract.
 
 These are migration inputs, not reasons to keep domain construction in
 `MainWindow` permanently.
@@ -91,9 +91,9 @@ These are migration inputs, not reasons to keep domain construction in
   broadcaster provider at runtime.
 - A user-facing module-management redesign beyond the minimum bundled-module
   enabled state.
-- Conversion of current providers to the module contracts. The Core foundation
-  exists under `products/hub/modules/`; OBS conversion is the next isolated
-  proof-of-concept branch.
+- Conversion of Twitch or Music. OBS is the first provider converted to the
+  contracts; later conversions should use its tested lifecycle and unavailable
+  provider behavior rather than adding direct module coupling.
 - Cross-module extension APIs beyond Core registries. A future need must be
   solved through a new Core-owned capability contract, not direct imports.
 - Migration of Twitch or Music after OBS. Their eventual extraction should use

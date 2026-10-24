@@ -66,6 +66,43 @@ class PackageBoundaryTests(unittest.TestCase):
     def test_shared_does_not_import_either_product(self) -> None:
         self._assert_no_prefix(self.root / "shared", "products")
 
+    def test_core_bootstrap_does_not_import_obs_implementation(self) -> None:
+        for relative in (
+            "products/hub/streamhouse_hub/app.py",
+            "products/hub/ui/main_window.py",
+        ):
+            root = self.root / relative
+            imports = (
+                self._imports_under(root)
+                if root.is_dir()
+                else self._imports_under(root.parent)
+            )
+            violations = [
+                f"{path.relative_to(self.root)} imports {module}"
+                for path, module in imports
+                if path == root or root.is_dir()
+                if module == "products.hub.obs_service"
+                or module.startswith("products.hub.obs_service.")
+            ]
+            self.assertEqual(violations, [])
+
+    def test_bundled_modules_do_not_import_other_bundled_modules(self) -> None:
+        root = self.root / "products" / "hub" / "modules" / "bundled"
+        violations: list[str] = []
+        for path, module in self._imports_under(root):
+            relative = path.relative_to(root)
+            if len(relative.parts) < 2:
+                continue
+            owner = relative.parts[0]
+            prefix = "products.hub.modules.bundled."
+            if module.startswith(prefix):
+                target = module.removeprefix(prefix).split(".", 1)[0]
+                if target != owner:
+                    violations.append(
+                        f"{path.relative_to(self.root)} imports bundled module {target}"
+                    )
+        self.assertEqual(violations, [])
+
     def test_product_specific_tools_and_extension_are_separated(self) -> None:
         for relative in (
             "tools/build/build_hub.ps1",
