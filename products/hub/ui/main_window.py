@@ -237,6 +237,7 @@ from products.hub.ui.wiki_page import WikiPage
 from products.hub.ui.channel_points_page import ChannelPointsPage
 from products.hub.ui.channel_information_page import ChannelInformationPage
 from products.hub.ui.twitch_chat_workspace import TwitchChatWorkspaceLayout
+from products.hub.ui.table_sizing import configure_semantic_columns
 from shared.streamhouse_shared.responsive import (
     LAYOUT_MODE_AUTOMATIC,
     LAYOUT_MODE_LANDSCAPE,
@@ -2042,8 +2043,10 @@ class MainWindow(QMainWindow):
         self.memory_sessions_table.setHorizontalHeaderLabels(
             ("Session", "Observed messages", "Attendance")
         )
-        self.memory_sessions_table.horizontalHeader().setSectionResizeMode(
-            QHeaderView.ResizeMode.Stretch
+        configure_semantic_columns(
+            self.memory_sessions_table,
+            stretch=(0,),
+            compact=(1, 2),
         )
         self.memory_sessions_table.setEditTriggers(
             QTableWidget.EditTrigger.NoEditTriggers
@@ -2140,13 +2143,20 @@ class MainWindow(QMainWindow):
         self.analytics_viewers_table.setHorizontalHeaderLabels(
             ("Viewer", "Messages", "Active days", "First seen", "Last seen")
         )
+        configure_semantic_columns(
+            self.analytics_sessions_table,
+            stretch=(0,),
+            compact=(1, 2, 3, 4, 5, 6, 7),
+        )
+        configure_semantic_columns(
+            self.analytics_viewers_table,
+            stretch=(0,),
+            compact=(1, 2, 3, 4),
+        )
         for table in (
             self.analytics_sessions_table,
             self.analytics_viewers_table,
         ):
-            table.horizontalHeader().setSectionResizeMode(
-                QHeaderView.ResizeMode.Stretch
-            )
             table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         analytics_tables.addTab(self.analytics_sessions_table, "Sessions")
         analytics_tables.addTab(self.analytics_viewers_table, "Top Viewers")

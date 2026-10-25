@@ -32,6 +32,7 @@ from PySide6.QtWidgets import (
 
 from products.hub.counters.models import parse_counter_number
 from products.hub.ui.page_header import PageHeader
+from products.hub.ui.table_sizing import configure_semantic_columns
 
 
 class _JobSignals(QObject):
@@ -205,6 +206,11 @@ class UsersPage(QWidget):
         self.counter_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
         self.counter_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.counter_table.verticalHeader().hide()
+        configure_semantic_columns(
+            self.counter_table,
+            stretch=(0,),
+            compact=(1, 2),
+        )
         self.counter_table.setMaximumHeight(180)
         detail_layout.addWidget(self.counter_table)
         self.edit_counter = QPushButton("Edit Selected Counter Value")

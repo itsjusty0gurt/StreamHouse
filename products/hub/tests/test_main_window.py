@@ -4241,6 +4241,33 @@ class MainWindowTests(unittest.TestCase):
                     QHeaderView.ResizeMode.Interactive,
                 )
 
+    def test_history_and_analytics_tables_prioritize_identifying_text(self) -> None:
+        history_header = self.window.automation_page.history_table.horizontalHeader()
+        self.assertEqual(
+            history_header.sectionResizeMode(1),
+            QHeaderView.ResizeMode.Stretch,
+        )
+        self.assertEqual(
+            history_header.sectionResizeMode(2),
+            QHeaderView.ResizeMode.Stretch,
+        )
+        for column in (0, 3, 4):
+            self.assertEqual(
+                history_header.sectionResizeMode(column),
+                QHeaderView.ResizeMode.ResizeToContents,
+            )
+
+        viewers_header = self.window.analytics_viewers_table.horizontalHeader()
+        self.assertEqual(
+            viewers_header.sectionResizeMode(0),
+            QHeaderView.ResizeMode.Stretch,
+        )
+        for column in (1, 2, 3, 4):
+            self.assertEqual(
+                viewers_header.sectionResizeMode(column),
+                QHeaderView.ResizeMode.ResizeToContents,
+            )
+
     def test_obs_connection_is_module_owned_and_saves_automatically(self) -> None:
         page = self.window.module_pages["obs.workspace"]
         self.assertFalse(hasattr(self.window, "obs_connection_group"))

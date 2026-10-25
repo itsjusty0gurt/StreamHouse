@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
 from products.hub.counters.models import CounterDefinition, counter_id_from_name
 from products.hub.counters.service import CounterService
 from products.hub.ui.page_header import PageHeader
+from products.hub.ui.table_sizing import configure_semantic_columns
 
 
 class CounterDefinitionDialog(QDialog):
@@ -172,7 +173,13 @@ class CountersPage(QWidget):
 
     def _build_viewers(self) -> None:
         page = QWidget(); layout = QVBoxLayout(page); self.viewer_search = QLineEdit(); self.viewer_search.setPlaceholderText("Search viewer name or login…"); layout.addWidget(self.viewer_search)
-        self.viewer_table = QTableWidget(0, 4); self.viewer_table.setHorizontalHeaderLabels(("Viewer", "Lifetime", "Current Stream", "Twitch User ID")); self.viewer_table.setSortingEnabled(True); layout.addWidget(self.viewer_table)
+        self.viewer_table = QTableWidget(0, 4); self.viewer_table.setHorizontalHeaderLabels(("Viewer", "Lifetime", "Current Stream", "Twitch User ID"))
+        configure_semantic_columns(
+            self.viewer_table,
+            stretch=(0,),
+            compact=(1, 2, 3),
+        )
+        self.viewer_table.setSortingEnabled(True); layout.addWidget(self.viewer_table)
         row = QHBoxLayout(); self.edit_viewer = QPushButton("Edit selected values"); self.remove_viewer_button = QPushButton("Remove viewer from this counter"); row.addWidget(self.edit_viewer); row.addWidget(self.remove_viewer_button); row.addStretch(); layout.addLayout(row); self.tabs.addTab(page, "Viewers")
         self.viewer_search.textChanged.connect(self._refresh_viewers); self.edit_viewer.clicked.connect(self._edit_viewer); self.remove_viewer_button.clicked.connect(self._remove_viewer)
 

@@ -34,6 +34,7 @@ from products.hub.automation.variable_registry import (
 )
 from products.hub.ui.variable_picker import VariablePickerDialog
 from products.hub.ui.page_header import PageHeader
+from products.hub.ui.table_sizing import configure_semantic_columns
 
 
 @dataclass(frozen=True, slots=True)
@@ -148,7 +149,11 @@ class VariablesPage(QWidget):
                 "Access",
             )
         )
-        self.table.horizontalHeader().setStretchLastSection(True)
+        configure_semantic_columns(
+            self.table,
+            stretch=(0, 1, 4),
+            compact=(2, 3, 5, 6, 7),
+        )
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)

@@ -158,6 +158,7 @@ from products.hub.ui.counters_page import CounterDefinitionDialog
 from products.hub.ui.variables_page import VariablesPage
 from products.hub.ui.variable_picker import VariablePickerDialog
 from products.hub.ui.page_header import PageHeader
+from products.hub.ui.table_sizing import configure_semantic_columns
 
 
 def _parse_event_filters(text: str) -> dict[str, str]:
@@ -4193,7 +4194,11 @@ class AutomationPage(QWidget):
         self.routine_history_table.setHorizontalHeaderLabels(
             ("When", "Trigger", "Result", "Tasks")
         )
-        self.routine_history_table.horizontalHeader().setStretchLastSection(True)
+        configure_semantic_columns(
+            self.routine_history_table,
+            stretch=(1,),
+            compact=(0, 2, 3),
+        )
         self.routine_history_table.setEditTriggers(
             QTableWidget.EditTrigger.NoEditTriggers
         )
@@ -4225,7 +4230,11 @@ class AutomationPage(QWidget):
         self.history_table.setHorizontalHeaderLabels(
             ("When", "Routine", "Trigger", "Result", "Tasks")
         )
-        self.history_table.horizontalHeader().setStretchLastSection(True)
+        configure_semantic_columns(
+            self.history_table,
+            stretch=(1, 2),
+            compact=(0, 3, 4),
+        )
         self.history_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         layout.addWidget(self.history_table)
         actions = QHBoxLayout()

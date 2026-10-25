@@ -7,7 +7,7 @@ import unittest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtWidgets import QApplication, QComboBox, QPushButton
+from PySide6.QtWidgets import QApplication, QComboBox, QHeaderView, QPushButton
 from unittest.mock import patch
 
 from products.hub.automation.routines import RoutineStore
@@ -89,7 +89,6 @@ class CountersPageTests(unittest.TestCase):
             self.page.page_header.subtitle_label.text(),
             "Track shared, stream, and viewer totals.",
         )
-
         reference = PageHeader(
             "Automation",
             "Manage routines, triggers, tasks, queues, and run history.",
@@ -113,6 +112,18 @@ class CountersPageTests(unittest.TestCase):
             )
         finally:
             reference.deleteLater()
+
+    def test_viewer_table_prioritizes_viewer_name_over_numeric_metadata(self) -> None:
+        header = self.page.viewer_table.horizontalHeader()
+        self.assertEqual(
+            header.sectionResizeMode(0),
+            QHeaderView.ResizeMode.Stretch,
+        )
+        for column in (1, 2, 3):
+            self.assertEqual(
+                header.sectionResizeMode(column),
+                QHeaderView.ResizeMode.ResizeToContents,
+            )
 
     def test_new_counter_tasks_default_to_every_configured_scope(self) -> None:
         for task_type in (

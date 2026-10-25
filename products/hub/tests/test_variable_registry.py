@@ -9,7 +9,7 @@ import pytest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QHeaderView
 
 from products.hub.automation.custom_variables import CustomVariableStore
 from products.hub.automation.models import TaskDefinition, TaskExecutionResult
@@ -781,6 +781,17 @@ def test_variables_page_and_picker_search_canonical_names() -> None:
         registry.register(context_provider())
         registry.register(CustomVariableProvider(store))
         page = VariablesPage(registry, store)
+        page_header = page.table.horizontalHeader()
+        for column in (0, 1, 4):
+            assert (
+                page_header.sectionResizeMode(column)
+                == QHeaderView.ResizeMode.Stretch
+            )
+        for column in (2, 3, 5, 6, 7):
+            assert (
+                page_header.sectionResizeMode(column)
+                == QHeaderView.ResizeMode.ResizeToContents
+            )
         page.search_edit.setText("game_mode")
         assert page.table.rowCount() == 1
         assert page.table.horizontalHeaderItem(0).text() == "Placeholders"
@@ -790,6 +801,14 @@ def test_variables_page_and_picker_search_canonical_names() -> None:
         page.copy_placeholder_button.click()
         assert QApplication.clipboard().text() == "{custom.game_mode}"
         picker = VariablePickerDialog(registry)
+        assert (
+            picker.table.horizontalHeader().sectionResizeMode(0)
+            == QHeaderView.ResizeMode.Stretch
+        )
+        assert (
+            picker.table.horizontalHeader().sectionResizeMode(7)
+            == QHeaderView.ResizeMode.ResizeToContents
+        )
         picker.search_edit.setText("game_mode")
         assert picker.selected_placeholder() == "{custom.game_mode}"
         assert picker.table.horizontalHeaderItem(1).text() == "Actual Value"
