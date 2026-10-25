@@ -418,6 +418,7 @@ class MainWindow(QMainWindow):
         soundboard_relay_config_store: SoundboardRelayConfigStore | None = None,
         soundboard_relay_client: SoundboardRelayClient | None = None,
         diagnostics_service: DiagnosticsService | None = None,
+        data_root: Path | None = None,
         auto_upgrade_permissions: bool = True,
     ) -> None:
         super().__init__()
@@ -475,7 +476,12 @@ class MainWindow(QMainWindow):
             path=routine_store.path.with_name("core_triggers.json"),
             routine_store=routine_store,
         )
-        data_root = routine_store.path.parent.parent
+        data_root = (
+            Path(data_root).expanduser().resolve()
+            if data_root is not None
+            else routine_store.path.parent.parent.expanduser().resolve()
+        )
+        self.data_root = data_root
         self.user_group_store = user_group_store or UserGroupStore(
             data_root / "memory" / "user_groups.json"
         )
@@ -1302,8 +1308,13 @@ class MainWindow(QMainWindow):
             "Configure Hub behavior, chat appearance, and developer tools.",
             self.ui.settingsPage,
         )
+        self.open_user_data_folder_button = QPushButton("Open User Data Folder")
+        self.settings_page_header.add_action(self.open_user_data_folder_button)
         self.settings_page_header.add_action(self.ui.resetSettingsButton)
         self.settings_page_header.add_action(self.ui.saveSettingsButton)
+        self.open_user_data_folder_button.clicked.connect(
+            self._open_user_data_folder
+        )
         self.ui.settingsLayout.insertWidget(0, self.settings_page_header)
 
     def _make_layout_responsive(self) -> None:
@@ -8629,6 +8640,34 @@ class MainWindow(QMainWindow):
         directory = self.release_controller.backup_directory
         directory.mkdir(parents=True, exist_ok=True)
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(directory)))
+
+    @Slot()
+    def _open_user_data_folder(self) -> None:
+        try:
+            self.data_root.mkdir(parents=True, exist_ok=True)
+        except OSError as error:
+            Logger.warning(
+                f"Could not create the Hub user-data directory: {error}",
+                source="DATA",
+            )
+            QMessageBox.warning(
+                self,
+                "User Data Folder",
+                "Streamhouse Hub could not open its User Data Folder.",
+            )
+            return
+        if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.data_root))):
+            Logger.warning(
+                "Windows did not open the Hub user-data directory.",
+                source="DATA",
+            )
+            QMessageBox.warning(
+                self,
+                "User Data Folder",
+                "Streamhouse Hub could not open its User Data Folder.",
+            )
+            return
+        self.statusBar().showMessage("Opened User Data Folder.", 8_000)
 
     @Slot()
     @Slot()

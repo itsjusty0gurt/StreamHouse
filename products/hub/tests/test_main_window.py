@@ -262,6 +262,7 @@ class MainWindowTests(unittest.TestCase):
             module_registry=module_registry,
             user_group_store=UserGroupStore(command_root / "user_groups.json"),
             soundboard_store=SoundboardStore(command_root / "soundboard.json"),
+            data_root=command_root,
             auto_upgrade_permissions=False,
         )
         if self._testMethodName != "test_hub_starts_with_ai_disconnected":
@@ -3016,7 +3017,50 @@ class MainWindowTests(unittest.TestCase):
         self.assertEqual(
             self.window.open_backup_folder_button.text(), "Open Backup Folder"
         )
+        self.assertEqual(
+            self.window.open_user_data_folder_button.text(),
+            "Open User Data Folder",
+        )
+        self.assertIs(
+            self.window.open_user_data_folder_button.parentWidget(),
+            self.window.settings_page_header.action_widget,
+        )
         self.assertTrue(self.window.local_ai_settings_group.isHidden())
+
+    def test_open_user_data_folder_creates_and_opens_active_root(self) -> None:
+        data_root = Path(self.twitch_command_directory.name) / "missing-data-root"
+        self.window.data_root = data_root
+
+        with patch(
+            "products.hub.ui.main_window.QDesktopServices.openUrl",
+            return_value=True,
+        ) as open_url:
+            self.window.open_user_data_folder_button.click()
+
+        self.assertTrue(data_root.is_dir())
+        opened_url = open_url.call_args.args[0]
+        self.assertTrue(opened_url.isLocalFile())
+        self.assertEqual(Path(opened_url.toLocalFile()), data_root.resolve())
+        self.assertEqual(
+            self.window.statusBar().currentMessage(),
+            "Opened User Data Folder.",
+        )
+
+    def test_open_user_data_folder_failure_is_reported_without_crashing(self) -> None:
+        with (
+            patch(
+                "products.hub.ui.main_window.QDesktopServices.openUrl",
+                return_value=False,
+            ),
+            patch.object(QMessageBox, "warning") as warning,
+        ):
+            self.window.open_user_data_folder_button.click()
+
+        warning.assert_called_once_with(
+            self.window,
+            "User Data Folder",
+            "Streamhouse Hub could not open its User Data Folder.",
+        )
 
     def test_restore_passes_confirmed_active_twitch_stream_to_planner(self) -> None:
         inspection = Mock()

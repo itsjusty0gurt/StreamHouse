@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 
 from PySide6.QtCore import QTimer
 from PySide6.QtGui import QIcon
@@ -15,7 +16,7 @@ from products.hub.twitch.token_store import TwitchTokenStore
 from products.hub.config.twitch import TWITCH_BOT_SCOPES
 from products.hub.ui.main_window import MainWindow
 from products.hub.core.resources import resource_path
-from shared.streamhouse_runtime.paths import smoke_test_enabled
+from shared.streamhouse_runtime.paths import smoke_test_enabled, user_data_root
 from shared.streamhouse_runtime.qt_settings import (
     HUB_APPLICATION_NAME,
     ORGANIZATION_NAME,
@@ -87,6 +88,11 @@ def configure_application(application: QApplication) -> None:
     )
 
 
+def _resolved_data_root(diagnostics: DiagnosticsService | None) -> Path:
+    root = diagnostics.root if diagnostics is not None else user_data_root()
+    return Path(root).expanduser().resolve()
+
+
 def run(diagnostics: DiagnosticsService | None = None) -> None:
     """Create and run the Streamhouse Hub desktop application."""
 
@@ -121,6 +127,7 @@ def run(diagnostics: DiagnosticsService | None = None) -> None:
         bot_auth=twitch_bot_auth,
     )
     window_settings = streamhouse_qsettings(HUB_APPLICATION_NAME)
+    data_root = _resolved_data_root(diagnostics)
     window = MainWindow(
         twitch_service=twitch_service,
         twitch_auth=twitch_auth,
@@ -128,6 +135,7 @@ def run(diagnostics: DiagnosticsService | None = None) -> None:
         window_state_store=WindowStateStore(window_settings),
         diagnostics_service=diagnostics,
         module_registry=create_bundled_module_registry(),
+        data_root=data_root,
     )
     if diagnostics is not None:
         diagnostics.checkpoint("MainWindow created")
