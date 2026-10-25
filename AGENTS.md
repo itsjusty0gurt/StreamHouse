@@ -60,3 +60,10 @@ Use `docs/architecture/product-family.md` for product-facing names and
 dependencies. Preserve the independent `products/hub/` and `products/ai/`
 packages. Keep heavyweight `products/ai/engine/` implementation out of the Hub
 bundle. Shared packages must remain lightweight and genuinely cross-product.
+
+For meaningful milestones, keep `docs/DEVELOPMENT_STATUS.md` accurate. Update
+`docs/ARCHITECTURE.md` when implemented ownership or contracts change, and
+`docs/STREAMHOUSE_MASTER_REFERENCE.md` when a major product decision changes.
+Record significant accepted architectural decisions under `docs/decisions/`
+using its ADR convention. Do not churn these continuity documents for trivial
+fixes, rewrite historical decisions silently, or claim unexecuted validation.

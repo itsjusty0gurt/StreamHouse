@@ -23,6 +23,7 @@ from shared.streamhouse_runtime.qt_settings import (
 )
 from products.hub.core.window_state import WindowStateStore
 from products.hub.version import HUB_VERSION
+from products.hub.modules.bootstrap import create_bundled_module_registry
 
 
 def register_events() -> None:
@@ -126,6 +127,7 @@ def run(diagnostics: DiagnosticsService | None = None) -> None:
         twitch_bot_auth=twitch_bot_auth,
         window_state_store=WindowStateStore(window_settings),
         diagnostics_service=diagnostics,
+        module_registry=create_bundled_module_registry(),
     )
     if diagnostics is not None:
         diagnostics.checkpoint("MainWindow created")
@@ -135,7 +137,6 @@ def run(diagnostics: DiagnosticsService | None = None) -> None:
     QTimer.singleShot(0, window, window.fire_application_started_trigger)
     QTimer.singleShot(0, window, window.start_local_integration)
     QTimer.singleShot(100, window, window.start_music_player_integration)
-    QTimer.singleShot(250, window, window.auto_connect_obs)
     QTimer.singleShot(350, window, window.auto_connect_soundboard_relay)
 
     if smoke_test_enabled():

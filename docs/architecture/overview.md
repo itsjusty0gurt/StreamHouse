@@ -2,9 +2,9 @@
 
 > Canonical implementation map for maintainers and coding agents.
 >
-> Last verified: 2026-10-21 against current `develop` after the
-> `v0.2.0-alpha` release. This records an implementation audit, not a later
-> released-version claim.
+> Last verified: 2026-10-25 after final OBS module acceptance and integration
+> into `develop`. This records an implementation audit, not a released-version
+> claim.
 > Update this file when a change moves ownership, adds a persisted format,
 > changes an inter-process contract, or introduces a new service/trigger/task.
 
@@ -31,8 +31,8 @@ provide product behavior and policy detail:
 - `docs/shared/viewer-memories.md`
 - `docs/architecture/offline-design-checkpoint-2026-07-20.md`
 - `docs/architecture/release-checklist.md`
-- `docs/architecture/hub-0.3-foundation.md` (current milestone direction;
-  planned capabilities are not implemented contracts)
+- `docs/architecture/hub-0.3-foundation.md` (implemented Core module foundation;
+  contribution/lifecycle contracts and the future OBS extraction boundary)
 
 Product-facing branding is defined in the
 [Streamhouse product-family reference](product-family.md). This implementation
@@ -140,7 +140,9 @@ trigger and routine setup, but their stored records remain separate.
 | `products/hub/automation/` | Hub trigger/routine/task/queue execution, variables, logic, import/export |
 | `products/hub/config/` | Hub Twitch client/scopes and Extension constants |
 | `products/hub/core/` | Hub event bus, settings, DPAPI secrets, backup, diagnostics, and resources |
-| `products/hub/obs_service/` | OBS WebSocket transport, configuration, triggers, and task handlers |
+| `products/hub/modules/` | Core module contracts, trusted discovery, lifecycle, actions, and contribution registries. Packaged discovery uses the explicit first-party allowlist because PyInstaller embeds Python packages without source directories. |
+| `products/hub/modules/bundled/obs/` | Bundled OBS module entry point, Variables provider, connection/status page, and lifecycle ownership |
+| `products/hub/obs_service/` | OBS module WebSocket transport, public-data configuration/store, triggers, and task handlers |
 | `products/hub/soundboard/` | Local soundboard models/store/server and hosted relay client |
 | `products/hub/twitch/` | OAuth, Helix, EventSub, normalized Twitch models, commands, triggers, analytics/history |
 | `products/hub/ui/` | Hub Qt shell, pages, workers, bridges, controllers, and generated Designer code |
@@ -196,21 +198,21 @@ normal writable composition.
 1. Creates `QApplication`, application metadata, and Qt message capture.
 2. Creates separate broadcaster and optional bot `TwitchAuthService` objects.
 3. Creates `TwitchService`.
-4. Constructs `products.hub.ui.main_window.MainWindow`, the current composition
-   root for most Hub services and stores.
-5. Shows the window, restores both Twitch identities, fires Core startup, then
-   schedules optional OBS and soundboard-relay auto-connect.
+4. Creates the trusted bundled `ModuleRegistry` and constructs
+   `products.hub.ui.main_window.MainWindow`, the Core composition root.
+5. `MainWindow` registers/configures/starts enabled bundled modules, renders
+   their tab contributions, then shows the window and restores Twitch identities.
 6. Runs the Qt event loop.
 7. Clears the global event bus, marks a zero-exit session clean, and shuts down
    diagnostics/logging after the window closes.
 
 `MainWindow.__init__` creates or receives injectable instances of:
 
-- Twitch command, EventSub-trigger, Core-trigger, OBS-trigger, and Music-trigger stores
+- Twitch command, EventSub-trigger, Core-trigger, and Music-trigger stores
 - the shared `RoutineStore`
 - `CustomVariableStore`
 - automation queue store/manager
-- OBS service/config
+- Core module/action/tab/trigger-provider/Backup-contributor registries
 - soundboard store/local server/relay client
 - chatter, activity, and stream-session stores
 - training/test-report remote proxies
@@ -224,7 +226,7 @@ preventing the application from opening.
 
 Core `application.started` fires after the Qt loop begins. Core
 `application.closing` fires before service teardown. Shutdown must stop timers,
-unsubscribe event handlers, close Twitch/OBS, stop soundboard threads/servers,
+unsubscribe event handlers, close Twitch and reverse-stop modules, stop soundboard threads/servers,
 save state, and only then let `products/hub/streamhouse_hub/app.py` clear the event bus.
 
 The optional local integration listener starts after primary-instance ownership
@@ -339,6 +341,17 @@ but does not emit another signed-in transition or restart chat/EventSub.
   and first/last seen presentation through the Users workspace
 - soundboard configuration and local routine execution
 - deciding whether a draft may actually be sent
+
+Hub Core is the integration layer between optional modules. The foundation in
+`products/hub/modules/` owns stable descriptors, allowlisted bundled discovery,
+desired enablement, deterministic lifecycle/status, contribution registries,
+and the provider-neutral `ActionRegistry`. It is wired into Hub startup. OBS is
+the first converted provider: its module owns the one OBS socket/service,
+connection settings, trigger store, tasks, Variables, tab, and lifecycle, while
+Core retains Automation/routines/queues and Backup orchestration. Disabled OBS
+still registers its static catalogs so routines and references remain intact
+and visibly unavailable. Modules publish capabilities and state through Core
+registries; they must not import one another or create duplicate connections.
 
 ### Streamhouse AI owns
 
@@ -1155,13 +1168,34 @@ as live events whenever possible.
 
 ## OBS subsystem
 
-`ObsWebSocketService` implements OBS WebSocket 5.x over Qt WebSockets.
+The trusted bundled module `streamhouse.obs` lives at
+`products/hub/modules/bundled/obs/`. `ModuleRegistry` owns its lifecycle. The
+module contributes its primary OBS tab, actions, Automation task handlers,
+trigger provider/store, canonical Variables, and safe Backup configuration.
+`MainWindow` no longer constructs or shuts down the OBS service directly.
+
+`ObsWebSocketService` implements OBS WebSocket 5.x over Qt WebSockets for that
+module.
 
 - connection config: `products/hub/obs_service/config.py`;
 - password: separate DPAPI secret;
 - normalized models: `products/hub/obs_service/models.py`;
 - trigger matching: `products/hub/obs_service/triggers.py`;
 - automation tasks: `products/hub/obs_service/tasks.py`.
+
+Public paths and schemas remain unchanged: non-secret connection data stays in
+`obs/connection.json`, the DPAPI password stays in `obs/password.dat`, and OBS
+triggers stay in `obs/triggers.json`. No data migration or compatibility runtime
+was introduced. The default audio input remains supported and now appears in
+the OBS tab under Automation Defaults rather than connection settings.
+
+Reusable stream/record/scene/mute operations are registered as namespaced Core
+actions. Matching existing OBS tasks invoke those actions; specialized OBS
+tasks continue to use the module-owned completion-aware service boundary.
+When the module is disabled, OBS tasks are retained and recorded as skipped,
+OBS triggers remain stored but cannot fire, and OBS Variables report their
+provider unavailable. Re-enabling and restarting restores the same stored
+tasks/triggers without rebinding or recreation.
 
 Connection intent and current socket state are separate:
 
@@ -1981,6 +2015,16 @@ The output contains public assets only. Never include the Twitch Extension
 secret or broadcaster relay key.
 
 ## Change-routing guide
+
+### Changing the module foundation
+
+Start with `docs/architecture/hub-0.3-foundation.md`. Core contracts,
+allowlisted bundled discovery, enablement persistence, lifecycle, and actions
+live under `products/hub/modules/`; focused coverage lives in
+`products/hub/tests/test_module_foundation.py`. Provider conversion must retain
+public IDs, paths, schemas, and data meanings. Do not wire an optional module
+directly to another module, and do not turn bundled discovery into arbitrary
+code loading.
 
 ### Adding an automation task
 

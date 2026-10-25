@@ -6,6 +6,7 @@ import math
 from products.hub.automation.models import TaskDefinition, TaskExecutionResult, TriggerEvent
 from products.hub.automation.variable_registry import render_placeholders
 from products.hub.automation.variable_outputs import automation_output_name
+from products.hub.modules.actions import ActionExecutionContext, ActionRegistry
 from products.hub.obs_service.models import ObsRequestResult
 from products.hub.obs_service.service import ObsWebSocketService
 
@@ -40,12 +41,21 @@ OBS_TASK_LABELS = {
 
 
 class ObsTask:
-    def __init__(self, service: ObsWebSocketService, task_type: str) -> None:
+    def __init__(
+        self,
+        service: ObsWebSocketService,
+        task_type: str,
+        actions: ActionRegistry | None = None,
+    ) -> None:
         self.service = service
         self.task_type = task_type
+        self.actions = actions
 
     def execute(self, task: TaskDefinition, trigger: TriggerEvent) -> TaskExecutionResult:
         try:
+            action_result = self._execute_registered_action(task, trigger)
+            if action_result is not None:
+                return action_result
             if self.task_type == "obs.set_scene_item_enabled":
                 c = task.config
                 result = self.service.set_scene_item_enabled(
@@ -108,6 +118,47 @@ class ObsTask:
                 request_data["imageFilePath"]
             )
         return execution_result
+
+    def _execute_registered_action(
+        self,
+        task: TaskDefinition,
+        trigger: TriggerEvent,
+    ) -> TaskExecutionResult | None:
+        if self.actions is None:
+            return None
+        config = task.config
+        action_id = ""
+        parameters: dict[str, object] = {}
+        if self.task_type == "obs.set_program_scene":
+            action_id = "obs.scene.switch"
+            parameters["scene"] = self._required(config, "scene")
+        elif self.task_type == "obs.set_input_mute":
+            requested = str(config.get("action", "toggle")).casefold()
+            if requested == "toggle":
+                return None
+            action_id = "obs.input.mute" if requested == "mute" else "obs.input.unmute"
+            parameters["input"] = self._required(config, "input")
+        elif self.task_type == "obs.stream_control":
+            requested = str(config.get("action", "start")).casefold()
+            action_id = "obs.stream.start" if requested == "start" else "obs.stream.stop"
+        elif self.task_type == "obs.record_control":
+            requested = str(config.get("action", "start")).casefold()
+            if requested not in {"start", "stop"}:
+                return None
+            action_id = "obs.record.start" if requested == "start" else "obs.record.stop"
+        else:
+            return None
+        result = self.actions.invoke(
+            action_id,
+            parameters,
+            ActionExecutionContext(trigger.context),
+        )
+        return TaskExecutionResult(
+            task.task_id,
+            task.task_type,
+            result.succeeded,
+            result.detail,
+        )
 
     @staticmethod
     def _result(
@@ -333,6 +384,10 @@ class ObsTask:
         return value
 
 
-def register_obs_tasks(registry, service: ObsWebSocketService) -> None:
+def register_obs_tasks(
+    registry,
+    service: ObsWebSocketService,
+    actions: ActionRegistry | None = None,
+) -> None:
     for task_type in OBS_TASK_LABELS:
-        registry.register(ObsTask(service, task_type))
+        registry.register(ObsTask(service, task_type, actions))
