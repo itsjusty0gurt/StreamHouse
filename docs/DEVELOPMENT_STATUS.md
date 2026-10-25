@@ -12,23 +12,24 @@
 2. **Current architecture:** Hub Core owns Automation, registries, persistence
    orchestration, and the Qt shell. Trusted bundled modules contribute actions,
    tasks, triggers, Variables, tabs, and Backup data through Core contracts.
-3. **Current focus:** review the isolated OBS module conversion and prepare a
-   safe integration decision for 0.3 without changing public OBS data contracts.
-4. **Active branch:** `feature/obs-module-conversion`; this refresh started from
-   documentation baseline `43d2bb4` after the OBS startup fix at `2517ce9`.
+3. **Current architecture milestone:** OBS is the first accepted real bundled
+   Hub module. Its conversion passed final acceptance and is integrated into the
+   stable 0.3 `develop` line without changing public OBS data contracts.
+4. **Active branch:** `develop`; the accepted conversion came from
+   `feature/obs-module-conversion` at acceptance HEAD `f3db6f8`.
 5. **Most important unresolved issues:** routine groups cannot be reordered;
    outgoing raids lack a distinct `Raid Out Started` trigger; raid landing
    navigation starts too late; normal Twitch reconnect/renewal can create
    visible interruption or chat noise; and one Windows forced-termination test
-   currently retains a crash-log handle. The OBS conversion also remains unmerged.
-6. **Latest verified tests:** focused startup regression 5 passed; modular/OBS/
-   MainWindow/package slice 295 passed plus 50 subtests; the remaining Hub/release
-   partition produced 1,048 passes plus 326 subtests and one unrelated Windows
-   mutex/crash-log failure. Packaged Hub startup exits 0 with OBS enabled and disabled.
-7. **Immediate next steps:** complete manual review/acceptance of the OBS
-   conversion, including its remaining static presentation coupling; address
-   the four confirmed Hub issues below; investigate the independent Windows
-   forced-termination test; and merge only after the conversion is accepted.
+   currently retains a crash-log handle. Contextual `obs.*` event Variables also
+   use the generic `Twitch Context` source label despite correct OBS context behavior.
+6. **Latest OBS acceptance:** 372 unique relevant tests and 70 subtests passed;
+   packaged Hub/AI smoke passed; packaged startup exited 0 with OBS disabled and
+   again after re-enabling; compilation and `git diff --check` passed.
+7. **Immediate next steps:** address the four confirmed Hub issues below;
+   investigate the independent Windows forced-termination test; correct the
+   non-blocking OBS Variable source label; and consider provider-neutral
+   presentation adapters only where they materially simplify future modules.
 8. **Read next:** [master reference](STREAMHOUSE_MASTER_REFERENCE.md),
    [architecture](ARCHITECTURE.md), [0.3 foundation](architecture/hub-0.3-foundation.md),
    [implementation map](architecture/overview.md), and
@@ -38,18 +39,18 @@
 
 | Item | Verified value |
 | --- | --- |
-| Date | 2026-10-24 (America/Edmonton) |
-| Branch | `feature/obs-module-conversion` |
-| Task-start HEAD | `43d2bb4ae82c1a86284384469ea370fe65687ded` — `docs: establish Streamhouse development reference` |
-| Upstream | synchronized with `origin/feature/obs-module-conversion` before this documentation task |
+| Date | 2026-10-25 (America/Edmonton) |
+| Branch | `develop` after accepted feature integration |
+| Accepted feature HEAD | `f3db6f8fa2ce22603cf974344a78144a56bcd2ff` |
+| Feature upstream | synchronized with `origin/feature/obs-module-conversion` before acceptance documentation |
 | Working tree at task start | clean |
 | Hub development version | `0.3.0-alpha` / Windows `0.3.0.0` |
-| Stable integration branch | `develop` at `a91f7850e133b6a19240a61938d18b0ca3a0621b` |
+| Pre-merge integration baseline | `develop` at `a91f7850e133b6a19240a61938d18b0ca3a0621b` |
 | Latest published Hub tag | `v0.2.1-alpha` at `b1c25a21ef34de8029d6216eb96c47274c2a4c58` |
 
 ## Active development focus
 
-The OBS module conversion is isolated from `develop`. The branch contains:
+The accepted OBS module conversion is integrated into `develop`. It provides:
 
 - Core module contribution registries and unavailable-provider behavior;
 - bundled OBS module ID `streamhouse.obs`;
@@ -59,7 +60,7 @@ The OBS module conversion is isolated from `develop`. The branch contains:
 - a packaged discovery fix that registers trusted embedded modules before
   Automation UI consumes their static catalogs.
 
-The branch is ready for review, not merged. No Twitch or Music conversion has begun.
+OBS is the first accepted bundled Hub module. No Twitch or Music conversion has begun.
 
 ## Completed milestones
 
@@ -69,17 +70,31 @@ The branch is ready for review, not merged. No Twitch or Music conversion has be
 - OBS runtime conversion committed through `46a5d1a`.
 - Packaged OBS discovery/startup regression fixed at `2517ce9`.
 - Packaged smoke startup now exits cleanly with OBS enabled and disabled.
+- Final OBS acceptance passed at feature HEAD `f3db6f8`; the conversion is
+  approved and integrated into `develop`.
 
-## In-progress migrations
+## Accepted module conversions
 
-### OBS module conversion — **PARTIAL / READY FOR REVIEW**
+### OBS module conversion — **IMPLEMENTED / ACCEPTED**
 
 Completed ownership changes are described in
-[ARCHITECTURE.md](ARCHITECTURE.md#obs-module-conversion). Remaining review points:
+[ARCHITECTURE.md](ARCHITECTURE.md#obs-module-conversion). Final acceptance verified:
+
+- packaged Hub startup and catalog-before-UI ordering;
+- enabled, disabled, reconnect, and re-enable lifecycle behavior;
+- existing Automation task compatibility and trigger regression coverage;
+- canonical OBS Variables and unavailable-provider behavior;
+- safe Backup/Restore contribution and retained Default Audio Input behavior;
+- clean reverse-order shutdown; and
+- one module-owned OBS runtime with no duplicate legacy runtime.
+
+Non-blocking follow-ups remain:
 
 - Core Automation editor/simulator/transfer/Wiki adapters retain static OBS
-  contract imports; they no longer own runtime lifecycle but are not fully provider-neutral.
-- The branch has not been merged into `develop`.
+  contract imports. They do not duplicate runtime ownership or create
+  module-to-module coupling, but can become provider-neutral where justified.
+- Contextual `obs.*` event Variables use the generic `Twitch Context` source
+  label in the Variables table; context, availability, and resolution are correct.
 - There is no user-facing Modules management page yet.
 
 No OBS persistence schema migration was introduced. Existing
@@ -132,6 +147,9 @@ Reproduction/validation requirements:
   source is OAuth refresh, EventSub/WebSocket lifecycle, chat transport, or
   another layer before choosing a fix. Normal recovery should be fast and quiet
   in chat while retaining useful diagnostics in logs.
+- **OBS Variable source label:** contextual `obs.*` event Variables currently
+  show the generic `Twitch Context` source label. This is a presentation defect;
+  their actual OBS context, status, availability, and resolution are correct.
 - **Known test issue:**
   `WindowsInstanceMutexTests.test_forced_termination_releases_lock_and_preserves_abnormal_marker`
   currently fails because the force-terminated helper retains the named mutex
@@ -140,9 +158,9 @@ Reproduction/validation requirements:
 - **Validation gap:** the complete 1,256-test Hub/release command did not finish
   green because of that single Windows process-lifetime test. Do not report a
   fully green gate until it is resolved or independently proven environmental.
-- **Validation gap:** no human visual inspection of the packaged OBS tab was
-  recorded; MainWindow tests verify its contribution and both packaged modes
-  completed normal startup/shutdown.
+- **Acceptance limitation:** no preexisting live OBS trigger was available for
+  nondestructive manual firing. Automated persistence, matching, filtering,
+  context, and MainWindow dispatch coverage passed.
 - **Architecture debt:** `MainWindow` remains large, and Core Automation UI
   contains provider-specific editor/presentation adapters.
 
@@ -150,24 +168,24 @@ Reproduction/validation requirements:
 
 | Check | Result |
 | --- | --- |
-| Focused frozen/enabled/disabled/missing-catalog tests | 5 passed |
-| Modular + OBS + MainWindow + package boundaries | 295 passed, 50 subtests passed |
-| Other Hub/release tests | 1,048 passed, 326 subtests passed; one unrelated failure/error |
-| Test collection | 1,256 Hub/release tests |
-| Python compilation | Passed for `products/hub` and `shared` |
-| `git diff --check` before documentation | Passed |
-| Packaged startup, OBS enabled | Exit code 0 |
+| OBS/module/Automation/Backup/package-boundary slice | 165 passed, 64 subtests passed |
+| MainWindow | 200 passed, 6 subtests passed in the restricted run |
+| Restricted-loopback rerun | 7 passed with loopback access |
+| Unique relevant acceptance total | 372 passed, 70 subtests passed |
+| Packaged Hub/AI smoke | Passed |
 | Packaged startup, OBS disabled | Exit code 0 |
+| Packaged startup, OBS re-enabled | Exit code 0 |
+| Python compilation | Passed for `products/hub` and `shared` |
+| `git diff --check` before acceptance documentation | Passed |
 
 ## Next recommended steps
 
-1. Review the OBS conversion against the public data and package-boundary contracts.
-2. Diagnose the Windows forced-termination/mutex crash-log handle issue separately.
-3. Decide whether remaining static OBS Automation adapters belong in the module
-   before merging; avoid creating a duplicate editor framework without evidence.
-4. If accepted, merge through the repository's normal review process and rerun
-   the full gate from the integration result.
-5. Only then consider Modules-page, navigation, or docking work.
+1. Diagnose the Windows forced-termination/mutex crash-log handle issue separately.
+2. Address the four active Hub behavior issues in the handoff.
+3. Correct the non-blocking OBS Variable source-label presentation defect.
+4. Make static OBS presentation adapters provider-neutral only where another
+   module or a concrete maintenance benefit justifies the abstraction.
+5. Consider Modules-page, navigation, or docking work as separate scoped changes.
 
 ## Maintenance rules
 

@@ -2,8 +2,8 @@
 
 > Long-term product and architecture continuity reference.
 >
-> Verified against `feature/obs-module-conversion` at commit `43d2bb4` on
-> 2026-10-24. Use [DEVELOPMENT_STATUS.md](DEVELOPMENT_STATUS.md) for the
+> Verified through final OBS module acceptance and integration into `develop`
+> on 2026-10-25. Use [DEVELOPMENT_STATUS.md](DEVELOPMENT_STATUS.md) for the
 > current working state and [ARCHITECTURE.md](ARCHITECTURE.md) for code-level
 > structure.
 
@@ -104,10 +104,9 @@ remain interpretable and visible as unavailable. Duplicate stable IDs are
 errors; load order never selects a winner. Enable/disable takes effect after
 restart. Runtime hot unload is not implemented.
 
-### Current OBS proof of concept
+### Accepted OBS module conversion
 
-The isolated OBS conversion is **PARTIAL/READY FOR REVIEW** on
-`feature/obs-module-conversion`:
+The OBS conversion is **IMPLEMENTED/ACCEPTED** and integrated into `develop`:
 
 - **IMPLEMENTED** — module ID `streamhouse.obs`;
 - **IMPLEMENTED** — service lifecycle, connection state, triggers, Variables,
@@ -115,9 +114,12 @@ The isolated OBS conversion is **PARTIAL/READY FOR REVIEW** on
 - **IMPLEMENTED** — existing paths, protected password semantics, task/trigger
   IDs, and routine references are preserved;
 - **IMPLEMENTED** — disabled OBS keeps static definitions and skips tasks as unavailable;
-- **PARTIAL** — Core Automation editor, simulator, transfer, and Wiki adapters
-  still contain static OBS-specific presentation/contract knowledge;
-- **PLANNED** — merge/review into `develop`; `develop` remains unchanged.
+- **IMPLEMENTED** — packaged enabled/disabled/re-enabled startup, Automation
+  compatibility, triggers, Variables, Backup, Default Audio Input, and clean
+  shutdown passed final acceptance;
+- **FOLLOW-UP** — Core Automation editor, simulator, transfer, task metadata,
+  and Wiki adapters retain stable OBS-specific presentation/contract knowledge.
+  This does not duplicate runtime ownership or create module-to-module coupling.
 
 ## Automation
 
@@ -170,7 +172,7 @@ supported runtime architecture.
 | Integration | Status | Boundary |
 | --- | --- | --- |
 | Twitch | **IMPLEMENTED** | Helix + EventSub services under `products/hub/twitch/`; currently Core-wired, not converted to a module. |
-| OBS | **PARTIAL/READY FOR REVIEW** | First bundled module conversion; WebSocket transport remains under `products/hub/obs_service/` but lifecycle owner is `streamhouse.obs`. |
+| OBS | **IMPLEMENTED/ACCEPTED** | First accepted bundled module; WebSocket transport remains under `products/hub/obs_service/` and lifecycle owner is `streamhouse.obs`. |
 | Local Music Player | **IMPLEMENTED** | Versioned localhost WebSocket; independent player owns discovery files, token, state, and playback. |
 | Streamhouse AI | **IMPLEMENTED** | Separate process using versioned localhost presence/HTTP contracts; Hub contains no model runtime. |
 | Touch Portal | **IMPLEMENTED/EXPERIMENTAL** | Loopback API lists and runs routines by stable ID. |
@@ -228,7 +230,7 @@ The detailed open questions remain in
 - **PLANNED** — user-facing Modules page and restart-required enablement workflow.
 - **PLANNED** — navigation ordering and module tab persistence.
 - **PLANNED** — dock contribution and recovery contract.
-- **PLANNED** — OBS conversion review/merge, then evidence-based later module conversions.
+- **PLANNED** — evidence-based later module conversions after the accepted OBS foundation.
 - **PROPOSED** — Broadcaster/PRISM provider modules and live-use panels.
 - **PROPOSED** — stronger generic provider routing only after more than one real provider exists.
 - **UNKNOWN** — final third-party trust, signing, dependency, and marketplace model.
@@ -236,10 +238,10 @@ The detailed open questions remain in
 ## Roadmap
 
 1. **IMPLEMENTED** — public Alpha foundation through `v0.2.1-alpha`.
-2. **IMPLEMENTED** — Core 0.3 module contracts and trusted discovery on the modular branch.
-3. **PARTIAL** — OBS module proof of concept, packaged startup fixed and ready for review.
-4. **PLANNED** — review and integrate the modular work without regressing public data.
-5. **PLANNED** — Modules/navigation/docking UX only when contracts are proven.
-6. **PROPOSED** — additional first-party modules and future products through Core contracts.
+2. **IMPLEMENTED** — Core 0.3 module contracts and trusted discovery on `develop`.
+3. **IMPLEMENTED/ACCEPTED** — OBS is the first accepted bundled module; packaged
+   startup and public-data compatibility passed final acceptance.
+4. **PLANNED** — Modules/navigation/docking UX only when contracts are proven.
+5. **PROPOSED** — additional first-party modules and future products through Core contracts.
 
 This roadmap expresses direction, not release promises or dates.

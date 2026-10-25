@@ -193,7 +193,7 @@ listeners, and releases single-instance ownership through the outer runner.
 
 | Area | Current state | Future direction |
 | --- | --- | --- |
-| OBS | First module conversion, ready for review | Prove integration, then merge deliberately |
+| OBS | First accepted bundled module | Preserve public contracts and use the proven Core contribution lifecycle |
 | Twitch/Music | Core-wired services | No conversion scheduled in current task |
 | Navigation | Main buttons/stack plus contributed OBS tab | Reorderable scrolling top; pinned Modules/Settings/Wiki |
 | Docks | Developer dock only; no module dock registry | Optional live-use dock contributions |
