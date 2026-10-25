@@ -114,8 +114,14 @@ def test_contextual_resolution_and_safe_placeholder_rendering() -> None:
     assert not registry.resolve("channel_points.reward_id", command).available
     definition = registry.definition("channel_points.redeemed_at")
     assert definition.data_type == VariableDataType.DATETIME
+    assert definition.source == "Twitch Context"
     assert definition.lifetime_label == "Routine"
     assert definition.context_label == "Channel Point Redemption"
+
+    obs_definition = registry.definition("obs.scene")
+    assert obs_definition is not None
+    assert obs_definition.source == "OBS Context"
+    assert obs_definition.context_label == "Matching OBS event"
 
 
 def test_subscription_and_raid_context_definitions_are_typed_and_contextual() -> None:
@@ -867,6 +873,13 @@ def test_variables_page_lists_contextual_definitions_without_fake_values() -> No
             assert page.table.item(row, 6).text() == "Routine"
 
         command_row = names["{command.data}"]
+        user_row = names["{user.id}"]
+        obs_row = names["{obs.scene}"]
+        assert page.table.item(user_row, 2).text() == "Twitch Context"
+        assert page.table.item(obs_row, 2).text() == "OBS Context"
+        assert page.table.item(obs_row, 5).text() == "Matching OBS event"
+        assert page.source_combo.findData("Twitch Context") >= 0
+        assert page.source_combo.findData("OBS Context") >= 0
         assert page.table.item(command_row, 5).text() == "Chat Command routine"
         page.table.selectRow(command_row)
         assert "Context: Chat Command routine" in page.details_label.text()

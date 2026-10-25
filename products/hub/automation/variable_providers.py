@@ -490,6 +490,10 @@ def _context_presentation(name: str) -> tuple[str, str]:
     }.get(namespace, (namespace.title(), "Matching trigger context"))
 
 
+def _context_source(name: str) -> str:
+    return "OBS Context" if name.startswith("obs.") else "Twitch Context"
+
+
 def context_provider() -> CallbackVariableProvider:
     definitions = tuple(
         VariableDefinition(
@@ -497,7 +501,7 @@ def context_provider() -> CallbackVariableProvider:
             display_name=display,
             description=description,
             data_type=data_type,
-            source="Twitch Context",
+            source=_context_source(name),
             category=_context_presentation(name)[0],
             availability=VariableAvailability.CONTEXTUAL,
             required_context=tuple(_aliases),

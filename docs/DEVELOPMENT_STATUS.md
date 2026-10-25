@@ -21,15 +21,14 @@
    outgoing raids lack a distinct `Raid Out Started` trigger; raid landing
    navigation starts too late; normal Twitch reconnect/renewal can create
    visible interruption or chat noise; and one Windows forced-termination test
-   currently retains a crash-log handle. Contextual `obs.*` event Variables also
-   use the generic `Twitch Context` source label despite correct OBS context behavior.
+   currently retains a crash-log handle.
 6. **Latest OBS acceptance:** 372 unique relevant tests and 70 subtests passed;
    packaged Hub/AI smoke passed; packaged startup exited 0 with OBS disabled and
    again after re-enabling; compilation and `git diff --check` passed.
 7. **Immediate next steps:** address the four confirmed Hub issues below;
-   investigate the independent Windows forced-termination test; correct the
-   non-blocking OBS Variable source label; and consider provider-neutral
-   presentation adapters only where they materially simplify future modules.
+   investigate the independent Windows forced-termination test; and consider
+   provider-neutral presentation adapters only where they materially simplify
+   future modules.
 8. **Read next:** [master reference](STREAMHOUSE_MASTER_REFERENCE.md),
    [architecture](ARCHITECTURE.md), [0.3 foundation](architecture/hub-0.3-foundation.md),
    [implementation map](architecture/overview.md), and
@@ -72,6 +71,8 @@ OBS is the first accepted bundled Hub module. No Twitch or Music conversion has 
 - Packaged smoke startup now exits cleanly with OBS enabled and disabled.
 - Final OBS acceptance passed at feature HEAD `f3db6f8`; the conversion is
   approved and integrated into `develop`.
+- Contextual `obs.*` event Variables now use the provider-appropriate
+  `OBS Context` source label while Twitch context labels remain unchanged.
 
 ## Accepted module conversions
 
@@ -93,8 +94,6 @@ Non-blocking follow-ups remain:
 - Core Automation editor/simulator/transfer/Wiki adapters retain static OBS
   contract imports. They do not duplicate runtime ownership or create
   module-to-module coupling, but can become provider-neutral where justified.
-- Contextual `obs.*` event Variables use the generic `Twitch Context` source
-  label in the Variables table; context, availability, and resolution are correct.
 - There is no user-facing Modules management page yet.
 
 No OBS persistence schema migration was introduced. Existing
@@ -147,9 +146,6 @@ Reproduction/validation requirements:
   source is OAuth refresh, EventSub/WebSocket lifecycle, chat transport, or
   another layer before choosing a fix. Normal recovery should be fast and quiet
   in chat while retaining useful diagnostics in logs.
-- **OBS Variable source label:** contextual `obs.*` event Variables currently
-  show the generic `Twitch Context` source label. This is a presentation defect;
-  their actual OBS context, status, availability, and resolution are correct.
 - **Known test issue:**
   `WindowsInstanceMutexTests.test_forced_termination_releases_lock_and_preserves_abnormal_marker`
   currently fails because the force-terminated helper retains the named mutex
@@ -182,10 +178,9 @@ Reproduction/validation requirements:
 
 1. Diagnose the Windows forced-termination/mutex crash-log handle issue separately.
 2. Address the four active Hub behavior issues in the handoff.
-3. Correct the non-blocking OBS Variable source-label presentation defect.
-4. Make static OBS presentation adapters provider-neutral only where another
+3. Make static OBS presentation adapters provider-neutral only where another
    module or a concrete maintenance benefit justifies the abstraction.
-5. Consider Modules-page, navigation, or docking work as separate scoped changes.
+4. Consider Modules-page, navigation, or docking work as separate scoped changes.
 
 ## Maintenance rules
 
