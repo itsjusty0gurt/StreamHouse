@@ -10,9 +10,11 @@ from PySide6.QtCore import QSettings, Qt, QRect
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
+    QHeaderView,
     QMainWindow,
     QPushButton,
     QSplitter,
+    QTableWidget,
     QTabWidget,
     QWidget,
 )
@@ -179,6 +181,38 @@ class WindowStateStoreTests(unittest.TestCase):
             self.assertEqual(restored_tabs.currentIndex(), 1)
             self.assertEqual(restored_editor_tabs.currentIndex(), 1)
             self.assertTrue(restored_sort_button.isChecked())
+
+    def test_automation_variable_column_widths_round_trip(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            settings = QSettings(
+                str(Path(directory) / "window.ini"),
+                QSettings.Format.IniFormat,
+            )
+            store = WindowStateStore(settings)
+            original = QMainWindow()
+            original_table = QTableWidget(0, 3, original)
+            original_table.setObjectName("automationVariablesTable")
+            for column, width in enumerate((260, 180, 90)):
+                original_table.setColumnWidth(column, width)
+            original.setCentralWidget(original_table)
+
+            store.save(original)
+
+            restored = QMainWindow()
+            restored_table = QTableWidget(0, 3, restored)
+            restored_table.setObjectName("automationVariablesTable")
+            restored.setCentralWidget(restored_table)
+            store.restore(restored)
+
+            assert [
+                restored_table.columnWidth(column)
+                for column in range(3)
+            ] == [260, 180, 90]
+            assert all(
+                restored_table.horizontalHeader().sectionResizeMode(column)
+                == QHeaderView.ResizeMode.Interactive
+                for column in range(3)
+            )
 
 
 if __name__ == "__main__":

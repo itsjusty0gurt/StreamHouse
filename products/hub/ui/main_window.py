@@ -936,7 +936,6 @@ class MainWindow(QMainWindow):
             self.ui.dashboardButton,
             self.ui.twitchButton,
             self.automation_button,
-            self.timers_button,
             self.wiki_button,
             self.connections_button,
             self.ui.logsButton,
@@ -1019,7 +1018,6 @@ class MainWindow(QMainWindow):
         self.ui.dashboardButton.clicked.connect(self.show_dashboard)
         self.ui.twitchButton.clicked.connect(self.show_twitch)
         self.automation_button.clicked.connect(self.show_automation)
-        self.timers_button.clicked.connect(self.show_timers)
         self.wiki_button.clicked.connect(self.show_wiki)
         self.connections_button.clicked.connect(self.show_connections)
         self.ui.logsButton.clicked.connect(self.show_logs)
@@ -1400,7 +1398,6 @@ class MainWindow(QMainWindow):
             self.ui.dashboardButton,
             self.ui.twitchButton,
             self.automation_button,
-            self.timers_button,
             self.wiki_button,
             self.connections_button,
             self.ui.logsButton,
@@ -2948,19 +2945,16 @@ class MainWindow(QMainWindow):
         self.ui.mainStack.addWidget(self.wiki_page)
 
     def _build_timers_page(self) -> None:
-        self.timers_button = QPushButton("Timers")
-        self.timers_button.setCheckable(True)
-        self.ui.verticalLayout.insertWidget(4, self.timers_button)
         self.timers_page = TimersPage(
             self.twitch_command_trigger_store.routine_store,
             self.core_trigger_store,
             self.automation_timer_scheduler,
             create_routine=self.automation_page.create_routine,
-            parent=self,
+            parent=self.automation_page.tabs,
         )
         self.timers_page.open_routine_requested.connect(self.open_routine)
         self.timers_page.timers_changed.connect(self.automation_page.refresh)
-        self.ui.mainStack.addWidget(self.timers_page)
+        self.automation_page.tabs.addTab(self.timers_page, "Timers")
 
     def _build_counters_page(self) -> None:
         self.counters_page = CountersPage(
@@ -6551,8 +6545,9 @@ class MainWindow(QMainWindow):
     @Slot()
     def show_timers(self) -> None:
         self.timers_page.refresh()
-        self.ui.mainStack.setCurrentWidget(self.timers_page)
-        self.timers_button.setChecked(True)
+        self.ui.mainStack.setCurrentWidget(self.automation_page)
+        self.automation_page.tabs.setCurrentWidget(self.timers_page)
+        self.automation_button.setChecked(True)
 
     @Slot(str)
     def open_routine(self, routine_id: str) -> bool:

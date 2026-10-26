@@ -11,7 +11,10 @@ from PySide6.QtWidgets import (
     QTableWidgetItem,
 )
 
-from products.hub.ui.table_sizing import configure_semantic_columns
+from products.hub.ui.table_sizing import (
+    configure_semantic_columns,
+    make_columns_interactive,
+)
 
 
 def test_semantic_table_columns_stretch_text_and_compact_metadata() -> None:
@@ -87,5 +90,37 @@ def test_semantic_table_columns_support_user_resizable_header_compact_metadata()
     table.show()
     application.processEvents()
     assert header.sectionSize(1) == resized
+    table.deleteLater()
+    application.processEvents()
+
+
+def test_semantic_widths_can_be_frozen_for_manual_resizing() -> None:
+    application = QApplication.instance() or QApplication([])
+    table = QTableWidget(1, 3)
+    table.setHorizontalHeaderLabels(("Variable", "Status", "Context"))
+    for column, value in enumerate(("{user.display_name}", "Available", "Viewer")):
+        table.setItem(0, column, QTableWidgetItem(value))
+    configure_semantic_columns(
+        table,
+        stretch=(0,),
+        compact=(),
+        header_compact=(1, 2),
+    )
+    table.resize(600, 240)
+    table.show()
+    application.processEvents()
+    defaults = [table.columnWidth(column) for column in range(3)]
+
+    make_columns_interactive(table)
+
+    header = table.horizontalHeader()
+    assert all(
+        header.sectionResizeMode(column) == QHeaderView.ResizeMode.Interactive
+        for column in range(3)
+    )
+    assert [table.columnWidth(column) for column in range(3)] == defaults
+    header.resizeSection(0, defaults[0] + 40)
+    application.processEvents()
+    assert table.columnWidth(0) == defaults[0] + 40
     table.deleteLater()
     application.processEvents()

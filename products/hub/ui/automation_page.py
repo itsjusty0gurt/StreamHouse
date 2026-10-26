@@ -3715,7 +3715,7 @@ class AutomationPage(QWidget):
         root.setContentsMargins(12, 10, 12, 12)
         self.page_header = PageHeader(
             "Automation",
-            "Manage routines, triggers, tasks, queues, and run history.",
+            "Manage routines, triggers, tasks, queues, timers, and run history.",
             self,
         )
         root.addWidget(self.page_header)

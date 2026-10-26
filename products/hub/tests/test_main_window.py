@@ -526,12 +526,11 @@ class MainWindowTests(unittest.TestCase):
         )
         self.assertFalse(hasattr(self.window, "soundboard_page"))
 
-    def test_timers_navigation_button_uses_shared_responsive_sizing(self) -> None:
+    def test_timers_live_under_automation_navigation(self) -> None:
         navigation_buttons = (
             self.window.ui.dashboardButton,
             self.window.ui.twitchButton,
             self.window.automation_button,
-            self.window.timers_button,
             self.window.wiki_button,
             self.window.connections_button,
             self.window.ui.logsButton,
@@ -551,11 +550,21 @@ class MainWindowTests(unittest.TestCase):
                     QSizePolicy.Policy.Fixed,
                 )
 
-        self.window.timers_button.click()
+        self.assertFalse(hasattr(self.window, "timers_button"))
+        self.assertEqual(
+            self.window.ui.mainStack.indexOf(self.window.timers_page),
+            -1,
+        )
+        self.window.show_timers()
         self.assertIs(
             self.window.ui.mainStack.currentWidget(),
+            self.window.automation_page,
+        )
+        self.assertIs(
+            self.window.automation_page.tabs.currentWidget(),
             self.window.timers_page,
         )
+        self.assertTrue(self.window.automation_button.isChecked())
 
     def test_twitch_chat_keeps_stacked_side_column_across_layouts(self) -> None:
         chat = self.window.ui.twitchDetailTabs
@@ -2769,7 +2778,6 @@ class MainWindowTests(unittest.TestCase):
                 "Dashboard",
                 "Your Channel",
                 "Automation",
-                "Timers",
                 "Wiki",
                 "Connections",
                 "Logs",
@@ -2794,7 +2802,7 @@ class MainWindowTests(unittest.TestCase):
                 self.window.automation_page.tabs.tabText(index)
                 for index in range(self.window.automation_page.tabs.count())
             ],
-            ["Routines", "Queues", "Variables", "Run History"],
+            ["Routines", "Queues", "Variables", "Run History", "Timers"],
         )
 
         self.assertFalse(self.window.channel_points_page.create_button.isEnabled())

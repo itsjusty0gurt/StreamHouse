@@ -785,21 +785,28 @@ def test_variables_page_and_picker_search_canonical_names() -> None:
         registry.register(context_provider())
         registry.register(CustomVariableProvider(store))
         page = VariablesPage(registry, store)
+        page.resize(800, 500)
+        page.show()
+        application.processEvents()
         page_header = page.table.horizontalHeader()
-        for column in (0, 1, 4):
+        for column in range(page.table.columnCount()):
             assert (
                 page_header.sectionResizeMode(column)
-                == QHeaderView.ResizeMode.Stretch
+                == QHeaderView.ResizeMode.Interactive
             )
-        for column in (2, 3, 5, 6, 7):
-            assert (
-                page_header.sectionResizeMode(column)
-                == QHeaderView.ResizeMode.ResizeToContents
-            )
+        assert page_header.sectionSize(0) > page_header.sectionSize(4)
+        assert page_header.sectionSize(0) > page_header.sectionSize(5)
+        manually_resized = page_header.sectionSize(0) + 40
+        page_header.resizeSection(0, manually_resized)
         page.search_edit.setText("game_mode")
+        application.processEvents()
+        assert page_header.sectionSize(0) == manually_resized
         assert page.table.rowCount() == 1
         assert page.table.horizontalHeaderItem(0).text() == "Placeholders"
         assert page.table.item(0, 0).text() == "{custom.game_mode}"
+        page.resize(360, 500)
+        application.processEvents()
+        assert page.table.horizontalScrollBar().maximum() > 0
         assert not hasattr(page, "copy_name_button")
         page.table.selectRow(0)
         page.copy_placeholder_button.click()

@@ -45,3 +45,16 @@ def configure_semantic_columns(
         )
     for column in stretch:
         header.setSectionResizeMode(column, QHeaderView.ResizeMode.Stretch)
+
+
+def make_columns_interactive(table: QTableView) -> None:
+    """Preserve the current semantic widths, then allow manual resizing."""
+
+    header = table.horizontalHeader()
+    widths = tuple(
+        header.sectionSize(column)
+        for column in range(table.model().columnCount())
+    )
+    for column, width in enumerate(widths):
+        header.setSectionResizeMode(column, QHeaderView.ResizeMode.Interactive)
+        header.resizeSection(column, width)

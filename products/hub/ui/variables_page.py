@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QTimer, Qt, Signal
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -34,7 +34,10 @@ from products.hub.automation.variable_registry import (
 )
 from products.hub.ui.variable_picker import VariablePickerDialog
 from products.hub.ui.page_header import PageHeader
-from products.hub.ui.table_sizing import configure_semantic_columns
+from products.hub.ui.table_sizing import (
+    configure_semantic_columns,
+    make_columns_interactive,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -137,6 +140,7 @@ class VariablesPage(QWidget):
         toolbar.addWidget(self.source_combo)
         layout.addLayout(toolbar)
         self.table = QTableWidget(0, 8)
+        self.table.setObjectName("automationVariablesTable")
         self.table.setHorizontalHeaderLabels(
             (
                 "Placeholders",
@@ -151,8 +155,9 @@ class VariablesPage(QWidget):
         )
         configure_semantic_columns(
             self.table,
-            stretch=(0, 1, 4),
-            compact=(2, 3, 5, 6, 7),
+            stretch=(0,),
+            compact=(2, 3, 6, 7),
+            header_compact=(4, 5),
         )
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
@@ -176,7 +181,19 @@ class VariablesPage(QWidget):
         self.edit_button.clicked.connect(self._edit)
         self.delete_button.clicked.connect(self._delete)
         self.picker_button.clicked.connect(self._open_picker)
+        self._columns_interactive = False
         self.refresh()
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        if not self._columns_interactive:
+            QTimer.singleShot(0, self._enable_manual_column_resizing)
+
+    def _enable_manual_column_resizing(self) -> None:
+        if self._columns_interactive:
+            return
+        make_columns_interactive(self.table)
+        self._columns_interactive = True
 
     def refresh(self) -> None:
         self.rebuild_catalog()

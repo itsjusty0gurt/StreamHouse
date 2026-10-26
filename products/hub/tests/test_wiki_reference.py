@@ -499,6 +499,7 @@ def test_command_and_timer_references_document_stable_open_routine_navigation() 
         assert "stable id" in text
         assert "expands" in text
         assert "scrolls it into view" in text
+    assert "automation > timers" in entries["trigger:timer"]
 
 
 def test_all_current_obs_triggers_have_exact_ui_names_and_event_descriptions() -> None:

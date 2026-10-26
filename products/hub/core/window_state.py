@@ -4,8 +4,10 @@ from PySide6.QtCore import QByteArray, QSettings
 from PySide6.QtWidgets import (
     QAbstractButton,
     QComboBox,
+    QHeaderView,
     QMainWindow,
     QSplitter,
+    QTableView,
     QTabWidget,
     QWidget,
 )
@@ -80,6 +82,35 @@ class WindowStateStore:
             if tabs is not None:
                 index = int(self.settings.value(key, tabs.currentIndex()))
                 tabs.setCurrentIndex(max(0, min(index, tabs.count() - 1)))
+        variables_table = window.findChild(
+            QTableView,
+            "automationVariablesTable",
+        )
+        saved_widths = self.settings.value(
+            "window/automation_variables_column_widths",
+            [],
+        )
+        if variables_table is not None and isinstance(
+            saved_widths,
+            (list, tuple),
+        ):
+            column_count = variables_table.model().columnCount()
+            if len(saved_widths) == column_count:
+                try:
+                    widths = tuple(int(width) for width in saved_widths)
+                except (TypeError, ValueError):
+                    widths = ()
+                if len(widths) == column_count and all(
+                    width > 0 for width in widths
+                ):
+                    header = variables_table.horizontalHeader()
+                    for column, width in enumerate(widths):
+                        header.setSectionResizeMode(
+                            column,
+                            QHeaderView.ResizeMode.Interactive,
+                        )
+                        header.resizeSection(column, width)
+                    variables_table.setProperty("columnWidthsRestored", True)
         return restored
 
     def save(self, window: QMainWindow) -> None:
@@ -131,4 +162,17 @@ class WindowStateStore:
             tabs = window.findChild(QTabWidget, object_name)
             if tabs is not None:
                 self.settings.setValue(key, tabs.currentIndex())
+        variables_table = window.findChild(
+            QTableView,
+            "automationVariablesTable",
+        )
+        if variables_table is not None:
+            header = variables_table.horizontalHeader()
+            self.settings.setValue(
+                "window/automation_variables_column_widths",
+                [
+                    header.sectionSize(column)
+                    for column in range(variables_table.model().columnCount())
+                ],
+            )
         self.settings.sync()
