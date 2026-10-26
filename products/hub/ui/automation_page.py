@@ -3110,9 +3110,10 @@ class TaskTestDialog(QDialog):
 
 
 class RoutineTreeWidget(QTreeWidget):
-    """Routine-only drag and drop that never nests routines inside routines."""
+    """Routine/group drag and drop that preserves the two-level tree."""
 
     routine_dropped = Signal(str, str, int)
+    group_dropped = Signal(str, int)
     KIND_ROLE = int(Qt.ItemDataRole.UserRole) + 1
 
     def _schedule_routine_drop(
@@ -3132,6 +3133,14 @@ class RoutineTreeWidget(QTreeWidget):
             ),
         )
 
+    def _schedule_group_drop(self, group_id: str, destination_index: int) -> None:
+        """Persist group presentation order after Qt finishes the active drop."""
+        QTimer.singleShot(
+            0,
+            self,
+            lambda: self.group_dropped.emit(group_id, destination_index),
+        )
+
     def dropEvent(self, event) -> None:
         if not bool(self.property("routine_reorder_enabled")):
             event.ignore()
@@ -3139,12 +3148,13 @@ class RoutineTreeWidget(QTreeWidget):
         selected = self.selectedItems()
         source = selected[0] if selected else None
         target = self.itemAt(event.position().toPoint())
-        if (
-            source is None
-            or target is None
-            or source is target
-            or source.data(0, self.KIND_ROLE) != "routine"
-        ):
+        if source is None or target is None or source is target:
+            event.ignore()
+            return
+        if source.data(0, self.KIND_ROLE) == "group":
+            self._drop_group(source, target, event)
+            return
+        if source.data(0, self.KIND_ROLE) != "routine":
             event.ignore()
             return
         target_kind = target.data(0, self.KIND_ROLE)
@@ -3176,6 +3186,50 @@ class RoutineTreeWidget(QTreeWidget):
             str(destination.data(0, Qt.ItemDataRole.UserRole) or ""),
             destination_index,
         )
+        event.acceptProposedAction()
+
+    def _drop_group(
+        self,
+        source: QTreeWidgetItem,
+        target: QTreeWidgetItem,
+        event,
+    ) -> None:
+        group_id = str(source.data(0, Qt.ItemDataRole.UserRole) or "")
+        if not group_id or source.parent() is not None:
+            event.ignore()
+            return
+        if target.data(0, self.KIND_ROLE) == "routine":
+            target = target.parent()
+        if target is None or target.data(0, self.KIND_ROLE) != "group":
+            event.ignore()
+            return
+
+        source_index = self.indexOfTopLevelItem(source)
+        target_index = self.indexOfTopLevelItem(target)
+        if source_index < 1 or target_index < 0:
+            event.ignore()
+            return
+        # Ungrouped is a fixed inbox at row zero. Dropping on it puts the
+        # custom group first without allowing anything above it.
+        if target_index == 0:
+            destination_tree_index = 1
+        else:
+            destination_tree_index = target_index
+            if (
+                self.dropIndicatorPosition()
+                != QAbstractItemView.DropIndicatorPosition.AboveItem
+            ):
+                destination_tree_index += 1
+        moved = self.takeTopLevelItem(source_index)
+        if source_index < destination_tree_index:
+            destination_tree_index -= 1
+        destination_tree_index = max(
+            1,
+            min(destination_tree_index, self.topLevelItemCount()),
+        )
+        self.insertTopLevelItem(destination_tree_index, moved)
+        self.setCurrentItem(moved)
+        self._schedule_group_drop(group_id, destination_tree_index - 1)
         event.acceptProposedAction()
 
 
@@ -3573,6 +3627,7 @@ class AutomationPage(QWidget):
             lambda item: self._set_group_collapsed(item, False)
         )
         self.routine_tree.routine_dropped.connect(self._routine_dropped)
+        self.routine_tree.group_dropped.connect(self._group_dropped)
         self.routine_enabled_check.toggled.connect(self._toggle_selected_routine)
         self.test_routine_button.clicked.connect(self._test_selected_routine)
         self._install_routine_shortcuts()
@@ -4182,10 +4237,12 @@ class AutomationPage(QWidget):
             group_item = QTreeWidgetItem((f"{title} ({len(routines)})",))
             group_item.setData(0, Qt.ItemDataRole.UserRole, group_id)
             group_item.setData(0, self.KIND_ROLE, "group")
-            group_item.setFlags(
-                (group_item.flags() | Qt.ItemFlag.ItemIsDropEnabled)
-                & ~Qt.ItemFlag.ItemIsDragEnabled
-            )
+            group_flags = group_item.flags() | Qt.ItemFlag.ItemIsDropEnabled
+            if group_id:
+                group_flags |= Qt.ItemFlag.ItemIsDragEnabled
+            else:
+                group_flags &= ~Qt.ItemFlag.ItemIsDragEnabled
+            group_item.setFlags(group_flags)
             self.routine_tree.addTopLevelItem(group_item)
             expanded = self._group_expansion_state.get(
                 group_id,
@@ -4516,6 +4573,28 @@ class AutomationPage(QWidget):
             self.refresh(routine_id)
             return
         self.select_routine(moved.routine_id)
+
+    def _group_dropped(self, group_id: str, index: int) -> None:
+        try:
+            self.routine_store.reorder_group(group_id, index)
+        except (OSError, ValueError) as error:
+            self._error("Could Not Move Group", error)
+            self.refresh()
+            return
+        self.refresh()
+        item = self._routine_group_item(group_id)
+        if item is not None:
+            self.routine_tree.setCurrentItem(item)
+
+    def _routine_group_item(self, group_id: str) -> QTreeWidgetItem | None:
+        for index in range(self.routine_tree.topLevelItemCount()):
+            item = self.routine_tree.topLevelItem(index)
+            if (
+                item.data(0, self.KIND_ROLE) == "group"
+                and str(item.data(0, Qt.ItemDataRole.UserRole) or "") == group_id
+            ):
+                return item
+        return None
 
     def _show_routine(self, routine) -> None:
         enabled = routine is not None

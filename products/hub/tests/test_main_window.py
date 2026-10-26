@@ -15,6 +15,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtCore import QCoreApplication, QEvent, QPoint, Qt
 from PySide6.QtGui import QContextMenuEvent
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QApplication,
     QBoxLayout,
     QDialog,
@@ -1548,6 +1549,93 @@ class MainWindowTests(unittest.TestCase):
             [second.routine_id, first.routine_id],
         )
         self.assertEqual(page._selected_routine_id, second.routine_id)
+
+    def test_group_drag_persists_order_without_changing_ids_or_membership(self) -> None:
+        store = self.twitch_command_trigger_store.routine_store
+        original_group_ids = [group.group_id for group in store.groups]
+        first = store.add_group("First")
+        second = store.add_group("Second")
+        third = store.add_group("Third")
+        routine = store.add("Stay in First", group_id=first.group_id)
+        page = self.window.automation_page
+        page.refresh()
+        source_item = self._routine_group_item(third.group_id)
+        target_item = self._routine_group_item(first.group_id)
+        page.routine_tree.setCurrentItem(source_item)
+        event = Mock()
+        position = Mock()
+        position.toPoint.return_value = QPoint(0, 0)
+        event.position.return_value = position
+
+        with (
+            patch.object(page.routine_tree, "itemAt", return_value=target_item),
+            patch.object(
+                page.routine_tree,
+                "dropIndicatorPosition",
+                return_value=QAbstractItemView.DropIndicatorPosition.AboveItem,
+            ),
+        ):
+            page.routine_tree.dropEvent(event)
+        self.application.processEvents()
+
+        self.assertEqual(
+            [group.group_id for group in store.groups],
+            [*original_group_ids, third.group_id, first.group_id, second.group_id],
+        )
+        self.assertEqual(store.get(routine.routine_id).group_id, first.group_id)
+        self.assertEqual(
+            page.routine_tree.currentItem().data(0, Qt.ItemDataRole.UserRole),
+            third.group_id,
+        )
+        event.acceptProposedAction.assert_called_once_with()
+
+        reloaded = RoutineStore(store.path)
+        reloaded.load()
+        self.assertEqual(
+            [group.group_id for group in reloaded.groups],
+            [*original_group_ids, third.group_id, first.group_id, second.group_id],
+        )
+        self.assertEqual(reloaded.get(routine.routine_id).group_id, first.group_id)
+
+    def test_only_custom_groups_are_draggable(self) -> None:
+        store = self.twitch_command_trigger_store.routine_store
+        group = store.add_group("Custom")
+        page = self.window.automation_page
+        page.refresh()
+
+        ungrouped = self._routine_group_item("")
+        custom = self._routine_group_item(group.group_id)
+        self.assertFalse(ungrouped.flags() & Qt.ItemFlag.ItemIsDragEnabled)
+        self.assertTrue(custom.flags() & Qt.ItemFlag.ItemIsDragEnabled)
+
+    def test_routine_filter_does_not_change_saved_group_order(self) -> None:
+        store = self.twitch_command_trigger_store.routine_store
+        first = store.add_group("Manual First")
+        second = store.add_group("Manual Second")
+        store.add("Needle routine", group_id=second.group_id)
+        store.reorder_group(second.group_id, store.groups.index(first))
+        saved_order = [group.group_id for group in store.groups]
+        page = self.window.automation_page
+        page.refresh()
+
+        page.search_edit.setText("Needle")
+        self.assertFalse(page.routine_tree.property("routine_reorder_enabled"))
+        self.assertFalse(page.routine_tree.dragEnabled())
+        self.assertEqual([group.group_id for group in store.groups], saved_order)
+
+        page.search_edit.clear()
+        self.assertTrue(page.routine_tree.property("routine_reorder_enabled"))
+        self.assertEqual([group.group_id for group in store.groups], saved_order)
+        displayed = [
+            str(
+                page.routine_tree.topLevelItem(index).data(
+                    0, Qt.ItemDataRole.UserRole
+                )
+                or ""
+            )
+            for index in range(1, page.routine_tree.topLevelItemCount())
+        ]
+        self.assertEqual(displayed, saved_order)
 
     def test_routine_drag_does_not_expand_collapsed_destination_group(self) -> None:
         store = self.twitch_command_trigger_store.routine_store

@@ -370,6 +370,36 @@ class AutomationServiceTests(unittest.TestCase):
         self.assertEqual(self.store.get(routine.routine_id).group_id, "")
         self.assertEqual(self.store.grouped("")[0].routine_id, routine.routine_id)
 
+    def test_group_reorder_round_trip_preserves_ids_and_membership(self) -> None:
+        first = self.store.add_group("First")
+        second = self.store.add_group("Second")
+        third = self.store.add_group("Third")
+        first_routine = self.store.add("First routine", group_id=first.group_id)
+        third_routine = self.store.add("Third routine", group_id=third.group_id)
+
+        self.store.reorder_group(third.group_id, 0)
+        reloaded = RoutineStore(self.store.path)
+        reloaded.load()
+
+        self.assertEqual(
+            [group.group_id for group in reloaded.groups],
+            [third.group_id, first.group_id, second.group_id],
+        )
+        self.assertEqual(reloaded.get(first_routine.routine_id).group_id, first.group_id)
+        self.assertEqual(reloaded.get(third_routine.routine_id).group_id, third.group_id)
+        self.assertEqual(
+            {routine.routine_id for routine in reloaded.routines},
+            {first_routine.routine_id, third_routine.routine_id},
+        )
+
+        added = reloaded.add_group("Added later")
+        self.assertEqual(reloaded.groups[-1].group_id, added.group_id)
+        self.assertTrue(reloaded.delete_group(second.group_id))
+        self.assertEqual(
+            [group.group_id for group in reloaded.groups],
+            [third.group_id, first.group_id, added.group_id],
+        )
+
     def test_routines_can_move_between_groups_and_reorder(self) -> None:
         first_group = self.store.add_group("First")
         second_group = self.store.add_group("Second")

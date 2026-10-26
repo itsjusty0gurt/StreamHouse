@@ -17,15 +17,15 @@
    stable 0.3 `develop` line without changing public OBS data contracts.
 4. **Active branch:** `develop`; the accepted conversion came from
    `feature/obs-module-conversion` at acceptance HEAD `f3db6f8`.
-5. **Most important unresolved issues:** routine groups cannot be reordered;
-   outgoing raids lack a distinct `Raid Out Started` trigger; raid landing
+5. **Most important unresolved issues:** outgoing raids lack a distinct
+   `Raid Out Started` trigger; raid landing
    navigation starts too late; normal Twitch reconnect/renewal can create
    visible interruption or chat noise; and one Windows forced-termination test
    currently retains a crash-log handle.
 6. **Latest OBS acceptance:** 372 unique relevant tests and 70 subtests passed;
    packaged Hub/AI smoke passed; packaged startup exited 0 with OBS disabled and
    again after re-enabling; compilation and `git diff --check` passed.
-7. **Immediate next steps:** address the four confirmed Hub issues below;
+7. **Immediate next steps:** address the three confirmed Hub issues below;
    investigate the independent Windows forced-termination test; and consider
    provider-neutral presentation adapters only where they materially simplify
    future modules.
@@ -73,6 +73,8 @@ OBS is the first accepted bundled Hub module. No Twitch or Music conversion has 
   approved and integrated into `develop`.
 - Contextual `obs.*` event Variables now use the provider-appropriate
   `OBS Context` source label while Twitch context labels remain unchanged.
+- Automation routine groups can be reordered by drag-and-drop or their context
+  menu, with the custom-group order persisted by stable group identity.
 
 ## Accepted module conversions
 
@@ -129,9 +131,6 @@ Reproduction/validation requirements:
 
 ## Known issues and validation gaps
 
-- **Routine groups cannot be reordered:** the Automation/Routines UI needs to
-  let users reorder routine groups and persist that presentation order without
-  changing stable routine or group identities.
 - **Missing `Raid Out Started` trigger:** Hub needs a distinct Twitch Automation
   trigger for the moment the user confirms an outgoing raid action in Hub. It
   must remain separate from later raid-completed or Twitch-confirmed states;
