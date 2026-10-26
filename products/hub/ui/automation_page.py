@@ -9,8 +9,8 @@ from pathlib import Path
 import re
 from uuid import uuid4
 
-from PySide6.QtCore import QTimer, Qt, Signal
-from PySide6.QtGui import QKeySequence, QShortcut
+from PySide6.QtCore import QPoint, QTimer, Qt, Signal
+from PySide6.QtGui import QDrag, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
+    QFrame,
     QGroupBox,
     QHBoxLayout,
     QInputDialog,
@@ -3116,6 +3117,60 @@ class RoutineTreeWidget(QTreeWidget):
     group_dropped = Signal(str, int)
     KIND_ROLE = int(Qt.ItemDataRole.UserRole) + 1
 
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._drop_line = QFrame(self.viewport())
+        self._drop_line.setObjectName("automationCardDropIndicator")
+        self._drop_line.setFixedHeight(3)
+        self._drop_line.setStyleSheet(
+            "background:#bf94ff; border:none; border-radius:1px;"
+        )
+        self._drop_line.hide()
+
+    def startDrag(self, supported_actions) -> None:  # noqa: N802 - Qt API
+        item = self.currentItem()
+        if item is None or item.data(0, self.KIND_ROLE) != "routine":
+            super().startDrag(supported_actions)
+            return
+        card = self.itemWidget(item, 0)
+        if card is None:
+            super().startDrag(supported_actions)
+            return
+        drag = QDrag(self)
+        drag.setMimeData(self.model().mimeData(self.selectedIndexes()))
+        pixmap = card.grab()
+        drag.setPixmap(pixmap)
+        drag.setHotSpot(QPoint(pixmap.width() // 2, pixmap.height() // 2))
+        indicator_was_shown = self.showDropIndicator()
+        self.setDropIndicatorShown(False)
+        try:
+            drag.exec(Qt.DropAction.MoveAction)
+        finally:
+            self.setDropIndicatorShown(indicator_was_shown)
+            self._clear_drop_indicator()
+
+    def dragMoveEvent(self, event) -> None:  # noqa: N802 - Qt API
+        super().dragMoveEvent(event)
+        selected = self.selectedItems()
+        source = selected[0] if selected else None
+        if source is None or source.data(0, self.KIND_ROLE) != "routine":
+            self._clear_drop_indicator()
+            return
+        point = event.position().toPoint()
+        target = self._drop_target(point)
+        destination = self._routine_drop_destination(target, point.y())
+        if destination is None:
+            self._clear_drop_indicator()
+            event.ignore()
+            return
+        group_item, destination_index, _before = destination
+        self._show_routine_drop_indicator(group_item, destination_index)
+        event.acceptProposedAction()
+
+    def dragLeaveEvent(self, event) -> None:  # noqa: N802 - Qt API
+        self._clear_drop_indicator()
+        super().dragLeaveEvent(event)
+
     def _schedule_routine_drop(
         self,
         routine_id: str,
@@ -3142,12 +3197,14 @@ class RoutineTreeWidget(QTreeWidget):
         )
 
     def dropEvent(self, event) -> None:
+        self._clear_drop_indicator()
         if not bool(self.property("routine_reorder_enabled")):
             event.ignore()
             return
         selected = self.selectedItems()
         source = selected[0] if selected else None
-        target = self.itemAt(event.position().toPoint())
+        point = event.position().toPoint()
+        target = self._drop_target(point)
         if source is None or target is None or source is target:
             event.ignore()
             return
@@ -3157,18 +3214,11 @@ class RoutineTreeWidget(QTreeWidget):
         if source.data(0, self.KIND_ROLE) != "routine":
             event.ignore()
             return
-        target_kind = target.data(0, self.KIND_ROLE)
-        if target_kind == "group":
-            destination = target
-            destination_index = destination.childCount()
-        elif target_kind == "routine" and target.parent() is not None:
-            destination = target.parent()
-            destination_index = destination.indexOfChild(target)
-            if self.dropIndicatorPosition() != QAbstractItemView.DropIndicatorPosition.AboveItem:
-                destination_index += 1
-        else:
+        drop_destination = self._routine_drop_destination(target, point.y())
+        if drop_destination is None:
             event.ignore()
             return
+        destination, destination_index, _before = drop_destination
 
         source_parent = source.parent()
         if source_parent is None:
@@ -3187,6 +3237,71 @@ class RoutineTreeWidget(QTreeWidget):
             destination_index,
         )
         event.acceptProposedAction()
+
+    def _drop_target(self, point: QPoint) -> QTreeWidgetItem | None:
+        target = self.itemAt(point)
+        if target is not None:
+            return target
+        visible_items: list[QTreeWidgetItem] = []
+        for group_index in range(self.topLevelItemCount()):
+            group = self.topLevelItem(group_index)
+            if group.isExpanded() and group.childCount():
+                visible_items.extend(
+                    group.child(child_index)
+                    for child_index in range(group.childCount())
+                )
+            else:
+                visible_items.append(group)
+        if not visible_items:
+            return None
+        return min(
+            visible_items,
+            key=lambda item: abs(self.visualItemRect(item).center().y() - point.y()),
+        )
+
+    def _routine_drop_destination(
+        self,
+        target: QTreeWidgetItem | None,
+        pointer_y: int,
+    ) -> tuple[QTreeWidgetItem, int, bool] | None:
+        if target is None:
+            return None
+        target_kind = target.data(0, self.KIND_ROLE)
+        if target_kind == "group":
+            return target, target.childCount(), False
+        if target_kind != "routine" or target.parent() is None:
+            return None
+        destination = target.parent()
+        before = pointer_y < self.visualItemRect(target).center().y()
+        destination_index = destination.indexOfChild(target) + (0 if before else 1)
+        return destination, destination_index, before
+
+    def _show_routine_drop_indicator(
+        self,
+        group_item: QTreeWidgetItem,
+        destination_index: int,
+    ) -> None:
+        if group_item.childCount():
+            if destination_index <= 0:
+                reference = group_item.child(0)
+                reference_rect = self.visualItemRect(reference)
+                y = reference_rect.top()
+            else:
+                reference = group_item.child(
+                    min(destination_index - 1, group_item.childCount() - 1)
+                )
+                reference_rect = self.visualItemRect(reference)
+                y = reference_rect.bottom() + 1
+        else:
+            reference_rect = self.visualItemRect(group_item)
+            y = self.visualItemRect(group_item).bottom() + 1
+        x = max(reference_rect.left(), 0)
+        self._drop_line.setGeometry(x, y - 1, max(self.viewport().width() - x, 1), 3)
+        self._drop_line.show()
+        self._drop_line.raise_()
+
+    def _clear_drop_indicator(self) -> None:
+        self._drop_line.hide()
 
     def _drop_group(
         self,
@@ -3231,6 +3346,119 @@ class RoutineTreeWidget(QTreeWidget):
         self.setCurrentItem(moved)
         self._schedule_group_drop(group_id, destination_tree_index - 1)
         event.acceptProposedAction()
+
+
+class TaskCardListWidget(QListWidget):
+    """Full-card task reordering with a card-based drag preview."""
+
+    task_dropped = Signal(str, str, int)
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._drop_line = QFrame(self.viewport())
+        self._drop_line.setObjectName("automationCardDropIndicator")
+        self._drop_line.setFixedHeight(3)
+        self._drop_line.setStyleSheet(
+            "background:#bf94ff; border:none; border-radius:1px;"
+        )
+        self._drop_line.hide()
+
+    def startDrag(self, supported_actions) -> None:  # noqa: N802 - Qt API
+        item = self.currentItem()
+        card = self.itemWidget(item) if item is not None else None
+        if item is None or card is None:
+            super().startDrag(supported_actions)
+            return
+        drag = QDrag(self)
+        drag.setMimeData(self.model().mimeData(self.selectedIndexes()))
+        pixmap = card.grab()
+        drag.setPixmap(pixmap)
+        drag.setHotSpot(QPoint(pixmap.width() // 2, pixmap.height() // 2))
+        try:
+            drag.exec(Qt.DropAction.MoveAction)
+        finally:
+            self._clear_drop_indicator()
+
+    def dragMoveEvent(self, event) -> None:  # noqa: N802 - Qt API
+        super().dragMoveEvent(event)
+        source = self.currentItem()
+        if source is None:
+            self._clear_drop_indicator()
+            return
+        point = event.position().toPoint()
+        target = self._drop_target(point)
+        if target is None:
+            self._clear_drop_indicator()
+            event.ignore()
+            return
+        _destination_index, before = self._drop_destination(target, point.y())
+        rect = self.visualItemRect(target)
+        y = rect.top() if before else rect.bottom() + 1
+        self._show_drop_indicator(y)
+        event.acceptProposedAction()
+
+    def dragLeaveEvent(self, event) -> None:  # noqa: N802 - Qt API
+        self._clear_drop_indicator()
+        super().dragLeaveEvent(event)
+
+    def dropEvent(self, event) -> None:  # noqa: N802 - Qt API
+        self._clear_drop_indicator()
+        source = self.currentItem()
+        point = event.position().toPoint()
+        target = self._drop_target(point)
+        if source is None or target is None or source is target:
+            event.ignore()
+            return
+        source_row = self.row(source)
+        destination_index, _before = self._drop_destination(target, point.y())
+        if source_row < destination_index:
+            destination_index -= 1
+        destination_index = max(0, min(destination_index, self.count() - 1))
+        if destination_index == source_row:
+            event.ignore()
+            return
+        task_id = str(source.data(Qt.ItemDataRole.UserRole) or "")
+        routine_id = str(self.property("routine_id") or "")
+        if not routine_id or not task_id:
+            event.ignore()
+            return
+        QTimer.singleShot(
+            0,
+            self,
+            lambda: self.task_dropped.emit(
+                routine_id,
+                task_id,
+                destination_index,
+            ),
+        )
+        event.acceptProposedAction()
+
+    def _drop_target(self, point: QPoint) -> QListWidgetItem | None:
+        target = self.itemAt(point)
+        if target is not None:
+            return target
+        if not self.count():
+            return None
+        return min(
+            (self.item(index) for index in range(self.count())),
+            key=lambda item: abs(self.visualItemRect(item).center().y() - point.y()),
+        )
+
+    def _drop_destination(
+        self,
+        target: QListWidgetItem,
+        pointer_y: int,
+    ) -> tuple[int, bool]:
+        before = pointer_y < self.visualItemRect(target).center().y()
+        return self.row(target) + (0 if before else 1), before
+
+    def _show_drop_indicator(self, y: int) -> None:
+        self._drop_line.setGeometry(0, y - 1, max(self.viewport().width(), 1), 3)
+        self._drop_line.show()
+        self._drop_line.raise_()
+
+    def _clear_drop_indicator(self) -> None:
+        self._drop_line.hide()
 
 
 class QueueEditorDialog(QDialog):
@@ -4042,7 +4270,7 @@ class AutomationPage(QWidget):
         toolbar.addWidget(self.test_task_button)
         toolbar.addWidget(self.add_task_button)
         layout.addLayout(toolbar)
-        self.task_list = QListWidget()
+        self.task_list = TaskCardListWidget()
         self.task_list.setAlternatingRowColors(False)
         self.task_list.setSpacing(5)
         self.task_list.setStyleSheet(
@@ -4052,7 +4280,7 @@ class AutomationPage(QWidget):
         )
         self.task_list.setDragEnabled(True)
         self.task_list.setAcceptDrops(True)
-        self.task_list.setDropIndicatorShown(True)
+        self.task_list.setDropIndicatorShown(False)
         self.task_list.setDragDropOverwriteMode(False)
         self.task_list.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
         self.task_list.setDefaultDropAction(Qt.DropAction.MoveAction)
@@ -4069,11 +4297,7 @@ class AutomationPage(QWidget):
         self.task_list.itemDoubleClicked.connect(lambda _item: self._edit_task())
         self.task_list.itemSelectionChanged.connect(self._task_selection_changed)
         self.task_list.customContextMenuRequested.connect(self._task_context_menu)
-        self.task_list.model().rowsMoved.connect(
-            lambda *_args: QTimer.singleShot(
-                0, self, self._persist_task_order
-            )
-        )
+        self.task_list.task_dropped.connect(self._task_dropped)
         self._install_task_shortcuts()
 
     def _task_selection_changed(self) -> None:
@@ -4608,6 +4832,7 @@ class AutomationPage(QWidget):
                 "Choose a routine from the grouped list to edit it."
             )
             self.task_list.clear()
+            self.task_list.setProperty("routine_id", "")
             self.test_task_button.setEnabled(False)
             return
         command = self.trigger_store.for_routine(routine.routine_id)
@@ -4864,10 +5089,11 @@ class AutomationPage(QWidget):
     def _refresh_tasks(self, routine) -> None:
         self.task_list.blockSignals(True)
         self.task_list.clear()
-        for index, task in enumerate(routine.tasks, start=1):
+        self.task_list.setProperty("routine_id", routine.routine_id)
+        for task in routine.tasks:
             content = self._task_card_content(task)
             item = QListWidgetItem(
-                f"{index} {content.category} — {content.task_name} "
+                f"{content.category} — {content.task_name} "
                 f"{content.summary} {content.instance_name} {content.status}"
             )
             item.setData(Qt.ItemDataRole.UserRole, task.task_id)
@@ -6018,21 +6244,27 @@ class AutomationPage(QWidget):
         self.select_routine(routine.routine_id)
         self._select_task(task.task_id)
 
-    def _persist_task_order(self) -> None:
-        routine = self.routine_store.get(self._selected_routine_id)
-        if routine is None or self.task_list.count() != len(routine.tasks):
-            return
-        task_ids = [
-            str(self.task_list.item(index).data(Qt.ItemDataRole.UserRole) or "")
-            for index in range(self.task_list.count())
-        ]
-        if task_ids == [task.task_id for task in routine.tasks]:
+    def _task_dropped(
+        self,
+        routine_id: str,
+        task_id: str,
+        destination_index: int,
+    ) -> None:
+        routine = self.routine_store.get(routine_id)
+        if routine is None:
             return
         try:
-            self.routine_store.reorder_tasks(routine.routine_id, task_ids)
+            moved = self.routine_store.move_task(
+                routine.routine_id,
+                task_id,
+                destination_index,
+            )
         except (OSError, ValueError) as error:
             self._error("Could Not Reorder Tasks", error)
+            self.select_routine(routine.routine_id)
+            return
         self.select_routine(routine.routine_id)
+        self._select_task(moved.task_id)
 
     def _task_context_menu(self, position) -> None:
         item = self.task_list.itemAt(position)

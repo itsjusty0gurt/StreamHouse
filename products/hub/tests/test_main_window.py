@@ -12,7 +12,7 @@ from uuid import uuid4
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QCoreApplication, QEvent, QPoint, Qt
+from PySide6.QtCore import QCoreApplication, QEvent, QPoint, QRect, Qt
 from PySide6.QtGui import QContextMenuEvent
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -1325,13 +1325,25 @@ class MainWindowTests(unittest.TestCase):
         )
         page = self.window.automation_page
         page.select_routine(routine.routine_id)
-        moved = page.task_list.model().moveRow(
-            page.task_list.rootIndex(),
-            0,
-            page.task_list.rootIndex(),
-            2,
-        )
-        self.assertTrue(moved)
+        page.task_list.setCurrentRow(0)
+        source_item = page.task_list.item(0)
+        target_item = page.task_list.item(1)
+        target_rect = QRect(0, 100, 400, 40)
+        event = Mock()
+        position = Mock()
+        position.toPoint.return_value = QPoint(10, target_rect.bottom())
+        event.position.return_value = position
+
+        with (
+            patch.object(page.task_list, "itemAt", return_value=target_item),
+            patch.object(
+                page.task_list,
+                "visualItemRect",
+                return_value=target_rect,
+            ),
+        ):
+            page.task_list.dropEvent(event)
+
         self.assertEqual(
             [task.task_id for task in store.get(routine.routine_id).tasks],
             [first.task_id, second.task_id],
@@ -1343,9 +1355,121 @@ class MainWindowTests(unittest.TestCase):
             [task.task_id for task in store.get(routine.routine_id).tasks],
             [second.task_id, first.task_id],
         )
-        page.task_list.setCurrentRow(1)
         self.assertEqual(page._selected_task().task_id, first.task_id)
+        self.assertEqual(store.get(routine.routine_id).tasks[1].config["duration"], "1")
+        self.assertEqual(
+            {task.task_id for task in store.get(routine.routine_id).tasks},
+            {first.task_id, second.task_id},
+        )
+        event.acceptProposedAction.assert_called_once_with()
         self.assertTrue(page.task_list.isEnabled())
+
+    def test_task_drop_uses_full_card_halves_and_cleans_indicator(self) -> None:
+        store = self.twitch_command_trigger_store.routine_store
+        routine = store.add("Drop geometry")
+        for name in ("First", "Second", "Third"):
+            store.add_task(
+                routine.routine_id,
+                task_type="core.wait",
+                name=name,
+                config={"duration": "1", "unit": "seconds"},
+            )
+        page = self.window.automation_page
+        page.select_routine(routine.routine_id)
+        target = page.task_list.item(1)
+        target_rect = QRect(0, 100, 400, 40)
+
+        with patch.object(
+            page.task_list,
+            "visualItemRect",
+            return_value=target_rect,
+        ):
+            upper_index, upper_before = page.task_list._drop_destination(target, 105)
+            lower_index, lower_before = page.task_list._drop_destination(target, 135)
+
+        self.assertEqual((upper_index, upper_before), (1, True))
+        self.assertEqual((lower_index, lower_before), (2, False))
+        page.task_list._show_drop_indicator(target_rect.top())
+        self.assertFalse(page.task_list._drop_line.isHidden())
+        page.task_list._clear_drop_indicator()
+        self.assertTrue(page.task_list._drop_line.isHidden())
+
+    def test_task_drop_handles_first_adjacent_and_multi_position_moves(self) -> None:
+        store = self.twitch_command_trigger_store.routine_store
+        routine = store.add("Position moves")
+        tasks = [
+            store.add_task(
+                routine.routine_id,
+                task_type="core.wait",
+                name=name,
+                config={"duration": str(index), "unit": "seconds"},
+            )
+            for index, name in enumerate(("A", "B", "C", "D"), start=1)
+        ]
+        page = self.window.automation_page
+        page.select_routine(routine.routine_id)
+        target_rect = QRect(0, 100, 400, 40)
+
+        def drop(source_row: int, target_row: int, *, before: bool) -> None:
+            page.task_list.setCurrentRow(source_row)
+            target = page.task_list.item(target_row)
+            event = Mock()
+            position = Mock()
+            position.toPoint.return_value = QPoint(
+                10,
+                target_rect.top() + 5 if before else target_rect.bottom() - 5,
+            )
+            event.position.return_value = position
+            with (
+                patch.object(page.task_list, "itemAt", return_value=target),
+                patch.object(
+                    page.task_list,
+                    "visualItemRect",
+                    return_value=target_rect,
+                ),
+            ):
+                page.task_list.dropEvent(event)
+            self.application.processEvents()
+            event.acceptProposedAction.assert_called_once_with()
+
+        drop(3, 0, before=True)
+        self.assertEqual(
+            [task.task_id for task in store.get(routine.routine_id).tasks],
+            [tasks[3].task_id, tasks[0].task_id, tasks[1].task_id, tasks[2].task_id],
+        )
+        drop(0, 1, before=False)
+        self.assertEqual(
+            [task.task_id for task in store.get(routine.routine_id).tasks],
+            [tasks[0].task_id, tasks[3].task_id, tasks[1].task_id, tasks[2].task_id],
+        )
+        drop(1, 3, before=False)
+        saved = store.get(routine.routine_id).tasks
+        self.assertEqual([task.task_id for task in saved], [task.task_id for task in tasks])
+        self.assertEqual([task.config["duration"] for task in saved], ["1", "2", "3", "4"])
+        self.assertEqual(page._selected_task().task_id, tasks[3].task_id)
+
+    def test_task_drag_preview_uses_visible_card_without_row_number(self) -> None:
+        store = self.twitch_command_trigger_store.routine_store
+        routine = store.add("Preview")
+        store.add_task(
+            routine.routine_id,
+            task_type="core.wait",
+            name="Wait visibly",
+            config={"duration": "1", "unit": "seconds"},
+        )
+        page = self.window.automation_page
+        page.select_routine(routine.routine_id)
+        page.task_list.setCurrentRow(0)
+        backing_text = page.task_list.item(0).text()
+        page.task_list._show_drop_indicator(10)
+
+        with patch("products.hub.ui.automation_page.QDrag") as drag_class:
+            page.task_list.startDrag(Qt.DropAction.MoveAction)
+
+        self.assertFalse(backing_text.startswith("1 "))
+        self.assertTrue(page.task_list._drop_line.isHidden())
+        drag_class.return_value.setPixmap.assert_called_once()
+        drag_class.return_value.setMimeData.assert_called_once()
 
     def test_task_cards_show_category_name_summary_and_selection(self) -> None:
         store = self.twitch_command_trigger_store.routine_store
@@ -1549,6 +1673,76 @@ class MainWindowTests(unittest.TestCase):
             [second.routine_id, first.routine_id],
         )
         self.assertEqual(page._selected_routine_id, second.routine_id)
+
+    def test_routine_drop_uses_card_halves_and_preserves_stable_ids(self) -> None:
+        store = self.twitch_command_trigger_store.routine_store
+        group = store.add_group("Ordered")
+        first = store.add("First", group_id=group.group_id)
+        second = store.add("Second", group_id=group.group_id)
+        third = store.add("Third", group_id=group.group_id)
+        page = self.window.automation_page
+        page.refresh()
+        group_item = self._routine_group_item(group.group_id)
+        source_item = group_item.child(0)
+        target_item = group_item.child(2)
+        target_rect = QRect(20, 100, 400, 40)
+
+        with patch.object(
+            page.routine_tree,
+            "visualItemRect",
+            return_value=target_rect,
+        ):
+            upper = page.routine_tree._routine_drop_destination(target_item, 105)
+            lower = page.routine_tree._routine_drop_destination(target_item, 135)
+        self.assertEqual(upper, (group_item, 2, True))
+        self.assertEqual(lower, (group_item, 3, False))
+
+        page.routine_tree.setCurrentItem(source_item)
+        event = Mock()
+        position = Mock()
+        position.toPoint.return_value = QPoint(30, 135)
+        event.position.return_value = position
+        with (
+            patch.object(page.routine_tree, "itemAt", return_value=target_item),
+            patch.object(
+                page.routine_tree,
+                "visualItemRect",
+                return_value=target_rect,
+            ),
+        ):
+            page.routine_tree.dropEvent(event)
+        self.application.processEvents()
+
+        self.assertEqual(
+            [routine.routine_id for routine in store.grouped(group.group_id)],
+            [second.routine_id, third.routine_id, first.routine_id],
+        )
+        self.assertEqual(
+            {routine.routine_id for routine in store.grouped(group.group_id)},
+            {first.routine_id, second.routine_id, third.routine_id},
+        )
+        self.assertEqual(page._selected_routine_id, first.routine_id)
+        event.acceptProposedAction.assert_called_once_with()
+
+    def test_routine_drag_preview_uses_visible_card(self) -> None:
+        store = self.twitch_command_trigger_store.routine_store
+        routine = store.add("Clean preview")
+        page = self.window.automation_page
+        page.refresh()
+        routine_item = page.routine_tree.topLevelItem(0).child(0)
+        page.routine_tree.setCurrentItem(routine_item)
+        page.routine_tree._drop_line.show()
+
+        with patch("products.hub.ui.automation_page.QDrag") as drag_class:
+            page.routine_tree.startDrag(Qt.DropAction.MoveAction)
+
+        self.assertTrue(page.routine_tree._drop_line.isHidden())
+        drag_class.return_value.setPixmap.assert_called_once()
+        drag_class.return_value.setMimeData.assert_called_once()
+        self.assertEqual(
+            routine_item.data(0, Qt.ItemDataRole.UserRole),
+            routine.routine_id,
+        )
 
     def test_group_drag_persists_order_without_changing_ids_or_membership(self) -> None:
         store = self.twitch_command_trigger_store.routine_store
