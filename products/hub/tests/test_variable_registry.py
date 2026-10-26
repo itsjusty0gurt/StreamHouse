@@ -9,7 +9,8 @@ import pytest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication, QHeaderView
+from PySide6.QtGui import QTextCursor
+from PySide6.QtWidgets import QApplication, QHeaderView, QLineEdit, QTextEdit
 
 from products.hub.automation.custom_variables import CustomVariableStore
 from products.hub.automation.models import TaskDefinition, TaskExecutionResult
@@ -43,7 +44,10 @@ from products.hub.twitch.channel_information import (
     ChannelInformationStore,
     SocialLink,
 )
-from products.hub.ui.variable_picker import VariablePickerDialog
+from products.hub.ui.variable_picker import (
+    VariablePickerButton,
+    VariablePickerDialog,
+)
 from products.hub.ui.variables_page import VariablesPage
 from products.hub.ui.automation_page import TaskEditorDialog
 from shared.streamhouse_runtime.json_store import JsonStoreCorruptionError
@@ -502,7 +506,7 @@ def test_counter_variables_map_all_scopes_and_use_stable_user_id() -> None:
         picker.search_edit.setText("counter.deaths.user.total")
         assert picker.selected_placeholder() == "{counter.deaths.user.total}"
         assert picker.table.item(0, 1).text() == "Not currently available"
-        assert picker.table.item(0, 4).text() == "Requires user context."
+        assert picker.table.item(0, 5).text() == "Requires user context."
         picker.close()
         application.processEvents()
 
@@ -806,10 +810,11 @@ def test_variables_page_and_picker_search_canonical_names() -> None:
             == QHeaderView.ResizeMode.Stretch
         )
         assert (
-            picker.table.horizontalHeader().sectionResizeMode(7)
+            picker.table.horizontalHeader().sectionResizeMode(8)
             == QHeaderView.ResizeMode.ResizeToContents
         )
         picker.search_edit.setText("game_mode")
+        assert picker.selected_name() == "custom.game_mode"
         assert picker.selected_placeholder() == "{custom.game_mode}"
         assert picker.table.horizontalHeaderItem(1).text() == "Actual Value"
         assert picker.table.item(0, 1).text() == "Hardcore"
@@ -817,20 +822,17 @@ def test_variables_page_and_picker_search_canonical_names() -> None:
         assert picker.selected_placeholder() == "{user.id}"
         assert picker.table.item(0, 1).text() == "Not currently available"
         assert (
-            picker.table.item(0, 4).text()
+            picker.table.item(0, 5).text()
             == "Only available during a matching trigger event."
         )
-        assert picker.table.item(0, 5).text() == "Viewer context"
-        assert picker.table.item(0, 6).text() == "Routine"
+        assert picker.table.item(0, 6).text() == "Viewer context"
+        assert picker.table.item(0, 7).text() == "Routine"
         editor = TaskEditorDialog(
             "twitch.send_chat_message",
             variable_registry=registry,
         )
-        assert editor.browse_variables_button.isEnabled()
-        assert any(
-            editor.variable_table.item(row, 0).text() == "{custom.game_mode}"
-            for row in range(editor.variable_table.rowCount())
-        )
+        assert editor.variable_picker_buttons["message"].isEnabled()
+        assert editor.variable_picker_buttons["message"].registry is registry
         integer_definition = VariableDefinition(
             "hub.score", "Score", "Current score.", VariableDataType.INTEGER, "Hub", "Hub"
         )
@@ -854,6 +856,107 @@ def test_variables_page_and_picker_search_canonical_names() -> None:
         editor.close()
         picker.close()
         page.close()
+    application.processEvents()
+
+
+def test_variable_picker_filters_metadata_and_preserves_provider_contexts() -> None:
+    application = QApplication.instance() or QApplication([])
+    registry = VariableRegistry()
+    registry.register(context_provider())
+    picker = VariablePickerDialog(registry)
+
+    picker.source_combo.setCurrentIndex(
+        picker.source_combo.findData("OBS Context")
+    )
+    assert picker.table.rowCount() > 0
+    assert {
+        picker.table.item(row, 2).text()
+        for row in range(picker.table.rowCount())
+    } == {"OBS Context"}
+    assert all(
+        picker.table.item(row, 0).text().startswith("{obs.")
+        for row in range(picker.table.rowCount())
+    )
+    category = picker.table.item(0, 3).text()
+    picker.category_combo.setCurrentIndex(
+        picker.category_combo.findData(category)
+    )
+    assert picker.table.rowCount() > 0
+    assert all(
+        picker.table.item(row, 3).text() == category
+        for row in range(picker.table.rowCount())
+    )
+
+    picker.source_combo.setCurrentIndex(
+        picker.source_combo.findData("Twitch Context")
+    )
+    picker.category_combo.setCurrentIndex(0)
+    picker.search_edit.setText("viewer context")
+    assert picker.table.rowCount() > 0
+    assert {
+        picker.table.item(row, 2).text()
+        for row in range(picker.table.rowCount())
+    } == {"Twitch Context"}
+    picker.close()
+    application.processEvents()
+
+
+def test_variable_picker_button_inserts_at_cursor_and_replaces_selection() -> None:
+    application = QApplication.instance() or QApplication([])
+    registry = VariableRegistry()
+    line = QLineEdit("Hello !")
+    line.setCursorPosition(6)
+    line_button = VariablePickerButton(registry, line)
+    line_button.insert_placeholder("{user.display_name}")
+    assert line.text() == "Hello {user.display_name}!"
+
+    multiline = QTextEdit()
+    multiline.setPlainText("Before selected after")
+    cursor = multiline.textCursor()
+    cursor.setPosition(7)
+    cursor.setPosition(15, QTextCursor.MoveMode.KeepAnchor)
+    multiline.setTextCursor(cursor)
+    text_button = VariablePickerButton(registry, multiline)
+    text_button.insert_placeholder("{automation.random_line}")
+    assert multiline.toPlainText() == "Before {automation.random_line} after"
+    line_button.close()
+    text_button.close()
+    line.close()
+    multiline.close()
+    application.processEvents()
+
+
+def test_variable_picker_keeps_unavailable_provider_definitions_discoverable() -> None:
+    application = QApplication.instance() or QApplication([])
+    definition = VariableDefinition(
+        "obs.current_scene",
+        "Current OBS Scene",
+        "The active OBS program scene.",
+        VariableDataType.TEXT,
+        "OBS",
+        "Scenes",
+    )
+    registry = VariableRegistry()
+    registry.register(
+        CallbackVariableProvider(
+            "OBS",
+            (definition,),
+            lambda _name, _context: (
+                False,
+                None,
+                "OBS module is disabled or unavailable.",
+            ),
+        )
+    )
+    picker = VariablePickerDialog(registry)
+
+    assert picker.table.rowCount() == 1
+    assert picker.selected_placeholder() == "{obs.current_scene}"
+    assert picker.table.item(0, 2).text() == "OBS"
+    assert picker.table.item(0, 3).text() == "Scenes"
+    assert picker.table.item(0, 5).text() == "OBS module is disabled or unavailable."
+    assert "OBS module is disabled or unavailable." in picker.details_label.text()
+    picker.close()
     application.processEvents()
 
 

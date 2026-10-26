@@ -780,9 +780,11 @@ Custom records persist
 in `automation/variables.json` using atomic replacement and now include `text`,
 `integer`, `number`, `boolean`, or ISO-8601 `datetime` metadata plus an optional
 description. The reusable picker in `products/hub/ui/variable_picker.py` uses
-the same registry metadata, supports source/category/search filtering, and is
-also available from templated task editors. Contextual definitions remain
-discoverable when unavailable and state their required context.
+the same registry metadata, groups and filters by source/category, and provides
+the selector and cursor-position insertion behavior used by Variables and every
+registry-declared templated task field. Contextual definitions remain
+discoverable when unavailable and state their required context. Module-owned UI
+uses this Core picker rather than defining provider-specific picker catalogs.
 
 `VariableRegistry` remains authoritative for both definitions and resolved
 values, while Variables UI consumers use separate update paths. Runtime value,

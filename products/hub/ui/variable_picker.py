@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
+    QTextEdit,
     QVBoxLayout,
     QWidget,
 )
@@ -56,15 +57,18 @@ class VariablePickerDialog(QDialog):
         for category in sorted({item.category for item in definitions}):
             self.category_combo.addItem(category, category)
         filters.addWidget(self.search_edit, 1)
+        filters.addWidget(QLabel("Source"))
         filters.addWidget(self.source_combo)
+        filters.addWidget(QLabel("Category"))
         filters.addWidget(self.category_combo)
         layout.addLayout(filters)
-        self.table = QTableWidget(0, 8)
+        self.table = QTableWidget(0, 9)
         self.table.setHorizontalHeaderLabels(
             (
-                "Name",
+                "Variable",
                 "Actual Value",
                 "Source",
+                "Category",
                 "Type",
                 "Status",
                 "Context",
@@ -74,8 +78,8 @@ class VariablePickerDialog(QDialog):
         )
         configure_semantic_columns(
             self.table,
-            stretch=(0, 1, 4),
-            compact=(2, 3, 5, 6, 7),
+            stretch=(0, 1, 5),
+            compact=(2, 3, 4, 6, 7, 8),
         )
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
@@ -107,7 +111,14 @@ class VariablePickerDialog(QDialog):
         source = str(self.source_combo.currentData() or "")
         category = str(self.category_combo.currentData() or "")
         self.table.setRowCount(0)
-        for snapshot in self._snapshots():
+        for snapshot in sorted(
+            self._snapshots(),
+            key=lambda item: (
+                item.definition.source.casefold(),
+                item.definition.category.casefold(),
+                item.definition.name,
+            ),
+        ):
             definition = snapshot.definition
             searchable = " ".join(
                 (
@@ -127,7 +138,7 @@ class VariablePickerDialog(QDialog):
                 continue
             row = self.table.rowCount()
             self.table.insertRow(row)
-            name = QTableWidgetItem(definition.name)
+            name = QTableWidgetItem(definition.placeholder)
             name.setData(Qt.ItemDataRole.UserRole, definition.name)
             self.table.setItem(row, 0, name)
             value = (
@@ -137,10 +148,11 @@ class VariablePickerDialog(QDialog):
             )
             self.table.setItem(row, 1, QTableWidgetItem(value))
             self.table.setItem(row, 2, QTableWidgetItem(definition.source))
-            self.table.setItem(row, 3, QTableWidgetItem(definition.data_type.value.title()))
+            self.table.setItem(row, 3, QTableWidgetItem(definition.category))
+            self.table.setItem(row, 4, QTableWidgetItem(definition.data_type.value.title()))
             self.table.setItem(
                 row,
-                4,
+                5,
                 QTableWidgetItem(
                     "Available"
                     if snapshot.available
@@ -149,15 +161,15 @@ class VariablePickerDialog(QDialog):
             )
             self.table.setItem(
                 row,
-                5,
+                6,
                 QTableWidgetItem(definition.context_label or "—"),
             )
             self.table.setItem(
-                row, 6, QTableWidgetItem(definition.lifetime_label)
+                row, 7, QTableWidgetItem(definition.lifetime_label)
             )
             self.table.setItem(
                 row,
-                7,
+                8,
                 QTableWidgetItem(
                     "Read/write" if definition.writable else "Read-only"
                 ),
@@ -209,12 +221,15 @@ class VariablePickerDialog(QDialog):
         access = "Read/write" if definition.writable else "Read-only"
         details = [
             definition.description,
+            f"Source: {definition.source} / {definition.category}",
             f"Context: {definition.context_label or '—'}",
             f"Lifetime: {definition.lifetime_label}",
             f"Access: {access}",
         ]
-        if definition.context_label and not snapshot.available:
-            details.append(f"Requires: {definition.context_label}")
+        if not snapshot.available:
+            details.append(
+                "Status: " + (snapshot.detail or "Not currently available")
+            )
         self.details_label.setText("\n".join(details))
 
     def _copy(self) -> None:
@@ -223,3 +238,57 @@ class VariablePickerDialog(QDialog):
         placeholder = self.selected_placeholder()
         if placeholder:
             QApplication.clipboard().setText(placeholder)
+
+
+def insert_variable_placeholder(
+    target: QLineEdit | QTextEdit,
+    placeholder: str,
+) -> None:
+    """Insert a canonical placeholder without replacing surrounding text."""
+
+    if not placeholder:
+        return
+    if isinstance(target, QLineEdit):
+        target.insert(placeholder)
+    else:
+        target.insertPlainText(placeholder)
+
+
+class VariablePickerButton(QPushButton):
+    """Reusable Variable Picker launcher for a Variable-capable text field."""
+
+    def __init__(
+        self,
+        registry: VariableRegistry | None,
+        target: QLineEdit | QTextEdit,
+        context: Mapping[str, object] | None = None,
+        parent: QWidget | None = None,
+        *,
+        extra_definitions: tuple[VariableDefinition, ...] = (),
+    ) -> None:
+        super().__init__("{x} Variables", parent)
+        self.registry = registry
+        self.target = target
+        self.context = dict(context or {})
+        self.extra_definitions = extra_definitions
+        self.setToolTip("Choose a canonical Variable and insert it at the cursor.")
+        self.setEnabled(registry is not None)
+        if registry is None:
+            self.setToolTip("The Variable catalog is unavailable.")
+        self.clicked.connect(self.open_picker)
+
+    def open_picker(self) -> None:
+        if self.registry is None:
+            return
+        dialog = VariablePickerDialog(
+            self.registry,
+            self.context,
+            self,
+            extra_definitions=self.extra_definitions,
+        )
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        self.insert_placeholder(dialog.selected_placeholder())
+
+    def insert_placeholder(self, placeholder: str) -> None:
+        insert_variable_placeholder(self.target, placeholder)

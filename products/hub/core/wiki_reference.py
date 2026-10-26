@@ -766,7 +766,7 @@ def _getting_started_entries() -> tuple[WikiEntry, ...]:
                         "2. Add the Twitch — First Message Of Stream Trigger.",
                         "3. Add the Twitch — Send Chat Message Task.",
                         "4. Enter a welcome such as: Welcome {user.display_name}!",
-                        "5. Use the Variable Picker / Browse Variables button to insert user.display_name instead of memorizing it.",
+                        "5. Use the {x} Variables button beside the Message field to insert user.display_name instead of memorizing it.",
                         "6. Save and enable the routine. Each viewer can now receive the welcome on their first message of the current stream.",
                     ),
                 ),
@@ -1089,7 +1089,7 @@ def _example_entries() -> tuple[WikiEntry, ...]:
             setup=(
                 "Create a Routine and add the Trigger and Task shown above.",
                 "Set the message to: Welcome {user.display_name}!",
-                "Use Variable Picker / Browse Variables to insert user.display_name, then save and enable the routine.",
+                "Use the {x} Variables button beside Message to insert user.display_name, then save and enable the routine.",
             ),
             variables=("{user.display_name} — the viewer who sent the first message.",),
         ),

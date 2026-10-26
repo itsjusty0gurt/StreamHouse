@@ -108,7 +108,6 @@ from products.hub.automation.variable_outputs import (
 from products.hub.automation.variable_registry import (
     PLACEHOLDER_PATTERN,
     VariableDefinition,
-    render_placeholders,
     validate_variable_name,
 )
 from products.hub.obs_service.tasks import OBS_TASK_LABELS
@@ -156,7 +155,7 @@ from products.hub.ui.automation_task_cards import (
 from products.hub.ui.twitch_command_dialog import TwitchCommandDialog, TwitchCommandManagerDialog
 from products.hub.ui.counters_page import CounterDefinitionDialog
 from products.hub.ui.variables_page import VariablesPage
-from products.hub.ui.variable_picker import VariablePickerDialog
+from products.hub.ui.variable_picker import VariablePickerButton
 from products.hub.ui.page_header import PageHeader
 from products.hub.ui.table_sizing import configure_semantic_columns
 
@@ -2081,6 +2080,7 @@ class TaskEditorDialog(QDialog):
         self._obs_request_generation = 0
         self._obs_refresh_scheduled = False
         self.field_widgets: dict[str, dict[str, QWidget]] = {}
+        self.variable_picker_buttons: dict[str, VariablePickerButton] = {}
         self.setWindowTitle("Edit Task" if task else "Add Task")
         self.setMinimumWidth(
             360 if self.task_type == "obs.set_source_transform" else 620
@@ -2164,16 +2164,6 @@ class TaskEditorDialog(QDialog):
                 "border-radius:4px; padding:8px;"
             )
             layout.addWidget(helpers)
-        self._build_variable_help(layout)
-
-        if self.TEMPLATED_FIELDS.get(self.task_type):
-            variables = QLabel(
-                "Task templates use canonical variables such as {user.display_name}, "
-                "{stream.channel}, {event.type}, {obs.scene}, {chat.message}, "
-                "{event.viewers}, {event.reward}, and {command.data}."
-            )
-            variables.setWordWrap(True)
-            layout.addWidget(variables)
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel
         )
@@ -2186,158 +2176,6 @@ class TaskEditorDialog(QDialog):
             state_changed.connect(self._obs_state_changed)
         self.finished.connect(lambda _result: self._invalidate_obs_request())
         self._schedule_obs_refresh()
-
-    def _build_variable_help(self, layout: QVBoxLayout) -> None:
-        field_keys = self.TEMPLATED_FIELDS.get(self.task_type, ())
-        if not field_keys:
-            return
-        group = QGroupBox("Available Variables")
-        group_layout = QVBoxLayout(group)
-        help_label = QLabel(
-            "Actual values are shown when they are available in this task's "
-            "current context. Contextual Variables may be unavailable until the "
-            "routine runs."
-        )
-        help_label.setWordWrap(True)
-        group_layout.addWidget(help_label)
-        self.variable_table = QTableWidget(0, 2)
-        self.variable_table.setHorizontalHeaderLabels(
-            ("Variable", "Actual Value")
-        )
-        self.variable_table.horizontalHeader().setStretchLastSection(True)
-        self.variable_table.setSelectionBehavior(
-            QTableWidget.SelectionBehavior.SelectRows
-        )
-        self.variable_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        self.variable_table.setMaximumHeight(190)
-        registry_definitions = (
-            {item.name: item for item in self.variable_registry.definitions()}
-            if self.variable_registry is not None
-            else {}
-        )
-        ordered_keys = list(registry_definitions)
-        output_definitions = {
-            definition.name: definition for definition in self._output_definitions
-        }
-        ordered_keys.extend(
-            key for key in output_definitions if key not in ordered_keys
-        )
-        self.variable_preview_context = dict(self.variables)
-        if self.variable_registry is not None:
-            self.variable_preview_context.update(
-                self.variable_registry.context_values(self.variables)
-            )
-        for row, key in enumerate(ordered_keys):
-            metadata = registry_definitions.get(key) or output_definitions.get(key)
-            if metadata is None:
-                continue
-            value = (
-                self.variable_preview_context[key]
-                if key in self.variable_preview_context
-                else "Not currently available"
-            )
-            self.variable_table.insertRow(row)
-            self.variable_table.setItem(row, 0, QTableWidgetItem(f"{{{key}}}"))
-            self.variable_table.setItem(
-                row,
-                1,
-                QTableWidgetItem(VariableRegistry.display_value(value)),
-            )
-        if self.variable_table.rowCount():
-            self.variable_table.selectRow(0)
-        group_layout.addWidget(self.variable_table)
-        message = self._message_widget()
-        if message is not None:
-            controls = QHBoxLayout()
-            self.insert_variable_button = QPushButton("Insert Selected Variable")
-            self.browse_variables_button = QPushButton("{x} Browse Variables")
-            controls.addWidget(self.insert_variable_button)
-            controls.addWidget(self.browse_variables_button)
-            controls.addStretch()
-            group_layout.addLayout(controls)
-            self.variable_preview_label = QLabel()
-            self.variable_preview_label.setWordWrap(True)
-            group_layout.addWidget(self.variable_preview_label)
-            self.insert_variable_button.clicked.connect(
-                self._insert_selected_variable
-            )
-            self.browse_variables_button.setEnabled(
-                self.variable_registry is not None
-            )
-            self.browse_variables_button.clicked.connect(
-                self._browse_registry_variable
-            )
-            if isinstance(message, QLineEdit):
-                message.textChanged.connect(
-                    lambda _text: self._update_variable_preview()
-                )
-            else:
-                message.textChanged.connect(self._update_variable_preview)
-            self._update_variable_preview()
-        layout.addWidget(group)
-
-    def _selected_variable(self) -> str:
-        row = self.variable_table.currentRow() if hasattr(self, "variable_table") else -1
-        item = self.variable_table.item(row, 0) if row >= 0 else None
-        return item.text() if item is not None else ""
-
-    def _browse_registry_variable(self) -> None:
-        if self.variable_registry is None:
-            return
-        dialog = VariablePickerDialog(
-            self.variable_registry,
-            self.variables,
-            self,
-            extra_definitions=tuple(getattr(self, "_output_definitions", ())),
-        )
-        if dialog.exec() != QDialog.DialogCode.Accepted:
-            return
-        variable = dialog.selected_placeholder()
-        widget = self._message_widget()
-        if not variable or widget is None:
-            return
-        if isinstance(widget, QLineEdit):
-            widget.insert(variable)
-        elif isinstance(widget, QTextEdit):
-            widget.insertPlainText(variable)
-        self._update_variable_preview()
-
-    def _message_widget(self) -> QLineEdit | QTextEdit | None:
-        widget = self.field_widgets.get(self.task_type, {}).get("message")
-        return widget if isinstance(widget, (QLineEdit, QTextEdit)) else None
-
-    def _insert_selected_variable(self) -> None:
-        variable = self._selected_variable()
-        widget = self._message_widget()
-        if not variable or widget is None:
-            return
-        if isinstance(widget, QLineEdit):
-            widget.insert(variable)
-        elif isinstance(widget, QTextEdit):
-            widget.insertPlainText(variable)
-        self._update_variable_preview()
-
-    def _update_variable_preview(self) -> None:
-        if not hasattr(self, "variable_preview_label"):
-            return
-        widget = self._message_widget()
-        if isinstance(widget, QLineEdit):
-            template = widget.text()
-        elif isinstance(widget, QTextEdit):
-            template = widget.toPlainText()
-        else:
-            template = ""
-        self.variable_preview_label.setText(
-            "Preview: "
-            + (
-                render_placeholders(
-                    template,
-                    getattr(self, "variable_preview_context", self.variables),
-                    strip_values=True,
-                )
-                or "(empty)"
-            )
-        )
 
     def _build_page(self, task_type: str) -> QWidget:
         page = QWidget()
@@ -2364,6 +2202,7 @@ class TaskEditorDialog(QDialog):
             if task_type == "obs.set_source_transform":
                 widget.setMinimumWidth(self.SOURCE_TRANSFORM_FIELD_MINIMUM_WIDTH)
             fields[key] = widget
+            row_widget = self._with_variable_picker(key, widget, row_widget)
             form.addRow(str(spec.get("label", "")), row_widget)
         self.field_widgets[task_type] = fields
         if task_type in COUNTER_TASK_TYPES:
@@ -2381,6 +2220,32 @@ class TaskEditorDialog(QDialog):
             scroll.setWidget(page)
             return scroll
         return page
+
+    def _with_variable_picker(
+        self,
+        key: str,
+        editor: QWidget,
+        row_widget: QWidget,
+    ) -> QWidget:
+        if key not in self.TEMPLATED_FIELDS.get(self.task_type, ()):
+            return row_widget
+        if not isinstance(editor, (QLineEdit, QTextEdit)):
+            return row_widget
+        container = QWidget()
+        row = QHBoxLayout(container)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.addWidget(row_widget, 1)
+        button = VariablePickerButton(
+            self.variable_registry,
+            editor,
+            self.variables,
+            container,
+            extra_definitions=self._output_definitions,
+        )
+        button.setObjectName(f"variablePickerButton_{key}")
+        row.addWidget(button, 0, Qt.AlignmentFlag.AlignTop)
+        self.variable_picker_buttons[key] = button
+        return container
 
     def _wire_counter_scope_editor(self, fields: dict[str, QWidget]) -> None:
         counter = fields.get("counter_id")

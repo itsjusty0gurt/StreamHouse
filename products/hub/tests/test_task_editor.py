@@ -29,6 +29,7 @@ from products.hub.ui.automation_page import (
     OBS_SCREENSHOT_PNG_FILTER,
     TaskEditorDialog,
 )
+from products.hub.ui.variable_picker import VariablePickerDialog
 
 
 class FakeSignal:
@@ -604,18 +605,29 @@ class TaskEditorTests(unittest.TestCase):
             dialog.values()["config"],
             {"duration": "{custom.overlay_delay}", "unit": "minutes"},
         )
-        self.assertTrue(hasattr(dialog, "variable_table"))
-        self.assertEqual(dialog.variable_table.columnCount(), 2)
-        self.assertEqual(
-            [
-                dialog.variable_table.horizontalHeaderItem(column).text()
-                for column in range(dialog.variable_table.columnCount())
-            ],
-            ["Variable", "Actual Value"],
+        self.assertIn("duration", dialog.variable_picker_buttons)
+        self.assertIs(
+            dialog.variable_picker_buttons["duration"].target,
+            fields["duration"],
         )
-        self.assertFalse(hasattr(dialog, "variable_field_combo"))
-        self.assertFalse(hasattr(dialog, "insert_variable_button"))
-        self.assertFalse(hasattr(dialog, "browse_variables_button"))
+        self.assertTrue(dialog.variable_picker_buttons["duration"].isEnabled())
+        self.assertNotIn("unit", dialog.variable_picker_buttons)
+
+    def test_every_declared_template_field_uses_the_shared_picker(self) -> None:
+        registry = self.variables()
+        for task_type, field_keys in TaskEditorDialog.TEMPLATED_FIELDS.items():
+            with self.subTest(task_type=task_type):
+                dialog = TaskEditorDialog(task_type, variable_registry=registry)
+                self.assertEqual(
+                    set(dialog.variable_picker_buttons),
+                    set(field_keys),
+                )
+                for key in field_keys:
+                    self.assertIs(
+                        dialog.variable_picker_buttons[key].target,
+                        dialog.field_widgets[task_type][key],
+                    )
+                dialog.close()
 
     def test_play_audio_form_exposes_volume_and_wait_controls(self) -> None:
         dialog = TaskEditorDialog("core.play_audio")
@@ -635,7 +647,7 @@ class TaskEditorTests(unittest.TestCase):
         self.assertEqual(config["file"], "C:/Sounds/hello.mp3")
         self.assertEqual(config["volume"], 42)
         self.assertTrue(config["wait_for_completion"])
-        self.assertFalse(hasattr(dialog, "variable_table"))
+        self.assertEqual(dialog.variable_picker_buttons, {})
         self.assertFalse(
             any(
                 "templates support variables" in label.text()
@@ -678,15 +690,12 @@ class TaskEditorTests(unittest.TestCase):
             variable_registry=self.variables(),
         )
 
-        rows = {
-            dialog.variable_table.item(row, 0).text(): row
-            for row in range(dialog.variable_table.rowCount())
-        }
-        self.assertIn("{user.display_name}", rows)
-        self.assertEqual(
-            dialog.variable_table.item(rows["{user.display_name}"], 1).text(),
-            "TestViewer",
-        )
+        self.assertIn("value", dialog.variable_picker_buttons)
+        button = dialog.variable_picker_buttons["value"]
+        picker = VariablePickerDialog(button.registry, button.context)
+        picker.search_edit.setText("user.display_name")
+        self.assertEqual(picker.selected_placeholder(), "{user.display_name}")
+        self.assertEqual(picker.table.item(0, 1).text(), "TestViewer")
 
     def test_if_form_has_exact_operators_and_disables_right_for_unary(self) -> None:
         dialog = TaskEditorDialog("core.if")
@@ -846,11 +855,30 @@ class TaskEditorTests(unittest.TestCase):
             dialog.values()["config"]["message"],
             "{automation.random_line}",
         )
-        rows = {
-            dialog.variable_table.item(row, 0).text()
-            for row in range(dialog.variable_table.rowCount())
-        }
-        self.assertIn("{automation.random_line}", rows)
+        self.assertEqual(
+            tuple(
+                definition.name
+                for definition in dialog.variable_picker_buttons[
+                    "message"
+                ].extra_definitions
+            ),
+            ("automation.random_line",),
+        )
+        button = dialog.variable_picker_buttons["message"]
+        picker = VariablePickerDialog(
+            button.registry,
+            button.context,
+            extra_definitions=button.extra_definitions,
+        )
+        picker.search_edit.setText("automation.random_line")
+        self.assertEqual(
+            picker.selected_placeholder(),
+            "{automation.random_line}",
+        )
+        self.assertEqual(
+            picker.table.item(0, 5).text(),
+            "Available only during the routine after its producing task runs.",
+        )
 
         message.setPlainText("{random_line}")
         with self.assertRaisesRegex(ValueError, "Invalid canonical variable placeholder"):
@@ -998,7 +1026,7 @@ class TaskEditorTests(unittest.TestCase):
         dialog.accept()
         self.assertEqual(dialog.result(), QDialog.DialogCode.Accepted)
 
-    def test_trigger_variable_can_be_inserted_and_previewed(self) -> None:
+    def test_trigger_variable_is_inserted_at_the_current_cursor(self) -> None:
         dialog = TaskEditorDialog(
             "twitch.send_chat_message",
             variables={"user.display_name": "TestViewer", "stream.channel": "samplechannel"},
@@ -1007,44 +1035,39 @@ class TaskEditorTests(unittest.TestCase):
         message = dialog.field_widgets["twitch.send_chat_message"]["message"]
         message.setPlainText("Hello ")
         message.moveCursor(QTextCursor.MoveOperation.End)
-        display_row = next(
-            row for row in range(dialog.variable_table.rowCount())
-            if dialog.variable_table.item(row, 0).text() == "{user.display_name}"
+        dialog.variable_picker_buttons["message"].insert_placeholder(
+            "{user.display_name}"
         )
-        dialog.variable_table.selectRow(display_row)
-
-        dialog._insert_selected_variable()
 
         self.assertEqual(message.toPlainText(), "Hello {user.display_name}")
-        self.assertIn("Hello TestViewer", dialog.variable_preview_label.text())
-        self.assertFalse(hasattr(dialog, "variable_field_combo"))
 
-    def test_variable_reference_shows_only_actual_runtime_values(self) -> None:
+    def test_unified_picker_shows_only_actual_runtime_values(self) -> None:
         dialog = TaskEditorDialog("twitch.send_chat_message", variable_registry=self.variables())
-        message = dialog.field_widgets["twitch.send_chat_message"]["message"]
-        message.setPlainText(
-            "Hello {user.name}; command {command.data}; keyword {keyword.message}. "
-            "Scene is {obs.current_scene} while playing {stream.category}."
+        button = dialog.variable_picker_buttons["message"]
+        picker = VariablePickerDialog(
+            button.registry,
+            button.context,
+            extra_definitions=button.extra_definitions,
         )
 
         rows = {
-            dialog.variable_table.item(row, 0).text(): row
-            for row in range(dialog.variable_table.rowCount())
+            picker.table.item(row, 0).text(): row
+            for row in range(picker.table.rowCount())
         }
 
         muted_row = rows["{obs.current_scene}"]
         game_row = rows["{stream.category}"]
         self.assertEqual(
-            dialog.variable_table.item(muted_row, 1).text(),
+            picker.table.item(muted_row, 1).text(),
             "Gameplay",
         )
         self.assertEqual(
-            dialog.variable_table.item(game_row, 1).text(),
+            picker.table.item(game_row, 1).text(),
             "Science & Technology",
         )
         user_row = rows["{user.display_name}"]
         self.assertEqual(
-            dialog.variable_table.item(user_row, 1).text(),
+            picker.table.item(user_row, 1).text(),
             "Not currently available",
         )
         for placeholder in (
@@ -1053,23 +1076,13 @@ class TaskEditorTests(unittest.TestCase):
             "{keyword.message}",
         ):
             self.assertEqual(
-                dialog.variable_table.item(rows[placeholder], 1).text(),
+                picker.table.item(rows[placeholder], 1).text(),
                 "Not currently available",
             )
-        preview = dialog.variable_preview_label.text()
-        self.assertIn("{user.name}", preview)
-        self.assertIn("{command.data}", preview)
-        self.assertIn("{keyword.message}", preview)
-        self.assertNotIn("TestViewer", preview)
-        self.assertNotIn("123456", preview)
         definition = dialog.variable_registry.definition("user.display_name")
         self.assertIsNotNone(definition)
         self.assertEqual(definition.source, "Twitch Context")
         self.assertEqual(definition.data_type.value, "text")
-        self.assertIn(
-            "Scene is Gameplay while playing Science & Technology.",
-            dialog.variable_preview_label.text(),
-        )
 
     def test_shoutout_target_is_a_normal_variable_capable_text_field(self) -> None:
         dialog = TaskEditorDialog(
@@ -1084,6 +1097,7 @@ class TaskEditorTests(unittest.TestCase):
             TaskEditorDialog.TEMPLATED_FIELDS["twitch.shoutout_user"],
             ("target",),
         )
+        self.assertIs(dialog.variable_picker_buttons["target"].target, target)
 
     def test_get_user_clip_editor_defaults_to_trigger_user_and_selection_mode(self) -> None:
         dialog = TaskEditorDialog(
@@ -1119,9 +1133,11 @@ class TaskEditorTests(unittest.TestCase):
             variables={"automation.stream_title": "Building Streamhouse"},
             variable_registry=self.variables(),
         )
+        button = dialog.variable_picker_buttons["message"]
+        picker = VariablePickerDialog(button.registry, button.context)
         rows = {
-            dialog.variable_table.item(row, 0).text(): row
-            for row in range(dialog.variable_table.rowCount())
+            picker.table.item(row, 0).text(): row
+            for row in range(picker.table.rowCount())
         }
         expected_values = {
             "{stream.title}": "Building Streamhouse",
@@ -1131,7 +1147,7 @@ class TaskEditorTests(unittest.TestCase):
         for variable, value in expected_values.items():
             self.assertIn(variable, rows)
             self.assertEqual(
-                dialog.variable_table.item(rows[variable], 1).text(),
+                picker.table.item(rows[variable], 1).text(),
                 value,
             )
 
