@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
-from PySide6.QtWidgets import QHeaderView, QTableView
+from PySide6.QtWidgets import QHeaderView, QStyle, QTableView
 
 
 def configure_semantic_columns(
@@ -10,6 +10,7 @@ def configure_semantic_columns(
     *,
     stretch: Iterable[int],
     compact: Iterable[int],
+    header_compact: Iterable[int] = (),
     minimum_section_size: int = 56,
 ) -> None:
     """Allocate table width by column meaning instead of equally by index."""
@@ -18,5 +19,29 @@ def configure_semantic_columns(
     header.setMinimumSectionSize(minimum_section_size)
     for column in compact:
         header.setSectionResizeMode(column, QHeaderView.ResizeMode.ResizeToContents)
+    for column in header_compact:
+        header.setSectionResizeMode(column, QHeaderView.ResizeMode.Interactive)
+        label = str(table.model().headerData(column, header.orientation()) or "")
+        margin = table.style().pixelMetric(
+            QStyle.PixelMetric.PM_HeaderMargin,
+            None,
+            header,
+        )
+        mark = (
+            table.style().pixelMetric(
+                QStyle.PixelMetric.PM_HeaderMarkSize,
+                None,
+                header,
+            )
+            if table.isSortingEnabled()
+            else 0
+        )
+        header.resizeSection(
+            column,
+            max(
+                minimum_section_size,
+                header.fontMetrics().horizontalAdvance(label) + (margin * 2) + mark,
+            ),
+        )
     for column in stretch:
         header.setSectionResizeMode(column, QHeaderView.ResizeMode.Stretch)

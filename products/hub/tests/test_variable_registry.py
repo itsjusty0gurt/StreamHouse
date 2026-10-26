@@ -901,6 +901,33 @@ def test_variable_picker_filters_metadata_and_preserves_provider_contexts() -> N
     application.processEvents()
 
 
+def test_variable_picker_prioritizes_variable_column_over_status_and_context() -> None:
+    application = QApplication.instance() or QApplication([])
+    registry = VariableRegistry()
+    registry.register(context_provider())
+    picker = VariablePickerDialog(registry)
+    header = picker.table.horizontalHeader()
+
+    assert header.sectionResizeMode(0) == QHeaderView.ResizeMode.Stretch
+    assert header.sectionResizeMode(1) == QHeaderView.ResizeMode.Interactive
+    assert header.sectionResizeMode(5) == QHeaderView.ResizeMode.Interactive
+    assert header.sectionResizeMode(6) == QHeaderView.ResizeMode.Interactive
+
+    picker.resize(720, 500)
+    picker.show()
+    application.processEvents()
+    assert header.sectionSize(0) > header.sectionSize(5)
+    assert header.sectionSize(0) > header.sectionSize(6)
+    assert all(not picker.table.isColumnHidden(column) for column in range(9))
+
+    picker.resize(420, 500)
+    application.processEvents()
+    assert picker.table.horizontalScrollBar().maximum() > 0
+    assert header.sectionSize(0) >= header.minimumSectionSize()
+    picker.close()
+    application.processEvents()
+
+
 def test_variable_picker_button_inserts_at_cursor_and_replaces_selection() -> None:
     application = QApplication.instance() or QApplication([])
     registry = VariableRegistry()

@@ -57,3 +57,35 @@ def test_semantic_table_columns_support_multiple_text_columns() -> None:
     assert header.sectionResizeMode(0) == QHeaderView.ResizeMode.ResizeToContents
     table.deleteLater()
     application.processEvents()
+
+
+def test_semantic_table_columns_support_user_resizable_header_compact_metadata() -> None:
+    application = QApplication.instance() or QApplication([])
+    table = QTableWidget(1, 3)
+    table.setHorizontalHeaderLabels(("Variable", "Status", "Context"))
+    table.setItem(0, 0, QTableWidgetItem("{automation.a_useful_output}"))
+    table.setItem(0, 1, QTableWidgetItem("A deliberately verbose status detail"))
+    table.setItem(0, 2, QTableWidgetItem("A deliberately verbose context"))
+
+    configure_semantic_columns(
+        table,
+        stretch=(0,),
+        compact=(),
+        header_compact=(1, 2),
+    )
+
+    header = table.horizontalHeader()
+    assert header.sectionResizeMode(0) == QHeaderView.ResizeMode.Stretch
+    assert header.sectionResizeMode(1) == QHeaderView.ResizeMode.Interactive
+    assert header.sectionResizeMode(2) == QHeaderView.ResizeMode.Interactive
+    assert header.sectionSize(1) < table.sizeHintForColumn(1)
+    assert header.sectionSize(2) < table.sizeHintForColumn(2)
+
+    resized = header.sectionSize(1) + 30
+    header.resizeSection(1, resized)
+    table.resize(700, 240)
+    table.show()
+    application.processEvents()
+    assert header.sectionSize(1) == resized
+    table.deleteLater()
+    application.processEvents()

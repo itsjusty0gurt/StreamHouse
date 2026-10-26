@@ -78,8 +78,9 @@ class VariablePickerDialog(QDialog):
         )
         configure_semantic_columns(
             self.table,
-            stretch=(0, 1, 5),
-            compact=(2, 3, 4, 6, 7, 8),
+            stretch=(0,),
+            compact=(2, 3, 4, 7, 8),
+            header_compact=(5, 6),
         )
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
@@ -150,20 +151,20 @@ class VariablePickerDialog(QDialog):
             self.table.setItem(row, 2, QTableWidgetItem(definition.source))
             self.table.setItem(row, 3, QTableWidgetItem(definition.category))
             self.table.setItem(row, 4, QTableWidgetItem(definition.data_type.value.title()))
-            self.table.setItem(
-                row,
-                5,
-                QTableWidgetItem(
-                    "Available"
-                    if snapshot.available
-                    else snapshot.detail or "Not currently available"
-                ),
+            status_text = (
+                "Available"
+                if snapshot.available
+                else snapshot.detail or "Not currently available"
             )
-            self.table.setItem(
-                row,
-                6,
-                QTableWidgetItem(definition.context_label or "—"),
-            )
+            status = QTableWidgetItem(status_text)
+            if not snapshot.available:
+                status.setToolTip(status_text)
+            self.table.setItem(row, 5, status)
+            context_label = definition.context_label or "—"
+            context = QTableWidgetItem(context_label)
+            if context_label != "—":
+                context.setToolTip(context_label)
+            self.table.setItem(row, 6, context)
             self.table.setItem(
                 row, 7, QTableWidgetItem(definition.lifetime_label)
             )
