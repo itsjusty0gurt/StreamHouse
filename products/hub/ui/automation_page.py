@@ -132,6 +132,7 @@ from products.hub.twitch.automation_triggers import (
     CHANNEL_POINT_REDEMPTION_EVENT_TYPE,
     KEYWORD_MATCH_TYPES,
     KEYWORD_PHRASE_EVENT_TYPE,
+    OUTGOING_RAID_STARTED_EVENT_TYPE,
     TWITCH_EVENT_AUTOMATION_TYPES,
     TWITCH_STATUS_FILTER_TYPES,
     TWITCH_USER_FILTER_TYPES,
@@ -4989,6 +4990,9 @@ class AutomationPage(QWidget):
             defaults = {
                 "channel.chat.first_message": "First message of stream",
                 "channel.raid": "Any raid",
+                OUTGOING_RAID_STARTED_EVENT_TYPE: (
+                    "After Twitch accepts the outgoing raid"
+                ),
                 "channel.raid.outgoing": "After Twitch confirms the outgoing raid",
                 "channel.follow": "Any follow",
                 "channel.subscribe": "Any direct subscription",

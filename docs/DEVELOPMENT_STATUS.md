@@ -17,11 +17,9 @@
    stable 0.3 `develop` line without changing public OBS data contracts.
 4. **Active branch:** `develop`; the accepted conversion came from
    `feature/obs-module-conversion` at acceptance HEAD `f3db6f8`.
-5. **Most important unresolved issues:** outgoing raids lack a distinct
-   `Raid Out Started` trigger; raid landing
-   navigation starts too late; normal Twitch reconnect/renewal can create
-   visible interruption or chat noise; and one Windows forced-termination test
-   currently retains a crash-log handle.
+5. **Most important unresolved issues:** normal Twitch reconnect/renewal can
+   create visible interruption or chat noise, and one Windows
+   forced-termination test currently retains a crash-log handle.
 6. **Latest OBS acceptance:** 372 unique relevant tests and 70 subtests passed;
    packaged Hub/AI smoke passed; packaged startup exited 0 with OBS disabled and
    again after re-enabling; compilation and `git diff --check` passed.
@@ -75,6 +73,9 @@ OBS is the first accepted bundled Hub module. No Twitch or Music conversion has 
   `OBS Context` source label while Twitch context labels remain unchanged.
 - Automation routine groups can be reordered by drag-and-drop or their context
   menu, with the custom-group order persisted by stable group identity.
+- Outgoing raids now expose a distinct **Raid Out Started** Automation trigger,
+  and optional target-browser navigation begins as soon as Twitch accepts the
+  Start Raid request instead of waiting for EventSub confirmation.
 
 ## Accepted module conversions
 
@@ -131,15 +132,6 @@ Reproduction/validation requirements:
 
 ## Known issues and validation gaps
 
-- **Missing `Raid Out Started` trigger:** Hub needs a distinct Twitch Automation
-  trigger for the moment the user confirms an outgoing raid action in Hub. It
-  must remain separate from later raid-completed or Twitch-confirmed states;
-  no additional Twitch API guarantee is assumed.
-- **Raid landing navigation starts too late:** after the user selects a target
-  and confirms the outgoing raid, Hub should immediately begin loading that
-  channel in the raid landing webview/popout. The Twitch countdown and later
-  confirmation continue independently so the target stream and chat can be
-  ready before transfer.
 - **Twitch reconnect should be seamless — verify/fix:** periodic reconnect or
   renewal can create visible interruption or chat noise. Determine whether the
   source is OAuth refresh, EventSub/WebSocket lifecycle, chat transport, or

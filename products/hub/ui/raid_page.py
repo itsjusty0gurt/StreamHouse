@@ -39,7 +39,10 @@ from PySide6.QtWidgets import (
 
 from products.hub.core.events import Events
 from products.hub.twitch.models import TwitchEvent
-from products.hub.twitch.raid_contract import RAID_COUNTDOWN_SECONDS
+from products.hub.twitch.raid_contract import (
+    RAID_COUNTDOWN_SECONDS,
+    OutgoingRaidStartedEvent,
+)
 from products.hub.ui.automation_task_cards import ElidingLabel
 from products.hub.ui.page_header import PageHeader
 from shared.streamhouse_shared.responsive import responsive_grid_columns
@@ -373,6 +376,7 @@ class RaidPage(QWidget):
     GRID_GAP = 10
     GRID_HYSTERESIS = 24
     raid_event_received = Signal(object)
+    raid_started = Signal(object)
 
     @classmethod
     def columns_for_width(cls, width: int, *, current: int = 0) -> int:
@@ -469,15 +473,15 @@ class RaidPage(QWidget):
         root.addWidget(self.raid_message_frame)
 
         self.open_raided_channel_checkbox = QCheckBox(
-            "Open raided channel in browser after raid",
+            "Open raided channel in browser when raid starts",
             self,
         )
         self.open_raided_channel_checkbox.setObjectName(
             "openRaidedChannelInBrowserAfterRaid"
         )
         self.open_raided_channel_checkbox.setToolTip(
-            "After Twitch confirms the outgoing raid, open the target "
-            "channel in your default browser."
+            "After Twitch accepts the outgoing raid, open the target channel "
+            "in your default browser while the countdown continues."
         )
         open_after_raid = False
         if self._settings is not None:
@@ -920,6 +924,8 @@ class RaidPage(QWidget):
         created_at: object,
         detail: str,
     ) -> None:
+        if worker not in self._raid_workers:
+            return
         self._raid_workers.discard(worker)
         if self._shutting_down:
             return
@@ -928,6 +934,28 @@ class RaidPage(QWidget):
             card.set_raid_pending(False)
         if isinstance(created_at, datetime):
             self._set_active_raid(candidate, created_at)
+            active = self._active_raid
+            if active is not None:
+                self.raid_started.emit(
+                    OutgoingRaidStartedEvent(
+                        started_at=active.created_at,
+                        countdown_seconds=RAID_COUNTDOWN_SECONDS,
+                        source_id=str(
+                            getattr(self.service, "broadcaster_user_id", "")
+                        ).strip(),
+                        source_login=str(
+                            getattr(self.service, "channel", "")
+                        ).strip(),
+                        source_name=str(
+                            getattr(self.service, "broadcaster_display_name", "")
+                        ).strip(),
+                        target_id=candidate.user_id,
+                        target_login=candidate.login,
+                        target_name=candidate.display_name,
+                        viewers=candidate.viewer_count,
+                    )
+                )
+                self._open_raided_channel(candidate)
             message = f"Raid countdown started for {candidate.display_name}."
         elif detail and detail != "network":
             message = detail
@@ -987,8 +1015,8 @@ class RaidPage(QWidget):
             "Waiting for Twitch confirmation."
         )
         Logger.info(
-            "Raid browser open: countdown finished; awaiting outgoing raid "
-            f"confirmation for target ID {candidate.user_id}.",
+            "Raid countdown finished; awaiting outgoing raid confirmation for "
+            f"target ID {candidate.user_id}.",
             source="TWITCH",
         )
 
@@ -1001,8 +1029,8 @@ class RaidPage(QWidget):
         self._raid_confirmation_target = None
         self._update_card_raid_state()
         Logger.warning(
-            "Raid browser open skipped because no outgoing raid "
-            f"confirmation arrived for target ID {candidate.user_id}.",
+            "No outgoing raid confirmation arrived for target ID "
+            f"{candidate.user_id} before correlation expired.",
             source="TWITCH",
         )
 
@@ -1065,8 +1093,8 @@ class RaidPage(QWidget):
         event = twitch_event.payload.get("event", {})
         if not isinstance(event, dict):
             Logger.warning(
-                "Raid browser open skipped because channel.raid "
-                "did not contain an event object.",
+                "Outgoing raid confirmation ignored because channel.raid did "
+                "not contain an event object.",
                 source="TWITCH",
             )
             return
@@ -1090,40 +1118,35 @@ class RaidPage(QWidget):
         )
         if candidate is None:
             Logger.warning(
-                "Raid browser open skipped because there is no active "
-                "raid target to correlate.",
+                "Outgoing raid confirmation ignored because there is no "
+                "active raid target to correlate.",
                 source="TWITCH",
             )
             return
         if to_id != candidate.user_id:
             Logger.warning(
-                "Raid browser open skipped because confirmation target "
-                f"ID {to_id or 'missing'} did not match active target ID "
+                "Outgoing raid confirmation ignored because target ID "
+                f"{to_id or 'missing'} did not match active target ID "
                 f"{candidate.user_id}.",
                 source="TWITCH",
             )
             return
-        browser_enabled = self.open_raided_channel_checkbox.isChecked()
-        Logger.info(
-            "Outgoing raid target matched; browser-open preference is "
-            f"{'enabled' if browser_enabled else 'disabled'}.",
-            source="TWITCH",
-        )
         self._clear_active_raid(f"Raid sent to {candidate.display_name}.")
-        if not browser_enabled:
+
+    def _open_raided_channel(self, candidate: RaidCandidate) -> None:
+        if not self.open_raided_channel_checkbox.isChecked():
             return
-        target_login = event.get("to_broadcaster_user_login", "")
-        url = twitch_channel_url(target_login)
+        url = twitch_channel_url(candidate.login)
         if url is None:
             Logger.warning(
-                "Raid browser open skipped because Twitch did not provide a "
-                "valid target login.",
+                "Raid browser open skipped because the selected target does "
+                "not have a valid Twitch login.",
                 source="TWITCH",
             )
             return
         if not bool(self._url_opener(url)):
             Logger.warning(
-                "The confirmed raid target could not be opened in the default "
+                "The started raid target could not be opened in the default "
                 "browser.",
                 source="TWITCH",
             )

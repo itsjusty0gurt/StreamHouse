@@ -23,11 +23,13 @@ from shared.streamhouse_runtime.logger import Logger
 from shared.streamhouse_runtime.paths import user_data_root
 from products.hub.twitch.catalog import EVENTSUB_SUBSCRIPTIONS
 from products.hub.twitch.models import TwitchEvent, TwitchMessage
+from products.hub.twitch.raid_contract import OutgoingRaidStartedEvent
 
 
 TWITCH_EVENT_TYPES = tuple(
     sorted({subscription.type for subscription in EVENTSUB_SUBSCRIPTIONS})
 )
+OUTGOING_RAID_STARTED_EVENT_TYPE = "channel.raid.outgoing.started"
 TWITCH_EVENT_AUTOMATION_TYPES = (
     "channel.follow",
     "channel.subscribe",
@@ -35,6 +37,7 @@ TWITCH_EVENT_AUTOMATION_TYPES = (
     "channel.subscription.message",
     "channel.cheer",
     "channel.raid",
+    OUTGOING_RAID_STARTED_EVENT_TYPE,
     "channel.raid.outgoing",
     "channel.ban.permanent",
     "channel.ban.timeout",
@@ -67,6 +70,7 @@ TWITCH_TRIGGER_DISPLAY_NAMES = {
     "channel.subscription.gift": "Gift Subscription",
     "channel.cheer": "Cheer",
     "channel.raid": "Incoming Raid",
+    OUTGOING_RAID_STARTED_EVENT_TYPE: "Raid Out Started",
     "channel.raid.outgoing": "Outgoing Raid Completed",
     "channel.ban.permanent": "User Banned",
     "channel.ban.timeout": "User Timed Out",
@@ -774,6 +778,34 @@ class TwitchEventTriggerStore:
             for trigger in self.triggers
             if trigger.enabled and trigger.event_type == event_type
         )
+
+    @staticmethod
+    def outgoing_raid_started_context(
+        event: OutgoingRaidStartedEvent,
+    ) -> dict[str, str]:
+        """Build canonical Twitch/raid context for a successful Start Raid call."""
+
+        viewers = str(max(int(event.viewers), 0))
+        source_name = event.source_name or event.source_login or event.source_id
+        return {
+            "user": source_name or "--",
+            "channel": event.source_login or source_name or "--",
+            "event": "started",
+            "event_type": OUTGOING_RAID_STARTED_EVENT_TYPE,
+            "amount": viewers,
+            "viewers": viewers,
+            "user_id": event.source_id or "--",
+            "user_login": event.source_login or "--",
+            "event.started_at": event.started_at.isoformat(),
+            "raid.direction": "outgoing",
+            "raid.source.id": event.source_id,
+            "raid.source.login": event.source_login,
+            "raid.source.name": event.source_name,
+            "raid.target.id": event.target_id,
+            "raid.target.login": event.target_login,
+            "raid.target.name": event.target_name,
+            "raid.viewers": viewers,
+        }
 
     def add_keyword_phrase(
         self,

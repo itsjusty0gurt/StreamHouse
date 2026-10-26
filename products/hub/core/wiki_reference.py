@@ -252,6 +252,7 @@ def _trigger_entries(variable_registry: VariableRegistry) -> tuple[WikiEntry, ..
         )
         entries.append(_trigger_entry(event_type, label, summary, (), ("core",)))
     twitch_summaries = {
+        "channel.raid.outgoing.started": "Runs after Twitch accepts an outgoing raid started from Hub.",
         "channel.ban.permanent": "Runs when a viewer is permanently banned from Twitch chat.",
         "channel.ban.timeout": "Runs when a viewer is temporarily timed out in Twitch chat.",
         "channel.unban": "Runs when a viewer is unbanned from Twitch chat.",
@@ -457,6 +458,22 @@ def _trigger_entry(
                 ),
             ),
         )
+    elif trigger_id == "channel.raid.outgoing.started":
+        configuration = (
+            "No fields are required; attach the trigger to a routine and enable it.",
+            "It fires once after Twitch accepts an outgoing raid started from Hub's Raid page.",
+        )
+        additional_sections = (
+            WikiSection(
+                "Initiation semantics",
+                (
+                    "Selecting a target, opening the confirmation, or cancelling the confirmation does not fire this trigger.",
+                    "A failed Start Raid request does not fire it; cancelling an already-started countdown does not undo the initiation event.",
+                    "Raid source, target, and the target's observed viewer count are available through the raid Variables.",
+                    "Outgoing Raid Completed remains a separate later trigger driven by Twitch's authoritative channel.raid confirmation.",
+                ),
+            ),
+        )
     elif trigger_id == "channel.raid.outgoing":
         configuration = (
             "No fields are required; attach the trigger to a routine and enable it.",
@@ -467,7 +484,7 @@ def _trigger_entry(
                 "Completion semantics",
                 (
                     "Starting a raid, the local countdown reaching zero, and cancelling a raid do not fire this trigger.",
-                    "The optional default-browser action is a separate consumer of the same Twitch confirmation event.",
+                    "The optional default-browser action begins when Twitch accepts the earlier Start Raid request and does not wait for this completion event.",
                 ),
             ),
         )
@@ -925,11 +942,11 @@ def _twitch_entries() -> tuple[WikiEntry, ...]:
                     ),
                 ),
                 WikiSection(
-                    "Open after raid",
+                    "Open when raid starts",
                     (
-                        "Open raided channel in browser after raid is optional, saved on this computer, and off by default.",
-                        "After Twitch authoritatively confirms the outgoing raid, Hub opens the confirmed target login on twitch.tv in your normal default browser.",
-                        "Starting a raid, countdown expiry, cancellation, and incoming raids never open the browser.",
+                        "Open raided channel in browser when raid starts is optional, saved on this computer, and off by default.",
+                        "After Twitch accepts the Start Raid request, Hub immediately opens the selected target login on twitch.tv in your normal default browser while Twitch's countdown continues.",
+                        "Selecting a target, cancelling the confirmation, failed Start Raid requests, countdown expiry, and incoming raids never open the browser.",
                         "Hub does not embed Twitch video, open a temporary target chat, or depend on a Streamhouse-hosted service for this action.",
                     ),
                 ),

@@ -1433,16 +1433,20 @@ buttons reuse the same stable-ID `TwitchService.start_raid()` path as `/raid`
 after confirmation. A compact session-only message composer reuses normal
 broadcaster chat sending. After Twitch accepts a start request, the page uses
 the authoritative `created_at` response to present the pending 90-second
-countdown, disables other targets, and offers Helix cancellation. Matching
+countdown, emits the local **Raid Out Started** Automation event, optionally
+opens the selected target in the default browser immediately, disables other
+targets, and offers Helix cancellation. Matching
 outgoing `channel.raid` events clear the active state immediately. Twitch
 executes the raid automatically when the countdown expires; Hub exposes no
 forced-completion action. The candidate list, message, and active raid state are
 never persisted. Countdown expiry clears the visible countdown but retains a
 short-lived, runtime-only stable target-ID correlation until Twitch's outgoing
-confirmation arrives or that correlation expires. An optional, default-off
-machine-local preference opens the confirmed target login on twitch.tv in the
-user's default browser only after the matching outgoing raid EventSub
-confirmation. Hub owns no companion raid window, embedded Twitch player, or
+confirmation arrives or that correlation expires. The later EventSub also
+drives the distinct **Outgoing Raid Completed** trigger. An optional,
+default-off machine-local preference opens the selected target login on
+twitch.tv in the user's default browser as soon as Twitch accepts the Start
+Raid request, without waiting for EventSub confirmation. Hub owns no companion
+raid window, embedded Twitch player, or
 temporary target-chat session. The action adds no hosted Streamhouse dependency,
 and its QSettings preference is outside the durable Hub data schema and Backup.
 

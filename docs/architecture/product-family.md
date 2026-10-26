@@ -153,7 +153,9 @@ the two official `channel.raid` conditions. The completed trigger name refers
 to Hub consuming Twitch's authoritative outgoing confirmation; Twitch exposes
 no separate raid-completed EventSub type. Outgoing raid controls are implemented
 through the shared Twitch raid service used by Chat slash commands and **Your
-Channel > Raid**. A separate Raid Initiated Automation event remains planned.
+Channel > Raid**. The user-facing **Raid Out Started** Automation trigger is
+the implemented Raid Initiated event and remains distinct from the later
+EventSub-driven completion trigger.
 
 Stream Health may summarize:
 

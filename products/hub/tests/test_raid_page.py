@@ -9,7 +9,7 @@ from unittest.mock import Mock, patch
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QSettings, QThread
-from PySide6.QtTest import QTest
+from PySide6.QtTest import QSignalSpy, QTest
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 from products.hub.twitch.auth import TwitchToken
@@ -74,7 +74,11 @@ class RaidPageTests(unittest.TestCase):
             user_id="channel-1",
         )
         self.auth = Mock(token=token)
-        self.service = Mock(broadcaster_user_id="channel-1")
+        self.service = Mock(
+            broadcaster_user_id="channel-1",
+            channel="streamer",
+            broadcaster_display_name="Streamer",
+        )
         self.now = datetime(2026, 9, 25, 19, 0, tzinfo=timezone.utc)
         self.service.start_raid.return_value = self.now
         self.service.cancel_raid.return_value = True
@@ -125,6 +129,12 @@ class RaidPageTests(unittest.TestCase):
                 }
             },
         )
+
+    def _complete_raid_start(self, candidate: RaidCandidate) -> RaidActionWorker:
+        worker = RaidActionWorker(self.service, candidate)
+        self.page._raid_workers.add(worker)
+        self.page._raid_completed(worker, candidate, self.now, "")
+        return worker
 
     def test_candidate_uses_live_stream_metadata_and_excludes_offline(self) -> None:
         stream = _stream()
@@ -325,6 +335,7 @@ class RaidPageTests(unittest.TestCase):
         self._apply([_stream()])
         candidate = self.page._candidates[0]
         self.page.raid_pool.start = Mock()
+        started = QSignalSpy(self.page.raid_started)
 
         with patch.object(
             QMessageBox,
@@ -333,6 +344,7 @@ class RaidPageTests(unittest.TestCase):
         ):
             self.page._confirm_raid(candidate)
         self.page.raid_pool.start.assert_not_called()
+        self.assertEqual(started.count(), 0)
 
         with patch.object(
             QMessageBox,
@@ -362,6 +374,14 @@ class RaidPageTests(unittest.TestCase):
         )
         self.assertFalse(hasattr(self.page, "raid_now_button"))
         self.url_opener.assert_not_called()
+        self.assertEqual(started.count(), 1)
+        event = started.at(0)[0]
+        self.assertEqual(event.source_id, "channel-1")
+        self.assertEqual(event.source_login, "streamer")
+        self.assertEqual(event.target_id, "viewer-1")
+        self.assertEqual(event.target_login, "channel_login")
+        self.assertEqual(event.target_name, "Channel Name")
+        self.assertEqual(event.viewers, 42)
         self.assertEqual(QThread.currentThread(), self.page.thread())
 
     def test_raid_failure_restores_button_and_reports_error(self) -> None:
@@ -370,11 +390,14 @@ class RaidPageTests(unittest.TestCase):
         worker = RaidActionWorker(self.service, candidate)
         self.page._raid_workers.add(worker)
         self.page._cards[candidate.user_id].set_raid_pending(True)
+        started = QSignalSpy(self.page.raid_started)
 
         self.page._raid_completed(worker, candidate, None, "network")
 
         self.assertTrue(self.page._cards[candidate.user_id].raid_button.isEnabled())
         self.assertIn("Couldn’t start", self.page.status_label.text())
+        self.assertEqual(started.count(), 0)
+        self.url_opener.assert_not_called()
 
     def test_raid_message_copy_and_send_reuse_normal_chat_path(self) -> None:
         self.page.raid_message_edit.setText("Raid time!")
@@ -474,11 +497,7 @@ class RaidPageTests(unittest.TestCase):
         self.page._update_countdown()
         self.page._handle_raid_event(self._outgoing_raid_event())
 
-        self.url_opener.assert_called_once()
-        self.assertEqual(
-            self.url_opener.call_args.args[0].toString(),
-            "https://www.twitch.tv/channel_login",
-        )
+        self.url_opener.assert_not_called()
         self.assertIsNone(self.page._active_raid)
         self.assertIsNone(self.page._raid_confirmation_target)
         self.assertFalse(self.page.raid_confirmation_timer.isActive())
@@ -514,6 +533,21 @@ class RaidPageTests(unittest.TestCase):
         self.assertTrue(self.page._cards["viewer-1"].raid_button.isEnabled())
         self.url_opener.assert_not_called()
 
+    def test_cancel_after_started_raid_keeps_single_early_navigation(self) -> None:
+        self._apply([_stream()])
+        self.page.open_raided_channel_checkbox.setChecked(True)
+        self._complete_raid_start(self.page._candidates[0])
+        self.page.raid_pool.start = Mock()
+
+        self.page._cancel_active_raid()
+        worker = self.page.raid_pool.start.call_args.args[0]
+        worker.run()
+        self.application.processEvents()
+
+        self.assertIsNone(self.page._active_raid)
+        self.assertEqual(self.page.status_label.text(), "Raid cancelled.")
+        self.url_opener.assert_called_once()
+
     def test_cancel_failure_preserves_active_state(self) -> None:
         self._apply([_stream()])
         self.page._set_active_raid(self.page._candidates[0], self.now)
@@ -539,24 +573,34 @@ class RaidPageTests(unittest.TestCase):
             "Raid sent to Channel Name.",
         )
 
-    def test_confirmed_outgoing_raid_opens_target_in_default_browser_once(self) -> None:
+    def test_successful_raid_start_opens_target_before_eventsub_confirmation(self) -> None:
         self._apply([_stream()])
         self.page.open_raided_channel_checkbox.setChecked(True)
         candidate = self.page._candidates[0]
-        self.page._set_active_raid(candidate, self.now)
-        event = self._outgoing_raid_event(target_login="confirmed_login")
+        started = QSignalSpy(self.page.raid_started)
 
+        worker = self._complete_raid_start(candidate)
+
+        self.assertEqual(started.count(), 1)
+        self.url_opener.assert_called_once()
+        self.assertEqual(
+            self.url_opener.call_args.args[0].toString(),
+            "https://www.twitch.tv/channel_login",
+        )
+        self.assertIsNotNone(self.page._active_raid)
+
+        event = self._outgoing_raid_event(target_login="confirmed_login")
         self.page._handle_raid_event(event)
         self.page._handle_raid_event(event)
 
         self.url_opener.assert_called_once()
-        self.assertEqual(
-            self.url_opener.call_args.args[0].toString(),
-            "https://www.twitch.tv/confirmed_login",
-        )
+        self.assertEqual(started.count(), 1)
         self.assertIsNone(self.page._active_raid)
+        self.page._raid_completed(worker, candidate, self.now, "")
+        self.assertEqual(started.count(), 1)
+        self.url_opener.assert_called_once()
 
-    def test_live_eventsub_notification_reaches_browser_open_activation(self) -> None:
+    def test_live_eventsub_notification_only_completes_active_raid_state(self) -> None:
         self._apply([_stream()])
         self.page.open_raided_channel_checkbox.setChecked(True)
         self.page._set_active_raid(self.page._candidates[0], self.now)
@@ -597,25 +641,20 @@ class RaidPageTests(unittest.TestCase):
         )
         self.application.processEvents()
 
-        self.url_opener.assert_called_once()
-        self.assertEqual(
-            self.url_opener.call_args.args[0].toString(),
-            "https://www.twitch.tv/channel_login",
-        )
+        self.url_opener.assert_not_called()
         self.assertIsNone(self.page._raid_confirmation_target)
         socket.deleteLater()
 
-    def test_missing_or_invalid_confirmed_login_does_not_open_browser(self) -> None:
-        self._apply([_stream()])
+    def test_missing_or_invalid_selected_login_does_not_open_browser(self) -> None:
         self.page.open_raided_channel_checkbox.setChecked(True)
 
         for login in ("", "not/a/login", "https://example.test"):
-            self.page._set_active_raid(self.page._candidates[0], self.now)
+            candidate = RaidCandidate.from_twitch(_stream(login=login))
+            self.assertIsNotNone(candidate)
             with patch("products.hub.ui.raid_page.Logger.warning") as warning:
-                self.page._handle_raid_event(
-                    self._outgoing_raid_event(target_login=login)
-                )
-            self.assertIn("valid target login", warning.call_args.args[0])
+                self._complete_raid_start(candidate)
+            self.assertIn("valid Twitch login", warning.call_args.args[0])
+            self.page._clear_active_raid()
 
         self.url_opener.assert_not_called()
 

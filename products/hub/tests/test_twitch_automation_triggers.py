@@ -10,11 +10,16 @@ from unittest.mock import patch
 from products.hub.automation.routines import RoutineStore
 from products.hub.twitch.automation_triggers import (
     CHANNEL_POINT_REDEMPTION_EVENT_TYPE,
+    OUTGOING_RAID_STARTED_EVENT_TYPE,
     TwitchEventTriggerStore,
     TwitchSubscriptionEventCorrelator,
 )
 from products.hub.twitch.commands import TwitchCommandTriggerStore
 from products.hub.twitch.models import TwitchEvent, TwitchEventTransport, TwitchMessage
+from products.hub.twitch.raid_contract import (
+    RAID_COUNTDOWN_SECONDS,
+    OutgoingRaidStartedEvent,
+)
 from shared.streamhouse_runtime.json_store import JsonStoreCorruptionError
 
 
@@ -759,6 +764,48 @@ class TwitchEventTriggerStoreTests(unittest.TestCase):
         self.assertEqual(matches[0].context["raid.target.login"], "target_login")
         self.assertEqual(matches[0].context["raid.target.name"], "Target Name")
         self.assertEqual(matches[0].context["raid.viewers"], "42")
+
+    def test_raid_out_started_is_distinct_persisted_named_trigger(self) -> None:
+        routine = self.routines.add("Raid started")
+        trigger = self.store.add(
+            routine.routine_id,
+            OUTGOING_RAID_STARTED_EVENT_TYPE,
+        )
+        started = OutgoingRaidStartedEvent(
+            started_at=datetime(2026, 10, 25, 18, 30, tzinfo=timezone.utc),
+            countdown_seconds=RAID_COUNTDOWN_SECONDS,
+            source_id="source-1",
+            source_login="streamer",
+            source_name="Streamer",
+            target_id="target-1",
+            target_login="friend",
+            target_name="Friend",
+            viewers=42,
+        )
+        context = self.store.outgoing_raid_started_context(started)
+
+        matches = self.store.evaluate_named(
+            OUTGOING_RAID_STARTED_EVENT_TYPE,
+            context,
+            trigger_type="raid_out_started",
+        )
+
+        self.assertEqual([item.trigger_id for item in matches], [trigger.trigger_id])
+        self.assertEqual(matches[0].trigger_type, "raid_out_started")
+        self.assertEqual(matches[0].context["raid.direction"], "outgoing")
+        self.assertEqual(matches[0].context["raid.source.id"], "source-1")
+        self.assertEqual(matches[0].context["raid.target.id"], "target-1")
+        self.assertEqual(matches[0].context["raid.target.login"], "friend")
+        self.assertEqual(matches[0].context["raid.target.name"], "Friend")
+        self.assertEqual(matches[0].context["raid.viewers"], "42")
+
+        loaded_routines = RoutineStore(self.routines.path)
+        loaded = TwitchEventTriggerStore(self.store.path, loaded_routines)
+        loaded.load()
+        self.assertEqual(
+            loaded.get(trigger.trigger_id).event_type,
+            OUTGOING_RAID_STARTED_EVENT_TYPE,
+        )
 
     def test_redemption_matches_stable_reward_id_and_exposes_full_context(self) -> None:
         hydrate = self.routines.add("Hydrate")

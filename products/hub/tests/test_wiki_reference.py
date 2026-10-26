@@ -392,8 +392,32 @@ def test_outgoing_raid_completed_reference_uses_authoritative_confirmation() -> 
     assert "starting a raid" in text
     assert "countdown reaching zero" in text
     assert "cancelling a raid" in text
-    assert "default-browser action is a separate consumer" in text
+    assert "does not wait for this completion event" in text
     for variable in (
+        "raid.target.id",
+        "raid.target.login",
+        "raid.target.name",
+        "raid.viewers",
+    ):
+        assert variable in text
+
+
+def test_raid_out_started_reference_uses_successful_start_semantics() -> None:
+    tasks, variables = _reference_sources()
+    entry = next(
+        item
+        for item in build_wiki_entries(tasks, variables)
+        if item.entry_id == "trigger:channel.raid.outgoing.started"
+    )
+    text = entry.search_text()
+
+    assert entry.title == "Twitch — Raid Out Started"
+    assert "after twitch accepts an outgoing raid" in text
+    assert "cancelling the confirmation does not fire" in text
+    assert "failed start raid request does not fire" in text
+    assert "outgoing raid completed remains a separate later trigger" in text
+    for variable in (
+        "raid.source.id",
         "raid.target.id",
         "raid.target.login",
         "raid.target.name",
@@ -454,10 +478,12 @@ def test_raid_page_reference_documents_runtime_finder_and_permissions() -> None:
     assert "twitch automatically executes the raid" in text
     assert "raid now" not in text
     assert "outgoing channel raid event" in text
-    assert "open raided channel in browser after raid" in text
+    assert "open raided channel in browser when raid starts" in text
     assert "normal default browser" in text
     assert "temporary target chat" in text
-    assert "starting a raid, countdown expiry, cancellation" in text
+    assert "after twitch accepts the start raid request" in text
+    assert "cancelling the confirmation" in text
+    assert "failed start raid requests" in text
 
 
 def test_command_and_timer_references_document_stable_open_routine_navigation() -> None:

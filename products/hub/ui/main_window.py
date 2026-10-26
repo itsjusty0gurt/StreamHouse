@@ -178,6 +178,7 @@ from products.hub.modules.bootstrap import create_bundled_module_registry
 from products.hub.version import HUB_VERSION
 from products.hub.twitch.ads import AdsDomainEvent, AdsService
 from products.hub.twitch.automation_triggers import (
+    OUTGOING_RAID_STARTED_EVENT_TYPE,
     TwitchEventTriggerStore,
     TwitchSubscriptionEventCorrelator,
 )
@@ -187,6 +188,7 @@ from products.hub.twitch.models import (
     TwitchEventDiagnostic,
     TwitchMessage,
 )
+from products.hub.twitch.raid_contract import OutgoingRaidStartedEvent
 from products.hub.twitch.service import TwitchConnectionState, TwitchService
 from products.hub.twitch.token_store import TwitchTokenStore
 from products.hub.twitch.session_history import StreamSessionStore, StreamSessionTracker
@@ -2531,6 +2533,7 @@ class MainWindow(QMainWindow):
             self.channel_tabs,
             settings=getattr(self.window_state_store, "settings", None),
         )
+        self.raid_page.raid_started.connect(self._handle_outgoing_raid_started)
         self.channel_tabs.addTab(self.raid_page, "Raid")
 
     def _build_soundboard_tab(self) -> None:
@@ -5851,6 +5854,34 @@ class MainWindow(QMainWindow):
             elif execution.handled:
                 Logger.warning(
                     f'Twitch automation failed for "{twitch_event.subscription_type}".',
+                    source="AUTOMATION",
+                )
+
+    @Slot(object)
+    def _handle_outgoing_raid_started(self, event: object) -> None:
+        if not isinstance(event, OutgoingRaidStartedEvent):
+            return
+        context = self.twitch_event_trigger_store.outgoing_raid_started_context(
+            event
+        )
+        for trigger in self.twitch_event_trigger_store.evaluate_named(
+            OUTGOING_RAID_STARTED_EVENT_TYPE,
+            context,
+            trigger_type="raid_out_started",
+        ):
+            execution = self.automation_service.publish_trigger(trigger)
+            self.automation_page.record_execution(
+                execution,
+                "Twitch — Raid Out Started",
+            )
+            if execution.succeeded:
+                Logger.info(
+                    'Executed Twitch automation for "Raid Out Started".',
+                    source="AUTOMATION",
+                )
+            elif execution.handled:
+                Logger.warning(
+                    'Twitch automation failed for "Raid Out Started".',
                     source="AUTOMATION",
                 )
 

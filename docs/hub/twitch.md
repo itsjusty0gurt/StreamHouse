@@ -416,6 +416,12 @@ not publish a separate completed-raid EventSub type; Hub's trigger name refers
 only to the authoritative outgoing `channel.raid` confirmation. Starting the
 raid countdown, reaching zero locally, or cancelling never fires it.
 
+**Raid Out Started** is a separate Hub-derived trigger. It fires once after a
+user confirms a Raid-page action and Twitch accepts the Start Raid request. It
+does not fire for target selection, a cancelled confirmation, or a failed
+request. Its raid context contains the broadcaster identity, selected target,
+and target viewer count observed by the Raid page when the attempt started.
+
 An incoming raid also starts the shared First Message raid-suppression window,
 enabled by default for three minutes and configurable with First Message. The
 newest incoming raid restarts the window. Eligible chatters are still recorded
@@ -512,16 +518,16 @@ chat sending; cancellation reuses Helix Cancel Raid. Twitch executes the raid
 automatically when the countdown expires, and Hub exposes no forced-completion
 action. An outgoing `channel.raid` event clears matching active UI state as soon
 as Twitch confirms the raid and fires **Twitch — Outgoing Raid Completed** once.
-A separate Raid Initiated Automation event remains planned; the completed
-trigger consumes the existing outgoing `channel.raid` event rather than a
-separate Twitch completion event.
+The earlier **Twitch — Raid Out Started** trigger remains distinct from that
+completion event.
 
-**Open raided channel in browser after raid** is an optional machine-local
+**Open raided channel in browser when raid starts** is an optional machine-local
 preference and is off by default. When enabled, Hub opens
-`https://www.twitch.tv/<target_login>` in the user's normal default browser only
-after the outgoing `channel.raid` EventSub event matches the active target.
-Starting a raid, countdown expiry, cancellation, and incoming raids never open
-the browser. Hub uses the target login from the confirmed Twitch event and
+`https://www.twitch.tv/<target_login>` in the user's normal default browser as
+soon as Twitch accepts the Start Raid request. The countdown and later outgoing
+`channel.raid` confirmation continue independently. Target selection, a
+cancelled confirmation, failed Start Raid requests, countdown expiry, and
+incoming raids never open the browser. Hub uses the selected target login and
 rejects missing or invalid logins. There is no embedded player, temporary target
 chat, Streamhouse-hosted origin, Backup component, or additional OAuth scope.
 

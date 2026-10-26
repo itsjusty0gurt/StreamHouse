@@ -75,8 +75,13 @@ from products.hub.soundboard.store import SoundboardStore
 from products.hub.twitch.commands import TwitchCommandTriggerStore
 from products.hub.twitch.channel_information import ChannelInformationStore
 from products.hub.twitch.automation_triggers import (
+    OUTGOING_RAID_STARTED_EVENT_TYPE,
     TwitchEventTriggerStore,
     TwitchSubscriptionEventCorrelator,
+)
+from products.hub.twitch.raid_contract import (
+    RAID_COUNTDOWN_SECONDS,
+    OutgoingRaidStartedEvent,
 )
 from products.hub.twitch.service import TwitchConnectionState
 from products.hub.twitch.session_history import StreamSession
@@ -1071,6 +1076,7 @@ class MainWindowTests(unittest.TestCase):
                 "Subscription › Message",
                 "Cheer",
                 "Incoming Raid",
+                "Raid Out Started",
                 "Outgoing Raid Completed",
                 "User Banned",
                 "User Timed Out",
@@ -5660,6 +5666,51 @@ class MainWindowTests(unittest.TestCase):
         self.assertEqual(
             self.window.automation_service.publish_trigger.call_args_list[-1].args[0].trigger_id,
             self.twitch_event_trigger_store.for_routine(ended_routine.routine_id)[0].trigger_id,
+        )
+
+    def test_raid_out_started_publishes_canonical_context(self) -> None:
+        routine = self.twitch_command_trigger_store.routine_store.add(
+            "Raid started"
+        )
+        configured = self.twitch_event_trigger_store.add(
+            routine.routine_id,
+            OUTGOING_RAID_STARTED_EVENT_TYPE,
+        )
+        execution = Mock(succeeded=True, handled=True)
+        self.window.automation_service.publish_trigger = Mock(
+            return_value=execution
+        )
+        self.window.automation_page.record_execution = Mock()
+        started = OutgoingRaidStartedEvent(
+            started_at=datetime(2026, 10, 25, 18, 30, tzinfo=timezone.utc),
+            countdown_seconds=RAID_COUNTDOWN_SECONDS,
+            source_id="source-1",
+            source_login="streamer",
+            source_name="Streamer",
+            target_id="target-1",
+            target_login="friend",
+            target_name="Friend",
+            viewers=42,
+        )
+
+        self.window._handle_outgoing_raid_started(started)
+
+        published = self.window.automation_service.publish_trigger.call_args.args[0]
+        self.assertEqual(published.trigger_id, configured.trigger_id)
+        self.assertEqual(published.trigger_type, "raid_out_started")
+        self.assertEqual(published.context["raid.direction"], "outgoing")
+        self.assertEqual(published.context["raid.source.id"], "source-1")
+        self.assertEqual(published.context["raid.target.id"], "target-1")
+        self.assertEqual(published.context["raid.target.login"], "friend")
+        self.assertEqual(published.context["raid.target.name"], "Friend")
+        self.assertEqual(published.context["raid.viewers"], "42")
+        self.assertEqual(
+            published.context["event_type"],
+            OUTGOING_RAID_STARTED_EVENT_TYPE,
+        )
+        self.window.automation_page.record_execution.assert_called_once_with(
+            execution,
+            "Twitch — Raid Out Started",
         )
 
     def test_live_chat_starts_local_memory_reasoning_at_threshold(self) -> None:
