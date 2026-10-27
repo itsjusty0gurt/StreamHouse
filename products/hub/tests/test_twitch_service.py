@@ -340,6 +340,55 @@ class TwitchServiceTests(unittest.TestCase):
         finally:
             service.disconnect()
 
+    def test_live_transport_recovery_is_concise_and_does_not_emit_error(self) -> None:
+        service = TwitchService()
+        service.channel = "streamer"
+        service.state = TwitchConnectionState.CONNECTED
+        states = []
+        errors = []
+        Events.subscribe(
+            "twitch_status_changed",
+            lambda state, channel: states.append((state, channel)),
+        )
+        Events.subscribe("twitch_error", lambda message: errors.append(message))
+
+        with patch.object(Logger, "warning") as warning:
+            service._receive_live_reconnecting(False)
+            service._receive_live_reconnecting(False)
+            service._receive_live_reconnected(False)
+
+        self.assertEqual(
+            states,
+            [
+                (TwitchConnectionState.RECONNECTING, "streamer"),
+                (TwitchConnectionState.CONNECTED, "streamer"),
+            ],
+        )
+        self.assertEqual(errors, [])
+        warning.assert_called_once()
+
+    def test_native_eventsub_transfer_keeps_global_connection_state(self) -> None:
+        service = TwitchService()
+        service.channel = "streamer"
+        service.state = TwitchConnectionState.CONNECTED
+
+        with patch.object(Events, "emit") as emit:
+            service._receive_live_reconnecting(True)
+            service._receive_live_reconnected(True)
+
+        self.assertIs(service.state, TwitchConnectionState.CONNECTED)
+        emit.assert_not_called()
+
+    def test_connect_during_recovery_does_not_construct_duplicate_runtime(self) -> None:
+        service = TwitchService(auth=Mock(), helix=Mock())
+        service.channel = "streamer"
+        service.state = TwitchConnectionState.RECONNECTING
+
+        with patch.object(service, "_connect_live") as connect_live:
+            self.assertTrue(service.connect("streamer"))
+
+        connect_live.assert_not_called()
+
     def test_activity_subscription_unauthorized_requests_token_recovery(self) -> None:
         auth = Mock()
         auth.recover_unauthorized.return_value = True

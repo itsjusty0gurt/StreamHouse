@@ -462,7 +462,11 @@ class TwitchModule:
         target = self.service.channel or channel.strip().lstrip("#").casefold()
         if not target:
             return False
-        if self.service.state is TwitchConnectionState.CONNECTED:
+        if self.service.state in {
+            TwitchConnectionState.CONNECTING,
+            TwitchConnectionState.RECONNECTING,
+            TwitchConnectionState.CONNECTED,
+        }:
             self.service.disconnect()
         return self.service.connect(target)
 

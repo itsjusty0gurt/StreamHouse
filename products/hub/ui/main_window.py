@@ -4046,8 +4046,14 @@ class MainWindow(QMainWindow):
         channel: str,
     ) -> None:
         connected = state is TwitchConnectionState.CONNECTED
-        connecting = state is TwitchConnectionState.CONNECTING
-        if not connected:
+        connecting = state in {
+            TwitchConnectionState.CONNECTING,
+            TwitchConnectionState.RECONNECTING,
+        }
+        if state in {
+            TwitchConnectionState.DISCONNECTED,
+            TwitchConnectionState.ERROR,
+        }:
             self.twitch_module.clear_subscription_events()
 
         page_status = state.value
@@ -4067,11 +4073,24 @@ class MainWindow(QMainWindow):
         self.ui.twitchSendEdit.setEnabled(connected)
         self.ui.twitchSendButton.setEnabled(connected)
         self.ui.twitchListenerUrlLabel.setText(
-            self.twitch_service.listener_url if connected else "Stopped"
+            self.twitch_service.listener_url
+            if state
+            in {
+                TwitchConnectionState.CONNECTED,
+                TwitchConnectionState.RECONNECTING,
+            }
+            else "Stopped"
         )
         self.twitch_health.connection_state = state.value
         self.twitch_health.eventsub_state = (
-            "Connected" if connected else "Stopped"
+            state.value
+            if state
+            in {
+                TwitchConnectionState.CONNECTING,
+                TwitchConnectionState.RECONNECTING,
+                TwitchConnectionState.CONNECTED,
+            }
+            else "Stopped"
         )
         self._refresh_twitch_health(connection_state=state)
         self._refresh_twitch_chat_empty_state(connection_state=state)
@@ -5715,6 +5734,8 @@ class MainWindow(QMainWindow):
             return "Twitch isn't connected. Sign in to use chat."
         if state is TwitchConnectionState.CONNECTING:
             return "Connecting to your channel's chat…"
+        if state is TwitchConnectionState.RECONNECTING:
+            return "Reconnecting to your channel's chat…"
         if state is TwitchConnectionState.ERROR:
             return "Chat is temporarily unavailable. Check your Twitch connection."
         return "Chat connection lost — reconnecting…"
@@ -5861,10 +5882,6 @@ class MainWindow(QMainWindow):
     @Slot(str)
     def handle_twitch_error(self, message: str) -> None:
         self.ui.twitchErrorLabel.setText(message)
-        if self.twitch_chat_has_content:
-            self.ui.twitchChatOutput.append_system(
-                f"Twitch error: {message}", datetime.now(timezone.utc)
-            )
 
     def _load_settings(self) -> AppSettings:
         return self.settings_store.load_for_startup()
@@ -7997,6 +8014,8 @@ class MainWindow(QMainWindow):
             operational_state = "Connected"
         elif effective_connection_state is TwitchConnectionState.CONNECTING:
             operational_state = "Connecting"
+        elif effective_connection_state is TwitchConnectionState.RECONNECTING:
+            operational_state = "Reconnecting"
         elif broadcaster_state is not TwitchAuthState.SIGNED_IN:
             operational_state = "Needs Authorization"
         elif broadcaster_missing or bot_missing:

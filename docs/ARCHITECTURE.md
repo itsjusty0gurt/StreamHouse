@@ -128,7 +128,8 @@ definitions. Runtime construction and lifecycle are module-owned.
 
 ## Twitch module conversion
 
-Twitch conversion is **partial**. Phase 1 added the trusted bundled module
+Twitch conversion is implementation-complete on its feature branch and awaits
+final acceptance. Phase 1 added the trusted bundled module
 `streamhouse.twitch` under `products/hub/modules/bundled/twitch/` and moves
 production registration of Twitch task metadata, contextual Variable
 definitions, task-provider availability, and the Twitch trigger-provider
@@ -149,8 +150,16 @@ Commands authoring page under Automation. The module owns the command store,
 dispatcher, worker lifecycle, and Twitch Backup projections; Core continues to
 own Automation execution and Backup orchestration. Counters remain Core-owned
 and are presented under Automation. Public paths, schemas, task/trigger IDs,
-command IDs, and routine references are unchanged; reconnect semantics are
-intentionally preserved for a later focused improvement.
+command IDs, and routine references are unchanged.
+
+Twitch connection maintenance is module-owned. Routine broadcaster/bot token
+validation or refresh updates protected credentials without recreating live
+transports. Native EventSub session transfers preserve subscription continuity
+and the global Connected state. Unexpected transport interruption uses one
+owned retry timer, reports a concise Reconnecting state, and rebuilds
+subscriptions only after a replacement session welcome. Transport diagnostics
+remain in Logs rather than Chat, and module stop or explicit sign-out prevents
+late recovery callbacks from reopening transports or restoring stale tokens.
 
 ## Automation execution
 

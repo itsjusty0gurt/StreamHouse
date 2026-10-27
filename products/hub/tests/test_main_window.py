@@ -7,7 +7,7 @@ from threading import Event, Thread
 from time import monotonic
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, PropertyMock, patch
 from uuid import uuid4
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -4224,6 +4224,10 @@ class MainWindowTests(unittest.TestCase):
                 "Connecting to your channel's chat…",
             ),
             (
+                TwitchConnectionState.RECONNECTING,
+                "Reconnecting to your channel's chat…",
+            ),
+            (
                 TwitchConnectionState.DISCONNECTED,
                 "Chat connection lost — reconnecting…",
             ),
@@ -4242,6 +4246,49 @@ class MainWindowTests(unittest.TestCase):
         self.assertFalse(
             any("connect and simulate" in text.casefold() for text in visible_states)
         )
+
+    def test_twitch_transport_error_does_not_append_raw_detail_to_chat(self) -> None:
+        view = self.window.ui.twitchChatOutput
+        view.clear()
+        view.append_message(
+            TwitchMessage(
+                username="Viewer",
+                text="Keep chat clean",
+                received_at=datetime.now(timezone.utc),
+                message_id="message-1",
+                user_id="viewer-1",
+            )
+        )
+        self.window.twitch_chat_has_content = True
+        chat_before = view.toPlainText()
+
+        self.window.handle_twitch_error(
+            "Twitch WebSocket error: TLS handshake failed"
+        )
+
+        self.assertEqual(view.toPlainText(), chat_before)
+        self.assertIn("TLS handshake failed", self.window.ui.twitchErrorLabel.text())
+
+    def test_twitch_reconnect_preserves_pending_event_correlation(self) -> None:
+        self.window.twitch_module.clear_subscription_events = Mock()
+
+        with patch.object(
+            type(self.window.twitch_service.local_listener),
+            "url",
+            new_callable=PropertyMock,
+            return_value="http://127.0.0.1:1234/eventsub",
+        ):
+            self.window.handle_twitch_status_changed(
+                TwitchConnectionState.RECONNECTING,
+                "channel",
+            )
+
+        self.window.twitch_module.clear_subscription_events.assert_not_called()
+        self.assertEqual(
+            self.window.ui.twitchListenerUrlLabel.text(),
+            "http://127.0.0.1:1234/eventsub",
+        )
+        self.assertEqual(self.window.twitch_health.eventsub_state, "Reconnecting")
 
     def test_twitch_status_change_does_not_replace_existing_chat(self) -> None:
         view = self.window.ui.twitchChatOutput

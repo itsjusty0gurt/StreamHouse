@@ -16,17 +16,15 @@
    Hub module. Twitch conversion Phase 3 now has trusted discovery, static
    catalogs, module-owned auth/transport lifecycle, module-contributed UI and
    Commands, and Twitch Backup contributions.
-4. **Active branch:** `feature/twitch-module-conversion`; Phase 3 started from
-   Twitch runtime-lifecycle HEAD `c5319fceb3b1251d29ee0aa36f7066cf7a4ea3f9`.
-5. **Most important unresolved issues:** normal Twitch reconnect/renewal can
-   create visible interruption or chat noise, and one Windows
-   forced-termination test currently retains a crash-log handle.
+4. **Active branch:** `feature/twitch-module-conversion`; reconnect refinement
+   started from Phase 3 HEAD `877a2a41c33403b25ac950d876c0bb3c428b32f8`.
+5. **Most important unresolved issue:** one Windows forced-termination test
+   currently retains a crash-log handle.
 6. **Latest OBS acceptance:** 372 unique relevant tests and 70 subtests passed;
    packaged Hub/AI smoke passed; packaged startup exited 0 with OBS disabled and
    again after re-enabling; compilation and `git diff --check` passed.
-7. **Immediate next steps:** complete packaged Phase 3 acceptance, then address
-   quiet/seamless Twitch reconnect behavior separately; investigate the
-   independent Windows forced-termination test as its own task.
+7. **Immediate next steps:** complete final Twitch module acceptance, then
+   investigate the independent Windows forced-termination test as its own task.
 8. **Read next:** [master reference](STREAMHOUSE_MASTER_REFERENCE.md),
    [architecture](ARCHITECTURE.md), [0.3 foundation](architecture/hub-0.3-foundation.md),
    [implementation map](architecture/overview.md), and
@@ -58,16 +56,18 @@ The accepted OBS module conversion is integrated into `develop`. It provides:
   Automation UI consumes their static catalogs.
 
 OBS is the first accepted bundled Hub module. Twitch conversion is now
-**PARTIAL — STATIC CATALOGS + RUNTIME + UI/COMMANDS/BACKUP MODULE-OWNED** on its dedicated
-feature branch. Static task/trigger/Variable metadata remains available when the
+**IMPLEMENTATION COMPLETE — FINAL ACCEPTANCE PENDING** on its dedicated feature
+branch. Static task/trigger/Variable metadata remains available when the
 module is disabled. When enabled, `streamhouse.twitch` solely constructs and
 owns broadcaster/bot auth, protected-token maintenance policy, `TwitchService`,
 Helix/EventSub/chat transport lifecycle, trigger correlation, and shutdown.
 The Twitch workspace is module-contributed, Commands is contributed under
 Automation while its store/runtime remain Twitch-owned, Counters is presented
 under Core Automation, and Twitch data enters Backup through module
-contributors. Reconnect behavior is intentionally unchanged pending focused
-cleanup and final acceptance.
+contributors. Routine token maintenance does not rebuild transports. Native
+EventSub session transfers remain globally connected; unexpected interruptions
+enter a concise Reconnecting state and use one owned retry timer. Raw transport
+details remain in Logs and are not appended to Chat.
 
 ## Completed milestones
 
@@ -86,6 +86,9 @@ cleanup and final acceptance.
 - Outgoing raids now expose a distinct **Raid Out Started** Automation trigger,
   and optional target-browser navigation begins as soon as Twitch accepts the
   Start Raid request instead of waiting for EventSub confirmation.
+- Twitch reconnect/renewal now distinguishes native EventSub transfer from an
+  unexpected interruption, deduplicates recovery work, preserves pending event
+  correlation, and cancels late reconnect/auth work during shutdown or sign-out.
 
 ## Accepted module conversions
 
@@ -142,11 +145,6 @@ Reproduction/validation requirements:
 
 ## Known issues and validation gaps
 
-- **Twitch reconnect should be seamless — verify/fix:** periodic reconnect or
-  renewal can create visible interruption or chat noise. Determine whether the
-  source is OAuth refresh, EventSub/WebSocket lifecycle, chat transport, or
-  another layer before choosing a fix. Normal recovery should be fast and quiet
-  in chat while retaining useful diagnostics in logs.
 - **Known test issue:**
   `MainWindowTests.test_counters_page_refreshes_for_stream_and_counter_changes`
   currently raises `KeyError` during test cleanup after its Counter definition
@@ -175,6 +173,10 @@ Reproduction/validation requirements:
 | Twitch Phase 3 UI/Automation slice | 341 passed, 32 subtests passed; one unrelated Counter cleanup failure |
 | Twitch Phase 3 full gate | 1,378 passed, 373 subtests passed, one unrelated test deselected; logger-isolation failure passed alone |
 | Packaged Twitch enabled / disabled smoke | Exit code 0 / 0 using isolated data roots |
+| Twitch reconnect/auth/EventSub/module slice | 264 passed, 98 subtests passed |
+| Twitch reconnect MainWindow slice | 41 passed, 5 subtests passed; corrected focused rerun passed |
+| Twitch reconnect full gate | 1,390 passed, 374 subtests passed; one documented unrelated Counter cleanup failure |
+| Packaged reconnect build, Twitch enabled / disabled | Exit code 0 / 0 using isolated data roots; normal `dist` remained externally locked, so the same spec was built under ignored `.test-tmp` |
 | Python compilation | Passed for `products/hub` and `shared` |
 | `git diff --check` | Passed |
 

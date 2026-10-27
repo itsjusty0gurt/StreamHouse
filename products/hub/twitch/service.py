@@ -33,6 +33,7 @@ from products.hub.twitch.simulator import (
 class TwitchConnectionState(StrEnum):
     DISCONNECTED = "Disconnected"
     CONNECTING = "Connecting"
+    RECONNECTING = "Reconnecting"
     CONNECTED = "Connected"
     ERROR = "Error"
 
@@ -86,10 +87,14 @@ class TwitchService:
             self._report_error("A Twitch channel is required.")
             return False
 
-        if self.state is TwitchConnectionState.CONNECTED:
+        if self.state in {
+            TwitchConnectionState.CONNECTING,
+            TwitchConnectionState.RECONNECTING,
+            TwitchConnectionState.CONNECTED,
+        }:
             if self.channel == clean_channel:
                 Logger.debug(
-                    f'Already connected to Twitch channel "{clean_channel}".',
+                    f'Twitch connection for "{clean_channel}" is already active.',
                     source="TWITCH",
                 )
                 return True
@@ -180,6 +185,8 @@ class TwitchService:
             on_revocation=self._receive_revocation,
             on_error=self._receive_live_error,
             on_bus_event=self._publish_bus_event,
+            on_reconnecting=self._receive_live_reconnecting,
+            on_reconnected=self._receive_live_reconnected,
         )
         self._live_chat_token = self._chat_token()
         self._activity_token = token
@@ -202,6 +209,8 @@ class TwitchService:
                 on_revocation=self._receive_revocation,
                 on_error=self._receive_activity_error,
                 on_bus_event=self._publish_bus_event,
+                on_reconnecting=self._receive_activity_reconnecting,
+                on_reconnected=self._receive_activity_reconnected,
             )
             self.activity_socket.open()
         Logger.info(
@@ -211,6 +220,7 @@ class TwitchService:
         return True
 
     def _receive_live_welcome(self, session_id: str) -> None:
+        reconnecting = self.state is TwitchConnectionState.RECONNECTING
         broadcaster_token = self._current_token_for(self._activity_token)
         chat_token = self._current_token_for(self._live_chat_token)
         self._activity_token = broadcaster_token
@@ -239,10 +249,16 @@ class TwitchService:
                 self.live_socket.close()
             return
         self._set_state(TwitchConnectionState.CONNECTED)
-        Logger.info(
-            f'Connected to live Twitch chat for "{self.channel}".',
-            source="TWITCH",
-        )
+        if reconnecting:
+            Logger.debug(
+                f'Reconnected to live Twitch chat for "{self.channel}".',
+                source="TWITCH",
+            )
+        else:
+            Logger.info(
+                f'Connected to live Twitch chat for "{self.channel}".',
+                source="TWITCH",
+            )
 
     def _receive_activity_welcome(self, session_id: str) -> None:
         token = self._current_token_for(self._activity_token)
@@ -311,6 +327,55 @@ class TwitchService:
     def _receive_activity_error(message: str) -> None:
         Logger.warning(
             f"Twitch activity EventSub connection issue: {message}",
+            source="TWITCH",
+        )
+
+    def _receive_live_reconnecting(self, native_transfer: bool) -> None:
+        if native_transfer:
+            Logger.debug(
+                "Twitch EventSub is transferring to a replacement session.",
+                source="TWITCH",
+            )
+            return
+        if self.state is TwitchConnectionState.RECONNECTING:
+            Logger.debug(
+                "Twitch chat reconnect attempt is still pending.",
+                source="TWITCH",
+            )
+            return
+        Logger.warning(
+            "Twitch chat connection was interrupted; reconnecting automatically.",
+            source="TWITCH",
+        )
+        if self.state not in {
+            TwitchConnectionState.DISCONNECTED,
+            TwitchConnectionState.ERROR,
+        }:
+            self._set_state(TwitchConnectionState.RECONNECTING)
+
+    def _receive_live_reconnected(self, native_transfer: bool) -> None:
+        if native_transfer:
+            Logger.debug(
+                "Twitch EventSub session transfer completed.",
+                source="TWITCH",
+            )
+            return
+        if self.state is TwitchConnectionState.RECONNECTING:
+            self._set_state(TwitchConnectionState.CONNECTED)
+
+    @staticmethod
+    def _receive_activity_reconnecting(native_transfer: bool) -> None:
+        reason = "session transfer" if native_transfer else "connection interruption"
+        Logger.debug(
+            f"Twitch activity EventSub recovery started ({reason}).",
+            source="TWITCH",
+        )
+
+    @staticmethod
+    def _receive_activity_reconnected(native_transfer: bool) -> None:
+        reason = "session transfer" if native_transfer else "reconnect"
+        Logger.debug(
+            f"Twitch activity EventSub recovery completed ({reason}).",
             source="TWITCH",
         )
 
@@ -1113,6 +1178,8 @@ class TwitchService:
         )
 
     def _set_state(self, state: TwitchConnectionState) -> None:
+        if self.state is state:
+            return
         self.state = state
         Events.emit(
             "twitch_status_changed",

@@ -57,11 +57,20 @@ class DashboardPageTests(unittest.TestCase):
             TwitchAuthState.SIGNED_IN,
             TwitchConnectionState.DISCONNECTED,
         )
+        reconnecting = summarize_twitch_connection(
+            TwitchAuthState.SIGNED_IN,
+            TwitchConnectionState.RECONNECTING,
+        )
 
         self.assertIs(connected.status, DashboardStatus.CONNECTED)
         self.assertIs(missing_scope.status, DashboardStatus.NEEDS_ATTENTION)
         self.assertIs(bot_partial.status, DashboardStatus.PARTIAL)
         self.assertIs(disconnected.status, DashboardStatus.DISCONNECTED)
+        self.assertIs(reconnecting.status, DashboardStatus.PARTIAL)
+        self.assertEqual(
+            reconnecting.detail,
+            "Chat and EventSub are reconnecting.",
+        )
 
     def test_obs_summary_uses_existing_connection_state(self) -> None:
         self.assertIs(

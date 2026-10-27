@@ -23,6 +23,7 @@ from products.hub.twitch.models import (
 )
 from products.hub.twitch.parser import TwitchMessageParser, TwitchPayloadError
 from shared.streamhouse_runtime.logger import Logger
+from shared.streamhouse_runtime.redaction import redact_secret_text
 
 
 class TwitchHelixClient:
@@ -1092,6 +1093,8 @@ class TwitchEventSubSocket(QObject):
         on_revocation: Callable[[str], None],
         on_error: Callable[[str], None],
         on_bus_event: Callable[[TwitchEvent], None] | None = None,
+        on_reconnecting: Callable[[bool], None] | None = None,
+        on_reconnected: Callable[[bool], None] | None = None,
         parent: QObject | None = None,
     ) -> None:
         super().__init__(parent)
@@ -1102,23 +1105,37 @@ class TwitchEventSubSocket(QObject):
         self.on_revocation = on_revocation
         self.on_error = on_error
         self.on_bus_event = on_bus_event
+        self.on_reconnecting = on_reconnecting
+        self.on_reconnected = on_reconnected
         self.socket = QWebSocket(parent=self)
         self.socket.textMessageReceived.connect(self._receive_text)
         self.socket.disconnected.connect(self._disconnected)
         self.socket.errorOccurred.connect(self._socket_error)
         self._intentional_close = True
         self._reconnect_transfer = False
+        self._recovering = False
+        self._transport_error_logged = False
+        self._pending_reconnect_url = ""
         self._url = self.DEFAULT_URL
+        self._reconnect_timer = QTimer(self)
+        self._reconnect_timer.setSingleShot(True)
+        self._reconnect_timer.setInterval(2000)
+        self._reconnect_timer.timeout.connect(self._reopen_if_needed)
         self._seen_ids: set[str] = set()
         self._seen_order: deque[str] = deque()
 
     def open(self, url: str | None = None) -> None:
+        self._reconnect_timer.stop()
         self._intentional_close = False
         self._url = url or self.DEFAULT_URL
         self.socket.open(QUrl(self._url))
 
     def close(self) -> None:
         self._intentional_close = True
+        self._reconnect_timer.stop()
+        self._pending_reconnect_url = ""
+        self._reconnect_transfer = False
+        self._recovering = False
         self.socket.close()
 
     def _receive_text(self, text: str) -> None:
@@ -1147,8 +1164,18 @@ class TwitchEventSubSocket(QObject):
                 return
             if self._reconnect_transfer:
                 self._reconnect_transfer = False
+                self._recovering = False
+                self._transport_error_logged = False
+                if self.on_reconnected is not None:
+                    self.on_reconnected(True)
             else:
+                recovering = self._recovering
                 self.on_welcome(session_id)
+                if recovering and not self._intentional_close:
+                    self._recovering = False
+                    self._transport_error_logged = False
+                    if self.on_reconnected is not None:
+                        self.on_reconnected(False)
             return
 
         if message_type == "session_reconnect":
@@ -1159,10 +1186,16 @@ class TwitchEventSubSocket(QObject):
                 else ""
             )
             if reconnect_url:
+                if self._reconnect_transfer:
+                    return
                 self._reconnect_transfer = True
+                self._recovering = True
+                self._pending_reconnect_url = reconnect_url
+                if self.on_reconnecting is not None:
+                    self.on_reconnecting(True)
                 self._intentional_close = True
                 self.socket.close()
-                QTimer.singleShot(0, self, lambda: self.open(reconnect_url))
+                self._reconnect_timer.start(0)
             return
 
         if message_type == "revocation":
@@ -1242,16 +1275,36 @@ class TwitchEventSubSocket(QObject):
         )
 
     def _disconnected(self) -> None:
-        if not self._intentional_close:
-            QTimer.singleShot(2000, self, self._reopen_if_needed)
+        if self._intentional_close or self._reconnect_timer.isActive():
+            return
+        # A failed Twitch-provided transfer URL no longer owns subscription
+        # continuity. The fallback opens a normal session and must subscribe
+        # again after its welcome.
+        self._reconnect_transfer = False
+        self._recovering = True
+        if self.on_reconnecting is not None:
+            self.on_reconnecting(False)
+        self._reconnect_timer.start()
 
     def _reopen_if_needed(self) -> None:
-        if not self._intentional_close:
+        reconnect_url = self._pending_reconnect_url
+        if reconnect_url:
+            self._pending_reconnect_url = ""
+            self.open(reconnect_url)
+        elif not self._intentional_close:
             self.open()
 
     def _socket_error(self, error: QAbstractSocket.SocketError) -> None:
         if not self._intentional_close:
-            self.on_error(f"Twitch WebSocket error: {self.socket.errorString()}")
+            message = (
+                "Twitch EventSub transport error; automatic recovery will "
+                f"continue: {redact_secret_text(self.socket.errorString())}"
+            )
+            if self._transport_error_logged:
+                Logger.debug(message, source="TWITCH")
+            else:
+                self._transport_error_logged = True
+                Logger.warning(message, source="TWITCH")
 
     def _is_duplicate(self, message_id: str) -> bool:
         if message_id in self._seen_ids:

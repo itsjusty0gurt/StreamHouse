@@ -329,6 +329,11 @@ connection activity while Streamhouse AI is not running.
 Twitch token maintenance is separate from authentication state transitions.
 Routine validation or refresh updates the stored token and emits a token event,
 but does not emit another signed-in transition or restart chat/EventSub.
+EventSub native reconnect transfers retain the global Connected state and do
+not recreate subscriptions. An unexpected close enters Reconnecting, schedules
+one socket-owned retry, and recreates subscriptions after the replacement
+welcome. The retry is cancelled by intentional disconnect/module shutdown;
+transient socket details are logged but are not published as chat errors.
 
 ## Ownership boundaries
 

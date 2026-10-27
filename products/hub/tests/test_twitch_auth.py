@@ -164,7 +164,11 @@ class TwitchAuthServiceTests(unittest.TestCase):
         store = Mock()
         service = TwitchAuthService(client=client, store=store)
         service.token = old_token
-        service._run_async = lambda function, *args: function(*args)
+        def run_now(function, *args):
+            function(*args)
+            return True
+
+        service._run_async = run_now
 
         self.assertTrue(service.recover_unauthorized())
 
@@ -222,6 +226,59 @@ class TwitchAuthServiceTests(unittest.TestCase):
             service._set_state(TwitchAuthState.SIGNED_IN, "channel")
 
         emit.assert_not_called()
+
+    def test_maintenance_and_unauthorized_recovery_cannot_overlap(self) -> None:
+        token = TwitchToken(
+            "access", "refresh", 9_999_999_999, [], user_id="42", login="channel"
+        )
+        service = TwitchAuthService(client=Mock(), store=Mock())
+        service.token = token
+        service._worker = Mock()
+        service._worker.is_alive.return_value = True
+
+        service.maintain()
+
+        self.assertFalse(service.recover_unauthorized())
+        self.assertEqual(service._last_unauthorized_recovery, 0.0)
+
+    def test_maintenance_failure_keeps_technical_detail_out_of_auth_state(self) -> None:
+        token = TwitchToken("access", "refresh", 1, [], login="channel")
+        client = Mock()
+        client.refresh.side_effect = OSError("socket failed at private endpoint")
+        service = TwitchAuthService(client=client, store=Mock())
+        service.token = token
+        service.state = TwitchAuthState.SIGNED_IN
+
+        with patch.object(Events, "emit") as emit:
+            service._maintain_token(token)
+
+        self.assertIs(service.state, TwitchAuthState.ERROR)
+        self.assertEqual(
+            emit.call_args.kwargs["detail"],
+            "Twitch authentication requires attention.",
+        )
+
+    def test_sign_out_during_refresh_cannot_restore_stale_credentials(self) -> None:
+        old = TwitchToken("old", "refresh", 1, [], login="channel")
+        new = TwitchToken(
+            "new", "refresh-2", 9_999_999_999, [], user_id="42", login="channel"
+        )
+        store = Mock()
+        service = TwitchAuthService(client=Mock(), store=store)
+        service.token = old
+        service.state = TwitchAuthState.SIGNED_IN
+
+        def refresh_then_sign_out(_token):
+            service.sign_out()
+            return new
+
+        service.client.refresh.side_effect = refresh_then_sign_out
+        service.client.validate.return_value = new
+
+        service._maintain_token(old)
+
+        self.assertIsNone(service.token)
+        store.save.assert_not_called()
 
     def test_shutdown_suppresses_late_auth_state_callbacks(self) -> None:
         service = TwitchAuthService(client=Mock(), store=Mock())
