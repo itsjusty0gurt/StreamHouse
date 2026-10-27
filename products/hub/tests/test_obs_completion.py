@@ -29,7 +29,7 @@ from products.hub.twitch.commands import (
     TwitchCommandTriggerResult,
 )
 from products.hub.twitch.models import TwitchMessage
-from products.hub.ui.command_worker import CommandExecutionWorker
+from products.hub.twitch.command_worker import CommandExecutionWorker
 
 
 class AutoRespondingObsService(ObsWebSocketService):

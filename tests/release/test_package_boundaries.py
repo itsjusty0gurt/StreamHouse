@@ -126,7 +126,15 @@ class PackageBoundaryTests(unittest.TestCase):
         main_source = (
             self.root / "products" / "hub" / "ui" / "main_window.py"
         ).read_text(encoding="utf-8")
-        for constructor in ("TwitchAuthService(", "TwitchService(", "TwitchTokenStore("):
+        for constructor in (
+            "TwitchAuthService(",
+            "TwitchService(",
+            "TwitchTokenStore(",
+            "TwitchCommandTriggerStore(",
+            "TwitchCommandTriggerDispatcher(",
+            "ChannelInformationStore(",
+            "CommandExecutionWorker(",
+        ):
             self.assertNotIn(constructor, app_source)
             self.assertNotIn(constructor, main_source)
 

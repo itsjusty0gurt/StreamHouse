@@ -17,10 +17,13 @@ from products.hub.automation.tasks import TaskRegistry
 from products.hub.automation.variable_registry import VariableRegistry
 from products.hub.modules import (
     ActionRegistry,
+    AutomationSubpageRegistry,
+    BackupContributorRegistry,
     ModuleContext,
     ModuleEnablementStore,
     ModuleLifecycle,
     ModuleRegistry,
+    ModuleTabRegistry,
     TriggerProviderRegistry,
 )
 from products.hub.modules.bootstrap import CORE_MODULE_CAPABILITIES
@@ -227,3 +230,62 @@ def test_twitch_module_preserves_published_credential_paths() -> None:
 
     assert module.auth.store.path.name == "twitch-token.dat"
     assert module.bot_auth.store.path.name == "twitch-bot-token.dat"
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_twitch_ui_and_backup_contributions_follow_module_availability(
+    tmp_path: Path,
+    enabled: bool,
+) -> None:
+    module = TwitchModule()
+    module.auth.restore = Mock()
+    module.bot_auth.restore = Mock()
+    module.bind_ui_factories(
+        workspace=lambda parent: ("workspace", parent),
+        commands=lambda parent: ("commands", parent),
+    )
+    registry = _registry(tmp_path / "modules.json", module, enabled=enabled)
+    context, tasks, variables, providers, trigger_store, routines = _contracts(
+        tmp_path
+    )
+    module.bind_trigger_store(trigger_store)
+    tabs = ModuleTabRegistry()
+    automation_pages = AutomationSubpageRegistry()
+    backup = BackupContributorRegistry()
+    context = ModuleContext(
+        core_version=context.core_version,
+        events=context.events,
+        variables=variables,
+        tasks=tasks,
+        actions=context.actions,
+        routine_store=routines,
+        automation=context.automation,
+        trigger_providers=providers,
+        tabs=tabs,
+        automation_pages=automation_pages,
+        backup=backup,
+        data_root=tmp_path,
+    )
+
+    registry.register_catalogs(lambda _descriptor: context)
+    registry.register_enabled(lambda _descriptor: context)
+
+    assert [item.page_id for item in automation_pages.contributions()] == [
+        "twitch.commands"
+    ]
+    assert automation_pages.contributions()[0].current_availability().available is enabled
+    assert [item.tab_id for item in tabs.contributions()] == (
+        ["twitch.workspace"] if enabled else []
+    )
+    assert {item.contributor_id for item in backup.contributions()} == {
+        "twitch.channel_information",
+        "twitch.commands",
+        "twitch.triggers",
+        "twitch.users",
+    }
+    assert module.command_store is not None
+    assert module.command_store.path == tmp_path / "twitch" / "commands.json"
+    assert module.channel_information_store is not None
+    assert module.channel_information_store.path == (
+        tmp_path / "twitch" / "channel-information.json"
+    )

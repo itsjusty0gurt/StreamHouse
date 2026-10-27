@@ -2711,9 +2711,7 @@ class MainWindowTests(unittest.TestCase):
                 "Analytics",
                 "Raid",
                 "Channel Information",
-                "Commands",
                 "Channel Points",
-                "Counters",
                 "Users",
             ],
         )
@@ -2743,7 +2741,7 @@ class MainWindowTests(unittest.TestCase):
         )
         self.assertEqual(
             self.window.twitch_page_header.title_label.text(),
-            "Your Channel",
+            "Twitch",
         )
         self.assertEqual(
             self.window.automation_page.page_header.title_label.text(),
@@ -2785,16 +2783,16 @@ class MainWindowTests(unittest.TestCase):
             [button.text() for button in self.window.navigation_group.buttons()],
             [
                 "Dashboard",
-                "Your Channel",
                 "Automation",
                 "Wiki",
                 "Connections",
                 "Logs",
                 "Settings",
+                "Twitch",
                 "OBS",
             ],
         )
-        self.assertEqual(self.window.channel_tabs.count(), 8)
+        self.assertEqual(self.window.channel_tabs.count(), 6)
         self.assertNotIn(
             "Soundboard",
             [
@@ -2811,7 +2809,15 @@ class MainWindowTests(unittest.TestCase):
                 self.window.automation_page.tabs.tabText(index)
                 for index in range(self.window.automation_page.tabs.count())
             ],
-            ["Routines", "Queues", "Variables", "Run History", "Timers"],
+            [
+                "Routines",
+                "Queues",
+                "Variables",
+                "Counters",
+                "Commands",
+                "Run History",
+                "Timers",
+            ],
         )
 
         self.assertFalse(self.window.channel_points_page.create_button.isEnabled())
@@ -3089,7 +3095,7 @@ class MainWindowTests(unittest.TestCase):
     def test_command_creation_action_lives_in_management_controls(self) -> None:
         command_buttons = [
             button
-            for button in self.window.channel_tabs.findChildren(QPushButton)
+            for button in self.window.automation_page.findChildren(QPushButton)
             if button.text() == "+ Command"
         ]
 
@@ -3300,7 +3306,7 @@ class MainWindowTests(unittest.TestCase):
         self.assertLess(monotonic() - before, 0.5)
         self.assertTrue(started.wait(1))
         release.set()
-        self.window.command_thread_pool.waitForDone(2_000)
+        self.window.twitch_module.wait_for_commands(2_000)
         self.application.processEvents()
 
         self.window.twitch_service.send_message.assert_called_once_with(
@@ -4645,6 +4651,19 @@ class MainWindowTests(unittest.TestCase):
             ],
             ["obs.automation", "twitch.automation"],
         )
+        self.assertIn("twitch.workspace", self.window.module_pages)
+        self.assertEqual(
+            self.window.module_navigation_buttons["twitch.workspace"].text(),
+            "Twitch",
+        )
+        self.assertIs(
+            self.window.module_pages["twitch.workspace"],
+            self.window.ui.twitchPage,
+        )
+        self.assertIn(
+            "twitch.commands",
+            self.window.automation_page.contributed_pages,
+        )
 
     def test_disabled_obs_catalog_precedes_main_window_ui_without_runtime(self) -> None:
         provider = self.window.trigger_provider_registry.get("obs.automation")
@@ -4690,6 +4709,25 @@ class MainWindowTests(unittest.TestCase):
         self.assertFalse(self.window.channel_snapshot_timer.isActive())
         self.assertFalse(self.window.stream_overview_timer.isActive())
         self.assertFalse(self.window.twitch_subscription_correlation_timer.isActive())
+        self.assertNotIn("twitch.workspace", self.window.module_pages)
+        self.assertIn(
+            "twitch.commands",
+            self.window.automation_page.contributed_pages,
+        )
+        commands_page = self.window.automation_page.contributed_pages[
+            "twitch.commands"
+        ]
+        self.assertFalse(commands_page.property("provider_available"))
+        self.assertIn(
+            "disabled",
+            self.window.twitch_commands_availability_label.text().casefold(),
+        )
+        self.assertEqual(
+            self.window.automation_page.tabs.tabText(
+                self.window.automation_page.tabs.indexOf(self.window.counters_page)
+            ),
+            "Counters",
+        )
         routine = self.twitch_command_trigger_store.routine_store.add(
             "Disabled Twitch provider"
         )

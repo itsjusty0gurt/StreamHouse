@@ -532,18 +532,26 @@ class BackupManager:
                 },
             )
         if BackupComponent.CHANNEL_INFORMATION in components:
-            payloads[BackupComponent.CHANNEL_INFORMATION] = self._json_or_default(
-                "twitch/channel-information.json",
-                {
-                    "version": ChannelInformationStore.VERSION,
-                    "social_links": {},
-                    "schedule": "",
-                    "rules": "",
-                    "server_info": "",
-                },
+            payloads[BackupComponent.CHANNEL_INFORMATION] = self._contributed_snapshot(
+                "twitch.channel_information",
+                "Channel Information",
+                lambda: self._json_or_default(
+                    "twitch/channel-information.json",
+                    {
+                        "version": ChannelInformationStore.VERSION,
+                        "social_links": {},
+                        "schedule": "",
+                        "rules": "",
+                        "server_info": "",
+                    },
+                ),
             )
         if BackupComponent.USERS in components:
-            payloads[BackupComponent.USERS] = self._safe_users_snapshot()
+            payloads[BackupComponent.USERS] = self._contributed_snapshot(
+                "twitch.users",
+                "Users",
+                self._safe_users_snapshot,
+            )
         if BackupComponent.USER_GROUPS in components:
             payloads[BackupComponent.USER_GROUPS] = self._json_or_default(
                 "memory/user_groups.json",
@@ -653,8 +661,14 @@ class BackupManager:
                     "raid_suppression_enabled": True,
                     "raid_suppression_minutes": 3,
                 }
-            store = self._json_or_default(
-                relative, default
+            store = (
+                self._contributed_snapshot(
+                    "twitch.triggers",
+                    "Twitch triggers",
+                    lambda: self._json_or_default(relative, default),
+                )
+                if label == "twitch"
+                else self._json_or_default(relative, default)
             )
             self._expect_schema(store, version, f"{label} triggers", "version")
             selected = [
@@ -782,9 +796,13 @@ class BackupManager:
         }
 
     def _command_snapshot(self, *, routines_already_included: bool) -> dict[str, Any]:
-        commands = self._json_or_default(
-            "twitch/commands.json",
-            {"version": TwitchCommandTriggerStore.VERSION, "triggers": []},
+        commands = self._contributed_snapshot(
+            "twitch.commands",
+            "Commands",
+            lambda: self._json_or_default(
+                "twitch/commands.json",
+                {"version": TwitchCommandTriggerStore.VERSION, "triggers": []},
+            ),
         )
         self._expect_schema(
             commands,
@@ -803,6 +821,26 @@ class BackupManager:
                 ),
                 scope="commands",
             )
+        return payload
+
+    def _contributed_snapshot(
+        self,
+        contributor_id: str,
+        label: str,
+        fallback,
+    ) -> dict[str, Any]:
+        contributor = (
+            self.contributors.get(contributor_id)
+            if self.contributors is not None
+            else None
+        )
+        if contributor is None:
+            return dict(fallback())
+        try:
+            payload = dict(contributor.export(self.project_root))
+            contributor.validate(payload)
+        except (OSError, TypeError, ValueError) as error:
+            raise BackupError(f"{label} data is invalid.") from error
         return payload
 
     def _counter_definitions(self) -> dict[str, Any]:

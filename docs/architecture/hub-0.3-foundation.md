@@ -1,8 +1,8 @@
 # Streamhouse Hub 0.3 modular foundation contracts
 
 Status: **Core foundation and OBS conversion implemented; Twitch conversion
-Phase 2 static catalogs and runtime lifecycle complete on its isolated feature
-branch**.
+Phase 3 static catalogs, runtime lifecycle, UI, Commands, and Backup ownership
+complete on its isolated feature branch**.
 
 Streamhouse Hub `0.2.1-alpha` is the latest released maintenance Alpha at tag
 `v0.2.1-alpha`; `v0.2.0-alpha` remains its frozen predecessor. Active
@@ -45,8 +45,12 @@ The contracts below are grounded in the current implementation:
   persists window state and hosts one developer-tools `QDockWidget`, but there
   is no general dock-contribution contract.
 - Backup orchestration remains Core-owned and accepts the OBS module's safe
-  configuration contributor while preserving the published component and
-  archive contract.
+  configuration contributor and Twitch-owned component projections while
+  preserving the published component and archive contract.
+- Module-provided Automation authoring pages use one Core registry. Twitch uses
+  it for Commands even while disabled; the persisted command store remains at
+  `twitch/commands.json` and is not generalized into a cross-platform command
+  framework.
 
 These are migration inputs, not reasons to keep domain construction in
 `MainWindow` permanently.

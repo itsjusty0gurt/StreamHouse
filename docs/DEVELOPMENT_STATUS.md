@@ -13,21 +13,20 @@
    orchestration, and the Qt shell. Trusted bundled modules contribute actions,
    tasks, triggers, Variables, tabs, and Backup data through Core contracts.
 3. **Current architecture milestone:** OBS is the first accepted real bundled
-   Hub module. Twitch conversion Phase 2 now has trusted discovery, static
-   catalogs, and module-owned auth/transport lifecycle; UI, Commands, and Backup
-   ownership remain transitional.
-4. **Active branch:** `feature/twitch-module-conversion`, based on clean
-   `develop` HEAD `94f4c78`.
+   Hub module. Twitch conversion Phase 3 now has trusted discovery, static
+   catalogs, module-owned auth/transport lifecycle, module-contributed UI and
+   Commands, and Twitch Backup contributions.
+4. **Active branch:** `feature/twitch-module-conversion`; Phase 3 started from
+   Twitch runtime-lifecycle HEAD `c5319fceb3b1251d29ee0aa36f7066cf7a4ea3f9`.
 5. **Most important unresolved issues:** normal Twitch reconnect/renewal can
    create visible interruption or chat noise, and one Windows
    forced-termination test currently retains a crash-log handle.
 6. **Latest OBS acceptance:** 372 unique relevant tests and 70 subtests passed;
    packaged Hub/AI smoke passed; packaged startup exited 0 with OBS disabled and
    again after re-enabling; compilation and `git diff --check` passed.
-7. **Immediate next steps:** address the three confirmed Hub issues below;
-   investigate the independent Windows forced-termination test; and consider
-   provider-neutral presentation adapters only where they materially simplify
-   future modules.
+7. **Immediate next steps:** complete packaged Phase 3 acceptance, then address
+   quiet/seamless Twitch reconnect behavior separately; investigate the
+   independent Windows forced-termination test as its own task.
 8. **Read next:** [master reference](STREAMHOUSE_MASTER_REFERENCE.md),
    [architecture](ARCHITECTURE.md), [0.3 foundation](architecture/hub-0.3-foundation.md),
    [implementation map](architecture/overview.md), and
@@ -39,8 +38,8 @@
 | --- | --- |
 | Date | 2026-10-27 (America/Edmonton) |
 | Branch | `feature/twitch-module-conversion` from `develop` at `94f4c78` |
-| Accepted feature HEAD | `f3db6f8fa2ce22603cf974344a78144a56bcd2ff` |
-| Feature upstream | synchronized with `origin/feature/obs-module-conversion` before acceptance documentation |
+| Twitch Phase 3 starting HEAD | `c5319fceb3b1251d29ee0aa36f7066cf7a4ea3f9` |
+| Feature upstream | `origin/feature/twitch-module-conversion` |
 | Working tree at task start | clean |
 | Hub development version | `0.3.0-alpha` / Windows `0.3.0.0` |
 | Pre-merge integration baseline | `develop` at `a91f7850e133b6a19240a61938d18b0ca3a0621b` |
@@ -59,13 +58,16 @@ The accepted OBS module conversion is integrated into `develop`. It provides:
   Automation UI consumes their static catalogs.
 
 OBS is the first accepted bundled Hub module. Twitch conversion is now
-**PARTIAL — STATIC CATALOGS + RUNTIME LIFECYCLE MODULE-OWNED** on its dedicated
+**PARTIAL — STATIC CATALOGS + RUNTIME + UI/COMMANDS/BACKUP MODULE-OWNED** on its dedicated
 feature branch. Static task/trigger/Variable metadata remains available when the
 module is disabled. When enabled, `streamhouse.twitch` solely constructs and
 owns broadcaster/bot auth, protected-token maintenance policy, `TwitchService`,
 Helix/EventSub/chat transport lifecycle, trigger correlation, and shutdown.
-Commands, Twitch UI, and Backup ownership stay transitional for later phases;
-reconnect behavior is intentionally unchanged pending focused cleanup.
+The Twitch workspace is module-contributed, Commands is contributed under
+Automation while its store/runtime remain Twitch-owned, Counters is presented
+under Core Automation, and Twitch data enters Backup through module
+contributors. Reconnect behavior is intentionally unchanged pending focused
+cleanup and final acceptance.
 
 ## Completed milestones
 
@@ -146,13 +148,12 @@ Reproduction/validation requirements:
   another layer before choosing a fix. Normal recovery should be fast and quiet
   in chat while retaining useful diagnostics in logs.
 - **Known test issue:**
-  `WindowsInstanceMutexTests.test_forced_termination_releases_lock_and_preserves_abnormal_marker`
-  currently fails because the force-terminated helper retains the named mutex
-  and a crash-log handle long enough to block immediate reacquisition/cleanup.
-  It reproduced outside the restricted sandbox and is unrelated to the OBS diff.
-- **Validation gap:** the complete 1,256-test Hub/release command did not finish
-  green because of that single Windows process-lifetime test. Do not report a
-  fully green gate until it is resolved or independently proven environmental.
+  `MainWindowTests.test_counters_page_refreshes_for_stream_and_counter_changes`
+  currently raises `KeyError` during test cleanup after its Counter definition
+  has already been removed. It predates and is unrelated to Twitch Phase 3.
+- **Known test isolation issue:** the complete gate can deliver late AI
+  memory-expiry log callbacks into the Python-script logger mock. The affected
+  Python-script logging test passes in isolation; no assertion was weakened.
 - **Acceptance limitation:** no preexisting live OBS trigger was available for
   nondestructive manual firing. Automated persistence, matching, filtering,
   context, and MainWindow dispatch coverage passed.
@@ -170,13 +171,18 @@ Reproduction/validation requirements:
 | Packaged Hub/AI smoke | Passed |
 | Packaged startup, OBS disabled | Exit code 0 |
 | Packaged startup, OBS re-enabled | Exit code 0 |
+| Twitch Phase 3 module/Backup/package-boundary slice | 47 passed, 4 subtests passed |
+| Twitch Phase 3 UI/Automation slice | 341 passed, 32 subtests passed; one unrelated Counter cleanup failure |
+| Twitch Phase 3 full gate | 1,378 passed, 373 subtests passed, one unrelated test deselected; logger-isolation failure passed alone |
+| Packaged Twitch enabled / disabled smoke | Exit code 0 / 0 using isolated data roots |
 | Python compilation | Passed for `products/hub` and `shared` |
-| `git diff --check` before acceptance documentation | Passed |
+| `git diff --check` | Passed |
 
 ## Next recommended steps
 
-1. Diagnose the Windows forced-termination/mutex crash-log handle issue separately.
-2. Address the four active Hub behavior issues in the handoff.
+1. Complete final Twitch conversion acceptance, then address quiet/seamless
+   reconnect and renewal behavior as a separate task.
+2. Diagnose the independent Counter cleanup and logger-isolation tests.
 3. Make static OBS presentation adapters provider-neutral only where another
    module or a concrete maintenance benefit justifies the abstraction.
 4. Consider Modules-page, navigation, or docking work as separate scoped changes.

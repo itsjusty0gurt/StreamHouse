@@ -72,6 +72,7 @@ from products.hub.integrations.music_player import (
 )
 from products.hub.integrations.music_triggers import MusicTriggerStore
 from products.hub.automation.service import AutomationService
+from products.hub.automation.routines import RoutineStore
 from products.hub.automation.models import AutomationExecutionResult, TriggerEvent
 from products.hub.automation.custom_variables import CustomVariableStore
 from products.hub.automation.variable_providers import (
@@ -151,7 +152,6 @@ from products.hub.twitch.commands import (
     TwitchCommandPermission,
     TwitchCommandSetupState,
     TwitchCommandTrigger,
-    TwitchCommandTriggerDispatcher,
     TwitchCommandTriggerOutcome,
     TwitchCommandTriggerStore,
 )
@@ -160,13 +160,10 @@ from products.hub.twitch.default_commands import (
     default_command_definitions,
 )
 from products.hub.twitch.channel_information import ChannelInformationStore
-from products.hub.twitch.tasks import (
-    SendTwitchChatMessageTask,
-    TWITCH_INFORMATION_TASK_TYPES,
-    register_twitch_tasks,
-)
+from products.hub.twitch.tasks import SendTwitchChatMessageTask
 from products.hub.modules import (
     ActionRegistry,
+    AutomationSubpageRegistry,
     BackupContributorRegistry,
     ModuleContext,
     ModuleRegistry,
@@ -218,10 +215,6 @@ from products.hub.ui.twitch_command_dialog import TwitchCommandDialog
 from products.hub.ui.channel_snapshot_worker import (
     ChannelSnapshotResult,
     ChannelSnapshotWorker,
-)
-from products.hub.ui.command_worker import (
-    CommandExecutionWorker,
-    CommandExecutionWorkerResult,
 )
 from products.hub.ui.ads_worker import AdsActionWorker
 from products.hub.ui.controllers.release_controller import ReleaseController
@@ -430,6 +423,10 @@ class MainWindow(QMainWindow):
         self.ads_service = twitch_module.ads_service
         self.twitch_auth = twitch_module.auth
         self.twitch_bot_auth = twitch_module.bot_auth
+        self.twitch_module.bind_ui_factories(
+            workspace=self._create_twitch_workspace,
+            commands=self._build_twitch_commands_tab,
+        )
         self._last_twitch_auth_state = self.twitch_auth.state
         self._last_twitch_bot_auth_state = self.twitch_bot_auth.state
         self.window_state_store = window_state_store or WindowStateStore()
@@ -450,16 +447,10 @@ class MainWindow(QMainWindow):
             set_lifecycle = getattr(remote_store, "set_lifecycle", None)
             if callable(set_lifecycle):
                 set_lifecycle(self.ai_lifecycle)
-        self._owns_twitch_command_trigger_store = (
-            twitch_command_trigger_store is None
-        )
-        self.twitch_command_trigger_store = (
-            twitch_command_trigger_store or TwitchCommandTriggerStore()
-        )
-        routine_store = self.twitch_command_trigger_store.routine_store
-        self.core_trigger_store = core_trigger_store or CoreTriggerStore(
-            path=routine_store.path.with_name("core_triggers.json"),
-            routine_store=routine_store,
+        routine_store = (
+            twitch_command_trigger_store.routine_store
+            if twitch_command_trigger_store is not None
+            else RoutineStore()
         )
         data_root = (
             Path(data_root).expanduser().resolve()
@@ -467,6 +458,26 @@ class MainWindow(QMainWindow):
             else routine_store.path.parent.parent.expanduser().resolve()
         )
         self.data_root = data_root
+        if twitch_command_trigger_store is not None:
+            self.twitch_module.bind_command_store(twitch_command_trigger_store)
+        if channel_information_store is not None:
+            self.twitch_module.bind_channel_information_store(
+                channel_information_store
+            )
+        self.twitch_module.ensure_data_stores(data_root, routine_store)
+        self.twitch_command_trigger_store = self.twitch_module.command_store
+        self.channel_information_store = self.twitch_module.channel_information_store
+        self.twitch_command_trigger_dispatcher = self.twitch_module.command_dispatcher
+        if (
+            self.twitch_command_trigger_store is None
+            or self.channel_information_store is None
+            or self.twitch_command_trigger_dispatcher is None
+        ):
+            raise RuntimeError("The Twitch module data stores are unavailable.")
+        self.core_trigger_store = core_trigger_store or CoreTriggerStore(
+            path=routine_store.path.with_name("core_triggers.json"),
+            routine_store=routine_store,
+        )
         if twitch_event_trigger_store is not None:
             self.twitch_module.bind_trigger_store(twitch_event_trigger_store)
         elif self.twitch_module.trigger_store is None:
@@ -504,15 +515,6 @@ class MainWindow(QMainWindow):
         self.music_trigger_store = music_trigger_store or MusicTriggerStore(
             routine_store.path.with_name("music_triggers.json"),
             routine_store,
-        )
-        self.channel_information_store = (
-            channel_information_store
-            or ChannelInformationStore(data_root / "twitch" / "channel-information.json")
-        )
-        self.channel_information_store.load_for_startup()
-        self.twitch_command_trigger_dispatcher = TwitchCommandTriggerDispatcher(
-            self.twitch_command_trigger_store,
-            channel_information=self.channel_information_store,
         )
         self.soundboard_store = soundboard_store or SoundboardStore(
             data_root / "twitch" / "soundboard.json"
@@ -569,6 +571,7 @@ class MainWindow(QMainWindow):
         )
         self.action_registry = ActionRegistry()
         self.module_tab_registry = ModuleTabRegistry()
+        self.automation_subpage_registry = AutomationSubpageRegistry()
         self.trigger_provider_registry = TriggerProviderRegistry()
         self.backup_contributor_registry = BackupContributorRegistry()
         self.counter_store = CounterStore(data_root / "counters")
@@ -609,15 +612,6 @@ class MainWindow(QMainWindow):
         self.variable_registry.register(MusicVariableProvider(self.music_player_service))
         self.twitch_command_trigger_store.variable_registry = self.variable_registry
         self.task_registry = TaskRegistry(CORE_TASK_METADATA)
-        register_twitch_tasks(
-            self.task_registry,
-            self.twitch_service,
-            self._resolve_task_variables,
-            lambda: self.twitch_command_trigger_store,
-            lambda: self.channel_information_store,
-            self.variable_registry,
-            self.ads_service,
-        )
         self.task_registry.register(LaunchApplicationTask())
         self.task_registry.register(CloseApplicationTask())
         self.wait_task = WaitTask()
@@ -714,7 +708,6 @@ class MainWindow(QMainWindow):
                 f"Could not load anonymous AI test diagnostics: {error}",
                 source="AI",
             )
-        self.twitch_command_trigger_store.load_for_startup()
         try:
             routine_store.normalize_queue_assignments(
                 queue.queue_id for queue in self.automation_queue_store.queues
@@ -781,9 +774,6 @@ class MainWindow(QMainWindow):
         self.backup_thread_pool.setMaxThreadCount(1)
         self._backup_workers: set[BackupJob] = set()
         self.channel_snapshot_thread_pool.setMaxThreadCount(1)
-        self.command_thread_pool = QThreadPool(self)
-        self.command_thread_pool.setMaxThreadCount(1)
-        self._command_workers: set[CommandExecutionWorker] = set()
         self.slash_action_thread_pool = QThreadPool(self)
         self.slash_action_thread_pool.setMaxThreadCount(1)
         self._slash_action_workers: set[TwitchSlashActionWorker] = set()
@@ -890,11 +880,12 @@ class MainWindow(QMainWindow):
         self._build_channel_workspace()
         self._build_ai_connection_runtime()
         self._build_ai_page()
+        self._detach_twitch_workspace()
         self._build_automation_page()
+        self._build_counters_page()
         self._build_module_tabs()
         self._build_timers_page()
         self._build_wiki_page()
-        self._build_counters_page()
         self._build_release_tools()
         self._build_ai_settings()
         self._build_responsive_settings()
@@ -1229,7 +1220,7 @@ class MainWindow(QMainWindow):
     def _install_page_headers(self) -> None:
         """Apply the shared heading pattern to the visible shell workspaces."""
         self.twitch_page_header = PageHeader(
-            "Your Channel",
+            "Twitch",
             "Chat, channel tools, community activity, and Twitch management.",
             self.ui.twitchPage,
         )
@@ -2157,7 +2148,6 @@ class MainWindow(QMainWindow):
         self.channel_tabs.addTab(analytics_page, "Analytics")
         self._build_raid_tab()
         self._build_channel_information_tab()
-        self._build_twitch_commands_tab()
         self._build_channel_points_tab()
         self.memory_search_edit.textChanged.connect(
             self._refresh_memory_viewer_list
@@ -2340,8 +2330,8 @@ class MainWindow(QMainWindow):
                 f"Streamhouse AI disconnected: {reason}", source="AI"
             )
 
-    def _build_twitch_commands_tab(self) -> None:
-        page = QWidget(self.channel_tabs)
+    def _build_twitch_commands_tab(self, parent: object | None = None) -> QWidget:
+        page = QWidget(parent if isinstance(parent, QWidget) else None)
         layout = QVBoxLayout(page)
         command_header = PageHeader(
             "Commands",
@@ -2352,6 +2342,20 @@ class MainWindow(QMainWindow):
         )
         self.twitch_commands_header = command_header
         layout.addWidget(command_header)
+        self.twitch_commands_availability_label = QLabel()
+        self.twitch_commands_availability_label.setWordWrap(True)
+        self.twitch_commands_availability_label.setObjectName(
+            "twitchCommandsAvailability"
+        )
+        if self.twitch_runtime_enabled:
+            self.twitch_commands_availability_label.hide()
+        else:
+            self.twitch_commands_availability_label.setText(
+                "The Twitch module is disabled. Existing commands are preserved, "
+                "but chat invocation is unavailable until Twitch is enabled and Hub restarts."
+            )
+            self.twitch_commands_availability_label.setStyleSheet("color:#f0a34a;")
+        layout.addWidget(self.twitch_commands_availability_label)
         section_help = QLabel(
             "DEFAULT COMMANDS appear first in their stable built-in order. "
             "CUSTOM COMMANDS follow alphabetically."
@@ -2427,7 +2431,6 @@ class MainWindow(QMainWindow):
         self.twitch_command_status_label = QLabel()
         self.twitch_command_status_label.setWordWrap(True)
         layout.addWidget(self.twitch_command_status_label)
-        self.channel_tabs.addTab(page, "Commands")
         self.add_twitch_command_button.clicked.connect(
             self._add_twitch_command
         )
@@ -2462,6 +2465,19 @@ class MainWindow(QMainWindow):
             lambda _text: self._refresh_twitch_commands()
         )
         self._refresh_twitch_commands()
+        if not self.twitch_runtime_enabled:
+            for widget in (
+                self.add_twitch_command_button,
+                self.edit_twitch_command_button,
+                self.toggle_twitch_command_button,
+                self.delete_twitch_command_button,
+                self.reset_twitch_command_button,
+                self.configure_channel_information_button,
+                self.twitch_command_preview_edit,
+                self.twitch_command_preview_button,
+            ):
+                widget.setEnabled(False)
+        return page
 
     def _build_channel_information_tab(self) -> None:
         self.channel_information_page = ChannelInformationPage(
@@ -2779,6 +2795,7 @@ class MainWindow(QMainWindow):
         )
         if not requirement:
             return
+        self.show_twitch()
         self.channel_tabs.setCurrentWidget(self.channel_information_page)
         self.channel_information_page.focus_for_command(default_id)
 
@@ -2821,6 +2838,7 @@ class MainWindow(QMainWindow):
             self.task_registry,
             self.automation_service,
             trigger_provider_registry=self.trigger_provider_registry,
+            automation_subpages=self.automation_subpage_registry,
             twitch_service=self.twitch_service,
             twitch_auth=self.twitch_auth,
             commands_changed=self._refresh_twitch_commands,
@@ -2846,11 +2864,15 @@ class MainWindow(QMainWindow):
                 automation=self.automation_service,
                 trigger_providers=self.trigger_provider_registry,
                 tabs=self.module_tab_registry,
+                automation_pages=self.automation_subpage_registry,
                 backup=self.backup_contributor_registry,
                 data_root=data_root,
                 execution_recorder=self._record_module_execution,
                 integration_status_changed=self._module_status_changed,
                 trigger_context_enricher=self._twitch_command_context,
+                variable_resolver=self._resolve_task_variables,
+                command_automation=self.command_automation_service,
+                commands_changed=self._refresh_twitch_commands,
             )
 
         self.module_registry.register_catalogs(context_factory)
@@ -2878,7 +2900,21 @@ class MainWindow(QMainWindow):
             self.ui.mainStack.addWidget(page)
             self.module_navigation_buttons[contribution.tab_id] = button
             self.module_pages[contribution.tab_id] = page
+            if contribution.tab_id == "twitch.workspace":
+                self.ui.twitchButton = button
             insert_at += 1
+
+    def _detach_twitch_workspace(self) -> None:
+        legacy_button = self.ui.twitchButton
+        self.ui.verticalLayout.removeWidget(legacy_button)
+        legacy_button.hide()
+        legacy_button.setParent(None)
+        self.ui.mainStack.removeWidget(self.ui.twitchPage)
+
+    def _create_twitch_workspace(self, parent: object) -> object:
+        if isinstance(parent, QWidget):
+            self.ui.twitchPage.setParent(parent)
+        return self.ui.twitchPage
 
     def _service_connected(self, service: str) -> bool:
         if service == "obs":
@@ -2929,10 +2965,10 @@ class MainWindow(QMainWindow):
             self.counter_service,
             lambda: self.current_memory_stream_id if self.stream_is_live else "",
             self.twitch_command_trigger_store.routine_store,
-            self,
+            self.automation_page.tabs,
         )
         self.counters_page.counters_changed.connect(self.automation_page.refresh)
-        self.channel_tabs.addTab(self.counters_page, "Counters")
+        self.automation_page.tabs.insertTab(3, self.counters_page, "Counters")
         self._build_chat_user_page()
 
     def _handle_counter_service_change(self, _counter_id: str) -> None:
@@ -4168,126 +4204,11 @@ class MainWindow(QMainWindow):
         chat_message: TwitchMessage,
         is_bot: bool,
     ) -> bool:
-        if is_bot:
-            return False
-        result = self.twitch_command_trigger_dispatcher.evaluate(
+        return self.twitch_module.handle_command(
             chat_message,
-            self._twitch_command_context(),
+            is_bot=is_bot,
+            command_context=self._twitch_command_context(),
         )
-        if not result.handled:
-            return False
-        if result.outcome is not TwitchCommandTriggerOutcome.READY:
-            Events.emit(
-                "twitch_command_trigger_rejected",
-                trigger_id=result.trigger_id,
-                invocation=result.invocation,
-                outcome=result.outcome.value,
-                remaining_seconds=result.remaining_seconds,
-            )
-            return True
-        routine = self.twitch_command_trigger_store.routine_store.get(
-            result.routine_id
-        )
-        if routine is not None and any(
-            task.enabled and task.task_type in TWITCH_INFORMATION_TASK_TYPES
-            for task in routine.tasks
-        ):
-            worker = CommandExecutionWorker(
-                self.command_automation_service,
-                result,
-                chat_message,
-            )
-            self._command_workers.add(worker)
-            worker.signals.completed.connect(
-                lambda outcome, current=worker: self._command_worker_completed(
-                    current, outcome
-                )
-            )
-            worker.signals.failed.connect(
-                lambda command, message, error, current=worker: self._command_worker_failed(
-                    current, command, message, error
-                )
-            )
-            self.command_thread_pool.start(worker)
-            return True
-        execution = self.automation_service.publish_trigger(result.to_event())
-        self._complete_twitch_command_execution(result, chat_message, execution)
-        return True
-
-    def _command_worker_completed(
-        self,
-        worker: CommandExecutionWorker,
-        outcome: CommandExecutionWorkerResult,
-    ) -> None:
-        self._command_workers.discard(worker)
-        if self._shutting_down:
-            return
-        self._complete_twitch_command_execution(
-            outcome.command,
-            outcome.message,
-            outcome.execution,
-        )
-
-    def _command_worker_failed(
-        self,
-        worker: CommandExecutionWorker,
-        result,
-        _message: TwitchMessage,
-        _error: str,
-    ) -> None:
-        self._command_workers.discard(worker)
-        if self._shutting_down:
-            return
-        Logger.warning(
-            f"Twitch command !{result.invocation} failed.",
-            source="TWITCH",
-        )
-        Events.emit(
-            "twitch_command_trigger_rejected",
-            trigger_id=result.trigger_id,
-            invocation=result.invocation,
-            outcome=TwitchCommandTriggerOutcome.TASK_FAILED.value,
-            remaining_seconds=0,
-        )
-
-    def _complete_twitch_command_execution(
-        self,
-        result,
-        chat_message: TwitchMessage,
-        execution,
-    ) -> None:
-        self.automation_page.record_execution(
-            execution,
-            f"Twitch command !{result.invocation}",
-        )
-        if execution.succeeded:
-            try:
-                self.twitch_command_trigger_dispatcher.record_executed(
-                    result, chat_message
-                )
-            except OSError as error:
-                Logger.warning(
-                    f"Command was sent but its statistics could not be saved: {error}",
-                    source="TWITCH",
-                )
-            self._refresh_twitch_commands(result.trigger_id)
-            Events.emit(
-                "twitch_command_trigger_executed",
-                trigger_id=result.trigger_id,
-                invocation=result.invocation,
-            )
-            Logger.info(
-                f"Executed custom Twitch command !{result.invocation}.",
-                source="TWITCH",
-            )
-        else:
-            Events.emit(
-                "twitch_command_trigger_rejected",
-                trigger_id=result.trigger_id,
-                invocation=result.invocation,
-                outcome=TwitchCommandTriggerOutcome.TASK_FAILED.value,
-                remaining_seconds=0,
-            )
 
     def _handle_twitch_first_message(
         self,
@@ -6371,8 +6292,17 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def show_twitch(self) -> None:
-        self.ui.mainStack.setCurrentWidget(self.ui.twitchPage)
-        self.ui.twitchButton.setChecked(True)
+        page = self.module_pages.get("twitch.workspace")
+        button = self.module_navigation_buttons.get("twitch.workspace")
+        if page is None or button is None:
+            self.show_dashboard()
+            self.statusBar().showMessage(
+                "The Twitch module is disabled or unavailable.",
+                5_000,
+            )
+            return
+        self.ui.mainStack.setCurrentWidget(page)
+        button.setChecked(True)
 
     @Slot()
     def show_automation(self) -> None:
@@ -6411,8 +6341,8 @@ class MainWindow(QMainWindow):
     @Slot()
     def show_counters(self) -> None:
         self.counters_page.refresh()
-        self.show_twitch()
-        self.channel_tabs.setCurrentWidget(self.counters_page)
+        self.show_automation()
+        self.automation_page.tabs.setCurrentWidget(self.counters_page)
 
     @Slot(str)
     def _refresh_memory_viewer_list(self, _text: str = "") -> None:
@@ -8695,9 +8625,6 @@ class MainWindow(QMainWindow):
         self.backup_thread_pool.clear()
         if self.backup_thread_pool.waitForDone(5_000):
             self._backup_workers.clear()
-        self.command_thread_pool.clear()
-        if self.command_thread_pool.waitForDone(2_000):
-            self._command_workers.clear()
         self.slash_action_thread_pool.clear()
         if self.slash_action_thread_pool.waitForDone(2_000):
             self._slash_action_workers.clear()

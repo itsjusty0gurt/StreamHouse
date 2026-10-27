@@ -671,7 +671,7 @@ class Ui_MainWindow(object):
     def retranslateUi(self, MainWindow):
         MainWindow.setWindowTitle(QCoreApplication.translate("MainWindow", u"Streamhouse Hub", None))
         self.dashboardButton.setText(QCoreApplication.translate("MainWindow", u"Dashboard", None))
-        self.twitchButton.setText(QCoreApplication.translate("MainWindow", u"Your Channel", None))
+        self.twitchButton.setText(QCoreApplication.translate("MainWindow", u"Twitch", None))
         self.logsButton.setText(QCoreApplication.translate("MainWindow", u"Logs", None))
         self.settingsButton.setText(QCoreApplication.translate("MainWindow", u"Settings", None))
         self.dashboardTitleLabel.setText(QCoreApplication.translate("MainWindow", u"Hub Status", None))
@@ -708,7 +708,7 @@ class Ui_MainWindow(object):
         self.settingsStatusLabel.setText("")
         self.resetSettingsButton.setText(QCoreApplication.translate("MainWindow", u"Reset Defaults", None))
         self.saveSettingsButton.setText(QCoreApplication.translate("MainWindow", u"Save Settings", None))
-        self.twitchTitleLabel.setText(QCoreApplication.translate("MainWindow", u"Your Channel", None))
+        self.twitchTitleLabel.setText(QCoreApplication.translate("MainWindow", u"Twitch", None))
         self.twitchConnectionGroup.setTitle(QCoreApplication.translate("MainWindow", u"Connection", None))
         self.twitchAccountLabel.setText(QCoreApplication.translate("MainWindow", u"Twitch account", None))
         self.twitchAccountStatusLabel.setText(QCoreApplication.translate("MainWindow", u"Not signed in", None))

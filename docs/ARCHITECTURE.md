@@ -141,11 +141,16 @@ discoverable with honest unavailable state.
 Phase 2 makes that module the sole owner of broadcaster/bot authentication,
 protected-token maintenance, `TwitchService`, Helix/EventSub/chat transport,
 trigger correlation, and orderly runtime shutdown. `app.py` and `MainWindow` no
-longer construct or independently start/stop a Twitch runtime. MainWindow still
-hosts the existing Twitch presentation and command authoring/runtime seams, and
-Backup ownership remains deferred. Public paths, schemas, task/trigger IDs, and
-routine references are unchanged; reconnect semantics are intentionally
-preserved for a later focused improvement.
+longer construct or independently start/stop a Twitch runtime.
+
+Phase 3 adds a generic Automation-subpage contribution contract. Twitch now
+contributes its `Twitch` workspace through the module tab registry and its
+Commands authoring page under Automation. The module owns the command store,
+dispatcher, worker lifecycle, and Twitch Backup projections; Core continues to
+own Automation execution and Backup orchestration. Counters remain Core-owned
+and are presented under Automation. Public paths, schemas, task/trigger IDs,
+command IDs, and routine references are unchanged; reconnect semantics are
+intentionally preserved for a later focused improvement.
 
 ## Automation execution
 

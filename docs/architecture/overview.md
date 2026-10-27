@@ -833,7 +833,7 @@ retain this execution-scoped bridge. Dynamic script output names are runtime
 values and are not falsely predeclared in the global Variables catalog.
 
 `ChannelInformationVariableProvider` reads the same thread-safe configuration
-store used by **Your Channel > Channel Information**. All eight `socials.*`
+store used by **Twitch > Channel Information**. All eight `socials.*`
 definitions, `channel.schedule`, `channel.rules`, and `serverinfo.details`
 always exist; unconfigured fields resolve to empty text. There are no exposure
 flags. Social text/Include controls are UI-only drafts until that row's
@@ -936,8 +936,8 @@ text, with separator whitespace trimmed, as `command.data`. For example,
 `!coffee 0.5` can drive Counter -> Increase. No Counter-specific command logic
 or numbered argument Variables exist.
 
-The Counters management page is presented inside Hub's Twitch workspace. This
-is a navigation ownership choice only: definitions, named value files,
+The Counters management page is presented inside Core Automation. Definitions,
+named value files,
 transactional updates, and automation providers remain in
 `products/hub/counters/`. Successful `CounterService` mutations notify a
 MainWindow-owned Qt bridge so worker-thread Automation changes repaint the page
@@ -1397,7 +1397,7 @@ removed after hosted relay deployments have been upgraded.
 Primary left navigation:
 
 - Dashboard
-- Your Channel
+- Twitch (module-contributed when enabled)
 - Automation
 - Wiki
 - Connections
@@ -1414,16 +1414,18 @@ Its Help & About area and the Logs header expose the same Create Support Bundle,
 Copy Diagnostic Summary, and Report a Bug flows. An abnormal-shutdown notice on
 Dashboard offers those actions without blocking startup.
 
-Your Channel top tabs:
+Twitch top tabs:
 
 - Chat
 - Analytics
 - Raid
-- Commands
 - Channel Information
 - Channel Points
-- Counters
 - User
+
+Automation contains Routines, Queues, Variables, Counters, module-contributed
+Commands, Run History, and Timers. Commands remains visible with preserved
+definitions when Twitch is disabled; it reports the provider as unavailable.
 
 These are the tabs currently implemented. The planned Hub workspace—including
 Stream Info, Engagement, and Moderation—is documented in
