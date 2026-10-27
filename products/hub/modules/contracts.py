@@ -4,7 +4,7 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Mapping, Protocol
+from typing import Protocol
 
 
 _STABLE_ID = re.compile(r"^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)+$")
@@ -107,9 +107,6 @@ class ModuleContext:
     routine_store: object | None = None
     automation: object | None = None
     trigger_providers: object | None = None
-    # Transitional static-catalog seam for providers whose live store remains
-    # composition-root owned until a later module-conversion phase.
-    trigger_stores: Mapping[str, object] = field(default_factory=dict)
     tabs: object | None = None
     backup: object | None = None
     data_root: object | None = None

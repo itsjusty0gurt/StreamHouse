@@ -1,7 +1,8 @@
 # Streamhouse Hub 0.3 modular foundation contracts
 
 Status: **Core foundation and OBS conversion implemented; Twitch conversion
-Phase 1 static-catalog foundation complete on its isolated feature branch**.
+Phase 2 static catalogs and runtime lifecycle complete on its isolated feature
+branch**.
 
 Streamhouse Hub `0.2.1-alpha` is the latest released maintenance Alpha at tag
 `v0.2.1-alpha`; `v0.2.0-alpha` remains its frozen predecessor. Active
@@ -29,8 +30,9 @@ OBS, PRISM, Broadcaster, Deck, and later modules remain peers around Core.
 
 The contracts below are grounded in the current implementation:
 
-- `streamhouse_hub.app` creates Qt, Twitch authentication/service, the trusted
-  bundled `ModuleRegistry`, and `MainWindow`.
+- `streamhouse_hub.app` creates Qt, the trusted bundled `ModuleRegistry`, and
+  `MainWindow`; `streamhouse.twitch` owns broadcaster/bot authentication and the
+  Twitch service/transport lifecycle.
 - `MainWindow` remains the Core composition root, but OBS construction,
   configuration, triggers, Variables, connection UI, event subscriptions, and
   shutdown now belong to `streamhouse.obs` and enter Core through registries.

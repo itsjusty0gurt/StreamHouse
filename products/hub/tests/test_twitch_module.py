@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 
@@ -24,6 +26,7 @@ from products.hub.modules import (
 from products.hub.modules.bootstrap import CORE_MODULE_CAPABILITIES
 from products.hub.modules.bundled.twitch import TWITCH_MODULE_ID, TwitchModule
 from products.hub.twitch.automation_triggers import TwitchEventTriggerStore
+from products.hub.twitch.models import TwitchMessage
 from products.hub.twitch.tasks import TWITCH_TASK_LABELS
 
 
@@ -69,7 +72,6 @@ def _contracts(root: Path):
         routine_store=routines,
         automation=object(),
         trigger_providers=providers,
-        trigger_stores={"twitch.automation": trigger_store},
         data_root=root,
     )
     return context, tasks, variables, providers, trigger_store, routines
@@ -79,10 +81,13 @@ def test_disabled_twitch_module_preserves_static_catalogs_without_runtime(
     tmp_path: Path,
 ) -> None:
     module = TwitchModule()
+    module.auth.restore = Mock()
+    module.bot_auth.restore = Mock()
     registry = _registry(tmp_path / "modules.json", module, enabled=False)
     context, tasks, variables, providers, trigger_store, routines = _contracts(
         tmp_path
     )
+    module.bind_trigger_store(trigger_store)
     routine = routines.add("Persisted Twitch automation")
     trigger = trigger_store.add(routine.routine_id, "channel.follow")
     trigger_store.save()
@@ -126,18 +131,24 @@ def test_disabled_twitch_module_preserves_static_catalogs_without_runtime(
     assert contextual is not None
     assert contextual.available is False
     assert "disabled or unavailable" in contextual.detail
-    assert not hasattr(module, "service")
-    assert not hasattr(module, "auth")
+    assert module.started is False
+    assert module.maintenance_timer is None
+    module.auth.restore.assert_not_called()
+    module.bot_auth.restore.assert_not_called()
 
 
 def test_enabled_twitch_module_registers_static_catalog_exactly_once(
     tmp_path: Path,
 ) -> None:
     module = TwitchModule()
+    module.auth.restore = Mock()
+    module.bot_auth.restore = Mock()
+    module.service.disconnect = Mock(return_value=True)
     registry = _registry(tmp_path / "modules.json", module, enabled=True)
     context, tasks, variables, providers, _trigger_store, _routines = _contracts(
         tmp_path
     )
+    module.bind_trigger_store(_trigger_store)
 
     registry.register_catalogs(lambda _descriptor: context)
     registry.register_enabled(lambda _descriptor: context)
@@ -156,6 +167,63 @@ def test_enabled_twitch_module_registers_static_catalog_exactly_once(
     )
     assert contextual is not None and contextual.available is True
     assert contextual.value == "TestViewer"
+    assert module.started is True
+    module.auth.restore.assert_called_once_with()
+    module.bot_auth.restore.assert_called_once_with()
 
     with pytest.raises(ValueError, match="already registered"):
         module.register_catalog(context)
+
+    registry.stop_started()
+    registry.stop_started()
+    module.service.disconnect.assert_called_once_with()
+    assert module.started is False
+
+
+def test_twitch_runtime_start_stop_are_single_owned_and_late_events_are_ignored(
+    tmp_path: Path,
+) -> None:
+    module = TwitchModule()
+    module.auth.restore = Mock()
+    module.bot_auth.restore = Mock()
+    module.auth.shutdown = Mock()
+    module.bot_auth.shutdown = Mock()
+    module.service.disconnect = Mock(return_value=True)
+    registry = _registry(tmp_path / "modules.json", module, enabled=True)
+    context, _tasks, _variables, _providers, trigger_store, _routines = _contracts(
+        tmp_path
+    )
+    module.bind_trigger_store(trigger_store)
+    trigger_store.evaluate_first_message = Mock(return_value=())
+
+    registry.register_catalogs(lambda _descriptor: context)
+    registry.register_enabled(lambda _descriptor: context)
+    registry.configure_enabled()
+    registry.start_enabled()
+    registry.start_enabled()
+
+    module.auth.restore.assert_called_once_with()
+    module.bot_auth.restore.assert_called_once_with()
+
+    registry.stop_started()
+    registry.stop_started()
+    module.publish_first_message(
+        TwitchMessage(
+            username="Viewer",
+            text="hello",
+            received_at=datetime.now(timezone.utc),
+        ),
+        stream_is_live=True,
+    )
+
+    module.service.disconnect.assert_called_once_with()
+    module.auth.shutdown.assert_called_once_with()
+    module.bot_auth.shutdown.assert_called_once_with()
+    trigger_store.evaluate_first_message.assert_not_called()
+
+
+def test_twitch_module_preserves_published_credential_paths() -> None:
+    module = TwitchModule()
+
+    assert module.auth.store.path.name == "twitch-token.dat"
+    assert module.bot_auth.store.path.name == "twitch-bot-token.dat"

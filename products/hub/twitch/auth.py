@@ -139,8 +139,11 @@ class TwitchAuthService:
         self._cancel = threading.Event()
         self._worker: threading.Thread | None = None
         self._last_unauthorized_recovery = 0.0
+        self._stopped = False
 
     def restore(self) -> None:
+        if self._stopped:
+            return
         try:
             token = self.store.load()
         except (OSError, ValueError, json.JSONDecodeError) as error:
@@ -191,8 +194,19 @@ class TwitchAuthService:
         self._set_state(TwitchAuthState.SIGNED_OUT, "Not signed in")
 
     def _run_async(self, function: Any, *args: Any) -> None:
+        if self._stopped:
+            return
         self._worker = threading.Thread(target=function, args=args, daemon=True)
         self._worker.start()
+
+    def shutdown(self) -> None:
+        """Cancel owned auth work and suppress callbacks after module stop."""
+
+        self._stopped = True
+        self._cancel.set()
+        worker = self._worker
+        if worker is not None and worker.is_alive():
+            worker.join(timeout=0.25)
 
     def _validate_saved(self, token: TwitchToken) -> None:
         try:
@@ -318,6 +332,8 @@ class TwitchAuthService:
         return reason, description
 
     def _set_state(self, state: TwitchAuthState, detail: str) -> None:
+        if self._stopped:
+            return
         detail = redact_secret_text(detail)
         if state is self.state:
             return

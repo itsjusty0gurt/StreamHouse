@@ -223,6 +223,17 @@ class TwitchAuthServiceTests(unittest.TestCase):
 
         emit.assert_not_called()
 
+    def test_shutdown_suppresses_late_auth_state_callbacks(self) -> None:
+        service = TwitchAuthService(client=Mock(), store=Mock())
+
+        with patch.object(Events, "emit") as emit:
+            service.shutdown()
+            service._set_state(TwitchAuthState.SIGNED_IN, "channel")
+            service.restore()
+
+        emit.assert_not_called()
+        self.assertTrue(service._cancel.is_set())
+
     def test_auth_state_errors_do_not_expose_credentials(self) -> None:
         service = TwitchAuthService(client=Mock(), store=Mock())
 

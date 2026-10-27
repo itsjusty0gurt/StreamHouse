@@ -10,10 +10,6 @@ from PySide6.QtWidgets import QApplication
 from products.hub.core.events import Events
 from products.hub.core.diagnostics import DiagnosticsService
 from shared.streamhouse_runtime.logger import Logger
-from products.hub.twitch.service import TwitchService
-from products.hub.twitch.auth import TwitchAuthService
-from products.hub.twitch.token_store import TwitchTokenStore
-from products.hub.config.twitch import TWITCH_BOT_SCOPES
 from products.hub.ui.main_window import MainWindow
 from products.hub.core.resources import resource_path
 from shared.streamhouse_runtime.paths import smoke_test_enabled, user_data_root
@@ -25,7 +21,6 @@ from shared.streamhouse_runtime.qt_settings import (
 from products.hub.core.window_state import WindowStateStore
 from products.hub.version import HUB_VERSION
 from products.hub.modules.bootstrap import create_bundled_module_registry
-from products.hub.modules.bundled.twitch import TWITCH_MODULE_ID
 
 
 def register_events() -> None:
@@ -94,15 +89,6 @@ def _resolved_data_root(diagnostics: DiagnosticsService | None) -> Path:
     return Path(root).expanduser().resolve()
 
 
-def restore_twitch_identities(module_registry, broadcaster_auth, bot_auth) -> None:
-    """Activate the transitional Twitch runtime only when its module is enabled."""
-
-    if not module_registry.is_enabled(TWITCH_MODULE_ID):
-        return
-    broadcaster_auth.restore()
-    bot_auth.restore()
-
-
 def run(diagnostics: DiagnosticsService | None = None) -> None:
     """Create and run the Streamhouse Hub desktop application."""
 
@@ -125,24 +111,10 @@ def run(diagnostics: DiagnosticsService | None = None) -> None:
         source="UI",
     )
 
-    twitch_auth = TwitchAuthService()
-    twitch_bot_auth = TwitchAuthService(
-        store=TwitchTokenStore.bot_account(),
-        scopes=TWITCH_BOT_SCOPES,
-        event_name="twitch_bot_auth_changed",
-        account_label="Bot account",
-    )
-    twitch_service = TwitchService(
-        auth=twitch_auth,
-        bot_auth=twitch_bot_auth,
-    )
     window_settings = streamhouse_qsettings(HUB_APPLICATION_NAME)
     data_root = _resolved_data_root(diagnostics)
     module_registry = create_bundled_module_registry()
     window = MainWindow(
-        twitch_service=twitch_service,
-        twitch_auth=twitch_auth,
-        twitch_bot_auth=twitch_bot_auth,
         window_state_store=WindowStateStore(window_settings),
         diagnostics_service=diagnostics,
         module_registry=module_registry,
@@ -151,7 +123,6 @@ def run(diagnostics: DiagnosticsService | None = None) -> None:
     if diagnostics is not None:
         diagnostics.checkpoint("MainWindow created")
     window.show()
-    restore_twitch_identities(module_registry, twitch_auth, twitch_bot_auth)
     QTimer.singleShot(0, window, window.fire_application_started_trigger)
     QTimer.singleShot(0, window, window.start_local_integration)
     QTimer.singleShot(100, window, window.start_music_player_integration)

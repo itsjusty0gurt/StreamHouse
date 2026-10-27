@@ -56,7 +56,6 @@ from PySide6.QtWidgets import (
 from products.hub.core.events import Events
 from products.hub.core.diagnostics import DiagnosticsService
 from products.hub.config.product import ISSUE_TRACKER_URL
-from shared.streamhouse_runtime.json_store import UnsupportedJsonSchemaError
 from shared.streamhouse_runtime.logger import Logger
 from shared.streamhouse_runtime.redaction import redact_secret_text
 from shared.streamhouse_ui import install_window_chrome
@@ -137,7 +136,7 @@ from products.hub.config.twitch import (
     TWITCH_SCOPES,
 )
 from products.hub.twitch.catalog import EVENTSUB_SUBSCRIPTIONS, EventSubSubscription
-from products.hub.twitch.auth import TwitchAuthService, TwitchAuthState
+from products.hub.twitch.auth import TwitchAuthState
 from products.hub.twitch.activity import format_twitch_activity
 from products.hub.twitch.activity_history import (
     ActivityHistoryStore,
@@ -175,22 +174,17 @@ from products.hub.modules import (
     TriggerProviderRegistry,
 )
 from products.hub.modules.bootstrap import create_bundled_module_registry
+from products.hub.modules.bundled.twitch import TWITCH_MODULE_ID, TwitchModule
 from products.hub.version import HUB_VERSION
-from products.hub.twitch.ads import AdsDomainEvent, AdsService
-from products.hub.twitch.automation_triggers import (
-    OUTGOING_RAID_STARTED_EVENT_TYPE,
-    TwitchEventTriggerStore,
-    TwitchSubscriptionEventCorrelator,
-)
+from products.hub.twitch.ads import AdsDomainEvent
+from products.hub.twitch.automation_triggers import TwitchEventTriggerStore
 from products.hub.twitch.models import (
     TwitchChatNotice,
     TwitchEvent,
     TwitchEventDiagnostic,
     TwitchMessage,
 )
-from products.hub.twitch.raid_contract import OutgoingRaidStartedEvent
-from products.hub.twitch.service import TwitchConnectionState, TwitchService
-from products.hub.twitch.token_store import TwitchTokenStore
+from products.hub.twitch.service import TwitchConnectionState
 from products.hub.twitch.session_history import StreamSessionStore, StreamSessionTracker
 from products.hub.twitch.health import TwitchHealth
 from products.hub.twitch.analytics import AnalyticsSnapshot, build_analytics
@@ -398,9 +392,6 @@ class MainWindow(QMainWindow):
 
     def __init__(
         self,
-        twitch_service: TwitchService | None = None,
-        twitch_auth: TwitchAuthService | None = None,
-        twitch_bot_auth: TwitchAuthService | None = None,
         window_state_store: WindowStateStore | None = None,
         chatter_history_store: ChatterHistoryStore | None = None,
         user_group_store: UserGroupStore | None = None,
@@ -430,18 +421,17 @@ class MainWindow(QMainWindow):
             self._handle_ai_lifecycle_disconnect
         )
 
-        self.twitch_service = twitch_service or TwitchService()
-        self.ads_service = AdsService(self.twitch_service)
-        self.twitch_auth = twitch_auth or TwitchAuthService()
-        self.twitch_bot_auth = twitch_bot_auth or TwitchAuthService(
-            store=TwitchTokenStore.bot_account(),
-            scopes=TWITCH_BOT_SCOPES,
-            event_name="twitch_bot_auth_changed",
-            account_label="Bot account",
-        )
+        self.module_registry = module_registry or create_bundled_module_registry()
+        twitch_module = self.module_registry.module(TWITCH_MODULE_ID)
+        if not isinstance(twitch_module, TwitchModule):
+            raise RuntimeError("The bundled Twitch module is unavailable.")
+        self.twitch_module = twitch_module
+        self.twitch_service = twitch_module.service
+        self.ads_service = twitch_module.ads_service
+        self.twitch_auth = twitch_module.auth
+        self.twitch_bot_auth = twitch_module.bot_auth
         self._last_twitch_auth_state = self.twitch_auth.state
         self._last_twitch_bot_auth_state = self.twitch_bot_auth.state
-        self.twitch_service.bot_auth = self.twitch_bot_auth
         self.window_state_store = window_state_store or WindowStateStore()
         self.chatter_history = (
             chatter_history_store or ChatterHistoryStore()
@@ -466,13 +456,6 @@ class MainWindow(QMainWindow):
         self.twitch_command_trigger_store = (
             twitch_command_trigger_store or TwitchCommandTriggerStore()
         )
-        self.twitch_event_trigger_store = (
-            twitch_event_trigger_store
-            or TwitchEventTriggerStore(
-                routine_store=self.twitch_command_trigger_store.routine_store
-            )
-        )
-        self.twitch_subscription_correlator = TwitchSubscriptionEventCorrelator()
         routine_store = self.twitch_command_trigger_store.routine_store
         self.core_trigger_store = core_trigger_store or CoreTriggerStore(
             path=routine_store.path.with_name("core_triggers.json"),
@@ -484,6 +467,18 @@ class MainWindow(QMainWindow):
             else routine_store.path.parent.parent.expanduser().resolve()
         )
         self.data_root = data_root
+        if twitch_event_trigger_store is not None:
+            self.twitch_module.bind_trigger_store(twitch_event_trigger_store)
+        elif self.twitch_module.trigger_store is None:
+            self.twitch_module.bind_trigger_store(
+                TwitchEventTriggerStore(
+                    data_root / "twitch" / "event_triggers.json",
+                    routine_store,
+                )
+            )
+        self.twitch_event_trigger_store = self.twitch_module.trigger_store
+        if self.twitch_event_trigger_store is None:
+            raise RuntimeError("The Twitch trigger store is unavailable.")
         self.user_group_store = user_group_store or UserGroupStore(
             data_root / "memory" / "user_groups.json"
         )
@@ -568,7 +563,6 @@ class MainWindow(QMainWindow):
         self.automation_queue_manager = AutomationQueueManager(
             self.automation_queue_store
         )
-        self.module_registry = module_registry or create_bundled_module_registry()
         twitch_module_status = self.module_registry.status("streamhouse.twitch")
         self.twitch_runtime_enabled = (
             twitch_module_status is None or twitch_module_status.enabled
@@ -729,30 +723,6 @@ class MainWindow(QMainWindow):
             Logger.warning(
                 f"Could not normalize Automation queue assignments: {error}",
                 source="AUTOMATION",
-            )
-        try:
-            self.twitch_event_trigger_store.load()
-        except UnsupportedJsonSchemaError as error:
-            try:
-                removed = self.twitch_event_trigger_store.reset_obsolete_schema()
-            except (OSError, ValueError, json.JSONDecodeError) as reset_error:
-                self.twitch_event_trigger_store.triggers = []
-                Logger.warning(
-                    "Could not reset obsolete Twitch automation triggers: "
-                    f"{reset_error}",
-                    source="TWITCH",
-                )
-            else:
-                Logger.warning(
-                    "Reset obsolete pre-Alpha Twitch automation triggers "
-                    f"and removed {removed} routine link(s): {error}",
-                    source="TWITCH",
-                )
-        except (OSError, ValueError, json.JSONDecodeError) as error:
-            self.twitch_event_trigger_store.triggers = []
-            Logger.warning(
-                f"Could not load Twitch automation triggers: {error}",
-                source="TWITCH",
             )
         try:
             self.core_trigger_store.load()
@@ -1013,13 +983,6 @@ class MainWindow(QMainWindow):
             "twitch_event",
             self.twitch_bridge.handle_activity_received,
         )
-        self.twitch_subscription_correlation_timer = QTimer(self)
-        self.twitch_subscription_correlation_timer.setInterval(100)
-        self.twitch_subscription_correlation_timer.timeout.connect(
-            self._flush_twitch_subscription_automation
-        )
-        if self.twitch_runtime_enabled:
-            self.twitch_subscription_correlation_timer.start()
         self.ui.dashboardButton.clicked.connect(self.show_dashboard)
         self.ui.twitchButton.clicked.connect(self.show_twitch)
         self.automation_button.clicked.connect(self.show_automation)
@@ -1138,26 +1101,10 @@ class MainWindow(QMainWindow):
         self._responsive_ready = True
         self._update_responsive_layout(force=True)
         self.window_geometry = WindowGeometryController(self)
-        self.auth_maintenance_timer = QTimer(self)
-        self.auth_maintenance_timer.setInterval(30 * 60 * 1000)
-        self.auth_maintenance_timer.timeout.connect(self.twitch_auth.maintain)
-        self.auth_maintenance_timer.timeout.connect(
-            self.twitch_bot_auth.maintain
+        self.twitch_module.bind_runtime_callbacks(
+            refresh_channel_snapshot=self.refresh_channel_snapshot,
+            update_stream_overview=self._update_stream_overview_clock,
         )
-        if self.twitch_runtime_enabled:
-            self.auth_maintenance_timer.start()
-        self.channel_snapshot_timer = QTimer(self)
-        self.channel_snapshot_timer.setInterval(60_000)
-        self.channel_snapshot_timer.timeout.connect(self.refresh_channel_snapshot)
-        if self.twitch_runtime_enabled:
-            self.channel_snapshot_timer.start()
-        self.stream_overview_timer = QTimer(self)
-        self.stream_overview_timer.setInterval(1_000)
-        self.stream_overview_timer.timeout.connect(
-            self._update_stream_overview_clock
-        )
-        if self.twitch_runtime_enabled:
-            self.stream_overview_timer.start()
         self.chatter_history_save_timer = QTimer(self)
         self.chatter_history_save_timer.setInterval(10_000)
         self.chatter_history_save_timer.timeout.connect(
@@ -1177,6 +1124,20 @@ class MainWindow(QMainWindow):
             self.dashboard_page.show_abnormal_shutdown_notice(
                 self.diagnostics_service.previous_shutdown_abnormal
             )
+        # Live modules start only after every UI/event bridge is connected.
+        self.module_registry.start_enabled()
+        self.auth_maintenance_timer = (
+            self.twitch_module.maintenance_timer or QTimer(self)
+        )
+        self.twitch_subscription_correlation_timer = (
+            self.twitch_module.correlation_timer or QTimer(self)
+        )
+        self.channel_snapshot_timer = (
+            self.twitch_module.channel_snapshot_timer or QTimer(self)
+        )
+        self.stream_overview_timer = (
+            self.twitch_module.stream_overview_timer or QTimer(self)
+        )
         Logger.info("UI log viewer connected.", source="UI")
 
     def _build_release_tools(self) -> None:
@@ -2884,9 +2845,6 @@ class MainWindow(QMainWindow):
                 routine_store=routine_store,
                 automation=self.automation_service,
                 trigger_providers=self.trigger_provider_registry,
-                trigger_stores={
-                    "twitch.automation": self.twitch_event_trigger_store,
-                },
                 tabs=self.module_tab_registry,
                 backup=self.backup_contributor_registry,
                 data_root=data_root,
@@ -2898,7 +2856,6 @@ class MainWindow(QMainWindow):
         self.module_registry.register_catalogs(context_factory)
         self.module_registry.register_enabled(context_factory)
         self.module_registry.configure_enabled()
-        self.module_registry.start_enabled()
 
     def _build_module_tabs(self) -> None:
         self.module_navigation_buttons: dict[str, QPushButton] = {}
@@ -3399,23 +3356,7 @@ class MainWindow(QMainWindow):
         self.twitch_command_status_label.setText(status)
 
     def _variable_twitch_values(self) -> dict[str, object]:
-        snapshot = (
-            self.last_channel_snapshot.snapshot
-            if getattr(self, "last_channel_snapshot", None) is not None
-            else {}
-        )
-        stream = snapshot.get("stream")
-        stream = stream if isinstance(stream, dict) else {}
-        channel = snapshot.get("channel")
-        channel = channel if isinstance(channel, dict) else {}
-        return {
-            "channel": self.twitch_service.channel or "",
-            "title": stream.get("title") or channel.get("title") or "",
-            "category": stream.get("game_name") or channel.get("game_name") or "",
-            "viewer_count": stream.get("viewer_count"),
-            "game_id": stream.get("game_id") or channel.get("game_id") or "",
-            "connected": self.twitch_service.state is TwitchConnectionState.CONNECTED,
-        }
+        return self.twitch_module.variable_values()
 
     def _hub_uptime_text(self) -> str:
         seconds = max(0, int(monotonic() - self._hub_started_monotonic))
@@ -3844,12 +3785,15 @@ class MainWindow(QMainWindow):
             self.permission_upgrade_started = True
             QTimer.singleShot(100, self, self.twitch_auth.sign_in)
         self.ui.twitchSignOutButton.setEnabled(signed_in or waiting)
+        runtime_connected = self.twitch_module.reconcile_broadcaster_auth(
+            state,
+            previous_auth_state,
+            detail,
+        )
         if state is TwitchAuthState.ERROR:
             self.handle_twitch_error(f"Twitch sign-in failed: {detail}")
-            self.twitch_service.disconnect()
         elif state is TwitchAuthState.SIGNED_OUT:
             self.permission_upgrade_started = False
-            self.twitch_service.disconnect()
             self.twitch_status_bar_label.setText("Twitch: Signed out")
             self._apply_ad_schedule(None)
             self._update_ad_control_state()
@@ -3864,18 +3808,8 @@ class MainWindow(QMainWindow):
             )
             self.twitch_status_bar_label.setText(f"Twitch: @{detail}")
             if previous_auth_state is not TwitchAuthState.SIGNED_IN:
-                if (
-                    self.twitch_service.state
-                    is TwitchConnectionState.CONNECTED
-                    and self.twitch_service.channel
-                ):
-                    # Reauthorization may add EventSub scopes. Reopen the
-                    # connection so Twitch receives the updated subscriptions
-                    # immediately instead of waiting for an app restart.
-                    channel = self.twitch_service.channel
-                    self.twitch_service.disconnect()
-                    self.ui.twitchChannelEdit.setText(channel)
-                self.connect_twitch()
+                if runtime_connected:
+                    self.reset_twitch_event_payload()
                 self.refresh_channel_snapshot()
         self._refresh_twitch_chat_empty_state()
 
@@ -3930,20 +3864,7 @@ class MainWindow(QMainWindow):
         # EventSub chat subscriptions are tied to the reading identity. Reopen
         # the socket when that identity changes, while keeping channel controls
         # on the broadcaster token.
-        if (
-            state is not previous_auth_state
-            and self.twitch_auth.token is not None
-            and self.twitch_service.channel
-            and state
-            in {
-                TwitchAuthState.SIGNED_IN,
-                TwitchAuthState.SIGNED_OUT,
-                TwitchAuthState.ERROR,
-            }
-        ):
-            channel = self.twitch_service.channel
-            self.twitch_service.disconnect()
-            self.twitch_service.connect(channel)
+        self.twitch_module.reconcile_bot_auth(state, previous_auth_state)
 
     @Slot()
     def disconnect_twitch(self) -> None:
@@ -4091,7 +4012,7 @@ class MainWindow(QMainWindow):
         connected = state is TwitchConnectionState.CONNECTED
         connecting = state is TwitchConnectionState.CONNECTING
         if not connected:
-            self.twitch_subscription_correlator.clear()
+            self.twitch_module.clear_subscription_events()
 
         page_status = state.value
         dashboard_status = state.value
@@ -4372,48 +4293,16 @@ class MainWindow(QMainWindow):
         self,
         chat_message: TwitchMessage,
     ) -> None:
-        for trigger in self.twitch_event_trigger_store.evaluate_first_message(
+        self.twitch_module.publish_first_message(
             chat_message,
             stream_is_live=self.stream_is_live,
-        ):
-            execution = self.automation_service.publish_trigger(trigger)
-            self.automation_page.record_execution(
-                execution,
-                f"First message from {chat_message.username}",
-            )
-            if execution.succeeded:
-                Logger.info(
-                    f'Executed first-message welcome for "{chat_message.username}".',
-                    source="AUTOMATION",
-                )
-            elif execution.handled:
-                Logger.warning(
-                    f'First-message welcome failed for "{chat_message.username}".',
-                    source="AUTOMATION",
-                )
+        )
 
     def _handle_twitch_keyword_phrase(
         self,
         chat_message: TwitchMessage,
     ) -> None:
-        for trigger in self.twitch_event_trigger_store.evaluate_keyword_phrase(
-            chat_message
-        ):
-            execution = self.automation_service.publish_trigger(trigger)
-            self.automation_page.record_execution(
-                execution,
-                f"Keyword / Phrase match in chat from {chat_message.username}",
-            )
-            if execution.succeeded:
-                Logger.info(
-                    "Executed a Twitch Keyword / Phrase automation.",
-                    source="AUTOMATION",
-                )
-            elif execution.handled:
-                Logger.warning(
-                    "Twitch Keyword / Phrase automation failed.",
-                    source="AUTOMATION",
-                )
+        self.twitch_module.publish_keyword_phrase(chat_message)
 
     def _handle_sally_memory_command(
         self,
@@ -5679,10 +5568,7 @@ class MainWindow(QMainWindow):
                         received_at=twitch_event.received_at,
                     )
                 )
-        for automation_event in self.twitch_subscription_correlator.observe(
-            twitch_event
-        ):
-            self._handle_twitch_automation_event(automation_event)
+        self.twitch_module.observe_activity(twitch_event)
         if twitch_event.subscription_type in {
             "stream.online",
             "stream.offline",
@@ -5845,77 +5731,18 @@ class MainWindow(QMainWindow):
         self._schedule_activity_age_refresh()
 
     def _handle_twitch_automation_event(self, twitch_event: TwitchEvent) -> None:
-        for trigger in self.twitch_event_trigger_store.evaluate(twitch_event):
-            execution = self.automation_service.publish_trigger(trigger)
-            self.automation_page.record_execution(
-                execution,
-                f"Twitch event {twitch_event.subscription_type}",
-            )
-            if execution.succeeded:
-                Logger.info(
-                    f'Executed Twitch automation for "{twitch_event.subscription_type}".',
-                    source="AUTOMATION",
-                )
-            elif execution.handled:
-                Logger.warning(
-                    f'Twitch automation failed for "{twitch_event.subscription_type}".',
-                    source="AUTOMATION",
-                )
+        self.twitch_module.observe_activity(twitch_event)
 
     @Slot(object)
     def _handle_outgoing_raid_started(self, event: object) -> None:
-        if not isinstance(event, OutgoingRaidStartedEvent):
-            return
-        context = self.twitch_event_trigger_store.outgoing_raid_started_context(
-            event
-        )
-        for trigger in self.twitch_event_trigger_store.evaluate_named(
-            OUTGOING_RAID_STARTED_EVENT_TYPE,
-            context,
-            trigger_type="raid_out_started",
-        ):
-            execution = self.automation_service.publish_trigger(trigger)
-            self.automation_page.record_execution(
-                execution,
-                "Twitch — Raid Out Started",
-            )
-            if execution.succeeded:
-                Logger.info(
-                    'Executed Twitch automation for "Raid Out Started".',
-                    source="AUTOMATION",
-                )
-            elif execution.handled:
-                Logger.warning(
-                    'Twitch automation failed for "Raid Out Started".',
-                    source="AUTOMATION",
-                )
+        self.twitch_module.publish_outgoing_raid_started(event)
 
     @Slot()
     def _flush_twitch_subscription_automation(self) -> None:
-        for twitch_event in self.twitch_subscription_correlator.flush():
-            self._handle_twitch_automation_event(twitch_event)
+        self.twitch_module.flush_subscription_events()
 
     def _publish_ads_event(self, event: AdsDomainEvent) -> None:
-        for trigger in self.twitch_event_trigger_store.evaluate_named(
-            event.event_type,
-            event.context,
-            trigger_type="ads",
-        ):
-            execution = self.automation_service.publish_trigger(trigger)
-            self.automation_page.record_execution(
-                execution,
-                event.event_type.replace(".", " ").title(),
-            )
-            if execution.succeeded:
-                Logger.info(
-                    f'Executed Twitch automation for "{event.event_type}".',
-                    source="AUTOMATION",
-                )
-            elif execution.handled:
-                Logger.warning(
-                    f'Twitch automation failed for "{event.event_type}".',
-                    source="AUTOMATION",
-                )
+        self.twitch_module.publish_ads_event(event)
         if event.event_type == "ads.ended":
             QTimer.singleShot(1_000, self, self.refresh_channel_snapshot)
 
@@ -7248,6 +7075,7 @@ class MainWindow(QMainWindow):
         self.last_channel_snapshot = result
         self.channel_snapshot_in_flight = False
         snapshot = result.snapshot
+        self.twitch_module.update_channel_snapshot(snapshot)
         stream = snapshot.get("stream")
         next_stream_id = ""
         if isinstance(stream, dict):
@@ -7260,7 +7088,7 @@ class MainWindow(QMainWindow):
             self.last_memory_promo_at = 0.0
             self.training_notice_attempt_context = ""
         self._expire_daily_memory()
-        self.twitch_event_trigger_store.observe_stream(
+        self.twitch_module.observe_stream(
             stream if isinstance(stream, dict) else None
         )
         if self.session_tracker.observe_stream(snapshot.get("stream")):
@@ -8846,10 +8674,10 @@ class MainWindow(QMainWindow):
             "Hub is shutting down."
         )
         self.wait_task.cancel_all()
-        self.module_registry.stop_started()
         if not self._core_closing_fired:
             self._core_closing_fired = True
             self._fire_core_automation_event("application.closing")
+        self.module_registry.stop_started()
         self.window_state_store.save(self)
         if not self._save_chatter_history():
             self.persistence_shutdown_ok = False
@@ -8881,8 +8709,6 @@ class MainWindow(QMainWindow):
         self.channel_points_page.shutdown()
         self.soundboard_server.stop()
         self.soundboard_relay_client.disconnect_relay()
-        self.twitch_subscription_correlation_timer.stop()
-        self.twitch_subscription_correlator.clear()
         self.memory_reasoning_thread_pool.clear()
         self.memory_reasoning_thread_pool.waitForDone(2_000)
         self.memory_message_buffers.clear()
@@ -8890,7 +8716,6 @@ class MainWindow(QMainWindow):
         self.response_decision_thread_pool.waitForDone(2_000)
         self.response_decision_queue.clear()
         self.recent_ai_chat.clear()
-        self.twitch_service.disconnect()
         Events.unsubscribe(
             "twitch_status_changed",
             self.twitch_bridge.handle_status_changed,

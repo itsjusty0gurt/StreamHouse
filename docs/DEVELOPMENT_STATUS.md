@@ -13,9 +13,9 @@
    orchestration, and the Qt shell. Trusted bundled modules contribute actions,
    tasks, triggers, Variables, tabs, and Backup data through Core contracts.
 3. **Current architecture milestone:** OBS is the first accepted real bundled
-   Hub module. Twitch conversion Phase 1 is active and establishes trusted
-   discovery plus static catalogs only; Twitch runtime remains on the existing
-   application path.
+   Hub module. Twitch conversion Phase 2 now has trusted discovery, static
+   catalogs, and module-owned auth/transport lifecycle; UI, Commands, and Backup
+   ownership remain transitional.
 4. **Active branch:** `feature/twitch-module-conversion`, based on clean
    `develop` HEAD `94f4c78`.
 5. **Most important unresolved issues:** normal Twitch reconnect/renewal can
@@ -37,7 +37,7 @@
 
 | Item | Verified value |
 | --- | --- |
-| Date | 2026-10-26 (America/Edmonton) |
+| Date | 2026-10-27 (America/Edmonton) |
 | Branch | `feature/twitch-module-conversion` from `develop` at `94f4c78` |
 | Accepted feature HEAD | `f3db6f8fa2ce22603cf974344a78144a56bcd2ff` |
 | Feature upstream | synchronized with `origin/feature/obs-module-conversion` before acceptance documentation |
@@ -59,13 +59,13 @@ The accepted OBS module conversion is integrated into `develop`. It provides:
   Automation UI consumes their static catalogs.
 
 OBS is the first accepted bundled Hub module. Twitch conversion is now
-**PARTIAL — STATIC CATALOG FOUNDATION COMPLETE** on its dedicated feature
-branch. The first phase adds the trusted `streamhouse.twitch` descriptor and
-makes Twitch task metadata, contextual Variable definitions, task availability,
-and trigger-provider metadata available through module catalog registration.
-Compatible disabled Twitch modules still publish those catalogs, while OAuth,
-tokens, Helix, EventSub, chat, commands, UI, Backup, and shutdown ownership stay
-on the existing runtime path for later phases.
+**PARTIAL — STATIC CATALOGS + RUNTIME LIFECYCLE MODULE-OWNED** on its dedicated
+feature branch. Static task/trigger/Variable metadata remains available when the
+module is disabled. When enabled, `streamhouse.twitch` solely constructs and
+owns broadcaster/bot auth, protected-token maintenance policy, `TwitchService`,
+Helix/EventSub/chat transport lifecycle, trigger correlation, and shutdown.
+Commands, Twitch UI, and Backup ownership stay transitional for later phases;
+reconnect behavior is intentionally unchanged pending focused cleanup.
 
 ## Completed milestones
 

@@ -205,25 +205,29 @@ class MainWindowTests(unittest.TestCase):
             command_root / "event_triggers.json",
             self.twitch_command_trigger_store.routine_store,
         )
-        module_registry = None
+        self.obs_module = ObsModule()
+        self.twitch_module = TwitchModule()
+        self.twitch_module.auth.restore = Mock()
+        self.twitch_module.bot_auth.restore = Mock()
+        # MainWindow UI tests use TwitchService's established local simulator.
+        self.twitch_module.service.auth = None
+        enablement = ModuleEnablementStore(command_root / "modules.json")
         if self._testMethodName in {
             "test_obs_catalog_precedes_enabled_main_window_ui",
             "test_disabled_obs_catalog_precedes_main_window_ui_without_runtime",
             "test_disabled_twitch_catalog_precedes_main_window_ui_without_runtime",
         }:
-            self.obs_module = ObsModule()
-            enablement = ModuleEnablementStore(command_root / "modules.json")
             if self._testMethodName.startswith("test_disabled_obs"):
                 enablement.set_enabled(OBS_MODULE_ID, False)
             if self._testMethodName.startswith("test_disabled_twitch"):
                 enablement.set_enabled(TWITCH_MODULE_ID, False)
-            module_registry = ModuleRegistry(
-                core_version=HUB_VERSION,
-                core_capabilities=CORE_MODULE_CAPABILITIES,
-                enablement_store=enablement,
-            )
-            module_registry.register(self.obs_module)
-            module_registry.register(TwitchModule())
+        module_registry = ModuleRegistry(
+            core_version=HUB_VERSION,
+            core_capabilities=CORE_MODULE_CAPABILITIES,
+            enablement_store=enablement,
+        )
+        module_registry.register(self.obs_module)
+        module_registry.register(self.twitch_module)
         if self._testMethodName == "test_startup_resets_obsolete_twitch_triggers":
             routine = self.twitch_command_trigger_store.routine_store.add(
                 "Obsolete Twitch trigger"
@@ -3770,7 +3774,7 @@ class MainWindowTests(unittest.TestCase):
             },
         )
         handled: list[TwitchEvent] = []
-        self.window._handle_twitch_automation_event = handled.append
+        self.window.twitch_module._publish_event = handled.append
 
         self.window.handle_twitch_activity(direct)
         self.assertEqual(handled, [])
@@ -3791,7 +3795,7 @@ class MainWindowTests(unittest.TestCase):
             routine.routine_id,
             "channel.subscribe",
         )
-        self.window.twitch_subscription_correlator = (
+        self.window.twitch_module._subscription_correlator = (
             TwitchSubscriptionEventCorrelator(wait_seconds=0)
         )
         self.window.automation_service.publish_trigger = Mock()
@@ -5313,7 +5317,7 @@ class MainWindowTests(unittest.TestCase):
         self.window.twitch_service.state = TwitchConnectionState.CONNECTED
         self.window.twitch_service.channel = "streamer"
         self.window.twitch_service.disconnect = Mock()
-        self.window.connect_twitch = Mock()
+        self.window.twitch_service.connect = Mock(return_value=True)
         self.window.refresh_channel_snapshot = Mock()
 
         self.window.handle_twitch_auth_changed(
@@ -5321,7 +5325,7 @@ class MainWindowTests(unittest.TestCase):
         )
 
         self.window.twitch_service.disconnect.assert_called_once_with()
-        self.window.connect_twitch.assert_called_once_with()
+        self.window.twitch_service.connect.assert_called_once_with("streamer")
         self.window.refresh_channel_snapshot.assert_called_once_with()
 
     def test_ad_schedule_api_failure_has_compact_visible_status(self) -> None:
