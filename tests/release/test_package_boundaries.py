@@ -103,6 +103,29 @@ class PackageBoundaryTests(unittest.TestCase):
                     )
         self.assertEqual(violations, [])
 
+    def test_twitch_static_module_does_not_import_runtime_owners(self) -> None:
+        root = (
+            self.root
+            / "products"
+            / "hub"
+            / "modules"
+            / "bundled"
+            / "twitch"
+        )
+        forbidden = {
+            "products.hub.twitch.auth",
+            "products.hub.twitch.live",
+            "products.hub.twitch.service",
+            "products.hub.twitch.token_store",
+        }
+        violations = [
+            f"{path.relative_to(self.root)} imports {module}"
+            for path, module in self._imports_under(root)
+            if module in forbidden
+            or any(module.startswith(item + ".") for item in forbidden)
+        ]
+        self.assertEqual(violations, [])
+
     def test_product_specific_tools_and_extension_are_separated(self) -> None:
         for relative in (
             "tools/build/build_hub.ps1",

@@ -13,10 +13,11 @@
    orchestration, and the Qt shell. Trusted bundled modules contribute actions,
    tasks, triggers, Variables, tabs, and Backup data through Core contracts.
 3. **Current architecture milestone:** OBS is the first accepted real bundled
-   Hub module. Its conversion passed final acceptance and is integrated into the
-   stable 0.3 `develop` line without changing public OBS data contracts.
-4. **Active branch:** `develop`; the accepted conversion came from
-   `feature/obs-module-conversion` at acceptance HEAD `f3db6f8`.
+   Hub module. Twitch conversion Phase 1 is active and establishes trusted
+   discovery plus static catalogs only; Twitch runtime remains on the existing
+   application path.
+4. **Active branch:** `feature/twitch-module-conversion`, based on clean
+   `develop` HEAD `94f4c78`.
 5. **Most important unresolved issues:** normal Twitch reconnect/renewal can
    create visible interruption or chat noise, and one Windows
    forced-termination test currently retains a crash-log handle.
@@ -36,8 +37,8 @@
 
 | Item | Verified value |
 | --- | --- |
-| Date | 2026-10-25 (America/Edmonton) |
-| Branch | `develop` after accepted feature integration |
+| Date | 2026-10-26 (America/Edmonton) |
+| Branch | `feature/twitch-module-conversion` from `develop` at `94f4c78` |
 | Accepted feature HEAD | `f3db6f8fa2ce22603cf974344a78144a56bcd2ff` |
 | Feature upstream | synchronized with `origin/feature/obs-module-conversion` before acceptance documentation |
 | Working tree at task start | clean |
@@ -57,7 +58,14 @@ The accepted OBS module conversion is integrated into `develop`. It provides:
 - a packaged discovery fix that registers trusted embedded modules before
   Automation UI consumes their static catalogs.
 
-OBS is the first accepted bundled Hub module. No Twitch or Music conversion has begun.
+OBS is the first accepted bundled Hub module. Twitch conversion is now
+**PARTIAL — STATIC CATALOG FOUNDATION COMPLETE** on its dedicated feature
+branch. The first phase adds the trusted `streamhouse.twitch` descriptor and
+makes Twitch task metadata, contextual Variable definitions, task availability,
+and trigger-provider metadata available through module catalog registration.
+Compatible disabled Twitch modules still publish those catalogs, while OAuth,
+tokens, Helix, EventSub, chat, commands, UI, Backup, and shutdown ownership stay
+on the existing runtime path for later phases.
 
 ## Completed milestones
 

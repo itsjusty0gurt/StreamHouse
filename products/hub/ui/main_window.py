@@ -80,7 +80,7 @@ from products.hub.automation.variable_providers import (
     ChannelInformationVariableProvider,
     CounterVariableProvider,
     CustomVariableProvider,
-    context_provider,
+    obs_context_provider,
     runtime_provider,
 )
 from products.hub.automation.variable_registry import VariableRegistry
@@ -99,7 +99,7 @@ from products.hub.automation.core_tasks import (
     WaitForServiceTask,
 )
 from products.hub.automation.tasks import TaskRegistry
-from products.hub.automation.task_catalog import BUILTIN_TASK_METADATA
+from products.hub.automation.task_catalog import CORE_TASK_METADATA
 from products.hub.automation.variable_tasks import RunRoutineTask, register_variable_tasks
 from products.hub.automation.control_tasks import register_control_tasks
 from products.hub.automation.logic_tasks import register_logic_tasks
@@ -569,6 +569,10 @@ class MainWindow(QMainWindow):
             self.automation_queue_store
         )
         self.module_registry = module_registry or create_bundled_module_registry()
+        twitch_module_status = self.module_registry.status("streamhouse.twitch")
+        self.twitch_runtime_enabled = (
+            twitch_module_status is None or twitch_module_status.enabled
+        )
         self.action_registry = ActionRegistry()
         self.module_tab_registry = ModuleTabRegistry()
         self.trigger_provider_registry = TriggerProviderRegistry()
@@ -582,7 +586,7 @@ class MainWindow(QMainWindow):
         self.counter_service.subscribe_changes(self._counter_change_callback)
         self.counter_refresh_requested.connect(self._refresh_counters_page)
         self.variable_registry = VariableRegistry()
-        self.variable_registry.register(context_provider())
+        self.variable_registry.register(obs_context_provider())
         self.variable_registry.register(
             runtime_provider(
                 self._variable_twitch_values,
@@ -610,7 +614,7 @@ class MainWindow(QMainWindow):
         )
         self.variable_registry.register(MusicVariableProvider(self.music_player_service))
         self.twitch_command_trigger_store.variable_registry = self.variable_registry
-        self.task_registry = TaskRegistry(BUILTIN_TASK_METADATA)
+        self.task_registry = TaskRegistry(CORE_TASK_METADATA)
         register_twitch_tasks(
             self.task_registry,
             self.twitch_service,
@@ -1014,7 +1018,8 @@ class MainWindow(QMainWindow):
         self.twitch_subscription_correlation_timer.timeout.connect(
             self._flush_twitch_subscription_automation
         )
-        self.twitch_subscription_correlation_timer.start()
+        if self.twitch_runtime_enabled:
+            self.twitch_subscription_correlation_timer.start()
         self.ui.dashboardButton.clicked.connect(self.show_dashboard)
         self.ui.twitchButton.clicked.connect(self.show_twitch)
         self.automation_button.clicked.connect(self.show_automation)
@@ -1139,17 +1144,20 @@ class MainWindow(QMainWindow):
         self.auth_maintenance_timer.timeout.connect(
             self.twitch_bot_auth.maintain
         )
-        self.auth_maintenance_timer.start()
+        if self.twitch_runtime_enabled:
+            self.auth_maintenance_timer.start()
         self.channel_snapshot_timer = QTimer(self)
         self.channel_snapshot_timer.setInterval(60_000)
         self.channel_snapshot_timer.timeout.connect(self.refresh_channel_snapshot)
-        self.channel_snapshot_timer.start()
+        if self.twitch_runtime_enabled:
+            self.channel_snapshot_timer.start()
         self.stream_overview_timer = QTimer(self)
         self.stream_overview_timer.setInterval(1_000)
         self.stream_overview_timer.timeout.connect(
             self._update_stream_overview_clock
         )
-        self.stream_overview_timer.start()
+        if self.twitch_runtime_enabled:
+            self.stream_overview_timer.start()
         self.chatter_history_save_timer = QTimer(self)
         self.chatter_history_save_timer.setInterval(10_000)
         self.chatter_history_save_timer.timeout.connect(
@@ -2876,6 +2884,9 @@ class MainWindow(QMainWindow):
                 routine_store=routine_store,
                 automation=self.automation_service,
                 trigger_providers=self.trigger_provider_registry,
+                trigger_stores={
+                    "twitch.automation": self.twitch_event_trigger_store,
+                },
                 tabs=self.module_tab_registry,
                 backup=self.backup_contributor_registry,
                 data_root=data_root,

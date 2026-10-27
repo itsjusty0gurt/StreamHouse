@@ -1,7 +1,7 @@
 # Streamhouse Hub 0.3 modular foundation contracts
 
-Status: **Core foundation implemented; OBS conversion ready for review on its
-isolated feature branch**.
+Status: **Core foundation and OBS conversion implemented; Twitch conversion
+Phase 1 static-catalog foundation complete on its isolated feature branch**.
 
 Streamhouse Hub `0.2.1-alpha` is the latest released maintenance Alpha at tag
 `v0.2.1-alpha`; `v0.2.0-alpha` remains its frozen predecessor. Active

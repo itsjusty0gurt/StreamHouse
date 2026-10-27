@@ -70,6 +70,7 @@ from products.hub.modules import (
 )
 from products.hub.modules.bootstrap import CORE_MODULE_CAPABILITIES
 from products.hub.modules.bundled.obs import OBS_MODULE_ID, ObsModule
+from products.hub.modules.bundled.twitch import TWITCH_MODULE_ID, TwitchModule
 from products.hub.version import HUB_VERSION
 from products.hub.soundboard.store import SoundboardStore
 from products.hub.twitch.commands import TwitchCommandTriggerStore
@@ -208,17 +209,21 @@ class MainWindowTests(unittest.TestCase):
         if self._testMethodName in {
             "test_obs_catalog_precedes_enabled_main_window_ui",
             "test_disabled_obs_catalog_precedes_main_window_ui_without_runtime",
+            "test_disabled_twitch_catalog_precedes_main_window_ui_without_runtime",
         }:
             self.obs_module = ObsModule()
             enablement = ModuleEnablementStore(command_root / "modules.json")
             if self._testMethodName.startswith("test_disabled_obs"):
                 enablement.set_enabled(OBS_MODULE_ID, False)
+            if self._testMethodName.startswith("test_disabled_twitch"):
+                enablement.set_enabled(TWITCH_MODULE_ID, False)
             module_registry = ModuleRegistry(
                 core_version=HUB_VERSION,
                 core_capabilities=CORE_MODULE_CAPABILITIES,
                 enablement_store=enablement,
             )
             module_registry.register(self.obs_module)
+            module_registry.register(TwitchModule())
         if self._testMethodName == "test_startup_resets_obsolete_twitch_triggers":
             routine = self.twitch_command_trigger_store.routine_store.add(
                 "Obsolete Twitch trigger"
@@ -4634,7 +4639,7 @@ class MainWindowTests(unittest.TestCase):
                 item.provider_id
                 for item in self.window.trigger_provider_registry.contributions()
             ],
-            ["obs.automation"],
+            ["obs.automation", "twitch.automation"],
         )
 
     def test_disabled_obs_catalog_precedes_main_window_ui_without_runtime(self) -> None:
@@ -4653,6 +4658,53 @@ class MainWindowTests(unittest.TestCase):
             self.window.task_registry.registered_types(),
         )
         self.assertFalse(provider.current_availability().available)
+
+    def test_disabled_twitch_catalog_precedes_main_window_ui_without_runtime(self) -> None:
+        provider = self.window.trigger_provider_registry.get("twitch.automation")
+
+        self.assertIsNotNone(provider)
+        self.assertIs(provider.store, self.window.twitch_event_trigger_store)
+        self.assertEqual(
+            self.window.module_registry.status(TWITCH_MODULE_ID).lifecycle,
+            ModuleLifecycle.DISABLED,
+        )
+        self.assertFalse(provider.current_availability().available)
+        self.assertIsNotNone(
+            self.window.task_registry.metadata("twitch.send_chat_message")
+        )
+        self.assertEqual(
+            self.window.task_registry.availability("twitch.send_chat_message"),
+            (False, "The Twitch module is disabled or unavailable."),
+        )
+        variable = self.window.variable_registry.resolve(
+            "user.display_name",
+            {"user.display_name": "TestViewer"},
+        )
+        self.assertIsNotNone(variable)
+        self.assertFalse(variable.available)
+        self.assertFalse(self.window.auth_maintenance_timer.isActive())
+        self.assertFalse(self.window.channel_snapshot_timer.isActive())
+        self.assertFalse(self.window.stream_overview_timer.isActive())
+        self.assertFalse(self.window.twitch_subscription_correlation_timer.isActive())
+        routine = self.twitch_command_trigger_store.routine_store.add(
+            "Disabled Twitch provider"
+        )
+        task = self.twitch_command_trigger_store.routine_store.add_task(
+            routine.routine_id,
+            task_type="twitch.send_chat_message",
+            name="Send message",
+            config={"message": "Hello", "as_bot": True},
+        )
+        trigger = self.window.twitch_event_trigger_store.add(
+            routine.routine_id,
+            "channel.follow",
+        )
+        card = self.window.automation_page._task_card_content(task)
+        self.assertTrue(any("unavailable" in issue for issue in card.issues))
+        self.assertIsNotNone(
+            self.window.twitch_event_trigger_store.get(trigger.trigger_id)
+        )
+        self.assertIn("channel.follow", provider.event_types)
 
     def test_automation_page_still_rejects_missing_obs_catalog(self) -> None:
         with self.assertRaisesRegex(ValueError, "OBS trigger provider catalog"):

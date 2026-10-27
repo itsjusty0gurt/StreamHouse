@@ -126,6 +126,25 @@ Remaining coupling is presentation-oriented: Core Automation editor,
 simulation, transfer, and Wiki code still imports stable OBS task/trigger
 definitions. Runtime construction and lifecycle are module-owned.
 
+## Twitch module conversion
+
+Twitch conversion is **partial**. Phase 1 adds the trusted bundled module
+`streamhouse.twitch` under `products/hub/modules/bundled/twitch/` and moves
+production registration of Twitch task metadata, contextual Variable
+definitions, task-provider availability, and the Twitch trigger-provider
+catalog behind `register_catalog()`.
+
+Static registration occurs for compatible disabled modules, so saved Twitch
+tasks and triggers remain interpretable and contextual Variables remain
+discoverable with honest unavailable state. Enabled registration only activates
+the transitional availability boundary; it does not create a second Twitch
+service or connection.
+
+Broadcaster/bot auth, protected tokens, Helix, EventSub, chat, command and
+trigger dispatch, Twitch UI, Backup ownership, workers, and shutdown remain on
+the existing application/MainWindow path until later conversion phases. Their
+public paths, schemas, task/trigger IDs, and routine references are unchanged.
+
 ## Automation execution
 
 `AutomationService.publish_trigger()` matches linked routines by stable trigger

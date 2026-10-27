@@ -22,6 +22,7 @@ from products.hub.modules import (
     ModuleRegistry,
 )
 from products.hub.modules import bootstrap as module_bootstrap
+from products.hub.modules.bundled.catalog import trusted_bundled_module_specs
 
 
 @dataclass
@@ -156,6 +157,15 @@ def test_discovery_loads_only_allowlisted_bundled_factories(tmp_path: Path) -> N
     assert result.untrusted_entries == ("downloaded-plugin",)
 
 
+def test_source_catalog_allowlists_obs_and_twitch_modules() -> None:
+    specs = trusted_bundled_module_specs()
+
+    assert [(item.module_id, item.directory_name) for item in specs] == [
+        ("streamhouse.obs", "obs"),
+        ("streamhouse.twitch", "twitch"),
+    ]
+
+
 def test_discovery_reports_missing_trusted_module_without_importing(tmp_path: Path) -> None:
     factory_called = False
 
@@ -202,6 +212,7 @@ def test_frozen_bootstrap_discovers_trusted_obs_without_source_directory(
     registry = module_bootstrap.create_bundled_module_registry()
 
     assert registry.descriptor("streamhouse.obs") is not None
+    assert registry.descriptor("streamhouse.twitch") is not None
 
 
 def test_enablement_change_is_persisted_for_next_restart_only(tmp_path: Path) -> None:

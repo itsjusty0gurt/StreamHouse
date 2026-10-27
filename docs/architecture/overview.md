@@ -142,6 +142,7 @@ trigger and routine setup, but their stored records remain separate.
 | `products/hub/core/` | Hub event bus, settings, DPAPI secrets, backup, diagnostics, and resources |
 | `products/hub/modules/` | Core module contracts, trusted discovery, lifecycle, actions, and contribution registries. Packaged discovery uses the explicit first-party allowlist because PyInstaller embeds Python packages without source directories. |
 | `products/hub/modules/bundled/obs/` | Bundled OBS module entry point, Variables provider, connection/status page, and lifecycle ownership |
+| `products/hub/modules/bundled/twitch/` | Phase-one Twitch descriptor and static task/trigger/Variable catalog ownership; live runtime ownership has not moved yet |
 | `products/hub/obs_service/` | OBS module WebSocket transport, public-data configuration/store, triggers, and task handlers |
 | `products/hub/soundboard/` | Local soundboard models/store/server and hosted relay client |
 | `products/hub/twitch/` | OAuth, Helix, EventSub, normalized Twitch models, commands, triggers, analytics/history |
@@ -200,10 +201,13 @@ normal writable composition.
 3. Creates `TwitchService`.
 4. Creates the trusted bundled `ModuleRegistry` and constructs
    `products.hub.ui.main_window.MainWindow`, the Core composition root.
-5. `MainWindow` registers/configures/starts enabled bundled modules, renders
-   their tab contributions, then shows the window and restores Twitch identities.
-6. Runs the Qt event loop.
-7. Clears the global event bus, marks a zero-exit session clean, and shuts down
+5. `MainWindow` registers static catalogs for all compatible modules before
+   Automation UI construction, then registers/configures/starts enabled bundled
+   modules and renders their tab contributions.
+6. After the window is shown, the transitional application-owned Twitch path
+   restores broadcaster/bot identities only when `streamhouse.twitch` is enabled.
+7. Runs the Qt event loop.
+8. Clears the global event bus, marks a zero-exit session clean, and shuts down
    diagnostics/logging after the window closes.
 
 `MainWindow.__init__` creates or receives injectable instances of:
