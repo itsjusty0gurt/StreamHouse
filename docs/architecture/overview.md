@@ -1996,6 +1996,16 @@ Outputs:
 - `dist\StreamhouseHub\StreamhouseHub.exe`
 - `dist\StreamhouseAI\StreamhouseAI.exe`
 
+The Hub build assembles and prunes a complete bundle under the ignored
+`build\package-staging\` root before replacing `dist\StreamhouseHub`. It checks
+for a packaged Hub or bundled child process using the output before analysis,
+retries short Windows sharing violations during publication, and rolls back to
+the prior complete bundle if publication fails. Close a Hub launched from
+`dist\StreamhouseHub` before rebuilding; the build reports its PID and path
+instead of spending a full PyInstaller run and failing during `COLLECT`. A lock
+with no process running from the package is reported as a likely Explorer,
+antivirus, indexing, or other external Windows handle rather than being hidden.
+
 The build includes Qt's offscreen platform DLL so packaged smoke tests can run
 without displaying windows. `STREAMHOUSE_SMOKE_TEST=1` schedules a clean automatic
 exit.
