@@ -87,6 +87,10 @@ details remain in Logs and are not appended to Chat.
 - Outgoing raids now expose a distinct **Raid Out Started** Automation trigger,
   and optional target-browser navigation begins as soon as Twitch accepts the
   Start Raid request instead of waiting for EventSub confirmation.
+- Channel-snapshot viewer-list refreshes now run on the Qt GUI thread, suppress
+  transient selection callbacks while native list items are rebuilt, coalesce
+  reentrant requests, and ignore shutdown/deleted-widget callbacks. This closes
+  the unsafe nested-event-loop path exposed by Automation task context menus.
 - Twitch reconnect/renewal now distinguishes native EventSub transfer from an
   unexpected interruption, deduplicates recovery work, preserves pending event
   correlation, and cancels late reconnect/auth work during shutdown or sign-out.
@@ -181,6 +185,10 @@ Reproduction/validation requirements:
 
 ## Known issues and validation gaps
 
+- **Known Backup dependency issue:** automatic Routine Backup can stop when a
+  persisted trigger dependency is missing (observed missing trigger ID
+  `56dfb338dda549629707d76639def744`). This is independent of the Automation
+  task-context native crash and remains a separate investigation.
 - **Known test issue:**
   `MainWindowTests.test_counters_page_refreshes_for_stream_and_counter_changes`
   currently raises `KeyError` during test cleanup after its Counter definition
