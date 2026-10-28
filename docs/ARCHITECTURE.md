@@ -128,9 +128,9 @@ definitions. Runtime construction and lifecycle are module-owned.
 
 ## Twitch module conversion
 
-Twitch conversion is implementation-complete on its feature branch and awaits
-final acceptance. Phase 1 added the trusted bundled module
-`streamhouse.twitch` under `products/hub/modules/bundled/twitch/` and moves
+Twitch conversion is **implemented / accepted** at feature code commit
+`dba19eb5e6a8da2160664440dff9917e37bd2965`. Phase 1 added the trusted bundled
+module `streamhouse.twitch` under `products/hub/modules/bundled/twitch/` and moves
 production registration of Twitch task metadata, contextual Variable
 definitions, task-provider availability, and the Twitch trigger-provider
 catalog behind `register_catalog()`.
