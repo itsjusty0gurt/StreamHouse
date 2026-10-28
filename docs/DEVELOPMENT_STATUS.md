@@ -16,16 +16,15 @@
    modules. Twitch owns its catalogs, auth/transport lifecycle, UI, Commands,
    Variables, triggers, Backup contributions, reconnect, and shutdown.
 4. **Accepted Twitch code:** feature commit
-   `dba19eb5e6a8da2160664440dff9917e37bd2965`; integration into `develop` is the
-   next repository operation.
+   `dba19eb5e6a8da2160664440dff9917e37bd2965`, integrated into `develop` by
+   merge commit `a018ae414beced099066c22bf10ca7d7b93d5511`.
 5. **Most important unresolved issue:** one Windows forced-termination test
    currently retains a crash-log handle.
 6. **Latest OBS acceptance:** 372 unique relevant tests and 70 subtests passed;
    packaged Hub/AI smoke passed; packaged startup exited 0 with OBS disabled and
    again after re-enabling; compilation and `git diff --check` passed.
-7. **Immediate next steps:** merge the accepted Twitch feature into `develop`,
-   then investigate the independent Windows forced-termination and Counter test
-   cleanup issues as separate tasks.
+7. **Immediate next steps:** investigate the independent Windows
+   forced-termination and Counter test cleanup issues as separate tasks.
 8. **Read next:** [master reference](STREAMHOUSE_MASTER_REFERENCE.md),
    [architecture](ARCHITECTURE.md), [0.3 foundation](architecture/hub-0.3-foundation.md),
    [implementation map](architecture/overview.md), and
@@ -36,7 +35,7 @@
 | Item | Verified value |
 | --- | --- |
 | Date | 2026-10-27 (America/Edmonton) |
-| Branch | `feature/twitch-module-conversion` from `develop` at `94f4c78` |
+| Branch | `develop`; accepted Twitch feature retained at `feature/twitch-module-conversion` |
 | Twitch Phase 3 starting HEAD | `c5319fceb3b1251d29ee0aa36f7066cf7a4ea3f9` |
 | Feature upstream | `origin/feature/twitch-module-conversion` |
 | Working tree at task start | clean |
@@ -57,7 +56,8 @@ The accepted OBS module conversion is integrated into `develop`. It provides:
   Automation UI consumes their static catalogs.
 
 OBS and Twitch are accepted bundled Hub modules. Twitch conversion is
-**IMPLEMENTED / ACCEPTED** at feature code commit `dba19eb5` on 2026-10-27.
+**IMPLEMENTED / ACCEPTED** at feature code commit `dba19eb5` on 2026-10-27 and
+integrated into `develop` by merge commit `a018ae4`.
 Static task/trigger/Variable metadata remains available when the
 module is disabled. When enabled, `streamhouse.twitch` solely constructs and
 owns broadcaster/bot auth, protected-token maintenance policy, `TwitchService`,
@@ -216,17 +216,19 @@ Reproduction/validation requirements:
 | Final Twitch acceptance suite | 524 passed, 195 subtests passed |
 | Final Twitch MainWindow acceptance slice | 95 passed, 7 subtests passed; one documented unrelated Counter worker/cleanup failure |
 | Final packaged Twitch enabled / disabled / re-enabled | Exit code 0 / 0 / 0 using isolated data roots |
+| Post-merge Twitch/module/Automation/Backup/Variables/OBS gate | 404 passed, 138 subtests passed |
+| Post-merge MainWindow/startup slice | 55 passed, 5 subtests passed |
+| Post-merge packaged smoke | Exit code 0 with Twitch re-enabled |
 | Python compilation | Passed for `products/hub` and `shared` |
 | `git diff --check` | Passed |
 
 ## Next recommended steps
 
-1. Merge accepted Twitch conversion into `develop` and run the post-merge gate.
-2. Diagnose the independent Counter cleanup, Windows forced-termination, and
+1. Diagnose the independent Counter cleanup, Windows forced-termination, and
    logger-isolation tests.
-3. Make static OBS presentation adapters provider-neutral only where another
+2. Make static OBS presentation adapters provider-neutral only where another
    module or a concrete maintenance benefit justifies the abstraction.
-4. Consider Modules-page, navigation, or docking work as separate scoped changes.
+3. Consider Modules-page, navigation, or docking work as separate scoped changes.
 
 ## Maintenance rules
 
