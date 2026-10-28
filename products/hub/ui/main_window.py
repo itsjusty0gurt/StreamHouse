@@ -11,7 +11,17 @@ from datetime import datetime, time, timedelta, timezone
 from html import escape
 from pathlib import Path
 
-from PySide6.QtCore import QThreadPool, QTime, QTimer, Qt, Signal, Slot, QUrl
+from PySide6.QtCore import (
+    QSignalBlocker,
+    QThread,
+    QThreadPool,
+    QTime,
+    QTimer,
+    Qt,
+    Signal,
+    Slot,
+    QUrl,
+)
 from PySide6.QtGui import QCloseEvent, QColor, QCursor, QDesktopServices, QFont
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -52,6 +62,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+from shiboken6 import isValid
 
 from products.hub.core.events import Events
 from products.hub.core.diagnostics import DiagnosticsService
@@ -382,6 +393,7 @@ class ActivityFeedCard(QFrame):
 
 class MainWindow(QMainWindow):
     counter_refresh_requested = Signal()
+    memory_viewer_refresh_requested = Signal(str)
 
     def __init__(
         self,
@@ -818,6 +830,8 @@ class MainWindow(QMainWindow):
         self._core_started_fired = False
         self._core_closing_fired = False
         self._shutting_down = False
+        self._memory_viewer_refreshing = False
+        self._memory_viewer_refresh_pending = False
         self.persistence_shutdown_ok = True
         self.followers_backfilled = False
         self.stream_is_live = False
@@ -2151,6 +2165,10 @@ class MainWindow(QMainWindow):
         self._build_channel_points_tab()
         self.memory_search_edit.textChanged.connect(
             self._refresh_memory_viewer_list
+        )
+        self.memory_viewer_refresh_requested.connect(
+            self._refresh_memory_viewer_list,
+            Qt.ConnectionType.QueuedConnection,
         )
         self.memory_viewer_list.currentItemChanged.connect(
             self._show_memory_viewer
@@ -6363,31 +6381,53 @@ class MainWindow(QMainWindow):
 
     @Slot(str)
     def _refresh_memory_viewer_list(self, _text: str = "") -> None:
-        if not hasattr(self, "memory_viewer_list"):
+        if QThread.currentThread() != self.thread():
+            self.memory_viewer_refresh_requested.emit(_text)
             return
-        selected_item = self.memory_viewer_list.currentItem()
-        selected_id = (
-            str(selected_item.data(Qt.ItemDataRole.UserRole))
-            if selected_item is not None
-            else ""
-        )
-        query = self.memory_search_edit.text().strip().casefold()
-        self.memory_viewer_list.clear()
-        selected_row = -1
-        records = sorted(
-            self.chatter_history.records.values(),
-            key=lambda record: record.user_name.casefold(),
-        )
-        for record in records:
-            if query and query not in record.user_name.casefold():
-                continue
-            item = QListWidgetItem(record.user_name or record.user_id)
-            item.setData(Qt.ItemDataRole.UserRole, record.user_id)
-            self.memory_viewer_list.addItem(item)
-            if record.user_id == selected_id:
-                selected_row = self.memory_viewer_list.count() - 1
-        if selected_row >= 0:
-            self.memory_viewer_list.setCurrentRow(selected_row)
+        if self._shutting_down or not hasattr(self, "memory_viewer_list"):
+            return
+        viewer_list = self.memory_viewer_list
+        if not isValid(viewer_list):
+            return
+        if self._memory_viewer_refreshing:
+            self._memory_viewer_refresh_pending = True
+            return
+
+        self._memory_viewer_refreshing = True
+        try:
+            selected_item = viewer_list.currentItem()
+            selected_id = (
+                str(selected_item.data(Qt.ItemDataRole.UserRole))
+                if selected_item is not None
+                else ""
+            )
+            query = self.memory_search_edit.text().strip().casefold()
+            signal_blocker = QSignalBlocker(viewer_list)
+            try:
+                viewer_list.clear()
+                selected_row = -1
+                records = sorted(
+                    self.chatter_history.records.values(),
+                    key=lambda record: record.user_name.casefold(),
+                )
+                for record in records:
+                    if query and query not in record.user_name.casefold():
+                        continue
+                    item = QListWidgetItem(record.user_name or record.user_id)
+                    item.setData(Qt.ItemDataRole.UserRole, record.user_id)
+                    viewer_list.addItem(item)
+                    if record.user_id == selected_id:
+                        selected_row = viewer_list.count() - 1
+                if selected_row >= 0:
+                    viewer_list.setCurrentRow(selected_row)
+            finally:
+                del signal_blocker
+            self._show_memory_viewer(viewer_list.currentItem(), None)
+        finally:
+            self._memory_viewer_refreshing = False
+            if self._memory_viewer_refresh_pending and not self._shutting_down:
+                self._memory_viewer_refresh_pending = False
+                QTimer.singleShot(0, self._refresh_memory_viewer_list)
 
     @Slot(object, object)
     def _show_memory_viewer(self, current: object, _previous: object) -> None:

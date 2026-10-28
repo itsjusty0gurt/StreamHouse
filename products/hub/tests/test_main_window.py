@@ -2699,6 +2699,102 @@ class MainWindowTests(unittest.TestCase):
         self.window.memory_search_edit.setText("missing")
         self.assertEqual(self.window.memory_viewer_list.count(), 0)
 
+    def test_memory_viewer_refresh_is_stable_during_task_context_menu(self) -> None:
+        store = self.twitch_command_trigger_store.routine_store
+        routine = store.add("Snapshot overlap")
+        store.add_task(
+            routine.routine_id,
+            task_type="core.wait",
+            name="Wait",
+            config={"duration": "1", "unit": "seconds"},
+        )
+        page = self.window.automation_page
+        page.select_routine(routine.routine_id)
+        task_item = page.task_list.item(0)
+
+        self.chatter_history_store.records = {
+            "42": ChatterRecord(
+                user_id="42",
+                user_name="KnownViewer",
+                first_seen="2026-07-01T12:00:00+00:00",
+                last_seen="2026-07-12T12:00:00+00:00",
+            )
+        }
+        self.window._refresh_memory_viewer_list()
+        self.window.memory_viewer_list.setCurrentRow(0)
+        selection_changes = QSignalSpy(
+            self.window.memory_viewer_list.currentItemChanged
+        )
+        result = ChannelSnapshotResult(
+            request_id=self.window.channel_snapshot_request_id,
+            snapshot={"stream": None},
+            chatters=({"user_id": "42", "user_name": "KnownViewer"},),
+            can_read_chatters=True,
+        )
+
+        menu = Mock()
+        menu.exec.side_effect = lambda *_args: self.window._apply_chatter_groups(
+            result
+        )
+        with (
+            patch.object(page.task_list, "itemAt", return_value=task_item),
+            patch(
+                "products.hub.ui.automation_page.QMenu",
+                return_value=menu,
+            ),
+        ):
+            page._task_context_menu(QPoint(1, 1))
+
+        self.assertIs(page.task_list.currentItem(), task_item)
+        self.assertEqual(selection_changes.count(), 0)
+        selected_viewer = self.window.memory_viewer_list.currentItem()
+        self.assertIsNotNone(selected_viewer)
+        self.assertEqual(
+            selected_viewer.data(Qt.ItemDataRole.UserRole),
+            "42",
+        )
+
+    def test_memory_viewer_refresh_from_worker_is_queued_to_gui_thread(
+        self,
+    ) -> None:
+        self.chatter_history_store.records = {
+            "42": ChatterRecord(
+                user_id="42",
+                user_name="KnownViewer",
+                first_seen="2026-07-01T12:00:00+00:00",
+                last_seen="2026-07-12T12:00:00+00:00",
+            )
+        }
+        completed = Event()
+
+        def refresh_from_worker() -> None:
+            self.window._refresh_memory_viewer_list()
+            completed.set()
+
+        worker = Thread(target=refresh_from_worker)
+        worker.start()
+        worker.join(timeout=2)
+
+        self.assertTrue(completed.is_set())
+        self.assertEqual(self.window.memory_viewer_list.count(), 0)
+        self.application.processEvents()
+        self.assertEqual(self.window.memory_viewer_list.count(), 1)
+
+    def test_memory_viewer_refresh_ignores_shutdown_or_deleted_widget(
+        self,
+    ) -> None:
+        self.window._shutting_down = True
+        with patch("products.hub.ui.main_window.isValid") as is_valid:
+            self.window._refresh_memory_viewer_list()
+        is_valid.assert_not_called()
+
+        self.window._shutting_down = False
+        with patch(
+            "products.hub.ui.main_window.isValid",
+            return_value=False,
+        ):
+            self.window._refresh_memory_viewer_list()
+
     def test_channel_workspace_keeps_stream_sessions_inside_analytics(self) -> None:
         channel_tab_names = [
             self.window.channel_tabs.tabText(index)
