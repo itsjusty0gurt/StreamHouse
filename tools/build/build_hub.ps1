@@ -2,6 +2,14 @@ $ErrorActionPreference = "Stop"
 
 $projectRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $python = Join-Path $projectRoot ".venv\Scripts\python.exe"
+$outputHelpers = Join-Path $PSScriptRoot "windows_package_output.ps1"
+$distRoot = Join-Path $projectRoot "dist"
+$finalBundle = Join-Path $distRoot "StreamhouseHub"
+$stagingParent = Join-Path $projectRoot "build\package-staging"
+$stagingRoot = Join-Path $stagingParent ("hub-" + [guid]::NewGuid().ToString("N"))
+$stagedBundle = Join-Path $stagingRoot "StreamhouseHub"
+
+. $outputHelpers
 
 if (-not (Test-Path -LiteralPath $python)) {
     throw "Create .venv and install requirements-build.txt before packaging."
@@ -14,12 +22,19 @@ if ($LASTEXITCODE -ne 0) {
 
 Push-Location $projectRoot
 try {
+    # Fail before the expensive PyInstaller analysis when the packaged Hub (or
+    # one of its bundled child processes) is still using the normal output.
+    Assert-StreamhousePackageOutputIdle `
+        -OutputPath $finalBundle `
+        -ProductName "Streamhouse Hub"
+
     # Hub uses Qt Widgets and Qt WebEngine, not the Python Qt Quick/QML APIs.
     # Excluding them prevents PyInstaller from scanning incomplete, unused
     # QML plugin metadata shipped in the PySide6 wheel.
     & $python -m PyInstaller `
         --noconfirm `
         --clean `
+        --distpath $stagingRoot `
         --windowed `
         --name "StreamhouseHub" `
         --icon "shared\assets\streamhouse-icons\windows\streamhouse-hub.ico" `
@@ -36,8 +51,8 @@ try {
         throw "Streamhouse Hub PyInstaller failed with exit code $LASTEXITCODE."
     }
 
-    $qtRoot = Join-Path $projectRoot "dist\StreamhouseHub\_internal\PySide6"
-    $internalRoot = Join-Path $projectRoot "dist\StreamhouseHub\_internal"
+    $qtRoot = Join-Path $stagedBundle "_internal\PySide6"
+    $internalRoot = Join-Path $stagedBundle "_internal"
     $qtResources = Join-Path $qtRoot "resources"
     $qtQml = Join-Path $qtRoot "qml"
     $qtLocales = Join-Path $qtRoot "translations\qtwebengine_locales"
@@ -80,8 +95,28 @@ try {
             }
         }
     }
+    $stagedExecutable = Join-Path $stagedBundle "StreamhouseHub.exe"
+    if (-not (Test-Path -LiteralPath $stagedExecutable -PathType Leaf)) {
+        throw "PyInstaller did not produce the expected executable: $stagedExecutable"
+    }
+
+    # Build and prune a complete package before touching the prior output.
+    # Publishing uses same-volume directory moves, bounded retries for short
+    # Windows sharing violations, and rollback if the new move fails.
+    Assert-StreamhousePackageOutputIdle `
+        -OutputPath $finalBundle `
+        -ProductName "Streamhouse Hub"
+    Publish-StreamhousePackageOutput `
+        -StagedBundle $stagedBundle `
+        -FinalBundle $finalBundle `
+        -AllowedStagingRoot $stagingParent `
+        -AllowedFinalRoot $distRoot
+
     Write-Host "Streamhouse Hub created at dist\StreamhouseHub\StreamhouseHub.exe"
 }
 finally {
     Pop-Location
+    if (Test-Path -LiteralPath $stagingRoot) {
+        Remove-Item -LiteralPath $stagingRoot -Recurse -Force
+    }
 }

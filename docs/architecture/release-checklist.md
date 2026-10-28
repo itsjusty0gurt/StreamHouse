@@ -66,6 +66,12 @@ compatibility and migration rules.
 
 ## Installer and upgrade
 
+- [ ] Close any Hub launched from `dist\StreamhouseHub` before building; verify
+      the build preflight reports an owning package PID instead of modifying a
+      live package.
+- [ ] Build Hub repeatedly to the normal `dist\StreamhouseHub` output after a
+      packaged startup/shutdown and confirm no Hub or QtWebEngine descendant
+      retains the package directory.
 - [ ] Build the installer from the exact release commit/tag.
 - [ ] Install over the previous public release and verify the Hub data root is
       untouched except for intentional application-owned migrations.
