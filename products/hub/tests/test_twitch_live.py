@@ -779,6 +779,160 @@ class TwitchEventSubSocketTests(unittest.TestCase):
             TwitchEventTransport.WEBSOCKET,
         )
 
+    def test_native_reconnect_is_owned_quiet_and_keeps_subscriptions(self) -> None:
+        welcomes = []
+        reconnecting = []
+        reconnected = []
+        errors = []
+        socket = TwitchEventSubSocket(
+            on_welcome=welcomes.append,
+            on_message=lambda _message: None,
+            on_notification=lambda _kind, _payload: None,
+            on_diagnostic=lambda _diagnostic: None,
+            on_revocation=lambda _status: None,
+            on_error=errors.append,
+            on_reconnecting=reconnecting.append,
+            on_reconnected=reconnected.append,
+        )
+        transport = Mock()
+        socket.socket = transport
+
+        socket._receive_text(
+            json.dumps(
+                {
+                    "metadata": {
+                        "message_id": "reconnect-1",
+                        "message_type": "session_reconnect",
+                    },
+                    "payload": {
+                        "session": {
+                            "reconnect_url": "wss://eventsub.wss.twitch.tv/reconnect"
+                        }
+                    },
+                }
+            )
+        )
+
+        self.assertEqual(reconnecting, [True])
+        self.assertTrue(socket._reconnect_timer.isActive())
+        socket._reconnect_timer.stop()
+        socket._reopen_if_needed()
+        transport.open.assert_called_once()
+
+        socket._receive_text(
+            json.dumps(
+                {
+                    "metadata": {
+                        "message_id": "welcome-2",
+                        "message_type": "session_welcome",
+                    },
+                    "payload": {"session": {"id": "session-2"}},
+                }
+            )
+        )
+
+        self.assertEqual(welcomes, [])
+        self.assertEqual(reconnected, [True])
+        self.assertEqual(errors, [])
+
+    def test_unexpected_disconnect_schedules_one_recovery_and_resubscribes(self) -> None:
+        welcomes = []
+        reconnecting = []
+        reconnected = []
+        errors = []
+        socket = TwitchEventSubSocket(
+            on_welcome=welcomes.append,
+            on_message=lambda _message: None,
+            on_notification=lambda _kind, _payload: None,
+            on_diagnostic=lambda _diagnostic: None,
+            on_revocation=lambda _status: None,
+            on_error=errors.append,
+            on_reconnecting=reconnecting.append,
+            on_reconnected=reconnected.append,
+        )
+        transport = Mock()
+        transport.errorString.return_value = "temporary TLS failure"
+        socket.socket = transport
+        socket._intentional_close = False
+
+        socket._socket_error(Mock())
+        socket._disconnected()
+        socket._disconnected()
+
+        self.assertEqual(reconnecting, [False])
+        self.assertTrue(socket._reconnect_timer.isActive())
+        self.assertEqual(errors, [])
+        socket._reconnect_timer.stop()
+        socket._reopen_if_needed()
+        transport.open.assert_called_once()
+
+        socket._receive_text(
+            json.dumps(
+                {
+                    "metadata": {
+                        "message_id": "welcome-recovered",
+                        "message_type": "session_welcome",
+                    },
+                    "payload": {"session": {"id": "session-recovered"}},
+                }
+            )
+        )
+
+        self.assertEqual(welcomes, ["session-recovered"])
+        self.assertEqual(reconnected, [False])
+
+    def test_close_cancels_pending_reconnect_and_late_reopen(self) -> None:
+        socket = TwitchEventSubSocket(
+            on_welcome=lambda _session_id: None,
+            on_message=lambda _message: None,
+            on_notification=lambda _kind, _payload: None,
+            on_diagnostic=lambda _diagnostic: None,
+            on_revocation=lambda _status: None,
+            on_error=lambda _message: None,
+        )
+        transport = Mock()
+        socket.socket = transport
+        socket._intentional_close = False
+        socket._disconnected()
+
+        socket.close()
+        socket._reopen_if_needed()
+
+        self.assertFalse(socket._reconnect_timer.isActive())
+        transport.open.assert_not_called()
+
+    def test_failed_native_transfer_falls_back_to_fresh_subscriptions(self) -> None:
+        welcomes = []
+        reconnecting = []
+        socket = TwitchEventSubSocket(
+            on_welcome=welcomes.append,
+            on_message=lambda _message: None,
+            on_notification=lambda _kind, _payload: None,
+            on_diagnostic=lambda _diagnostic: None,
+            on_revocation=lambda _status: None,
+            on_error=lambda _message: None,
+            on_reconnecting=reconnecting.append,
+        )
+        socket._intentional_close = False
+        socket._reconnect_transfer = True
+
+        socket._disconnected()
+        socket._reconnect_timer.stop()
+        socket._receive_text(
+            json.dumps(
+                {
+                    "metadata": {
+                        "message_id": "welcome-fallback",
+                        "message_type": "session_welcome",
+                    },
+                    "payload": {"session": {"id": "session-fallback"}},
+                }
+            )
+        )
+
+        self.assertEqual(reconnecting, [False])
+        self.assertEqual(welcomes, ["session-fallback"])
+
     def test_outgoing_raid_notification_preserves_authoritative_payload(self) -> None:
         bus_events = []
         event = {

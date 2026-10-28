@@ -371,7 +371,7 @@ def test_first_message_reference_documents_stream_controls_and_data_safety() -> 
 
     assert "authoritative twitch stream" in text
     assert "new stream id" in text
-    assert "your channel → users" in text
+    assert "twitch → users" in text
     assert "reset first words for current stream" in text
     assert "trigger again during the same stream" in text
     assert "does not delete users" in text
@@ -459,7 +459,7 @@ def test_raid_page_reference_documents_runtime_finder_and_permissions() -> None:
     )
     text = entry.search_text()
 
-    assert "your channel → raid" in text
+    assert "twitch → raid" in text
     assert "currently live" in text
     assert "viewer count" in text
     assert "uptime" in text

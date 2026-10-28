@@ -75,7 +75,7 @@ session-only. The live timeline follows while near the bottom, pauses when the
 streamer reads older messages, and shows a counted Jump to latest control until
 the streamer jumps or manually returns to the bottom.
 
-**Your Channel > Raid** uses Get Followed Streams with the broadcaster's
+**Twitch > Raid** uses Get Followed Streams with the broadcaster's
 `user:read:follows` permission. Twitch returns only followed broadcasters that
 are currently live, including the stream metadata and thumbnail template used
 by the runtime-only cards. Starting a raid reuses the same
@@ -158,7 +158,7 @@ Reusable Twitch lookup tasks live in `products/hub/twitch/tasks.py`:
 
 Information Hub already owns does not need an Automation Get task. Cached
 Twitch title/category state resolves through `stream.title` and
-`stream.category`. Values configured in **Your Channel > Channel Information**
+`stream.category`. Values configured in **Twitch > Channel Information**
 always have read-only Text definitions through `ChannelInformationVariableProvider`:
 
 - `channel.schedule` and `channel.rules`;
@@ -215,9 +215,8 @@ thread.
 
 ## UI responsibilities
 
-- **Your Channel** is the current Hub channel workspace. Its current top-level tabs
-  are Chat, Analytics, Raid, Commands, Channel Information, Channel Points,
-  Counters, and Users. Session data is
+- **Twitch** is the module-contributed channel workspace. Its current tabs are
+  Chat, Analytics, Raid, Channel Information, Channel Points, and Users. Session data is
   currently presented within Analytics. Chat includes the overview, grouped
   chatters, Activity Feed, and eligible ad controls. In narrow and portrait
   layouts, Chat remains the primary pane while Chatters and Activity stay
@@ -237,8 +236,12 @@ thread.
   a group, and Viewers is the display fallback rather than redundant persisted
   membership. Renaming a custom group preserves its stable ID; Automation's
   User Is In Group condition references that ID rather than its display name.
-  Counters lives here because it is Twitch/stream interaction, while its store,
-  service, and task providers remain under `products/hub/counters/`.
+- **Automation > Commands** hosts Twitch command authoring while the Twitch
+  module owns command persistence, matching, permissions, cooldowns, context,
+  and chat dispatch.
+- **Automation > Counters** hosts the Core-owned Counter management page. Its
+  store, service, Variables, and task providers remain under
+  `products/hub/counters/`.
 - **Connections** contains independent broadcaster and optional bot OAuth
   controls plus transport details.
 - **Logs > Twitch Events** contains an in-memory, restart-cleared view of
@@ -452,7 +455,7 @@ automations, not hardcoded Counter commands.
 
 ## Planned Hub channel workspace
 
-The planned **Your Channel** structure is:
+The planned **Twitch** structure is:
 
 - Overview
 - Stream Info
@@ -464,7 +467,6 @@ The planned **Your Channel** structure is:
 - Raid (implemented as the live-followed-channel finder)
 - Moderation
 - Soundboard
-- Commands
 - Channel Points
 
 Analytics contains stream-session history as well as aggregate reporting;
@@ -512,7 +514,7 @@ Raid controls and normalized events distinguish:
 
 Incoming and outgoing `channel.raid` observation are implemented. Outgoing
 raid controls are implemented through the shared service used by `/raid` and
-**Your Channel > Raid**. The Raid page keeps its prepared message and active
+**Twitch > Raid**. The Raid page keeps its prepared message and active
 90-second countdown in memory only. Message sending reuses normal broadcaster
 chat sending; cancellation reuses Helix Cancel Raid. Twitch executes the raid
 automatically when the countdown expires, and Hub exposes no forced-completion

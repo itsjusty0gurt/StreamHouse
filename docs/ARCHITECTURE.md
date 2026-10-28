@@ -19,8 +19,8 @@ tests/release/                Packaging and release contracts
 ```
 
 Entry points are `products/hub/hub_main.py` and `products/ai/ai_main.py`.
-`products/hub/streamhouse_hub/app.py` creates QApplication, Twitch identities,
-the trusted bundled module registry, and `MainWindow`. Streamhouse AI starts its
+`products/hub/streamhouse_hub/app.py` creates QApplication, the trusted bundled
+module registry, and `MainWindow`. Streamhouse AI starts its
 own UI/server/provider process and is not bundled into Hub.
 
 ## System relationships
@@ -125,6 +125,41 @@ same persisted IDs and references.
 Remaining coupling is presentation-oriented: Core Automation editor,
 simulation, transfer, and Wiki code still imports stable OBS task/trigger
 definitions. Runtime construction and lifecycle are module-owned.
+
+## Twitch module conversion
+
+Twitch conversion is **implemented / accepted** at feature code commit
+`dba19eb5e6a8da2160664440dff9917e37bd2965`. Phase 1 added the trusted bundled
+module `streamhouse.twitch` under `products/hub/modules/bundled/twitch/` and moves
+production registration of Twitch task metadata, contextual Variable
+definitions, task-provider availability, and the Twitch trigger-provider
+catalog behind `register_catalog()`.
+
+Static registration occurs for compatible disabled modules, so saved Twitch
+tasks and triggers remain interpretable and contextual Variables remain
+discoverable with honest unavailable state.
+
+Phase 2 makes that module the sole owner of broadcaster/bot authentication,
+protected-token maintenance, `TwitchService`, Helix/EventSub/chat transport,
+trigger correlation, and orderly runtime shutdown. `app.py` and `MainWindow` no
+longer construct or independently start/stop a Twitch runtime.
+
+Phase 3 adds a generic Automation-subpage contribution contract. Twitch now
+contributes its `Twitch` workspace through the module tab registry and its
+Commands authoring page under Automation. The module owns the command store,
+dispatcher, worker lifecycle, and Twitch Backup projections; Core continues to
+own Automation execution and Backup orchestration. Counters remain Core-owned
+and are presented under Automation. Public paths, schemas, task/trigger IDs,
+command IDs, and routine references are unchanged.
+
+Twitch connection maintenance is module-owned. Routine broadcaster/bot token
+validation or refresh updates protected credentials without recreating live
+transports. Native EventSub session transfers preserve subscription continuity
+and the global Connected state. Unexpected transport interruption uses one
+owned retry timer, reports a concise Reconnecting state, and rebuilds
+subscriptions only after a replacement session welcome. Transport diagnostics
+remain in Logs rather than Chat, and module stop or explicit sign-out prevents
+late recovery callbacks from reopening transports or restoring stale tokens.
 
 ## Automation execution
 

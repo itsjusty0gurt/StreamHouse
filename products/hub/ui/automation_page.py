@@ -120,7 +120,7 @@ from products.hub.obs_service.triggers import (
     ObsTriggerFilterDefinition,
     ObsTriggerStore,
 )
-from products.hub.modules import TriggerProviderRegistry
+from products.hub.modules import AutomationSubpageRegistry, TriggerProviderRegistry
 from products.hub.soundboard.store import SoundboardStore
 from products.hub.twitch.commands import (
     TwitchCommandPermission,
@@ -3662,6 +3662,7 @@ class AutomationPage(QWidget):
         automation_service: AutomationService,
         *,
         trigger_provider_registry: TriggerProviderRegistry,
+        automation_subpages: AutomationSubpageRegistry | None = None,
         twitch_service: TwitchService | None = None,
         twitch_auth: TwitchAuthService | None = None,
         commands_changed: Callable[[], None] | None = None,
@@ -3679,6 +3680,7 @@ class AutomationPage(QWidget):
         self.event_trigger_store = event_trigger_store
         self.core_trigger_store = core_trigger_store
         self.trigger_provider_registry = trigger_provider_registry
+        self.automation_subpages = automation_subpages or AutomationSubpageRegistry()
         obs_provider = trigger_provider_registry.get("obs.automation")
         if obs_provider is None or not isinstance(obs_provider.store, ObsTriggerStore):
             raise ValueError("The OBS trigger provider catalog is unavailable.")
@@ -3725,11 +3727,26 @@ class AutomationPage(QWidget):
         self._build_routines_tab()
         self._build_queues_tab()
         self._build_variables_tab()
+        self._build_contributed_subpages()
         self._build_history_tab()
         self.queue_timer = QTimer(self)
         self.queue_timer.setInterval(100)
         self.queue_timer.timeout.connect(self._poll_queues)
         self.queue_timer.start()
+
+    def _build_contributed_subpages(self) -> None:
+        self.contributed_pages: dict[str, QWidget] = {}
+        for contribution in self.automation_subpages.contributions():
+            page = contribution.factory(self.tabs)
+            if not isinstance(page, QWidget):
+                raise TypeError(
+                    f'Automation page "{contribution.page_id}" did not create a QWidget.'
+                )
+            availability = contribution.current_availability()
+            page.setProperty("provider_available", availability.available)
+            page.setToolTip(availability.detail)
+            self.tabs.addTab(page, contribution.label)
+            self.contributed_pages[contribution.page_id] = page
 
     def set_responsive_orientation(self, portrait: bool) -> None:
         orientation = (

@@ -80,6 +80,11 @@ def summarize_twitch_connection(
             DashboardStatus.PARTIAL,
             "Chat and EventSub are connecting.",
         )
+    if connection_state is TwitchConnectionState.RECONNECTING:
+        return ConnectionSummary(
+            DashboardStatus.PARTIAL,
+            "Chat and EventSub are reconnecting.",
+        )
     if connection_state is not TwitchConnectionState.CONNECTED:
         return ConnectionSummary(
             DashboardStatus.DISCONNECTED,

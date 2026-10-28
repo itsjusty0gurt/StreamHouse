@@ -446,7 +446,7 @@ def _trigger_entry(
         configuration = (
             "Tracks each viewer's first message for the current authoritative Twitch stream.",
             "Hub resets the seen-viewer state automatically when Twitch reports a new stream ID.",
-            "Your Channel → Users can enable or disable the existing First Message triggers and reset the current stream for testing.",
+            "Twitch → Users can enable or disable the existing First Message triggers and reset the current stream for testing.",
         )
         additional_sections = (
             WikiSection(
@@ -814,9 +814,9 @@ def _getting_started_entries() -> tuple[WikiEntry, ...]:
                     (
                         "Automation — build Routines from Triggers and Tasks.",
                         "Variables and Variable Picker — find live values and insert canonical placeholders.",
-                        "Your Channel → Commands — manage chat commands and their linked routines.",
-                        "Your Channel → Channel Points — manage Twitch rewards.",
-                        "Your Channel → Counters — create totals for viewers, streams, and the channel.",
+                        "Automation → Commands — manage chat commands and their linked routines.",
+                        "Twitch → Channel Points — manage Twitch rewards.",
+                        "Automation → Counters — create totals for viewers, streams, and the channel.",
                         "Wiki → Recipes — follow complete examples at several difficulty levels.",
                     ),
                 ),
@@ -890,7 +890,7 @@ def _twitch_entries() -> tuple[WikiEntry, ...]:
                     (
                         "Bots and Regulars are protected system groups. Bots drives Hub's bot filtering; Regulars is maintained automatically from observed participation.",
                         "Automatic was a classification mode, not a group, and Viewers is the natural fallback for users without a more specific display group.",
-                        "A Twitch user may belong to several groups. Create, rename, delete, assign, and remove custom-group memberships from Your Channel → Users.",
+                        "A Twitch user may belong to several groups. Create, rename, delete, assign, and remove custom-group memberships from Twitch → Users.",
                         "Membership uses stable Twitch user IDs; renaming a group keeps its stable internal identity and existing Automation references.",
                     ),
                 ),
@@ -907,7 +907,7 @@ def _twitch_entries() -> tuple[WikiEntry, ...]:
         WikiEntry(
             "twitch:raid-page",
             "Twitch",
-            "Your Channel → Raid",
+            "Twitch → Raid",
             "Prepare a raid message, find followed channels that are currently live, and manage Twitch's pending raid countdown in Hub.",
             (
                 WikiSection(
@@ -1118,7 +1118,7 @@ def _example_entries() -> tuple[WikiEntry, ...]:
             trigger="Twitch — Channel Point Redemption, filtered to the chosen reward",
             tasks=("Twitch — Send Chat Message",),
             setup=(
-                "Create or choose the reward in Your Channel → Channel Points.",
+                "Create or choose the reward in Twitch → Channel Points.",
                 "Add Channel Point Redemption to a Routine and select that reward in its filter.",
                 "Add Send Chat Message, write the response, then save and enable the routine.",
             ),
@@ -1145,8 +1145,8 @@ def _example_entries() -> tuple[WikiEntry, ...]:
             trigger="Twitch — Channel Point Redemption, filtered to Coffee",
             tasks=("Counter — Increase", "Optional: Twitch — Send Chat Message"),
             setup=(
-                "In Your Channel → Channel Points, create or manage Coffee. Optionally set Limit per viewer per stream to 1; Twitch applies that limit once per viewer for each Twitch stream, not once per calendar day.",
-                "In Your Channel → Counters, create Coffee and enable the useful scopes: Per-viewer current-stream totals, Per-viewer all-time totals, Current stream total, and Channel all-time total.",
+                "In Twitch → Channel Points, create or manage Coffee. Optionally set Limit per viewer per stream to 1; Twitch applies that limit once per viewer for each Twitch stream, not once per calendar day.",
+                "In Automation → Counters, create Coffee and enable the useful scopes: Per-viewer current-stream totals, Per-viewer all-time totals, Current stream total, and Channel all-time total.",
                 "Create a Routine, add the Channel Point Redemption Trigger, and filter it to Coffee.",
                 "Add Counter — Increase, choose Coffee, select the task scopes User per stream, User, Per stream, and Lifetime as needed, and increase by 1.",
                 "Optionally add Send Chat Message. Use Variable Picker to insert the Coffee counter value you want to announce.",
@@ -1169,7 +1169,7 @@ def _example_entries() -> tuple[WikiEntry, ...]:
                 "Optional: Twitch — Send Chat Message, sound, or OBS Task",
             ),
             setup=(
-                "Create or manage First! in Your Channel → Channel Points.",
+                "Create or manage First! in Twitch → Channel Points.",
                 "Enable Limit per stream and set it to 1. Twitch then enforces one redemption for that stream.",
                 "Create a Routine with the filtered redemption Trigger and the response Tasks you want.",
                 "No extra Hub condition is needed for the once-per-stream limit.",

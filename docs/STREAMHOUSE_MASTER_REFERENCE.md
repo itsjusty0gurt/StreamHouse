@@ -186,9 +186,10 @@ supported runtime architecture.
 - **PLANNED** — bottom-pinned Modules, Settings, and Wiki entries.
 - **PLANNED** — optional docks for live-use panels such as platform chat and
   Broadcaster controls; docks do not replace main tabs.
-- **PARTIAL** — Your Channel contains working Chat, Analytics, Raid, Commands,
-  Channel Information, Channel Points, Counters, and Users areas; the proposed
-  Stream Info/Engagement/Moderation structure is not fully implemented.
+- **PARTIAL** — Twitch contains working Chat, Analytics, Raid,
+  Channel Information, Channel Points, and Users areas. Automation hosts
+  Commands and Counters; the proposed Stream Info/Engagement/Moderation
+  structure is not fully implemented.
 
 ## Streamhouse AI
 

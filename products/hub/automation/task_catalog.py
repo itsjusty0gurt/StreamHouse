@@ -1037,7 +1037,7 @@ _LABELS = {
     **MUSIC_TASK_LABELS,
 }
 
-BUILTIN_TASK_METADATA = tuple(
+_ALL_TASK_METADATA = tuple(
     TaskMetadata(
         task_type=task_type,
         label=_leaf_label(label),
@@ -1059,3 +1059,20 @@ BUILTIN_TASK_METADATA = tuple(
     )
     for task_type, label in _LABELS.items()
 )
+
+TWITCH_TASK_METADATA = tuple(
+    definition
+    for definition in _ALL_TASK_METADATA
+    if definition.task_type in TWITCH_TASK_LABELS
+)
+
+CORE_TASK_METADATA = tuple(
+    definition
+    for definition in _ALL_TASK_METADATA
+    if definition.task_type not in TWITCH_TASK_LABELS
+)
+
+# Complete reference catalog used by documentation and focused metadata tests.
+# Runtime composition registers Core metadata directly and Twitch metadata
+# through the bundled Twitch module catalog.
+BUILTIN_TASK_METADATA = _ALL_TASK_METADATA

@@ -42,6 +42,54 @@ class ModuleTabRegistry:
 
 
 @dataclass(frozen=True, slots=True)
+class AutomationSubpageContribution:
+    page_id: str
+    owner_module_id: str
+    label: str
+    factory: Callable[[object], object] = field(repr=False, compare=False)
+    order: int = 500
+    availability: Callable[[], Availability] | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "page_id",
+            validate_stable_id(self.page_id, label="Automation page ID"),
+        )
+        object.__setattr__(
+            self,
+            "owner_module_id",
+            validate_stable_id(self.owner_module_id, label="Owner module ID"),
+        )
+        if not self.label.strip():
+            raise ValueError("Automation page label cannot be blank.")
+
+    def current_availability(self) -> Availability:
+        return self.availability() if self.availability is not None else Availability(True)
+
+
+class AutomationSubpageRegistry:
+    def __init__(self) -> None:
+        self._pages: dict[str, AutomationSubpageContribution] = {}
+
+    def register(self, contribution: AutomationSubpageContribution) -> None:
+        if contribution.page_id in self._pages:
+            raise ValueError(
+                f'Automation page "{contribution.page_id}" is already registered.'
+            )
+        self._pages[contribution.page_id] = contribution
+
+    def contributions(self) -> tuple[AutomationSubpageContribution, ...]:
+        return tuple(
+            sorted(self._pages.values(), key=lambda item: (item.order, item.page_id))
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class TriggerProviderContribution:
     provider_id: str
     owner_module_id: str

@@ -2,9 +2,8 @@
 
 > Canonical implementation map for maintainers and coding agents.
 >
-> Last verified: 2026-10-25 after final OBS module acceptance and integration
-> into `develop`. This records an implementation audit, not a released-version
-> claim.
+> Last verified: 2026-10-27 after final Twitch module acceptance. This records
+> an implementation audit, not a released-version claim.
 > Update this file when a change moves ownership, adds a persisted format,
 > changes an inter-process contract, or introduces a new service/trigger/task.
 
@@ -142,6 +141,7 @@ trigger and routine setup, but their stored records remain separate.
 | `products/hub/core/` | Hub event bus, settings, DPAPI secrets, backup, diagnostics, and resources |
 | `products/hub/modules/` | Core module contracts, trusted discovery, lifecycle, actions, and contribution registries. Packaged discovery uses the explicit first-party allowlist because PyInstaller embeds Python packages without source directories. |
 | `products/hub/modules/bundled/obs/` | Bundled OBS module entry point, Variables provider, connection/status page, and lifecycle ownership |
+| `products/hub/modules/bundled/twitch/` | Twitch descriptor, static task/trigger/Variable catalogs, broadcaster/bot auth, token maintenance, Twitch service/transports, trigger correlation, and runtime shutdown |
 | `products/hub/obs_service/` | OBS module WebSocket transport, public-data configuration/store, triggers, and task handlers |
 | `products/hub/soundboard/` | Local soundboard models/store/server and hosted relay client |
 | `products/hub/twitch/` | OAuth, Helix, EventSub, normalized Twitch models, commands, triggers, analytics/history |
@@ -196,15 +196,18 @@ normal writable composition.
 `products/hub/streamhouse_hub/app.py`:
 
 1. Creates `QApplication`, application metadata, and Qt message capture.
-2. Creates separate broadcaster and optional bot `TwitchAuthService` objects.
-3. Creates `TwitchService`.
-4. Creates the trusted bundled `ModuleRegistry` and constructs
+2. Creates the trusted bundled `ModuleRegistry` and constructs
    `products.hub.ui.main_window.MainWindow`, the Core composition root.
-5. `MainWindow` registers/configures/starts enabled bundled modules, renders
-   their tab contributions, then shows the window and restores Twitch identities.
-6. Runs the Qt event loop.
-7. Clears the global event bus, marks a zero-exit session clean, and shuts down
-   diagnostics/logging after the window closes.
+3. `MainWindow` registers static catalogs for all compatible modules before
+   Automation UI construction, then registers/configures enabled bundled modules
+   and renders their tab contributions.
+4. After Qt bridges and UI consumers exist, Core starts enabled modules. The
+   Twitch module restores broadcaster/bot identities and starts its maintenance
+   and transport lifecycle; disabled Twitch registers no live runtime.
+5. Runs the Qt event loop.
+6. Stops started modules in reverse order, clears the global event bus, marks a
+   zero-exit session clean, and shuts down diagnostics/logging after the window
+   closes.
 
 `MainWindow.__init__` creates or receives injectable instances of:
 
@@ -325,6 +328,11 @@ connection activity while Streamhouse AI is not running.
 Twitch token maintenance is separate from authentication state transitions.
 Routine validation or refresh updates the stored token and emits a token event,
 but does not emit another signed-in transition or restart chat/EventSub.
+EventSub native reconnect transfers retain the global Connected state and do
+not recreate subscriptions. An unexpected close enters Reconnecting, schedules
+one socket-owned retry, and recreates subscriptions after the replacement
+welcome. The retry is cancelled by intentional disconnect/module shutdown;
+transient socket details are logged but are not published as chat errors.
 
 ## Ownership boundaries
 
@@ -829,7 +837,7 @@ retain this execution-scoped bridge. Dynamic script output names are runtime
 values and are not falsely predeclared in the global Variables catalog.
 
 `ChannelInformationVariableProvider` reads the same thread-safe configuration
-store used by **Your Channel > Channel Information**. All eight `socials.*`
+store used by **Twitch > Channel Information**. All eight `socials.*`
 definitions, `channel.schedule`, `channel.rules`, and `serverinfo.details`
 always exist; unconfigured fields resolve to empty text. There are no exposure
 flags. Social text/Include controls are UI-only drafts until that row's
@@ -932,8 +940,8 @@ text, with separator whitespace trimmed, as `command.data`. For example,
 `!coffee 0.5` can drive Counter -> Increase. No Counter-specific command logic
 or numbered argument Variables exist.
 
-The Counters management page is presented inside Hub's Twitch workspace. This
-is a navigation ownership choice only: definitions, named value files,
+The Counters management page is presented inside Core Automation. Definitions,
+named value files,
 transactional updates, and automation providers remain in
 `products/hub/counters/`. Successful `CounterService` mutations notify a
 MainWindow-owned Qt bridge so worker-thread Automation changes repaint the page
@@ -1393,7 +1401,7 @@ removed after hosted relay deployments have been upgraded.
 Primary left navigation:
 
 - Dashboard
-- Your Channel
+- Twitch (module-contributed when enabled)
 - Automation
 - Wiki
 - Connections
@@ -1410,16 +1418,18 @@ Its Help & About area and the Logs header expose the same Create Support Bundle,
 Copy Diagnostic Summary, and Report a Bug flows. An abnormal-shutdown notice on
 Dashboard offers those actions without blocking startup.
 
-Your Channel top tabs:
+Twitch top tabs:
 
 - Chat
 - Analytics
 - Raid
-- Commands
 - Channel Information
 - Channel Points
-- Counters
 - User
+
+Automation contains Routines, Queues, Variables, Counters, module-contributed
+Commands, Run History, and Timers. Commands remains visible with preserved
+definitions when Twitch is disabled; it reports the provider as unavailable.
 
 These are the tabs currently implemented. The planned Hub workspace—including
 Stream Info, Engagement, and Moderation—is documented in

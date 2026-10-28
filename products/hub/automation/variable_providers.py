@@ -494,7 +494,12 @@ def _context_source(name: str) -> str:
     return "OBS Context" if name.startswith("obs.") else "Twitch Context"
 
 
-def context_provider() -> CallbackVariableProvider:
+def _context_provider(
+    definitions_source,
+    *,
+    provider_name: str,
+    available: Callable[[], bool] | None = None,
+) -> CallbackVariableProvider:
     definitions = tuple(
         VariableDefinition(
             name=name,
@@ -508,11 +513,13 @@ def context_provider() -> CallbackVariableProvider:
             preview_value=CONTEXT_PREVIEW.get(name),
             context_label=_context_presentation(name)[1],
         )
-        for name, display, description, data_type, _aliases in CONTEXT_DEFINITIONS
+        for name, display, description, data_type, _aliases in definitions_source
     )
-    aliases = {name: values for name, *_rest, values in CONTEXT_DEFINITIONS}
+    aliases = {name: values for name, *_rest, values in definitions_source}
 
     def resolve(name: str, context: Mapping[str, object]) -> tuple[bool, object, str]:
+        if available is not None and not available():
+            return False, None, "The owning module is disabled or unavailable."
         for key in (name, *aliases[name]):
             allow_empty = (
                 name.startswith("channel_points.")
@@ -537,7 +544,34 @@ def context_provider() -> CallbackVariableProvider:
                 return True, value, ""
         return False, None, "Only available during a matching trigger event."
 
-    return CallbackVariableProvider("Twitch Context", definitions, resolve)
+    return CallbackVariableProvider(provider_name, definitions, resolve)
+
+
+def twitch_context_provider(
+    *,
+    available: Callable[[], bool] | None = None,
+) -> CallbackVariableProvider:
+    return _context_provider(
+        tuple(item for item in CONTEXT_DEFINITIONS if not item[0].startswith("obs.")),
+        provider_name="Twitch Context",
+        available=available,
+    )
+
+
+def obs_context_provider() -> CallbackVariableProvider:
+    return _context_provider(
+        tuple(item for item in CONTEXT_DEFINITIONS if item[0].startswith("obs.")),
+        provider_name="OBS Context",
+    )
+
+
+def context_provider() -> CallbackVariableProvider:
+    """Return the complete context catalog for standalone tooling/tests."""
+
+    return _context_provider(
+        CONTEXT_DEFINITIONS,
+        provider_name="Trigger Context",
+    )
 
 
 def runtime_provider(

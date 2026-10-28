@@ -138,9 +138,13 @@ class TwitchAuthService:
         self.token: TwitchToken | None = None
         self._cancel = threading.Event()
         self._worker: threading.Thread | None = None
+        self._worker_lock = threading.Lock()
         self._last_unauthorized_recovery = 0.0
+        self._stopped = False
 
     def restore(self) -> None:
+        if self._stopped:
+            return
         try:
             token = self.store.load()
         except (OSError, ValueError, json.JSONDecodeError) as error:
@@ -156,7 +160,7 @@ class TwitchAuthService:
         self._run_async(self._validate_saved, token)
 
     def maintain(self) -> None:
-        if self.token is None or (self._worker and self._worker.is_alive()):
+        if self.token is None:
             return
         self._run_async(self._maintain_token, self.token)
 
@@ -165,8 +169,6 @@ class TwitchAuthService:
         return set(scopes) - granted
 
     def sign_in(self) -> None:
-        if self._worker and self._worker.is_alive():
-            return
         self._cancel.clear()
         self._run_async(self._device_flow)
 
@@ -176,12 +178,12 @@ class TwitchAuthService:
         if (
             self.token is None
             or not self.token.refresh_token
-            or (self._worker and self._worker.is_alive())
             or now - self._last_unauthorized_recovery < 300
         ):
             return False
+        if not self._run_async(self._refresh_after_unauthorized, self.token):
+            return False
         self._last_unauthorized_recovery = now
-        self._run_async(self._refresh_after_unauthorized, self.token)
         return True
 
     def sign_out(self) -> None:
@@ -190,27 +192,44 @@ class TwitchAuthService:
         self.store.clear()
         self._set_state(TwitchAuthState.SIGNED_OUT, "Not signed in")
 
-    def _run_async(self, function: Any, *args: Any) -> None:
-        self._worker = threading.Thread(target=function, args=args, daemon=True)
-        self._worker.start()
+    def _run_async(self, function: Any, *args: Any) -> bool:
+        with self._worker_lock:
+            if self._stopped or (self._worker and self._worker.is_alive()):
+                return False
+            self._worker = threading.Thread(target=function, args=args, daemon=True)
+            self._worker.start()
+        return True
+
+    def shutdown(self) -> None:
+        """Cancel owned auth work and suppress callbacks after module stop."""
+
+        with self._worker_lock:
+            self._stopped = True
+            self._cancel.set()
+            worker = self._worker
+        if worker is not None and worker.is_alive():
+            worker.join(timeout=0.25)
 
     def _validate_saved(self, token: TwitchToken) -> None:
         try:
             try:
-                self.token = self.client.validate(token)
+                validated = self.client.validate(token)
             except HTTPError as error:
                 if error.code != 401 or not token.refresh_token:
                     raise
-                self.token = self.client.validate(self.client.refresh(token))
-            missing_scopes = set(self.scopes) - set(self.token.scopes)
+                validated = self.client.validate(self.client.refresh(token))
+            if self._cancel.is_set() or self._stopped:
+                return
+            self.token = validated
+            missing_scopes = set(self.scopes) - set(validated.scopes)
             if missing_scopes:
                 Logger.info(
                     "Saved Twitch login is missing newer optional permissions: "
                     + ", ".join(sorted(missing_scopes)),
                     source="TWITCH",
                 )
-            self.store.save(self.token)
-            self._set_state(TwitchAuthState.SIGNED_IN, self.token.login)
+            self.store.save(validated)
+            self._set_state(TwitchAuthState.SIGNED_IN, validated.login)
         except (HTTPError, URLError, OSError, ValueError) as error:
             self.store.clear()
             self._set_state(TwitchAuthState.SIGNED_OUT, "Not signed in")
@@ -221,34 +240,53 @@ class TwitchAuthService:
             refreshed = token.expires_at <= time.time() + 900
             if refreshed:
                 token = self.client.refresh(token)
-            self.token = self.client.validate(token)
-            self.store.save(self.token)
+            validated = self.client.validate(token)
+            if self._cancel.is_set() or self._stopped:
+                return
+            self.token = validated
+            self.store.save(validated)
             Events.emit(
                 "twitch_token_refreshed" if refreshed else "twitch_token_validated",
                 account=self.account_label,
-                token=self.token,
+                token=validated,
             )
         except (HTTPError, URLError, OSError, ValueError) as error:
             self.token = None
             self.store.clear()
-            self._set_state(TwitchAuthState.ERROR, f"Twitch session expired: {error}")
+            Logger.warning(
+                "Twitch session maintenance failed: "
+                f"{redact_secret_text(str(error))}",
+                source="TWITCH",
+            )
+            self._set_state(
+                TwitchAuthState.ERROR,
+                "Twitch authentication requires attention.",
+            )
 
     def _refresh_after_unauthorized(self, token: TwitchToken) -> None:
         try:
             refreshed = self.client.refresh(token)
-            self.token = self.client.validate(refreshed)
-            self.store.save(self.token)
+            validated = self.client.validate(refreshed)
+            if self._cancel.is_set() or self._stopped:
+                return
+            self.token = validated
+            self.store.save(validated)
             Logger.info(
                 "Refreshed Twitch login after an unauthorized API response.",
                 source="TWITCH",
             )
-            self._set_state(TwitchAuthState.SIGNED_IN, self.token.login)
+            self._set_state(TwitchAuthState.SIGNED_IN, validated.login)
         except (HTTPError, URLError, OSError, ValueError) as error:
             self.token = None
             self.store.clear()
+            Logger.warning(
+                "Twitch session recovery failed: "
+                f"{redact_secret_text(str(error))}",
+                source="TWITCH",
+            )
             self._set_state(
                 TwitchAuthState.ERROR,
-                f"Twitch session recovery failed: {error}",
+                "Twitch session recovery failed. Sign in again.",
             )
 
     def _device_flow(self) -> None:
@@ -318,6 +356,8 @@ class TwitchAuthService:
         return reason, description
 
     def _set_state(self, state: TwitchAuthState, detail: str) -> None:
+        if self._stopped:
+            return
         detail = redact_secret_text(detail)
         if state is self.state:
             return

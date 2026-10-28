@@ -106,6 +106,12 @@ class ModuleRegistry:
         record = self._records.get(str(module_id).strip().casefold())
         return record.module.descriptor if record is not None else None
 
+    def module(self, module_id: str) -> HubModule | None:
+        """Return a discovered module for narrow composition-root wiring."""
+
+        record = self._records.get(str(module_id).strip().casefold())
+        return record.module if record is not None else None
+
     def descriptors(self) -> tuple[ModuleDescriptor, ...]:
         return tuple(self._records[key].module.descriptor for key in sorted(self._records))
 

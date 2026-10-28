@@ -33,7 +33,7 @@ QPushButton:checked { background-color: palette(highlight); color: palette(highl
        <property name="rightMargin"><number>0</number></property>
        <property name="bottomMargin"><number>0</number></property>
        <item><widget class="QPushButton" name="dashboardButton"><property name="text"><string>Dashboard</string></property></widget></item>
-       <item><widget class="QPushButton" name="channelButton"><property name="text"><string>Your Channel</string></property></widget></item>
+       <item><widget class="QPushButton" name="channelButton"><property name="text"><string>Twitch</string></property></widget></item>
        <item><widget class="QPushButton" name="aiButton"><property name="text"><string>AI</string></property></widget></item>
        <item><widget class="QPushButton" name="automationButton"><property name="text"><string>Automation</string></property><property name="checkable"><bool>true</bool></property><property name="checked"><bool>true</bool></property></widget></item>
        <item><widget class="QPushButton" name="connectionsButton"><property name="text"><string>Connections</string></property></widget></item>

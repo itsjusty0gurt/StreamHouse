@@ -103,6 +103,41 @@ class PackageBoundaryTests(unittest.TestCase):
                     )
         self.assertEqual(violations, [])
 
+    def test_twitch_runtime_owners_are_composed_by_the_bundled_module(self) -> None:
+        module_root = (
+            self.root
+            / "products"
+            / "hub"
+            / "modules"
+            / "bundled"
+            / "twitch"
+        )
+        required = {
+            "products.hub.twitch.auth",
+            "products.hub.twitch.service",
+            "products.hub.twitch.token_store",
+        }
+        imports = {module for _path, module in self._imports_under(module_root)}
+        self.assertTrue(required.issubset(imports))
+
+        app_source = (
+            self.root / "products" / "hub" / "streamhouse_hub" / "app.py"
+        ).read_text(encoding="utf-8")
+        main_source = (
+            self.root / "products" / "hub" / "ui" / "main_window.py"
+        ).read_text(encoding="utf-8")
+        for constructor in (
+            "TwitchAuthService(",
+            "TwitchService(",
+            "TwitchTokenStore(",
+            "TwitchCommandTriggerStore(",
+            "TwitchCommandTriggerDispatcher(",
+            "ChannelInformationStore(",
+            "CommandExecutionWorker(",
+        ):
+            self.assertNotIn(constructor, app_source)
+            self.assertNotIn(constructor, main_source)
+
     def test_product_specific_tools_and_extension_are_separated(self) -> None:
         for relative in (
             "tools/build/build_hub.ps1",

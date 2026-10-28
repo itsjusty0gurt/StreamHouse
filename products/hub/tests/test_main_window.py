@@ -7,7 +7,7 @@ from threading import Event, Thread
 from time import monotonic
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, PropertyMock, patch
 from uuid import uuid4
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -70,6 +70,7 @@ from products.hub.modules import (
 )
 from products.hub.modules.bootstrap import CORE_MODULE_CAPABILITIES
 from products.hub.modules.bundled.obs import OBS_MODULE_ID, ObsModule
+from products.hub.modules.bundled.twitch import TWITCH_MODULE_ID, TwitchModule
 from products.hub.version import HUB_VERSION
 from products.hub.soundboard.store import SoundboardStore
 from products.hub.twitch.commands import TwitchCommandTriggerStore
@@ -204,21 +205,29 @@ class MainWindowTests(unittest.TestCase):
             command_root / "event_triggers.json",
             self.twitch_command_trigger_store.routine_store,
         )
-        module_registry = None
+        self.obs_module = ObsModule()
+        self.twitch_module = TwitchModule()
+        self.twitch_module.auth.restore = Mock()
+        self.twitch_module.bot_auth.restore = Mock()
+        # MainWindow UI tests use TwitchService's established local simulator.
+        self.twitch_module.service.auth = None
+        enablement = ModuleEnablementStore(command_root / "modules.json")
         if self._testMethodName in {
             "test_obs_catalog_precedes_enabled_main_window_ui",
             "test_disabled_obs_catalog_precedes_main_window_ui_without_runtime",
+            "test_disabled_twitch_catalog_precedes_main_window_ui_without_runtime",
         }:
-            self.obs_module = ObsModule()
-            enablement = ModuleEnablementStore(command_root / "modules.json")
             if self._testMethodName.startswith("test_disabled_obs"):
                 enablement.set_enabled(OBS_MODULE_ID, False)
-            module_registry = ModuleRegistry(
-                core_version=HUB_VERSION,
-                core_capabilities=CORE_MODULE_CAPABILITIES,
-                enablement_store=enablement,
-            )
-            module_registry.register(self.obs_module)
+            if self._testMethodName.startswith("test_disabled_twitch"):
+                enablement.set_enabled(TWITCH_MODULE_ID, False)
+        module_registry = ModuleRegistry(
+            core_version=HUB_VERSION,
+            core_capabilities=CORE_MODULE_CAPABILITIES,
+            enablement_store=enablement,
+        )
+        module_registry.register(self.obs_module)
+        module_registry.register(self.twitch_module)
         if self._testMethodName == "test_startup_resets_obsolete_twitch_triggers":
             routine = self.twitch_command_trigger_store.routine_store.add(
                 "Obsolete Twitch trigger"
@@ -2702,9 +2711,7 @@ class MainWindowTests(unittest.TestCase):
                 "Analytics",
                 "Raid",
                 "Channel Information",
-                "Commands",
                 "Channel Points",
-                "Counters",
                 "Users",
             ],
         )
@@ -2734,7 +2741,7 @@ class MainWindowTests(unittest.TestCase):
         )
         self.assertEqual(
             self.window.twitch_page_header.title_label.text(),
-            "Your Channel",
+            "Twitch",
         )
         self.assertEqual(
             self.window.automation_page.page_header.title_label.text(),
@@ -2776,16 +2783,16 @@ class MainWindowTests(unittest.TestCase):
             [button.text() for button in self.window.navigation_group.buttons()],
             [
                 "Dashboard",
-                "Your Channel",
                 "Automation",
                 "Wiki",
                 "Connections",
                 "Logs",
                 "Settings",
+                "Twitch",
                 "OBS",
             ],
         )
-        self.assertEqual(self.window.channel_tabs.count(), 8)
+        self.assertEqual(self.window.channel_tabs.count(), 6)
         self.assertNotIn(
             "Soundboard",
             [
@@ -2802,7 +2809,15 @@ class MainWindowTests(unittest.TestCase):
                 self.window.automation_page.tabs.tabText(index)
                 for index in range(self.window.automation_page.tabs.count())
             ],
-            ["Routines", "Queues", "Variables", "Run History", "Timers"],
+            [
+                "Routines",
+                "Queues",
+                "Variables",
+                "Counters",
+                "Commands",
+                "Run History",
+                "Timers",
+            ],
         )
 
         self.assertFalse(self.window.channel_points_page.create_button.isEnabled())
@@ -3080,7 +3095,7 @@ class MainWindowTests(unittest.TestCase):
     def test_command_creation_action_lives_in_management_controls(self) -> None:
         command_buttons = [
             button
-            for button in self.window.channel_tabs.findChildren(QPushButton)
+            for button in self.window.automation_page.findChildren(QPushButton)
             if button.text() == "+ Command"
         ]
 
@@ -3291,7 +3306,7 @@ class MainWindowTests(unittest.TestCase):
         self.assertLess(monotonic() - before, 0.5)
         self.assertTrue(started.wait(1))
         release.set()
-        self.window.command_thread_pool.waitForDone(2_000)
+        self.window.twitch_module.wait_for_commands(2_000)
         self.application.processEvents()
 
         self.window.twitch_service.send_message.assert_called_once_with(
@@ -3765,7 +3780,7 @@ class MainWindowTests(unittest.TestCase):
             },
         )
         handled: list[TwitchEvent] = []
-        self.window._handle_twitch_automation_event = handled.append
+        self.window.twitch_module._publish_event = handled.append
 
         self.window.handle_twitch_activity(direct)
         self.assertEqual(handled, [])
@@ -3786,7 +3801,7 @@ class MainWindowTests(unittest.TestCase):
             routine.routine_id,
             "channel.subscribe",
         )
-        self.window.twitch_subscription_correlator = (
+        self.window.twitch_module._subscription_correlator = (
             TwitchSubscriptionEventCorrelator(wait_seconds=0)
         )
         self.window.automation_service.publish_trigger = Mock()
@@ -4209,6 +4224,10 @@ class MainWindowTests(unittest.TestCase):
                 "Connecting to your channel's chat…",
             ),
             (
+                TwitchConnectionState.RECONNECTING,
+                "Reconnecting to your channel's chat…",
+            ),
+            (
                 TwitchConnectionState.DISCONNECTED,
                 "Chat connection lost — reconnecting…",
             ),
@@ -4227,6 +4246,49 @@ class MainWindowTests(unittest.TestCase):
         self.assertFalse(
             any("connect and simulate" in text.casefold() for text in visible_states)
         )
+
+    def test_twitch_transport_error_does_not_append_raw_detail_to_chat(self) -> None:
+        view = self.window.ui.twitchChatOutput
+        view.clear()
+        view.append_message(
+            TwitchMessage(
+                username="Viewer",
+                text="Keep chat clean",
+                received_at=datetime.now(timezone.utc),
+                message_id="message-1",
+                user_id="viewer-1",
+            )
+        )
+        self.window.twitch_chat_has_content = True
+        chat_before = view.toPlainText()
+
+        self.window.handle_twitch_error(
+            "Twitch WebSocket error: TLS handshake failed"
+        )
+
+        self.assertEqual(view.toPlainText(), chat_before)
+        self.assertIn("TLS handshake failed", self.window.ui.twitchErrorLabel.text())
+
+    def test_twitch_reconnect_preserves_pending_event_correlation(self) -> None:
+        self.window.twitch_module.clear_subscription_events = Mock()
+
+        with patch.object(
+            type(self.window.twitch_service.local_listener),
+            "url",
+            new_callable=PropertyMock,
+            return_value="http://127.0.0.1:1234/eventsub",
+        ):
+            self.window.handle_twitch_status_changed(
+                TwitchConnectionState.RECONNECTING,
+                "channel",
+            )
+
+        self.window.twitch_module.clear_subscription_events.assert_not_called()
+        self.assertEqual(
+            self.window.ui.twitchListenerUrlLabel.text(),
+            "http://127.0.0.1:1234/eventsub",
+        )
+        self.assertEqual(self.window.twitch_health.eventsub_state, "Reconnecting")
 
     def test_twitch_status_change_does_not_replace_existing_chat(self) -> None:
         view = self.window.ui.twitchChatOutput
@@ -4634,7 +4696,20 @@ class MainWindowTests(unittest.TestCase):
                 item.provider_id
                 for item in self.window.trigger_provider_registry.contributions()
             ],
-            ["obs.automation"],
+            ["obs.automation", "twitch.automation"],
+        )
+        self.assertIn("twitch.workspace", self.window.module_pages)
+        self.assertEqual(
+            self.window.module_navigation_buttons["twitch.workspace"].text(),
+            "Twitch",
+        )
+        self.assertIs(
+            self.window.module_pages["twitch.workspace"],
+            self.window.ui.twitchPage,
+        )
+        self.assertIn(
+            "twitch.commands",
+            self.window.automation_page.contributed_pages,
         )
 
     def test_disabled_obs_catalog_precedes_main_window_ui_without_runtime(self) -> None:
@@ -4653,6 +4728,72 @@ class MainWindowTests(unittest.TestCase):
             self.window.task_registry.registered_types(),
         )
         self.assertFalse(provider.current_availability().available)
+
+    def test_disabled_twitch_catalog_precedes_main_window_ui_without_runtime(self) -> None:
+        provider = self.window.trigger_provider_registry.get("twitch.automation")
+
+        self.assertIsNotNone(provider)
+        self.assertIs(provider.store, self.window.twitch_event_trigger_store)
+        self.assertEqual(
+            self.window.module_registry.status(TWITCH_MODULE_ID).lifecycle,
+            ModuleLifecycle.DISABLED,
+        )
+        self.assertFalse(provider.current_availability().available)
+        self.assertIsNotNone(
+            self.window.task_registry.metadata("twitch.send_chat_message")
+        )
+        self.assertEqual(
+            self.window.task_registry.availability("twitch.send_chat_message"),
+            (False, "The Twitch module is disabled or unavailable."),
+        )
+        variable = self.window.variable_registry.resolve(
+            "user.display_name",
+            {"user.display_name": "TestViewer"},
+        )
+        self.assertIsNotNone(variable)
+        self.assertFalse(variable.available)
+        self.assertFalse(self.window.auth_maintenance_timer.isActive())
+        self.assertFalse(self.window.channel_snapshot_timer.isActive())
+        self.assertFalse(self.window.stream_overview_timer.isActive())
+        self.assertFalse(self.window.twitch_subscription_correlation_timer.isActive())
+        self.assertNotIn("twitch.workspace", self.window.module_pages)
+        self.assertIn(
+            "twitch.commands",
+            self.window.automation_page.contributed_pages,
+        )
+        commands_page = self.window.automation_page.contributed_pages[
+            "twitch.commands"
+        ]
+        self.assertFalse(commands_page.property("provider_available"))
+        self.assertIn(
+            "disabled",
+            self.window.twitch_commands_availability_label.text().casefold(),
+        )
+        self.assertEqual(
+            self.window.automation_page.tabs.tabText(
+                self.window.automation_page.tabs.indexOf(self.window.counters_page)
+            ),
+            "Counters",
+        )
+        routine = self.twitch_command_trigger_store.routine_store.add(
+            "Disabled Twitch provider"
+        )
+        task = self.twitch_command_trigger_store.routine_store.add_task(
+            routine.routine_id,
+            task_type="twitch.send_chat_message",
+            name="Send message",
+            config={"message": "Hello", "as_bot": True},
+        )
+        trigger = self.window.twitch_event_trigger_store.add(
+            routine.routine_id,
+            "channel.follow",
+        )
+        card = self.window.automation_page._task_card_content(task)
+        self.assertTrue(any("unavailable" in issue for issue in card.issues))
+        self.assertIsNotNone(
+            self.window.twitch_event_trigger_store.get(trigger.trigger_id)
+        )
+        self.assertIn("channel.follow", provider.event_types)
 
     def test_automation_page_still_rejects_missing_obs_catalog(self) -> None:
         with self.assertRaisesRegex(ValueError, "OBS trigger provider catalog"):
@@ -5261,7 +5402,7 @@ class MainWindowTests(unittest.TestCase):
         self.window.twitch_service.state = TwitchConnectionState.CONNECTED
         self.window.twitch_service.channel = "streamer"
         self.window.twitch_service.disconnect = Mock()
-        self.window.connect_twitch = Mock()
+        self.window.twitch_service.connect = Mock(return_value=True)
         self.window.refresh_channel_snapshot = Mock()
 
         self.window.handle_twitch_auth_changed(
@@ -5269,7 +5410,7 @@ class MainWindowTests(unittest.TestCase):
         )
 
         self.window.twitch_service.disconnect.assert_called_once_with()
-        self.window.connect_twitch.assert_called_once_with()
+        self.window.twitch_service.connect.assert_called_once_with("streamer")
         self.window.refresh_channel_snapshot.assert_called_once_with()
 
     def test_ad_schedule_api_failure_has_compact_visible_status(self) -> None:

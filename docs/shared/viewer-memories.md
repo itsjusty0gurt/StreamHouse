@@ -64,7 +64,7 @@ non-archived memories and ranks them by prompt relevance, pinning, and confidenc
 
 ## Related channel tabs
 
-Streamhouse Hub's **Your Channel** workspace owns operational stream data. In
+Streamhouse Hub's **Twitch** workspace owns operational stream data. In
 the current UI, Analytics contains session records for peak viewers, messages,
 follows, subscriptions, cheers, and raids. An active session is persisted and
 resumed after an application restart rather than being ended when the current

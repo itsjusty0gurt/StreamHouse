@@ -82,9 +82,9 @@ Implementation mapping:
 | Entry point | `products/hub/hub_main.py` |
 | Implementation path | `products/hub/streamhouse_hub/` |
 
-### Planned Your Channel workspace
+### Planned Twitch workspace
 
-The intended future structure of Hub's **Your Channel** workspace is:
+The intended future structure of Hub's **Twitch** workspace is:
 
 - Overview
 - Stream Info

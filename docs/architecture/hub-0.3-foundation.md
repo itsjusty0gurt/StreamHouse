@@ -1,7 +1,8 @@
 # Streamhouse Hub 0.3 modular foundation contracts
 
-Status: **Core foundation implemented; OBS conversion ready for review on its
-isolated feature branch**.
+Status: **Core foundation and OBS conversion implemented; Twitch conversion
+Phase 3 static catalogs, runtime lifecycle, UI, Commands, and Backup ownership
+complete on its isolated feature branch**.
 
 Streamhouse Hub `0.2.1-alpha` is the latest released maintenance Alpha at tag
 `v0.2.1-alpha`; `v0.2.0-alpha` remains its frozen predecessor. Active
@@ -29,8 +30,9 @@ OBS, PRISM, Broadcaster, Deck, and later modules remain peers around Core.
 
 The contracts below are grounded in the current implementation:
 
-- `streamhouse_hub.app` creates Qt, Twitch authentication/service, the trusted
-  bundled `ModuleRegistry`, and `MainWindow`.
+- `streamhouse_hub.app` creates Qt, the trusted bundled `ModuleRegistry`, and
+  `MainWindow`; `streamhouse.twitch` owns broadcaster/bot authentication and the
+  Twitch service/transport lifecycle.
 - `MainWindow` remains the Core composition root, but OBS construction,
   configuration, triggers, Variables, connection UI, event subscriptions, and
   shutdown now belong to `streamhouse.obs` and enter Core through registries.
@@ -43,8 +45,12 @@ The contracts below are grounded in the current implementation:
   persists window state and hosts one developer-tools `QDockWidget`, but there
   is no general dock-contribution contract.
 - Backup orchestration remains Core-owned and accepts the OBS module's safe
-  configuration contributor while preserving the published component and
-  archive contract.
+  configuration contributor and Twitch-owned component projections while
+  preserving the published component and archive contract.
+- Module-provided Automation authoring pages use one Core registry. Twitch uses
+  it for Commands even while disabled; the persisted command store remains at
+  `twitch/commands.json` and is not generalized into a cross-platform command
+  framework.
 
 These are migration inputs, not reasons to keep domain construction in
 `MainWindow` permanently.

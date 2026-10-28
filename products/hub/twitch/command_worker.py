@@ -23,7 +23,7 @@ class CommandExecutionSignals(QObject):
 
 
 class CommandExecutionWorker(QRunnable):
-    """Run network-backed command routines without blocking the Qt thread."""
+    """Run network-backed Twitch command routines off the Qt UI thread."""
 
     def __init__(
         self,

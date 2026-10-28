@@ -17,6 +17,8 @@ from products.hub.modules.contracts import (
     RestartRequired,
 )
 from products.hub.modules.contributions import (
+    AutomationSubpageContribution,
+    AutomationSubpageRegistry,
     BackupContributor,
     BackupContributorRegistry,
     ModuleTabContribution,
@@ -40,6 +42,8 @@ __all__ = [
     "ActionRegistry",
     "ActionResult",
     "Availability",
+    "AutomationSubpageContribution",
+    "AutomationSubpageRegistry",
     "BackupContributor",
     "BackupContributorRegistry",
     "BUNDLED_MODULES_ROOT",

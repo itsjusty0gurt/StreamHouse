@@ -108,6 +108,7 @@ class ModuleContext:
     automation: object | None = None
     trigger_providers: object | None = None
     tabs: object | None = None
+    automation_pages: object | None = None
     backup: object | None = None
     data_root: object | None = None
     execution_recorder: Callable[[object, str], None] | None = field(
@@ -122,6 +123,12 @@ class ModuleContext:
         default=None,
         repr=False,
     )
+    variable_resolver: Callable[[str, dict[str, str]], dict[str, str]] | None = field(
+        default=None,
+        repr=False,
+    )
+    command_automation: object | None = field(default=None, repr=False)
+    commands_changed: Callable[[str], None] | None = field(default=None, repr=False)
     commit_registration: Callable[[], None] = field(default=_no_op, repr=False)
     rollback_registration: Callable[[], None] = field(default=_no_op, repr=False)
 

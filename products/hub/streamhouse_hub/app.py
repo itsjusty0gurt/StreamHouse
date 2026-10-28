@@ -10,10 +10,6 @@ from PySide6.QtWidgets import QApplication
 from products.hub.core.events import Events
 from products.hub.core.diagnostics import DiagnosticsService
 from shared.streamhouse_runtime.logger import Logger
-from products.hub.twitch.service import TwitchService
-from products.hub.twitch.auth import TwitchAuthService
-from products.hub.twitch.token_store import TwitchTokenStore
-from products.hub.config.twitch import TWITCH_BOT_SCOPES
 from products.hub.ui.main_window import MainWindow
 from products.hub.core.resources import resource_path
 from shared.streamhouse_runtime.paths import smoke_test_enabled, user_data_root
@@ -115,33 +111,18 @@ def run(diagnostics: DiagnosticsService | None = None) -> None:
         source="UI",
     )
 
-    twitch_auth = TwitchAuthService()
-    twitch_bot_auth = TwitchAuthService(
-        store=TwitchTokenStore.bot_account(),
-        scopes=TWITCH_BOT_SCOPES,
-        event_name="twitch_bot_auth_changed",
-        account_label="Bot account",
-    )
-    twitch_service = TwitchService(
-        auth=twitch_auth,
-        bot_auth=twitch_bot_auth,
-    )
     window_settings = streamhouse_qsettings(HUB_APPLICATION_NAME)
     data_root = _resolved_data_root(diagnostics)
+    module_registry = create_bundled_module_registry()
     window = MainWindow(
-        twitch_service=twitch_service,
-        twitch_auth=twitch_auth,
-        twitch_bot_auth=twitch_bot_auth,
         window_state_store=WindowStateStore(window_settings),
         diagnostics_service=diagnostics,
-        module_registry=create_bundled_module_registry(),
+        module_registry=module_registry,
         data_root=data_root,
     )
     if diagnostics is not None:
         diagnostics.checkpoint("MainWindow created")
     window.show()
-    twitch_auth.restore()
-    twitch_bot_auth.restore()
     QTimer.singleShot(0, window, window.fire_application_started_trigger)
     QTimer.singleShot(0, window, window.start_local_integration)
     QTimer.singleShot(100, window, window.start_music_player_integration)
