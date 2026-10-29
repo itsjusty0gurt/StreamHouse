@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime
 from typing import Any
 
@@ -30,7 +31,7 @@ class TwitchMessageParser:
     ) -> TwitchMessage:
         try:
             message = event["message"]
-            text = str(message["text"])
+            raw_text = str(message["text"])
             username = str(event["chatter_user_name"])
         except (KeyError, TypeError) as error:
             raise TwitchPayloadError(
@@ -40,9 +41,14 @@ class TwitchMessageParser:
         if not isinstance(message, dict):
             raise TwitchPayloadError("The message field must be an object.")
 
-        fragments = tuple(
+        raw_fragments = tuple(
             cls._parse_fragment(fragment)
             for fragment in cls._object_list(message.get("fragments"))
+        )
+        text, is_action = cls._normalize_action_text(raw_text)
+        fragments = cls._normalize_action_fragments(
+            raw_fragments,
+            is_action=is_action,
         )
         badges = cls._parse_badges(event.get("badges"))
         source_badges = cls._parse_badges(event.get("source_badges"))
@@ -84,7 +90,66 @@ class TwitchMessageParser:
             source_message_id=event.get("source_message_id"),
             source_badges=source_badges,
             is_source_only=bool(event.get("is_source_only", False)),
+            is_action=is_action,
         )
+
+    @staticmethod
+    def _normalize_action_text(text: str) -> tuple[str, bool]:
+        if text.startswith("\x01ACTION"):
+            body = text[len("\x01ACTION") :]
+            if body.startswith(" "):
+                body = body[1:]
+            if body.endswith("\x01"):
+                body = body[:-1]
+            return body, True
+        if text == "/me":
+            return "", True
+        if text.startswith("/me "):
+            return text[len("/me ") :], True
+        return text, False
+
+    @classmethod
+    def _normalize_action_fragments(
+        cls,
+        fragments: tuple[TwitchMessageFragment, ...],
+        *,
+        is_action: bool,
+    ) -> tuple[TwitchMessageFragment, ...]:
+        if not is_action or not fragments:
+            return fragments
+        combined = "".join(fragment.text for fragment in fragments)
+        _normalized, fragments_are_action = cls._normalize_action_text(combined)
+        if not fragments_are_action:
+            return fragments
+        values = list(fragments)
+        first = next(
+            (index for index, fragment in enumerate(values) if fragment.text),
+            None,
+        )
+        last = next(
+            (
+                index
+                for index in range(len(values) - 1, -1, -1)
+                if values[index].text
+            ),
+            None,
+        )
+        if first is None or last is None:
+            return fragments
+        first_text = values[first].text
+        if first_text.startswith("\x01ACTION"):
+            first_text = first_text[len("\x01ACTION") :]
+            if first_text.startswith(" "):
+                first_text = first_text[1:]
+        elif first_text == "/me":
+            first_text = ""
+        elif first_text.startswith("/me "):
+            first_text = first_text[len("/me ") :]
+        values[first] = replace(values[first], text=first_text)
+        last_text = values[last].text
+        if last_text.endswith("\x01"):
+            values[last] = replace(values[last], text=last_text[:-1])
+        return tuple(values)
 
     @classmethod
     def _parse_fragment(

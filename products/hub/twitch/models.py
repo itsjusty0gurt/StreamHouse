@@ -93,6 +93,7 @@ class TwitchMessage:
     source_message_id: str | None = None
     source_badges: tuple[TwitchBadge, ...] = ()
     is_source_only: bool = False
+    is_action: bool = False
 
 
 @dataclass(frozen=True, slots=True)

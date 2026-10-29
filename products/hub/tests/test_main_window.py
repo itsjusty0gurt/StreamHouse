@@ -97,6 +97,8 @@ from products.hub.twitch.models import (
     TwitchMessageFragment,
     TwitchReply,
 )
+from products.hub.twitch.parser import TwitchMessageParser
+from products.hub.twitch.simulator import create_chat_notification
 from products.hub.ui.main_window import MainWindow
 from products.hub.integrations.music_player import (
     MUSIC_EVENT_TRACK_CHANGED,
@@ -5864,6 +5866,42 @@ class MainWindowTests(unittest.TestCase):
         self.assertEqual(trigger.context["keyword.before"], "I think")
         self.assertEqual(trigger.context["keyword.after"], "is better than tea")
         self.assertNotIn("command_data", trigger.context)
+
+    def test_action_message_publishes_keyword_once_without_command(self) -> None:
+        routine = self.twitch_command_trigger_store.routine_store.add(
+            "Coffee response"
+        )
+        self.twitch_event_trigger_store.add_keyword_phrase(
+            routine.routine_id, "coffee"
+        )
+        self.twitch_command_trigger_store.add(
+            "coffee", "Command response", global_cooldown_seconds=0
+        )
+        execution = Mock(succeeded=True, handled=True)
+        self.window.automation_service.publish_trigger = Mock(
+            return_value=execution
+        )
+        self.window.automation_page.record_execution = Mock()
+        self.window.settings.ai_response_decisions_enabled = False
+        message = TwitchMessageParser.parse(
+            create_chat_notification(
+                "channel", "Viewer", "\x01ACTION !coffee today\x01"
+            )["event"],
+            datetime.now(timezone.utc),
+        )
+
+        self.window.handle_twitch_message(message)
+
+        published = [
+            call.args[0]
+            for call in self.window.automation_service.publish_trigger.call_args_list
+        ]
+        self.assertEqual(
+            [event.trigger_type for event in published],
+            ["keyword_phrase"],
+        )
+        self.assertEqual(published[0].context["keyword.message"], "!coffee today")
+        self.assertTrue(message.is_action)
 
     def test_ad_break_event_updates_ui_and_started_then_calculated_end_triggers(self) -> None:
         routines = self.twitch_command_trigger_store.routine_store

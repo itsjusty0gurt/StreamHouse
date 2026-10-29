@@ -34,6 +34,7 @@ def message(
     *,
     user_id: str = "viewer-1",
     badges: tuple[TwitchBadge, ...] = (),
+    is_action: bool = False,
 ) -> TwitchMessage:
     return TwitchMessage(
         username="TestViewer",
@@ -43,6 +44,7 @@ def message(
         user_login="testviewer",
         broadcaster_user_id="broadcaster-1",
         badges=badges,
+        is_action=is_action,
     )
 
 
@@ -956,6 +958,13 @@ class TwitchCommandTriggerDispatcherTests(unittest.TestCase):
 
         self.assertEqual(result.outcome, TwitchCommandTriggerOutcome.READY)
         self.assertEqual(result.trigger_id, "streamhouse.default.command.uptime")
+
+    def test_action_message_is_not_interpreted_as_command(self) -> None:
+        self.store.load()
+
+        result = self.dispatcher.evaluate(message("!uptime", is_action=True))
+
+        self.assertEqual(result.outcome, TwitchCommandTriggerOutcome.NOT_A_COMMAND)
 
     def test_global_and_per_viewer_cooldowns_are_both_enforced(self) -> None:
         self.store.add(
