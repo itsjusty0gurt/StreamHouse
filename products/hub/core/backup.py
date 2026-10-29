@@ -31,6 +31,7 @@ from products.hub.twitch.chatter_history import (
 )
 from products.hub.twitch.commands import TwitchCommandTriggerStore
 from products.hub.twitch.user_groups import UserGroupStore
+from shared.streamhouse_runtime.logger import Logger
 from shared.streamhouse_runtime.paths import user_data_root
 from shared.streamhouse_runtime.redaction import is_secret_key, redact_secret_text
 from products.hub.version import HUB_VERSION
@@ -94,7 +95,7 @@ COMPONENT_LABELS: Mapping[BackupComponent, str] = {
     BackupComponent.OBS_CONFIGURATION: "OBS Hub Configuration",
 }
 _COMPONENT_SCHEMAS: Mapping[BackupComponent, int] = {
-    BackupComponent.ROUTINES: 1,
+    BackupComponent.ROUTINES: 2,
     BackupComponent.COMMANDS: TwitchCommandTriggerStore.VERSION,
     BackupComponent.COUNTER_DEFINITIONS: INDEX_VERSION,
     BackupComponent.COUNTER_VALUES: COUNTER_VERSION,
@@ -345,6 +346,7 @@ class BackupManager:
             temporary.unlink(missing_ok=True)
         if backup_type == "automatic":
             self._rotate_automatic()
+        self._log_unresolved_dependencies(payloads, action="backed up")
         return destination
 
     def create_daily_if_needed(self) -> Path | None:
@@ -442,6 +444,10 @@ class BackupManager:
         else:
             safety = Path()
         self._commit_transaction(writes, deletes)
+        self._log_unresolved_dependencies(
+            {component: payloads[component] for component in selected},
+            action="restored",
+        )
         return RestoreReport(
             archive,
             tuple(
@@ -624,17 +630,18 @@ class BackupManager:
             for item in raw.get("groups", [])
             if item.get("group_id") in group_ids
         ]
-        trigger_ids = {
-            str(trigger_id)
+        trigger_references = {
+            (str(routine.get("routine_id", "")), str(trigger_id))
             for routine in routines
             for trigger_id in (
                 routine.get("trigger_id", ""),
                 *routine.get("additional_trigger_ids", []),
             )
-            if str(trigger_id)
+            if str(routine.get("routine_id", "")) and str(trigger_id)
         }
+        trigger_ids = {trigger_id for _routine_id, trigger_id in trigger_references}
         triggers: dict[str, Any] = {}
-        found_trigger_ids: set[str] = set()
+        found_trigger_references: set[tuple[str, str]] = set()
         trigger_sources = (
             (
                 "commands",
@@ -661,13 +668,18 @@ class BackupManager:
                     "raid_suppression_enabled": True,
                     "raid_suppression_minutes": 3,
                 }
+            contributor_id = {
+                "commands": "twitch.commands",
+                "twitch": "twitch.triggers",
+                "obs": "obs.triggers",
+            }.get(label)
             store = (
                 self._contributed_snapshot(
-                    "twitch.triggers",
-                    "Twitch triggers",
+                    contributor_id,
+                    f"{label} triggers",
                     lambda: self._json_or_default(relative, default),
                 )
-                if label == "twitch"
+                if contributor_id is not None
                 else self._json_or_default(relative, default)
             )
             self._expect_schema(store, version, f"{label} triggers", "version")
@@ -678,8 +690,12 @@ class BackupManager:
                 and str(item.get("trigger_id", "")) in trigger_ids
                 and str(item.get("routine_id", "")) in wanted
             ]
-            found_trigger_ids.update(
-                str(item.get("trigger_id", "")) for item in selected
+            found_trigger_references.update(
+                (
+                    str(item.get("routine_id", "")),
+                    str(item.get("trigger_id", "")),
+                )
+                for item in selected
             )
             projected = {"version": version, "triggers": selected}
             if label == "twitch":
@@ -690,12 +706,23 @@ class BackupManager:
                     )
                 projected["first_message"] = first_message
             triggers[label] = projected
-        missing = trigger_ids - found_trigger_ids
-        if missing:
-            raise BackupError(
-                "Routine backup stopped because trigger dependencies are missing: "
-                + ", ".join(sorted(missing))
+        routine_names = {
+            str(item.get("routine_id", "")): str(item.get("name", "")).strip()
+            for item in routines
+            if isinstance(item, dict)
+        }
+        unresolved_dependencies = [
+            {
+                "dependency_type": "trigger",
+                "dependency_id": trigger_id,
+                "provider": "unknown",
+                "routine_id": routine_id,
+                "routine_name": routine_names.get(routine_id, ""),
+            }
+            for routine_id, trigger_id in sorted(
+                trigger_references - found_trigger_references
             )
+        ]
         queues = self._json_or_default(
             "automation/queues.json",
             {
@@ -793,6 +820,7 @@ class BackupManager:
                 "version": INDEX_VERSION,
                 "counters": [by_counter[name] for name in sorted(counter_ids)],
             },
+            "unresolved_dependencies": unresolved_dependencies,
         }
 
     def _command_snapshot(self, *, routines_already_included: bool) -> dict[str, Any]:
@@ -1278,6 +1306,24 @@ class BackupManager:
                         )
                     payload = json.loads(content)
                     self._assert_safe_payload(component, payload)
+                    if component is BackupComponent.ROUTINES:
+                        self._validate_routine_dependencies_payload(
+                            payload,
+                            schema=int(details["schema"]),
+                        )
+                    elif component is BackupComponent.COMMANDS:
+                        if not isinstance(payload, Mapping):
+                            raise BackupError(
+                                "Commands backup component is malformed."
+                            )
+                        routine_dependencies = payload.get("routine_dependencies")
+                        if routine_dependencies is not None:
+                            self._validate_routine_dependencies_payload(
+                                routine_dependencies,
+                                schema=int(
+                                    routine_dependencies.get("schema", 1)
+                                ),
+                            )
                     payloads[component] = payload
                 return manifest, payloads
         except BackupError:
@@ -1320,7 +1366,14 @@ class BackupManager:
                 raise BackupError(f'Unknown backup component "{name}".') from error
             if not isinstance(details, dict):
                 raise BackupError(f'Backup component "{name}" is malformed.')
-            supported_schema = details.get("schema") == _COMPONENT_SCHEMAS[component]
+            supported_schema = (
+                details.get("schema") == _COMPONENT_SCHEMAS[component]
+            )
+            if (
+                component is BackupComponent.ROUTINES
+                and details.get("schema") == 1
+            ):
+                supported_schema = True
             if component is BackupComponent.USERS and details.get("schema") == 8:
                 supported_schema = True
             if not supported_schema:
@@ -1354,6 +1407,128 @@ class BackupManager:
                         f'"{dependency}".'
                     )
         datetime.fromisoformat(str(manifest["created_at"]))
+
+    @staticmethod
+    def _validate_routine_dependencies_payload(
+        payload: Any,
+        *,
+        schema: int,
+    ) -> None:
+        if not isinstance(payload, Mapping) or payload.get("schema") != schema:
+            raise BackupError("Routine backup component schema is inconsistent.")
+        routine_payload = payload.get("routines")
+        trigger_payload = payload.get("triggers")
+        if not isinstance(routine_payload, Mapping) or not isinstance(
+            trigger_payload, Mapping
+        ):
+            raise BackupError("Routine backup dependencies are malformed.")
+        references = {
+            (str(routine.get("routine_id", "")), str(trigger_id))
+            for routine in routine_payload.get("routines", [])
+            if isinstance(routine, Mapping)
+            for trigger_id in (
+                routine.get("trigger_id", ""),
+                *(
+                    routine.get("additional_trigger_ids", [])
+                    if isinstance(routine.get("additional_trigger_ids", []), list)
+                    else []
+                ),
+            )
+            if str(routine.get("routine_id", "")) and str(trigger_id)
+        }
+        included = {
+            (
+                str(trigger.get("routine_id", "")),
+                str(trigger.get("trigger_id", "")),
+            )
+            for store in trigger_payload.values()
+            if isinstance(store, Mapping)
+            for trigger in store.get("triggers", [])
+            if isinstance(trigger, Mapping)
+            and str(trigger.get("routine_id", ""))
+            and str(trigger.get("trigger_id", ""))
+        }
+        missing = references - included
+        raw_unresolved = payload.get("unresolved_dependencies", [])
+        if schema == 1:
+            if raw_unresolved or missing:
+                raise BackupError(
+                    "Legacy routine backup contains unresolved trigger dependencies."
+                )
+            return
+        if schema != _COMPONENT_SCHEMAS[BackupComponent.ROUTINES]:
+            raise BackupError("Routine backup component schema is unsupported.")
+        if not isinstance(raw_unresolved, list):
+            raise BackupError("Routine backup unresolved dependencies are malformed.")
+        declared: set[tuple[str, str]] = set()
+        for item in raw_unresolved:
+            if (
+                not isinstance(item, Mapping)
+                or item.get("dependency_type") != "trigger"
+                or not str(item.get("dependency_id", "")).strip()
+                or not str(item.get("routine_id", "")).strip()
+                or not str(item.get("provider", "")).strip()
+            ):
+                raise BackupError(
+                    "Routine backup unresolved dependencies are malformed."
+                )
+            key = (
+                str(item["routine_id"]).strip(),
+                str(item["dependency_id"]).strip(),
+            )
+            if key in declared:
+                raise BackupError(
+                    "Routine backup contains duplicate unresolved dependencies."
+                )
+            declared.add(key)
+        if declared != missing:
+            raise BackupError(
+                "Routine backup unresolved trigger inventory is inconsistent."
+            )
+
+    @staticmethod
+    def _unresolved_dependencies(
+        payloads: Mapping[BackupComponent, Any],
+    ) -> tuple[Mapping[str, Any], ...]:
+        values: list[Mapping[str, Any]] = []
+        routines = payloads.get(BackupComponent.ROUTINES)
+        if isinstance(routines, Mapping):
+            raw = routines.get("unresolved_dependencies", [])
+            if isinstance(raw, list):
+                values.extend(item for item in raw if isinstance(item, Mapping))
+        commands = payloads.get(BackupComponent.COMMANDS)
+        if isinstance(commands, Mapping):
+            dependencies = commands.get("routine_dependencies")
+            if isinstance(dependencies, Mapping):
+                raw = dependencies.get("unresolved_dependencies", [])
+                if isinstance(raw, list):
+                    values.extend(
+                        item for item in raw if isinstance(item, Mapping)
+                    )
+        return tuple(values)
+
+    def _log_unresolved_dependencies(
+        self,
+        payloads: Mapping[BackupComponent, Any],
+        *,
+        action: str,
+    ) -> None:
+        for item in self._unresolved_dependencies(payloads):
+            routine_name = str(item.get("routine_name", "")).strip()
+            routine_id = str(item.get("routine_id", "")).strip()
+            dependency_id = str(item.get("dependency_id", "")).strip()
+            provider = str(item.get("provider", "unknown")).strip() or "unknown"
+            label = (
+                f'"{routine_name}" ({routine_id})'
+                if routine_name
+                else routine_id
+            )
+            Logger.warning(
+                f"Routine {label} was {action} with unresolved trigger "
+                f'"{dependency_id}" (provider: {provider}). Repair the trigger '
+                "link when possible; all other eligible data was preserved.",
+                source="BACKUP",
+            )
 
     def _assert_safe_payload(
         self, component: BackupComponent, payload: Any
