@@ -196,6 +196,11 @@ commit, and rollback. Components and module contributors expose only eligible
 data. Credentials, chat/message history, logs, diagnostics, and AI-owned data
 remain excluded. Detailed paths and schema versions are maintained in
 [architecture/overview.md](architecture/overview.md#persistence-and-data-ownership).
+Twitch and OBS expose their trigger stores through static module Backup
+contributors, including while disabled. Routine archives explicitly inventory
+genuinely unresolved trigger references so one stale link cannot prevent all
+other eligible data from being protected; restore verifies that inventory
+before applying the current persisted state.
 
 ## External integration boundaries
 

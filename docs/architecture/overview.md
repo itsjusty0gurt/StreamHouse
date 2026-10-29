@@ -1875,9 +1875,18 @@ backup stream value is discarded rather than reclassified as current.
 Routines are structural units: nested tasks remain embedded, and backup follows
 stable Run Routine, trigger, queue, Counter, and referenced `custom.*` Variable
 dependencies. Commands similarly carry the managed routine/trigger dependency
-closure when Routines are not otherwise selected. A broken dependency stops
-backup creation rather than producing an orphaned archive. Tasks are not an
-independent backup component.
+closure when Routines are not otherwise selected. Twitch and OBS trigger data
+is discovered through the modules' static Backup contributions even while a
+module is disabled. A genuinely missing trigger no longer blocks protection of
+all unrelated data: routines component schema v2 preserves the routine and its
+stable reference while recording the exact unresolved trigger relationship.
+Restore accepts that state only when the declared unresolved inventory exactly
+matches the archive contents; undeclared or falsely declared missing links are
+rejected. The warning identifies the affected routine and trigger so the user
+can repair the authored relationship without Backup inventing or deleting
+data. Legacy routines component schema v1 remains an accepted import format
+only when its dependency closure is complete. Other missing dependency types
+still stop backup creation. Tasks are not an independent backup component.
 
 Alpha restore uses component replacement semantics, while dependency objects
 required by restored routines are installed without discarding unrelated queue,

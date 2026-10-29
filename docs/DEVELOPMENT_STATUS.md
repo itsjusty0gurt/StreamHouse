@@ -185,10 +185,14 @@ Reproduction/validation requirements:
 
 ## Known issues and validation gaps
 
-- **Known Backup dependency issue:** automatic Routine Backup can stop when a
-  persisted trigger dependency is missing (observed missing trigger ID
-  `56dfb338dda549629707d76639def744`). This is independent of the Automation
-  task-context native crash and remains a separate investigation.
+- **Resolved Backup dependency issue:** automatic and manual Routine Backup now
+  preserve a routine with an explicitly inventoried unresolved trigger instead
+  of abandoning all eligible user data. Restore validates the unresolved
+  inventory exactly, and disabled Twitch/OBS trigger stores remain discoverable
+  through static module Backup contributions. The observed stale reference
+  `56dfb338dda549629707d76639def744` belongs to routine `Ban User`; its original
+  trigger survives only in a quarantined Twitch store while the current routine
+  also retains a valid replacement trigger.
 - **Known test issue:**
   `MainWindowTests.test_counters_page_refreshes_for_stream_and_counter_changes`
   currently raises `KeyError` during test cleanup after its Counter definition

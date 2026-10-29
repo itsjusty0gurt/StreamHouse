@@ -343,7 +343,7 @@ class BackupManagerTests(unittest.TestCase):
             obs = json.loads(source.read("components/obs_configuration.json"))
             combined = b"\n".join(source.read(name) for name in names)
         self.assertEqual(manifest["backup_format_version"], 1)
-        self.assertEqual(manifest["components"]["routines"]["schema"], 1)
+        self.assertEqual(manifest["components"]["routines"]["schema"], 2)
         self.assertEqual(
             {item["routine_id"] for item in routines["routines"]["routines"]},
             {"parent", "child"},
@@ -381,6 +381,95 @@ class BackupManagerTests(unittest.TestCase):
             b"support",
         ):
             self.assertNotIn(forbidden, combined)
+
+    def test_missing_trigger_is_recorded_without_blocking_backup_or_restore(
+        self,
+    ) -> None:
+        missing_id = "56dfb338dda549629707d76639def744"
+        routine_path = self.root / "automation/routines.json"
+        routine_payload = json.loads(routine_path.read_text(encoding="utf-8"))
+        parent = next(
+            item
+            for item in routine_payload["routines"]
+            if item["routine_id"] == "parent"
+        )
+        parent["trigger_id"] = missing_id
+        parent["additional_trigger_ids"] = ["raid-trigger"]
+        write_json(routine_path, routine_payload)
+
+        manual_archive = self.manager.create("manual")
+        automatic_archive = self.manager.create_daily_if_needed()
+        self.assertTrue(manual_archive.exists())
+        self.assertIsNotNone(automatic_archive)
+        assert automatic_archive is not None
+        archive = automatic_archive
+        with ZipFile(archive) as source:
+            manifest = json.loads(source.read("manifest.json"))
+            routines = json.loads(source.read("components/routines.json"))
+        self.assertEqual(manifest["components"]["routines"]["schema"], 2)
+        self.assertEqual(
+            routines["unresolved_dependencies"],
+            [
+                {
+                    "dependency_type": "trigger",
+                    "dependency_id": missing_id,
+                    "provider": "unknown",
+                    "routine_id": "parent",
+                    "routine_name": "Parent",
+                }
+            ],
+        )
+        self.assertEqual(
+            [
+                item["trigger_id"]
+                for item in routines["triggers"]["twitch"]["triggers"]
+            ],
+            ["raid-trigger"],
+        )
+
+        routine_path.unlink()
+        (self.root / "twitch/event_triggers.json").unlink()
+        self.manager.restore(archive, create_safety=False)
+        restored_routines = RoutineStore(routine_path)
+        restored_routines.load()
+        restored_parent = restored_routines.get("parent")
+        self.assertIsNotNone(restored_parent)
+        assert restored_parent is not None
+        self.assertEqual(restored_parent.trigger_id, missing_id)
+        self.assertEqual(restored_parent.additional_trigger_ids, ["raid-trigger"])
+        self.assertIsNotNone(restored_routines.get("child"))
+        restored_triggers = TwitchEventTriggerStore(
+            self.root / "twitch/event_triggers.json",
+            restored_routines,
+        ).load()
+        self.assertEqual(
+            [item.trigger_id for item in restored_triggers],
+            ["raid-trigger"],
+        )
+
+    def test_routine_archive_rejects_unreported_or_false_missing_trigger(self) -> None:
+        payload = self.manager._routine_snapshot()
+        payload["routines"]["routines"][0]["trigger_id"] = "missing-trigger"
+        with self.assertRaisesRegex(BackupError, "inventory is inconsistent"):
+            self.manager._validate_routine_dependencies_payload(payload, schema=2)
+
+        payload["unresolved_dependencies"] = [
+            {
+                "dependency_type": "trigger",
+                "dependency_id": "different-trigger",
+                "provider": "unknown",
+                "routine_id": "parent",
+                "routine_name": "Parent",
+            }
+        ]
+        with self.assertRaisesRegex(BackupError, "inventory is inconsistent"):
+            self.manager._validate_routine_dependencies_payload(payload, schema=2)
+
+    def test_complete_legacy_routine_component_remains_restore_input(self) -> None:
+        payload = self.manager._routine_snapshot()
+        payload["schema"] = 1
+        payload.pop("unresolved_dependencies")
+        self.manager._validate_routine_dependencies_payload(payload, schema=1)
 
     def test_user_group_backup_restore_preserves_ids_memberships_and_references(
         self,

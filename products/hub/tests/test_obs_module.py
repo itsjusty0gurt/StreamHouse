@@ -75,6 +75,9 @@ def test_obs_module_registers_catalog_actions_tab_and_lifecycle(tmp_path: Path) 
     assert variables.definition("hub.connected_to_obs") is not None
     assert context.trigger_providers.get("obs.automation") is not None
     assert context.backup.get("obs.configuration") is not None
+    trigger_backup = context.backup.get("obs.triggers")
+    assert trigger_backup is not None
+    assert trigger_backup.export(tmp_path) == {"version": 1, "triggers": []}
 
     module.config_store.load = Mock(  # type: ignore[union-attr,method-assign]
         return_value=(ObsConnectionConfig(host="obs.local", port=4456), "protected")
@@ -126,6 +129,9 @@ def test_disabled_obs_module_preserves_catalog_and_skips_tasks(tmp_path: Path) -
     assert context.actions.descriptors() == ()
     assert context.tabs.contributions() == ()
     assert context.trigger_providers.get("obs.automation") is not None
+    trigger_backup = context.backup.get("obs.triggers")
+    assert trigger_backup is not None
+    assert trigger_backup.export(tmp_path) == {"version": 1, "triggers": []}
     assert context.trigger_providers.get("obs.automation").current_availability().available is False  # type: ignore[union-attr]
     scene = variables.resolve("obs.current_scene", {})
     assert scene is not None and scene.available is False

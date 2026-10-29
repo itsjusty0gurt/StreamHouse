@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import asdict
 from pathlib import Path
 from typing import Mapping
@@ -33,6 +34,7 @@ from shared.streamhouse_runtime.logger import Logger
 OBS_MODULE_ID = "streamhouse.obs"
 OBS_TRIGGER_PROVIDER_ID = "obs.automation"
 OBS_BACKUP_CONTRIBUTOR_ID = "obs.configuration"
+OBS_TRIGGERS_BACKUP_CONTRIBUTOR_ID = "obs.triggers"
 
 
 class ObsModule:
@@ -111,6 +113,16 @@ class ObsModule:
                     schema_version=1,
                     export=self._backup_export,
                     validate=self._backup_validate,
+                )
+            )
+            context.backup.register(
+                BackupContributor(
+                    contributor_id=OBS_TRIGGERS_BACKUP_CONTRIBUTOR_ID,
+                    owner_module_id=OBS_MODULE_ID,
+                    display_name="OBS Automation Triggers",
+                    schema_version=ObsTriggerStore.VERSION,
+                    export=self._backup_triggers_export,
+                    validate=self._backup_triggers_validate,
                 )
             )
 
@@ -318,3 +330,22 @@ class ObsModule:
         if not isinstance(payload, dict) or payload.get("version") != 1:
             raise ValueError("OBS configuration does not use the current schema.")
         ObsConnectionConfig.from_dict(payload).validate()
+
+    def _backup_triggers_export(
+        self,
+        project_root: object,
+    ) -> Mapping[str, object]:
+        assert self.trigger_store is not None
+        path = Path(project_root) / "obs" / "triggers.json"
+        payload: object = (
+            json.loads(path.read_text(encoding="utf-8"))
+            if json_store_exists(path)
+            else {"version": ObsTriggerStore.VERSION, "triggers": []}
+        )
+        self._backup_triggers_validate(payload)
+        assert isinstance(payload, Mapping)
+        return payload
+
+    def _backup_triggers_validate(self, payload: object) -> None:
+        assert self.trigger_store is not None
+        self.trigger_store._parse_payload(payload)
