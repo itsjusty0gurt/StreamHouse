@@ -8,6 +8,7 @@ from tempfile import TemporaryDirectory
 from threading import Event
 from time import sleep
 import unittest
+from unittest.mock import Mock
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -334,6 +335,33 @@ class UsersPageTests(unittest.TestCase):
         values = self.counters.get_values("hydration", user_id="1", stream_id=self.stream_id)
         self.assertEqual(values.viewer_total, Decimal("12.125"))
         self.assertIn("below", self.page.status.text())
+
+    def test_counter_double_click_uses_enabled_existing_edit_path(self) -> None:
+        self.add_user("1", "Joe", "joe")
+        self.counters.create_counter(CounterDefinition(
+            counter_id="points",
+            display_name="Points",
+            singular="point",
+            plural="points",
+        ))
+        self.page.select_user("1")
+        self.wait_for_counters()
+        self.page.counter_table.selectRow(0)
+        self.page._counter_selection()
+        edit = Mock()
+        self.page._edit_counter = edit
+
+        edit.assert_not_called()
+        self.page.counter_table.itemDoubleClicked.emit(
+            self.page.counter_table.item(0, 0)
+        )
+        edit.assert_called_once_with()
+
+        self.page.edit_counter.setEnabled(False)
+        self.page.counter_table.itemDoubleClicked.emit(
+            self.page.counter_table.item(0, 0)
+        )
+        edit.assert_called_once_with()
 
     def test_closing_page_during_write_suppresses_ui_callback_and_releases_job(self) -> None:
         self.add_user("1", "Joe", "joe")

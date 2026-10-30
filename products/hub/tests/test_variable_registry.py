@@ -3,6 +3,7 @@ import os
 from decimal import Decimal
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 import pytest
 
@@ -930,6 +931,34 @@ def test_variables_page_and_picker_search_canonical_names() -> None:
         condition_editor.close()
         editor.close()
         picker.close()
+        page.close()
+    application.processEvents()
+
+
+def test_variables_page_double_click_edits_only_writable_variables() -> None:
+    application = QApplication.instance() or QApplication([])
+    with TemporaryDirectory() as temporary:
+        store = CustomVariableStore(Path(temporary) / "variables.json")
+        store.load()
+        store.set("global", "game_mode", "Hardcore", description="Mode")
+        registry = VariableRegistry()
+        registry.register(context_provider())
+        registry.register(CustomVariableProvider(store))
+        page = VariablesPage(registry, store)
+
+        page.search_edit.setText("game_mode")
+        page.table.selectRow(0)
+        with patch.object(page, "_edit") as edit:
+            edit.assert_not_called()
+            page.table.itemDoubleClicked.emit(page.table.item(0, 0))
+            edit.assert_called_once_with()
+
+            page.search_edit.setText("user.id")
+            page.table.selectRow(0)
+            assert not page.edit_button.isEnabled()
+            page.table.itemDoubleClicked.emit(page.table.item(0, 0))
+            edit.assert_called_once_with()
+
         page.close()
     application.processEvents()
 

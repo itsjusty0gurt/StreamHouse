@@ -179,9 +179,11 @@ class CountersPage(QWidget):
             stretch=(0,),
             compact=(1, 2, 3),
         )
+        self.viewer_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.viewer_table.setSortingEnabled(True); layout.addWidget(self.viewer_table)
         row = QHBoxLayout(); self.edit_viewer = QPushButton("Edit selected values"); self.remove_viewer_button = QPushButton("Remove viewer from this counter"); row.addWidget(self.edit_viewer); row.addWidget(self.remove_viewer_button); row.addStretch(); layout.addLayout(row); self.tabs.addTab(page, "Viewers")
         self.viewer_search.textChanged.connect(self._refresh_viewers); self.edit_viewer.clicked.connect(self._edit_viewer); self.remove_viewer_button.clicked.connect(self._remove_viewer)
+        self.viewer_table.itemDoubleClicked.connect(lambda _item: self._edit_viewer())
 
     def _build_settings(self) -> None:
         page = QWidget(); layout = QVBoxLayout(page); self.settings_button = QPushButton("Edit Counter Settings"); self.delete_button = QPushButton("Delete Counter…"); layout.addWidget(self.settings_button); layout.addWidget(self.delete_button); layout.addStretch(); self.tabs.addTab(page, "Settings")
@@ -310,7 +312,7 @@ class CountersPage(QWidget):
 
     def _edit_viewer(self) -> None:
         definition = self._definition(); row = self.viewer_table.currentRow()
-        if not definition or row < 0: return
+        if not definition or not definition.enabled or row < 0: return
         user_id = self.viewer_table.item(row, 3).text(); lifetime = self.viewer_table.item(row, 1).text(); stream = self.viewer_table.item(row, 2).text()
         value, ok = self._ask_value("Edit Viewer Lifetime", "Lifetime value", lifetime)
         if ok and not self._accept_operation(self.service.set_value(definition.counter_id, "viewer_total", value, user_id=user_id)): return

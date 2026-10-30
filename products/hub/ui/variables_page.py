@@ -176,6 +176,9 @@ class VariablesPage(QWidget):
         self.search_edit.textChanged.connect(self.refresh)
         self.source_combo.currentIndexChanged.connect(self.refresh)
         self.table.itemSelectionChanged.connect(self._selection_changed)
+        self.table.itemDoubleClicked.connect(
+            lambda _item: self._edit() if self.edit_button.isEnabled() else None
+        )
         self.copy_placeholder_button.clicked.connect(self._copy_placeholder)
         self.new_button.clicked.connect(self._create)
         self.edit_button.clicked.connect(self._edit)

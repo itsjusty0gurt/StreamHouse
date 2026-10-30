@@ -1,7 +1,7 @@
 import os
 from time import sleep
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -77,6 +77,27 @@ class ChannelPointRewardTests(unittest.TestCase):
         self.assertEqual(values["global_cooldown_seconds"], 60)
         self.assertTrue(values["should_redemptions_skip_request_queue"])
         dialog.close()
+
+    def test_double_click_still_uses_existing_reward_edit_path(self) -> None:
+        auth = Mock(token=Mock(scopes=[ChannelPointsPage.REQUIRED_SCOPE]))
+        page = ChannelPointsPage(Mock(), auth)
+        page.rewards = [
+            TwitchCustomReward(
+                id="reward-1",
+                title="Hydrate",
+                cost=500,
+                manageable=True,
+            )
+        ]
+        page._populate()
+        page.table.selectRow(0)
+
+        with patch.object(page, "_edit_reward") as edit:
+            page.table.itemDoubleClicked.emit(page.table.item(0, 1))
+            edit.assert_called_once_with()
+
+        page.shutdown()
+        page.deleteLater()
 
     def test_shutdown_blocks_late_worker_ui_after_cpp_page_destruction(self) -> None:
         for iteration in range(25):

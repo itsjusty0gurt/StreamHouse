@@ -2479,6 +2479,11 @@ class MainWindow(QMainWindow):
         self.twitch_commands_table.itemSelectionChanged.connect(
             self._update_twitch_command_actions
         )
+        self.twitch_commands_table.itemDoubleClicked.connect(
+            lambda _item: self._edit_twitch_command()
+            if self.edit_twitch_command_button.isEnabled()
+            else None
+        )
         self.twitch_command_search_edit.textChanged.connect(
             lambda _text: self._refresh_twitch_commands()
         )

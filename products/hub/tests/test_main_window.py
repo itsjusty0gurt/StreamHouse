@@ -3340,6 +3340,24 @@ class MainWindowTests(unittest.TestCase):
             self.window.reset_twitch_command_button.click()
         reset.assert_called_once_with(command.default_id)
 
+    def test_twitch_command_double_click_uses_edit_selected_path(self) -> None:
+        table = self.window.twitch_commands_table
+        row = next(
+            row
+            for row in range(table.rowCount())
+            if table.item(row, 1).text() == "!uptime"
+        )
+
+        with patch.object(self.window, "_edit_twitch_command") as edit:
+            table.selectRow(row)
+            edit.assert_not_called()
+            table.itemDoubleClicked.emit(table.item(row, 1))
+            edit.assert_called_once_with()
+
+            self.window.edit_twitch_command_button.setEnabled(False)
+            table.itemDoubleClicked.emit(table.item(row, 1))
+            edit.assert_called_once_with()
+
     def test_configured_defaults_render_first_and_open_channel_information(self) -> None:
         self.twitch_command_trigger_store.add("alpha", "Hello")
         self.twitch_command_trigger_store.configure_default("discord")

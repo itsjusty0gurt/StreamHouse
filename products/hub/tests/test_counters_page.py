@@ -125,6 +125,37 @@ class CountersPageTests(unittest.TestCase):
                 QHeaderView.ResizeMode.ResizeToContents,
             )
 
+    def test_viewer_double_click_uses_existing_edit_path_without_inline_edit(self) -> None:
+        self.service.update_values(
+            "farts",
+            2,
+            ("viewer_total",),
+            user_id="111",
+            display_name="Steve",
+        )
+        self.page.refresh()
+        self.page.viewer_table.selectRow(0)
+
+        self.assertEqual(
+            self.page.viewer_table.editTriggers(),
+            self.page.viewer_table.EditTrigger.NoEditTriggers,
+        )
+        with patch.object(self.page, "_edit_viewer") as edit:
+            edit.assert_not_called()
+            self.page.viewer_table.itemDoubleClicked.emit(
+                self.page.viewer_table.item(0, 0)
+            )
+            edit.assert_called_once_with()
+
+        self.service.set_enabled("farts", False)
+        self.page.refresh()
+        self.page.viewer_table.selectRow(0)
+        with patch.object(self.page, "_ask_value") as ask_value:
+            self.page.viewer_table.itemDoubleClicked.emit(
+                self.page.viewer_table.item(0, 0)
+            )
+            ask_value.assert_not_called()
+
     def test_new_counter_tasks_default_to_every_configured_scope(self) -> None:
         for task_type in (
             "counter.increase",

@@ -236,6 +236,11 @@ class UsersPage(QWidget):
         self.first_words_enabled.clicked.connect(self._set_first_words_enabled)
         self.first_words_reset.clicked.connect(self._reset_first_words)
         self.counter_table.itemSelectionChanged.connect(self._counter_selection)
+        self.counter_table.itemDoubleClicked.connect(
+            lambda _item: self._edit_counter()
+            if self.edit_counter.isEnabled()
+            else None
+        )
         self.timer = QTimer(self)
         self.timer.setInterval(1000)
         self.timer.timeout.connect(self._tick)
