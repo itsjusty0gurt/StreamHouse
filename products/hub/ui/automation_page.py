@@ -490,6 +490,11 @@ class TwitchEventTriggerDialog(QDialog):
             self.event_type_combo.setCurrentIndex(
                 max(self.event_type_combo.findData(trigger.event_type), 0)
             )
+            self.event_type_combo.setEnabled(False)
+            self.event_type_combo.setToolTip(
+                "The event type is fixed for an existing trigger. "
+                "Create a new trigger to choose a different event."
+            )
         self.filters_edit = QLineEdit()
         self.filters_edit.setPlaceholderText("reward.id=abc123, tier=1000")
         seeded_filters = dict(trigger.filters) if trigger else {}
@@ -5489,6 +5494,31 @@ class AutomationPage(QWidget):
         routine = self.routine_store.get(self._selected_routine_id)
         if routine is None:
             return
+        visible_routine_ids: list[str] = []
+        for group_index in range(self.routine_tree.topLevelItemCount()):
+            group_item = self.routine_tree.topLevelItem(group_index)
+            for routine_index in range(group_item.childCount()):
+                item = group_item.child(routine_index)
+                if item.data(0, self.KIND_ROLE) == "routine":
+                    visible_routine_ids.append(
+                        str(item.data(0, Qt.ItemDataRole.UserRole) or "")
+                    )
+        try:
+            deleted_index = visible_routine_ids.index(routine.routine_id)
+        except ValueError:
+            nearby_routine_id = ""
+        else:
+            remaining_ids = [
+                routine_id
+                for routine_id in visible_routine_ids
+                if routine_id != routine.routine_id
+            ]
+            nearby_routine_id = (
+                remaining_ids[min(deleted_index, len(remaining_ids) - 1)]
+                if remaining_ids
+                else ""
+            )
+        previous_scroll = self.routine_tree.verticalScrollBar().value()
         command = self.trigger_store.for_routine(routine.routine_id)
         event_triggers = self.event_trigger_store.for_routine(routine.routine_id)
         core_triggers = self.core_trigger_store.for_routine(routine.routine_id)
@@ -5528,9 +5558,12 @@ class AutomationPage(QWidget):
         except (OSError, ValueError) as error:
             self._error("Could Not Delete Routine", error)
             return
-        self._selected_routine_id = ""
-        self.refresh()
-        self._show_routine(None)
+        self._selected_routine_id = nearby_routine_id
+        self.refresh(nearby_routine_id)
+        scroll_bar = self.routine_tree.verticalScrollBar()
+        scroll_bar.setValue(min(previous_scroll, scroll_bar.maximum()))
+        if not nearby_routine_id:
+            self._show_routine(None)
 
     def _move_routine_to_group(self, routine_id: str, group_id: str) -> None:
         try:

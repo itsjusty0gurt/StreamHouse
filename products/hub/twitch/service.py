@@ -27,6 +27,7 @@ from datetime import datetime, timezone
 from products.hub.twitch.simulator import (
     create_chat_notification,
     send_signed_eventsub_request,
+    simulated_user_id,
 )
 
 
@@ -1046,6 +1047,7 @@ class TwitchService:
             channel=self.channel,
             username=clean_username,
             text=clean_text,
+            user_id=simulated_user_id(clean_username),
         )
         try:
             status = send_signed_eventsub_request(

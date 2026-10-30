@@ -437,6 +437,11 @@ class CounterService:
         unit = definition.singular if abs(number) == 1 else definition.plural
         return f"{rendered} {unit}".rstrip()
 
+    def unit_for_value(self, counter_id: str, value: Any) -> str:
+        definition = self._require(counter_id)
+        number = parse_counter_number(value, definition.numeric_type)
+        return definition.singular if abs(number) == 1 else definition.plural
+
     @staticmethod
     def _validate_scopes(scopes: Iterable[str]) -> tuple[str, ...]:
         selected = tuple(dict.fromkeys(str(item).strip().casefold() for item in scopes if str(item).strip()))

@@ -203,6 +203,26 @@ class CounterVariableProvider:
                         context_label="User context" if needs_user else "",
                     )
                 )
+                definitions.append(
+                    VariableDefinition(
+                        name=f"counter.{counter.counter_id}.{suffix}.unit",
+                        display_name=f"{counter.display_name} - {label} Unit",
+                        description=(
+                            f"Singular or plural unit for {description.casefold()} "
+                            f"for {counter.display_name}."
+                        ),
+                        data_type=VariableDataType.TEXT,
+                        source=self.source,
+                        category="Counters",
+                        availability=(
+                            VariableAvailability.CONTEXTUAL
+                            if needs_user
+                            else VariableAvailability.GLOBAL
+                        ),
+                        required_context=("user.id",) if needs_user else (),
+                        context_label="User context" if needs_user else "",
+                    )
+                )
         return tuple(definitions)
 
     def resolve(self, name: str, context: Mapping[str, object]) -> VariableSnapshot:
@@ -211,7 +231,9 @@ class CounterVariableProvider:
         counter = self.service.get_counter(counter_id)
         if counter is None or not counter.enabled:
             return VariableSnapshot(definition, None, False, "Counter is unavailable.")
-        scope, needs_user, needs_stream = self._scope(suffix)
+        unit_requested = suffix.endswith(".unit")
+        value_suffix = suffix.removesuffix(".unit")
+        scope, needs_user, needs_stream = self._scope(value_suffix)
         if not counter.tracks(scope):
             return VariableSnapshot(
                 definition,
@@ -236,6 +258,8 @@ class CounterVariableProvider:
             stream_id=stream_id,
         )
         value = getattr(values, scope)
+        if unit_requested:
+            value = self.service.unit_for_value(counter_id, value)
         return VariableSnapshot(definition, value, True)
 
     def set_value(self, name: str, value: object) -> VariableSnapshot:
@@ -254,7 +278,8 @@ class CounterVariableProvider:
             raise KeyError(f'Unknown counter variable "{name}".')
         counter_id = parts[1]
         suffix = ".".join(parts[2:])
-        if suffix not in {item[0] for item in cls._SCOPES}:
+        valid_suffixes = {item[0] for item in cls._SCOPES}
+        if suffix.removesuffix(".unit") not in valid_suffixes:
             raise KeyError(f'Unknown counter variable "{name}".')
         return counter_id, suffix
 

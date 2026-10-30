@@ -847,6 +847,36 @@ class MainWindowTests(unittest.TestCase):
 
         self.assertIsNone(store.get(routine.routine_id))
 
+    def test_delete_routine_preserves_scroll_and_selects_nearby_routine(self) -> None:
+        store = self.twitch_command_trigger_store.routine_store
+        routines = [store.add(f"Routine {index:02d}") for index in range(30)]
+        page = self.window.automation_page
+        page.routine_tree.setFixedHeight(180)
+        page.refresh(routines[20].routine_id)
+        page.routine_tree.scrollToItem(self._routine_item(routines[20].routine_id))
+        QApplication.processEvents()
+        previous_scroll = page.routine_tree.verticalScrollBar().value()
+        self.assertGreater(previous_scroll, 0)
+
+        with patch.object(
+            QMessageBox,
+            "question",
+            return_value=QMessageBox.StandardButton.Yes,
+        ):
+            page._delete_routine()
+
+        self.assertIsNone(store.get(routines[20].routine_id))
+        self.assertEqual(page._selected_routine_id, routines[21].routine_id)
+        self.assertIs(
+            page.routine_tree.currentItem(),
+            self._routine_item(routines[21].routine_id),
+        )
+        self.assertGreater(page.routine_tree.verticalScrollBar().value(), 0)
+        self.assertLessEqual(
+            abs(page.routine_tree.verticalScrollBar().value() - previous_scroll),
+            1,
+        )
+
     def test_automation_queues_tab_assigns_and_displays_pending_routines(self) -> None:
         page = self.window.automation_page
         queue = self.window.automation_queue_store.add("Soundboard")
@@ -5750,6 +5780,42 @@ class MainWindowTests(unittest.TestCase):
         )
         self.assertEqual(trigger.trigger_type, "first_message")
         self.assertEqual(trigger.context["user"], "Viewer")
+
+    def test_dev_tools_simulation_distinguishes_first_message_viewers(self) -> None:
+        routine = self.twitch_command_trigger_store.routine_store.add(
+            "Welcome simulated viewers"
+        )
+        self.twitch_event_trigger_store.add(
+            routine.routine_id,
+            "channel.chat.first_message",
+        )
+        started = datetime.now(timezone.utc)
+        self.twitch_event_trigger_store.observe_stream({"id": "stream-1"}, started)
+        self.window.stream_is_live = True
+        execution = Mock(succeeded=True, handled=True)
+        self.window.automation_service.publish_trigger = Mock(
+            return_value=execution
+        )
+        self.window.automation_page.record_execution = Mock()
+        self.window.settings.ai_response_decisions_enabled = False
+        self.window.ui.twitchChannelEdit.setText("channel")
+        self.window.ui.twitchConnectButton.click()
+
+        self.assertTrue(self.window.twitch_service.simulate_message("first", "one"))
+        self.assertTrue(self.window.twitch_service.simulate_message("second", "two"))
+        self.assertTrue(self.window.twitch_service.simulate_message("first", "again"))
+        self.application.processEvents()
+
+        first_message_events = [
+            call.args[0]
+            for call in self.window.automation_service.publish_trigger.call_args_list
+            if call.args[0].trigger_type == "first_message"
+        ]
+        self.assertEqual(len(first_message_events), 2)
+        self.assertEqual(
+            {event.context["user"] for event in first_message_events},
+            {"first", "second"},
+        )
 
     def test_first_message_editor_shows_shared_raid_suppression_settings(self) -> None:
         dialog = TwitchEventTriggerDialog(

@@ -12,6 +12,8 @@ def create_chat_notification(
     channel: str,
     username: str,
     text: str,
+    *,
+    user_id: str = "3000",
 ) -> dict:
     """Build a realistic channel.chat.message EventSub notification."""
 
@@ -44,7 +46,7 @@ def create_chat_notification(
             "broadcaster_user_id": "1000",
             "broadcaster_user_login": channel,
             "broadcaster_user_name": channel,
-            "chatter_user_id": "3000",
+            "chatter_user_id": user_id,
             "chatter_user_login": user_key,
             "chatter_user_name": username,
             "message_id": str(uuid4()),
@@ -63,6 +65,12 @@ def create_chat_notification(
             "is_source_only": False,
         },
     }
+
+
+def simulated_user_id(username: str) -> str:
+    """Return a stable, distinct identity for a Dev Tools test viewer."""
+    normalized = username.strip().casefold().encode("utf-8")
+    return f"sim-{hashlib.sha256(normalized).hexdigest()[:16]}"
 
 
 def create_eventsub_notification(

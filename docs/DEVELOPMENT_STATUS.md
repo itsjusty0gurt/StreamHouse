@@ -34,7 +34,7 @@
 
 | Item | Verified value |
 | --- | --- |
-| Date | 2026-10-27 (America/Edmonton) |
+| Date | 2026-10-29 (America/Edmonton) |
 | Branch | `develop`; accepted Twitch feature retained at `feature/twitch-module-conversion` |
 | Twitch Phase 3 starting HEAD | `c5319fceb3b1251d29ee0aa36f7066cf7a4ea3f9` |
 | Feature upstream | `origin/feature/twitch-module-conversion` |
@@ -90,6 +90,15 @@ details remain in Logs and are not appended to Chat.
 - Twitch Keyword / Phrase triggers now match the visible text of `/me` action
   messages while preserving action presentation metadata and excluding actions
   from command invocation.
+- Routine deletion now preserves the routine-list position and selects the next
+  nearby routine instead of rebuilding back at the top.
+- Counter Variables now expose scope-aware `.unit` values for channel lifetime,
+  current stream, viewer lifetime, and viewer current-stream totals while
+  preserving the existing numeric Variables.
+- The Twitch Users page no longer forces a full unchanged table rebuild whenever
+  it is shown, existing Twitch trigger event types are fixed while editing, and
+  Dev Tools test viewers use stable distinct identities so First Message can be
+  simulated without weakening production eligibility rules.
 - Channel-snapshot viewer-list refreshes now run on the Qt GUI thread, suppress
   transient selection callbacks while native list items are rebuilt, coalesce
   reentrant requests, and ignore shutdown/deleted-widget callbacks. This closes
@@ -234,6 +243,8 @@ Reproduction/validation requirements:
 | Post-merge Twitch/module/Automation/Backup/Variables/OBS gate | 404 passed, 138 subtests passed |
 | Post-merge MainWindow/startup slice | 55 passed, 5 subtests passed |
 | Post-merge packaged smoke | Exit code 0 with Twitch re-enabled |
+| Hub smoke-maintenance focused/broader gate | Focused regressions passed; broader gate 411 passed with three load-sensitive existing Users worker timeouts and the documented Counter cleanup `KeyError` |
+| Hub smoke-maintenance package | Normal Hub build and automated packaged startup/shutdown smoke passed; visual click-through was blocked by an already-running installed single instance |
 | Python compilation | Passed for `products/hub` and `shared` |
 | `git diff --check` | Passed |
 

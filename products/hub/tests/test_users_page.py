@@ -13,6 +13,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import shiboken6
 from PySide6.QtCore import QCoreApplication, QEvent, QThread, Qt
+from PySide6.QtGui import QShowEvent
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QWidget
 
@@ -102,6 +103,17 @@ class UsersPageTests(unittest.TestCase):
 
     def add_user(self, user_id: str, name: str, login: str, **kwargs) -> None:
         self.store.observe_message(user_id, name, user_login=login, **kwargs)
+
+    def test_reshowing_page_does_not_force_unchanged_table_rebuild(self) -> None:
+        calls = []
+        original_refresh = self.page.refresh
+        self.page.refresh = lambda *args, **kwargs: calls.append((args, kwargs))
+        try:
+            self.page.showEvent(QShowEvent())
+        finally:
+            self.page.refresh = original_refresh
+
+        self.assertEqual(calls, [((), {})])
 
     def test_search_matches_display_name_and_login_case_insensitively(self) -> None:
         self.add_user("1", "JoeViewer", "joe_login")

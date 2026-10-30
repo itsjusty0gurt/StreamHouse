@@ -960,6 +960,12 @@ class TwitchServiceTests(unittest.TestCase):
         self.assertIsNotNone(messages[0].received_at.tzinfo)
         self.assertTrue(messages[0].message_id)
         self.assertEqual(messages[0].fragments[0].text, "Hi!")
+        first_user_id = messages[0].user_id
+
+        self.assertTrue(self.service.simulate_message("viewer", "Again"))
+        self.assertTrue(self.service.simulate_message("other", "Hello"))
+        self.assertEqual(messages[1].user_id, first_user_id)
+        self.assertNotEqual(messages[2].user_id, first_user_id)
 
     def test_received_chat_content_is_not_written_to_logs(self) -> None:
         output = io.StringIO()

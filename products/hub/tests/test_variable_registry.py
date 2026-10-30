@@ -395,13 +395,23 @@ def test_counter_variables_map_all_scopes_and_use_stable_user_id() -> None:
 
         assert {item.name for item in provider.definitions()} == {
             "counter.deaths.total",
+            "counter.deaths.total.unit",
             "counter.deaths.stream",
+            "counter.deaths.stream.unit",
             "counter.deaths.user.total",
+            "counter.deaths.user.total.unit",
             "counter.deaths.user.stream",
+            "counter.deaths.user.stream.unit",
         }
         assert all(
             item.data_type is VariableDataType.INTEGER
             for item in provider.definitions()
+            if not item.name.endswith(".unit")
+        )
+        assert all(
+            item.data_type is VariableDataType.TEXT
+            for item in provider.definitions()
+            if item.name.endswith(".unit")
         )
         assert registry.resolve("counter.deaths") is None
         assert registry.resolve("counter.deaths.viewer") is None
@@ -439,6 +449,51 @@ def test_counter_variables_map_all_scopes_and_use_stable_user_id() -> None:
         assert registry.resolve(
             "counter.deaths.user.stream", {"user.id": "222"}
         ).value == 6
+        assert registry.resolve("counter.deaths.total.unit").value == "deaths"
+        assert registry.resolve("counter.deaths.stream.unit").value == "deaths"
+        assert registry.resolve(
+            "counter.deaths.user.total.unit", {"user.id": "111"}
+        ).value == "deaths"
+        assert registry.resolve(
+            "counter.deaths.user.stream.unit", {"user.id": "111"}
+        ).value == "deaths"
+
+        service.set_value("deaths", "channel_total", 1)
+        service.set_value("deaths", "stream_total", 1, stream_id="stream-1")
+        service.set_value("deaths", "viewer_total", 1, user_id="111")
+        service.set_value(
+            "deaths",
+            "viewer_stream_total",
+            1,
+            user_id="111",
+            stream_id="stream-1",
+        )
+        assert registry.resolve("counter.deaths.total.unit").value == "death"
+        assert registry.resolve("counter.deaths.stream.unit").value == "death"
+        assert registry.resolve(
+            "counter.deaths.user.total.unit", {"user.id": "111"}
+        ).value == "death"
+        assert registry.resolve(
+            "counter.deaths.user.stream.unit", {"user.id": "111"}
+        ).value == "death"
+        assert registry.resolve("counter.deaths.total").value == 1
+        assert registry.resolve("counter.deaths.stream").value == 1
+        assert registry.resolve(
+            "counter.deaths.user.total", {"user.id": "111"}
+        ).value == 1
+        assert registry.resolve(
+            "counter.deaths.user.stream", {"user.id": "111"}
+        ).value == 1
+        service.set_value("deaths", "channel_total", 9)
+        service.set_value("deaths", "stream_total", 7, stream_id="stream-1")
+        service.set_value("deaths", "viewer_total", 3, user_id="111")
+        service.set_value(
+            "deaths",
+            "viewer_stream_total",
+            2,
+            user_id="111",
+            stream_id="stream-1",
+        )
         template = (
             "{counter.deaths.total}|{counter.deaths.stream}|"
             "{counter.deaths.user.total}|{counter.deaths.user.stream}"
@@ -495,6 +550,12 @@ def test_counter_variables_map_all_scopes_and_use_stable_user_id() -> None:
         assert all(
             item.data_type is VariableDataType.NUMBER
             for item in decimal_definitions.values()
+            if not item.name.endswith(".unit")
+        )
+        assert all(
+            item.data_type is VariableDataType.TEXT
+            for item in decimal_definitions.values()
+            if item.name.endswith(".unit")
         )
         assert registry.resolve("counter.coffee.total").value == Decimal("0.3")
         assert registry.resolve(
@@ -534,15 +595,22 @@ def test_counter_variable_definitions_report_untracked_and_missing_context() -> 
         }
         assert set(definitions) == {
             "counter.deaths.total",
+            "counter.deaths.total.unit",
             "counter.deaths.stream",
+            "counter.deaths.stream.unit",
             "counter.deaths.user.total",
+            "counter.deaths.user.total.unit",
             "counter.deaths.user.stream",
+            "counter.deaths.user.stream.unit",
         }
         assert registry.resolve("counter.deaths.total").available
         for name in (
             "counter.deaths.stream",
+            "counter.deaths.stream.unit",
             "counter.deaths.user.total",
+            "counter.deaths.user.total.unit",
             "counter.deaths.user.stream",
+            "counter.deaths.user.stream.unit",
         ):
             snapshot = registry.resolve(name, {"user.id": "111"})
             assert not snapshot.available

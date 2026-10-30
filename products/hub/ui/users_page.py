@@ -343,7 +343,7 @@ class UsersPage(QWidget):
                 ),
             )
         if not force and signature == self._signature:
-            return
+            return False
         self._signature = signature
         query = self.search.text().strip().casefold()
         records = [
@@ -386,6 +386,7 @@ class UsersPage(QWidget):
             else "No users recorded yet. Users appear as Hub observes Twitch chat/activity."
         )
         self._show_details()
+        return True
 
     def select_user(self, user_id):
         self.selected_id = user_id
@@ -851,7 +852,10 @@ class UsersPage(QWidget):
         super().showEvent(event)
         self._closing = False
         self.timer.start()
-        self.refresh(force=True)
+        if not self.refresh():
+            # Preserve the detail/counter refresh that showEvent historically
+            # performed without rebuilding every unchanged user-table row.
+            self._show_details()
 
     def closeEvent(self, event):
         self.shutdown()

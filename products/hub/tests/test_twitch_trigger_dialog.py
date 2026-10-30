@@ -28,6 +28,8 @@ def test_moderation_trigger_editor_uses_friendly_user_and_status_filters() -> No
     dialog.show()
     app.processEvents()
 
+    assert not dialog.event_type_combo.isEnabled()
+    assert dialog.event_type_combo.currentData() == "channel.unban_request.resolve"
     assert dialog.user_filter_edit.isVisible()
     assert dialog.status_filter_combo.isVisible()
     assert dialog.user_filter_edit.text() == "viewer"
@@ -56,6 +58,7 @@ def test_non_moderation_trigger_keeps_friendly_filters_hidden() -> None:
     dialog.show()
     app.processEvents()
 
+    assert dialog.event_type_combo.isEnabled()
     assert not dialog.user_filter_edit.isVisible()
     assert not dialog.status_filter_combo.isVisible()
     dialog.close()
