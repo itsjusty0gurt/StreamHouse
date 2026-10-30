@@ -15,7 +15,6 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import shiboken6
 from PySide6.QtCore import QCoreApplication, QEvent, QThread, Qt
 from PySide6.QtGui import QShowEvent
-from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QWidget
 
 from products.hub.counters.models import CounterDefinition
@@ -82,7 +81,9 @@ class UsersPageTests(unittest.TestCase):
             QApplication.processEvents()
             if not self.page._counter_pending and not self.page._counter_write_pending:
                 return
-            QTest.qWait(10)
+            # Release Python execution to the QRunnable without running a
+            # nested Qt wait loop that also fires the page's refresh timer.
+            sleep(0.01)
         self.fail("Counter operation did not finish.")
 
     def wait_for_counter_write(self) -> None:
@@ -90,7 +91,7 @@ class UsersPageTests(unittest.TestCase):
             QApplication.processEvents()
             if not self.page._counter_write_pending:
                 return
-            QTest.qWait(10)
+            sleep(0.01)
         self.fail("Counter write did not finish.")
 
     @staticmethod
@@ -99,7 +100,7 @@ class UsersPageTests(unittest.TestCase):
             QApplication.processEvents()
             if event.is_set():
                 return
-            QTest.qWait(10)
+            sleep(0.01)
         raise AssertionError("Worker did not start.")
 
     def add_user(self, user_id: str, name: str, login: str, **kwargs) -> None:

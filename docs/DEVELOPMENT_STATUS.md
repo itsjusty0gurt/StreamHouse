@@ -210,6 +210,10 @@ Reproduction/validation requirements:
   no longer registers a per-Counter unittest cleanup that ran after the fixture
   had already removed its entire temporary data root. Production deletion
   remains intentionally strict for unknown Counter IDs.
+- **Resolved Users Counter worker test timeouts:** the Users UI worker waits now
+  pump queued GUI completions while yielding Python execution to the serialized
+  Counter worker. They no longer use nested Qt waits that fire the page's
+  periodic refresh timer and add load-dependent Counter reads during a write.
 - **Known test isolation issue:** the complete gate can deliver late AI
   memory-expiry log callbacks into the Python-script logger mock. The affected
   Python-script logging test passes in isolation; no assertion was weakened.
@@ -244,8 +248,8 @@ Reproduction/validation requirements:
 | Post-merge Twitch/module/Automation/Backup/Variables/OBS gate | 404 passed, 138 subtests passed |
 | Post-merge MainWindow/startup slice | 55 passed, 5 subtests passed |
 | Post-merge packaged smoke | Exit code 0 with Twitch re-enabled |
-| Hub smoke-maintenance focused/broader gate | Focused regressions passed; broader gate 411 passed with three load-sensitive existing Users worker timeouts and the documented Counter cleanup `KeyError` |
-| Hub smoke-maintenance package | Normal Hub build and automated packaged startup/shutdown smoke passed; visual click-through was blocked by an already-running installed single instance |
+| Hub smoke-maintenance focused/broader gate | Users suite passed in five consecutive runs (100 tests, 125 subtests total); Users/Counter gate passed 67 tests and 35 subtests; relevant MainWindow slice passed 7 tests unrestricted after the known restricted QtWebEngine breakpoint |
+| Hub smoke-maintenance package | Normal Hub build and automated packaged startup/shutdown smoke passed; the follow-up visual click-through remained blocked by an already-running installed single instance and was not forced |
 | Python compilation | Passed for `products/hub` and `shared` |
 | `git diff --check` | Passed |
 
