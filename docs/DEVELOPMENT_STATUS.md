@@ -205,10 +205,11 @@ Reproduction/validation requirements:
   `56dfb338dda549629707d76639def744` belongs to routine `Ban User`; its original
   trigger survives only in a quarantined Twitch store while the current routine
   also retains a valid replacement trigger.
-- **Known test issue:**
+- **Resolved Counter test cleanup issue:**
   `MainWindowTests.test_counters_page_refreshes_for_stream_and_counter_changes`
-  currently raises `KeyError` during test cleanup after its Counter definition
-  has already been removed. It predates and is unrelated to Twitch Phase 3.
+  no longer registers a per-Counter unittest cleanup that ran after the fixture
+  had already removed its entire temporary data root. Production deletion
+  remains intentionally strict for unknown Counter IDs.
 - **Known test isolation issue:** the complete gate can deliver late AI
   memory-expiry log callbacks into the Python-script logger mock. The affected
   Python-script logging test passes in isolation; no assertion was weakened.
@@ -250,8 +251,8 @@ Reproduction/validation requirements:
 
 ## Next recommended steps
 
-1. Diagnose the independent Counter cleanup, Windows forced-termination, and
-   logger-isolation tests.
+1. Diagnose the independent Windows forced-termination and logger-isolation
+   tests.
 2. Make static OBS presentation adapters provider-neutral only where another
    module or a concrete maintenance benefit justifies the abstraction.
 3. Consider Modules-page, navigation, or docking work as separate scoped changes.

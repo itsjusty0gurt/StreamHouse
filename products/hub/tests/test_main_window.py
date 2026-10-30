@@ -5362,7 +5362,10 @@ class MainWindowTests(unittest.TestCase):
         self.window.counter_service.create_counter(
             CounterDefinition(counter_id, "Coffee", "ml", "ml")
         )
-        self.addCleanup(self.window.counter_service.delete_counter, counter_id)
+        # The Counter lives under this test's temporary data root, which
+        # tearDown removes. unittest cleanups run after tearDown, so registering
+        # delete_counter here would incorrectly operate on an already-removed
+        # store and mask the behavior this test is exercising.
         page._select_counter(counter_id)
         self.assertIn("Stream offline", page.list.currentItem().text())
         self.assertFalse(page.set_stream.isEnabled())

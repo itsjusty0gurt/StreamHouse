@@ -78,6 +78,13 @@ class CounterStoreTests(unittest.TestCase):
         self.assertIsNotNone(self.service.get_counter("bonks"))
         self.assertEqual([item.counter_id for item in self.service.list_counters()], ["bonks"])
 
+    def test_deleting_a_missing_counter_remains_a_strict_error(self) -> None:
+        self.service.create_counter(definition())
+        self.service.delete_counter("farts")
+
+        with self.assertRaises(KeyError):
+            self.service.delete_counter("farts")
+
     def test_definition_requires_a_tracked_scope_and_index_is_deterministic(self) -> None:
         with self.assertRaises(ValueError):
             definition(track_channel_total=False, track_stream_total=False, track_viewer_total=False)
