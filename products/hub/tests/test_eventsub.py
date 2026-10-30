@@ -48,6 +48,46 @@ def signed_headers(
 
 
 class TwitchMessageParserTests(unittest.TestCase):
+    def test_normalizes_twitch_action_text_and_fragments(self) -> None:
+        payload = create_chat_notification(
+            "channel",
+            "Viewer",
+            "\x01ACTION really likes coffee today\x01",
+        )
+
+        message = TwitchMessageParser.parse(
+            payload["event"],
+            datetime.now(timezone.utc),
+        )
+
+        self.assertTrue(message.is_action)
+        self.assertEqual(message.text, "really likes coffee today")
+        self.assertEqual(
+            "".join(fragment.text for fragment in message.fragments),
+            message.text,
+        )
+        self.assertNotIn("\x01", message.text)
+
+    def test_normalizes_literal_me_fallback_without_changing_normal_text(self) -> None:
+        action_payload = create_chat_notification(
+            "channel", "Viewer", "/me needs coffee"
+        )
+        normal_payload = create_chat_notification(
+            "channel", "Viewer", "I need coffee"
+        )
+
+        action = TwitchMessageParser.parse(
+            action_payload["event"], datetime.now(timezone.utc)
+        )
+        normal = TwitchMessageParser.parse(
+            normal_payload["event"], datetime.now(timezone.utc)
+        )
+
+        self.assertTrue(action.is_action)
+        self.assertEqual(action.text, "needs coffee")
+        self.assertFalse(normal.is_action)
+        self.assertEqual(normal.text, "I need coffee")
+
     def test_parses_badges_emotes_mentions_cheers_and_replies(self) -> None:
         payload = create_chat_notification(
             "channel", "Viewer", "Kappa Cheer100 @mod"

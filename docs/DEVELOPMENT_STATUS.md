@@ -87,6 +87,9 @@ details remain in Logs and are not appended to Chat.
 - Outgoing raids now expose a distinct **Raid Out Started** Automation trigger,
   and optional target-browser navigation begins as soon as Twitch accepts the
   Start Raid request instead of waiting for EventSub confirmation.
+- Twitch Keyword / Phrase triggers now match the visible text of `/me` action
+  messages while preserving action presentation metadata and excluding actions
+  from command invocation.
 - Channel-snapshot viewer-list refreshes now run on the Qt GUI thread, suppress
   transient selection callbacks while native list items are rebuilt, coalesce
   reentrant requests, and ignore shutdown/deleted-widget callbacks. This closes

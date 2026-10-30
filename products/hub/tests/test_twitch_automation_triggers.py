@@ -16,10 +16,12 @@ from products.hub.twitch.automation_triggers import (
 )
 from products.hub.twitch.commands import TwitchCommandTriggerStore
 from products.hub.twitch.models import TwitchEvent, TwitchEventTransport, TwitchMessage
+from products.hub.twitch.parser import TwitchMessageParser
 from products.hub.twitch.raid_contract import (
     RAID_COUNTDOWN_SECONDS,
     OutgoingRaidStartedEvent,
 )
+from products.hub.twitch.simulator import create_chat_notification
 from shared.streamhouse_runtime.json_store import JsonStoreCorruptionError
 
 
@@ -1453,6 +1455,55 @@ class TwitchEventTriggerStoreTests(unittest.TestCase):
         self.assertEqual(result[0].context["user_id"], "viewer-1")
         self.assertEqual(result[0].context["message_id"], "message-1")
         self.assertNotIn("command_data", result[0].context)
+
+    def test_keyword_phrase_matches_normal_and_action_visible_text_once(self) -> None:
+        routine = self.routines.add("Coffee response")
+        trigger = self.store.add_keyword_phrase(routine.routine_id, "coffee")
+        now = datetime.now(timezone.utc)
+        normal = TwitchMessageParser.parse(
+            create_chat_notification(
+                "channel", "Viewer", "I need coffee"
+            )["event"],
+            now,
+        )
+        action = TwitchMessageParser.parse(
+            create_chat_notification(
+                "channel",
+                "Viewer",
+                "\x01ACTION really likes coffee today\x01",
+            )["event"],
+            now,
+        )
+
+        normal_matches = self.store.evaluate_keyword_phrase(normal)
+        action_matches = self.store.evaluate_keyword_phrase(action)
+
+        self.assertEqual(
+            [match.trigger_id for match in normal_matches],
+            [trigger.trigger_id],
+        )
+        self.assertEqual(
+            [match.trigger_id for match in action_matches],
+            [trigger.trigger_id],
+        )
+        context = action_matches[0].context
+        self.assertEqual(context["keyword.message"], "really likes coffee today")
+        self.assertEqual(context["keyword.match"], "coffee")
+        self.assertEqual(context["keyword.before"], "really likes")
+        self.assertEqual(context["keyword.after"], "today")
+        self.assertEqual(context["message"], "really likes coffee today")
+
+    def test_keyword_phrase_action_non_match_does_not_fire(self) -> None:
+        routine = self.routines.add("Coffee response")
+        self.store.add_keyword_phrase(routine.routine_id, "coffee")
+        action = TwitchMessageParser.parse(
+            create_chat_notification(
+                "channel", "Viewer", "\x01ACTION drinks tea\x01"
+            )["event"],
+            datetime.now(timezone.utc),
+        )
+
+        self.assertEqual(self.store.evaluate_keyword_phrase(action), ())
 
     def test_keyword_phrase_match_modes_case_and_whole_word(self) -> None:
         cases = (

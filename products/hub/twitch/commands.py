@@ -936,6 +936,10 @@ class TwitchCommandTriggerDispatcher:
         message: TwitchMessage,
         context: Mapping[str, object] | None = None,
     ) -> TwitchCommandTriggerResult:
+        if message.is_action:
+            return TwitchCommandTriggerResult(
+                TwitchCommandTriggerOutcome.NOT_A_COMMAND
+            )
         text = message.text.strip()
         if not text.startswith("!"):
             return TwitchCommandTriggerResult(
