@@ -108,6 +108,7 @@ from products.hub.integrations.music_player import (
 from products.hub.integrations.music_triggers import MUSIC_TRIGGER_TYPES
 from products.hub.ui.automation_page import (
     AutomationPage,
+    NewRoutineDialog,
     RunHistoryDetailsDialog,
     TaskEditorDialog,
     TwitchEventTriggerDialog,
@@ -741,7 +742,54 @@ class MainWindowTests(unittest.TestCase):
         dialog_type.assert_called_once_with(
             page.routine_store,
             page,
-            page.event_trigger_store,
+        )
+
+    def test_new_routine_dialog_collects_only_routine_metadata(self) -> None:
+        page = self.window.automation_page
+        dialog = NewRoutineDialog(page.routine_store, page)
+        dialog.name_edit.setText("Manual helper")
+        dialog.group_combo.setCurrentText("Ungrouped")
+        dialog.description_edit.setText("Run manually or from another routine")
+
+        self.assertEqual(
+            dialog.values(),
+            {
+                "name": "Manual helper",
+                "group_name": "Ungrouped",
+                "group_id": "",
+                "description": "Run manually or from another routine",
+            },
+        )
+        self.assertFalse(hasattr(dialog, "trigger_combo"))
+        self.assertFalse(hasattr(dialog, "enabled_check"))
+
+    def test_routine_creation_is_metadata_only_and_selects_new_routine(self) -> None:
+        page = self.window.automation_page
+        dialog = Mock()
+        dialog.exec.return_value = QDialog.DialogCode.Accepted
+        dialog.values.return_value = {
+            "name": "Reusable helper",
+            "group_name": "Helpers",
+            "group_id": "",
+            "description": "Called by other routines",
+        }
+
+        with patch(
+            "products.hub.ui.automation_page.NewRoutineDialog",
+            return_value=dialog,
+        ):
+            routine = page.create_routine()
+
+        self.assertIsNotNone(routine)
+        assert routine is not None
+        saved = page.routine_store.get(routine.routine_id)
+        self.assertEqual(saved.name, "Reusable helper")
+        self.assertEqual(saved.description, "Called by other routines")
+        self.assertEqual(saved.trigger_ids, ())
+        self.assertEqual(page._selected_routine_id, saved.routine_id)
+        self.assertEqual(
+            page.routine_store.get_group(saved.group_id).name,
+            "Helpers",
         )
 
     def test_routine_group_expansion_survives_edit_add_delete_and_refresh(self) -> None:

@@ -122,10 +122,7 @@ from products.hub.obs_service.triggers import (
 )
 from products.hub.modules import AutomationSubpageRegistry, TriggerProviderRegistry
 from products.hub.soundboard.store import SoundboardStore
-from products.hub.twitch.commands import (
-    TwitchCommandPermission,
-    TwitchCommandTriggerStore,
-)
+from products.hub.twitch.commands import TwitchCommandTriggerStore
 from products.hub.twitch.tasks import SendTwitchChatMessageTask, TWITCH_TASK_LABELS
 from products.hub.twitch.automation_triggers import (
     ADS_TRIGGER_TYPES,
@@ -204,7 +201,6 @@ class NewRoutineDialog(QDialog):
         self,
         store: RoutineStore,
         parent: QWidget | None = None,
-        event_trigger_store: TwitchEventTriggerStore | None = None,
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Create Routine")
@@ -223,158 +219,10 @@ class NewRoutineDialog(QDialog):
         )
         self.description_edit = QLineEdit()
         self.description_edit.setPlaceholderText("Optional description")
-        self.enabled_check = QCheckBox("Enable this routine")
-        self.enabled_check.setChecked(True)
-        self.trigger_combo = QComboBox()
-        self.trigger_combo.addItem("Manual only", "manual")
-        self.trigger_combo.addItem("Twitch chat command", "twitch.command")
-        self.trigger_combo.addItem("Twitch event", "twitch.eventsub")
-        self.trigger_combo.addItem("Core program event", "core.lifecycle")
-        self.trigger_combo.addItem("OBS WebSocket event", "obs.event")
         form.addRow("Name", self.name_edit)
         form.addRow("Group", self.group_combo)
         form.addRow("Description", self.description_edit)
-        form.addRow("Starts from", self.trigger_combo)
-        form.addRow("", self.enabled_check)
         layout.addLayout(form)
-
-        self.command_group = QGroupBox("Twitch Command")
-        command_form = QFormLayout(self.command_group)
-        self.command_edit = QLineEdit()
-        self.command_edit.setPlaceholderText("welcome")
-        self.alternate_commands_edit = QLineEdit()
-        self.alternate_commands_edit.setPlaceholderText("hello, hi")
-        self.response_edit = QTextEdit()
-        self.response_edit.setMaximumHeight(90)
-        self.response_edit.setPlaceholderText("Welcome, {user.display_name}!")
-        self.permission_combo = QComboBox()
-        for permission in TwitchCommandPermission:
-            self.permission_combo.addItem(
-                permission.value.replace("_", " ").title(), permission.value
-            )
-        self.global_cooldown_spin = QSpinBox()
-        self.global_cooldown_spin.setRange(0, 3600)
-        self.global_cooldown_spin.setSuffix(" seconds")
-        self.global_cooldown_spin.setValue(10)
-        self.user_cooldown_spin = QSpinBox()
-        self.user_cooldown_spin.setRange(0, 86400)
-        self.user_cooldown_spin.setSuffix(" seconds")
-        self.user_cooldown_spin.setValue(30)
-        command_form.addRow("Command", self.command_edit)
-        command_form.addRow(
-            "Alternate commands", self.alternate_commands_edit
-        )
-        command_form.addRow("First response task", self.response_edit)
-        command_form.addRow("Permission", self.permission_combo)
-        command_form.addRow("Global cooldown", self.global_cooldown_spin)
-        command_form.addRow("Viewer cooldown", self.user_cooldown_spin)
-        layout.addWidget(self.command_group)
-        self.command_group.hide()
-
-        self.event_group = QGroupBox("Twitch Event")
-        event_form = QFormLayout(self.event_group)
-        self.event_type_combo = QComboBox()
-        for event_type in TWITCH_EVENT_AUTOMATION_TYPES:
-            if event_type == CHANNEL_POINT_REDEMPTION_EVENT_TYPE:
-                continue
-            self.event_type_combo.addItem(
-                twitch_trigger_display_name(event_type, menu=True), event_type
-            )
-        self.event_filters_edit = QLineEdit()
-        self.event_filters_edit.setPlaceholderText(
-            "Optional: reward.id=abc123, tier=1000"
-        )
-        event_help = QLabel(
-            "Leave filters empty to run for every event of this type. Nested "
-            "fields use dots, such as reward.id or reward.title."
-        )
-        event_help.setWordWrap(True)
-        self.event_user_filter_edit = QLineEdit()
-        self.event_user_filter_edit.setPlaceholderText("Any user")
-        self.event_status_filter_combo = QComboBox()
-        self.event_status_filter_combo.addItem("Any", "")
-        self.event_status_filter_combo.addItem("Approved", "approved")
-        self.event_status_filter_combo.addItem("Denied", "denied")
-        self.event_reset_spin = QSpinBox()
-        self.event_reset_spin.setRange(1, 180)
-        self.event_reset_spin.setValue(15)
-        self.event_reset_spin.setSuffix(" minutes offline")
-        self.event_raid_suppression_check = QCheckBox(
-            "Suppress First Message after incoming raids"
-        )
-        self.event_raid_suppression_check.setChecked(
-            event_trigger_store.first_message_raid_suppression_enabled
-            if event_trigger_store is not None
-            else True
-        )
-        self.event_raid_suppression_spin = QSpinBox()
-        self.event_raid_suppression_spin.setRange(
-            1,
-            TwitchEventTriggerStore.MAX_RAID_SUPPRESSION_MINUTES,
-        )
-        self.event_raid_suppression_spin.setValue(
-            event_trigger_store.first_message_raid_suppression_minutes
-            if event_trigger_store is not None
-            else TwitchEventTriggerStore.DEFAULT_RAID_SUPPRESSION_MINUTES
-        )
-        self.event_raid_suppression_spin.setSuffix(" minutes")
-        self.event_raid_suppression_help = QLabel(
-            "This setting is shared by all First Message triggers."
-        )
-        self.event_raid_suppression_help.setWordWrap(True)
-        event_form.addRow("Event", self.event_type_combo)
-        event_form.addRow("User", self.event_user_filter_edit)
-        event_form.addRow("Status", self.event_status_filter_combo)
-        event_form.addRow("Advanced field filters", self.event_filters_edit)
-        event_form.addRow("Reset welcomes after", self.event_reset_spin)
-        event_form.addRow("", self.event_raid_suppression_check)
-        event_form.addRow(
-            "Raid suppression duration",
-            self.event_raid_suppression_spin,
-        )
-        event_form.addRow("", self.event_raid_suppression_help)
-        event_form.addRow("", event_help)
-        layout.addWidget(self.event_group)
-        self.event_group.hide()
-
-        self.core_group = QGroupBox("Core Program Event")
-        core_form = QFormLayout(self.core_group)
-        self.core_event_combo = QComboBox()
-        for event_type, label in CORE_TRIGGER_TYPES.items():
-            if event_type == "timer":
-                continue
-            self.core_event_combo.addItem(label, event_type)
-        core_help = QLabel(
-            "Application Started fires after Streamhouse Hub's window opens. Application "
-            "Closing fires before services and automation are shut down."
-        )
-        core_help.setWordWrap(True)
-        core_form.addRow("Event", self.core_event_combo)
-        core_form.addRow("", core_help)
-        layout.addWidget(self.core_group)
-        self.core_group.hide()
-
-        self.obs_group = QGroupBox("OBS Event")
-        obs_form = QFormLayout(self.obs_group)
-        self.obs_event_combo = QComboBox()
-        for event_type, label in OBS_TRIGGER_TYPES.items():
-            self.obs_event_combo.addItem(label, event_type)
-        self.obs_filters_edit = QLineEdit()
-        self.obs_filters_edit.setPlaceholderText("Optional: sceneName=Gameplay")
-        obs_form.addRow("Event", self.obs_event_combo)
-        obs_form.addRow("Field filters", self.obs_filters_edit)
-        layout.addWidget(self.obs_group)
-        self.obs_group.hide()
-        self.trigger_combo.currentIndexChanged.connect(
-            self._update_trigger_fields
-        )
-        self.event_type_combo.currentIndexChanged.connect(
-            self._update_trigger_fields
-        )
-        self.event_raid_suppression_check.toggled.connect(
-            self._update_trigger_fields
-        )
-        self._update_trigger_fields()
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Save
@@ -385,84 +233,12 @@ class NewRoutineDialog(QDialog):
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
 
-    def _update_trigger_fields(self, _index: int = 0) -> None:
-        trigger_type = self.trigger_combo.currentData()
-        self.command_group.setVisible(trigger_type == "twitch.command")
-        self.event_group.setVisible(trigger_type == "twitch.eventsub")
-        self.core_group.setVisible(trigger_type == "core.lifecycle")
-        self.obs_group.setVisible(trigger_type == "obs.event")
-        reset_visible = (
-            trigger_type == "twitch.eventsub"
-            and self.event_type_combo.currentData()
-            == "channel.chat.first_message"
-        )
-        self.event_reset_spin.setVisible(reset_visible)
-        reset_label = self.event_group.layout().labelForField(
-            self.event_reset_spin
-        )
-        if reset_label is not None:
-            reset_label.setVisible(reset_visible)
-        self.event_raid_suppression_check.setVisible(reset_visible)
-        self.event_raid_suppression_spin.setVisible(
-            reset_visible and self.event_raid_suppression_check.isChecked()
-        )
-        self.event_raid_suppression_help.setVisible(reset_visible)
-        event_type = str(self.event_type_combo.currentData())
-        for field, visible in (
-            (self.event_user_filter_edit, event_type in TWITCH_USER_FILTER_TYPES),
-            (
-                self.event_status_filter_combo,
-                event_type in TWITCH_STATUS_FILTER_TYPES,
-            ),
-        ):
-            field.setVisible(visible)
-            label = self.event_group.layout().labelForField(field)
-            if label is not None:
-                label.setVisible(visible)
-        suppression_label = self.event_group.layout().labelForField(
-            self.event_raid_suppression_spin
-        )
-        if suppression_label is not None:
-            suppression_label.setVisible(
-                reset_visible and self.event_raid_suppression_check.isChecked()
-            )
-
     def values(self) -> dict[str, object]:
-        aliases = [
-            value.strip()
-            for value in self.alternate_commands_edit.text().split(",")
-            if value.strip()
-        ]
         return {
             "name": self.name_edit.text(),
             "group_name": self.group_combo.currentText(),
             "group_id": str(self.group_combo.currentData() or ""),
             "description": self.description_edit.text(),
-            "enabled": self.enabled_check.isChecked(),
-            "trigger_type": str(self.trigger_combo.currentData()),
-            "command": self.command_edit.text(),
-            "response": self.response_edit.toPlainText(),
-            "aliases": aliases,
-            "permission": str(self.permission_combo.currentData()),
-            "global_cooldown_seconds": self.global_cooldown_spin.value(),
-            "user_cooldown_seconds": self.user_cooldown_spin.value(),
-            "event_type": str(self.event_type_combo.currentData()),
-            "event_filters": _twitch_event_filters(
-                str(self.event_type_combo.currentData()),
-                self.event_filters_edit.text(),
-                user_login=self.event_user_filter_edit.text(),
-                status=str(self.event_status_filter_combo.currentData() or ""),
-            ),
-            "event_reset_minutes": self.event_reset_spin.value(),
-            "event_raid_suppression_enabled": (
-                self.event_raid_suppression_check.isChecked()
-            ),
-            "event_raid_suppression_minutes": (
-                self.event_raid_suppression_spin.value()
-            ),
-            "core_event_type": str(self.core_event_combo.currentData()),
-            "obs_event_type": str(self.obs_event_combo.currentData()),
-            "obs_filters": _parse_event_filters(self.obs_filters_edit.text()),
         }
 
 
@@ -5190,7 +4966,6 @@ class AutomationPage(QWidget):
         dialog = NewRoutineDialog(
             self.routine_store,
             self,
-            self.event_trigger_store,
         )
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return None
@@ -5199,58 +4974,11 @@ class AutomationPage(QWidget):
             group_id = self._resolve_group(
                 str(values["group_name"]), str(values["group_id"])
             )
-            if values["trigger_type"] == "twitch.command":
-                command = self.trigger_store.add(
-                    str(values["command"]),
-                    str(values["response"]),
-                    aliases=values["aliases"],
-                    permission=str(values["permission"]),
-                    global_cooldown_seconds=int(values["global_cooldown_seconds"]),
-                    user_cooldown_seconds=int(values["user_cooldown_seconds"]),
-                )
-                routine = self.routine_store.update(
-                    command.routine_id,
-                    name=str(values["name"]),
-                    group_id=group_id,
-                    description=str(values["description"]),
-                    enabled=bool(values["enabled"]),
-                )
-                self.trigger_store.set_enabled(command.trigger_id, bool(values["enabled"]))
-                self.commands_changed()
-            else:
-                routine = self.routine_store.add(
-                    str(values["name"]),
-                    group_id=group_id,
-                    description=str(values["description"]),
-                    enabled=bool(values["enabled"]),
-                )
-                if values["trigger_type"] == "twitch.eventsub":
-                    self.event_trigger_store.add(
-                        routine.routine_id,
-                        str(values["event_type"]),
-                        filters=values["event_filters"],
-                        enabled=bool(values["enabled"]),
-                        reset_minutes=int(values["event_reset_minutes"]),
-                        raid_suppression_enabled=bool(
-                            values["event_raid_suppression_enabled"]
-                        ),
-                        raid_suppression_minutes=int(
-                            values["event_raid_suppression_minutes"]
-                        ),
-                    )
-                elif values["trigger_type"] == "core.lifecycle":
-                    self.core_trigger_store.add(
-                        routine.routine_id,
-                        str(values["core_event_type"]),
-                        enabled=bool(values["enabled"]),
-                    )
-                elif values["trigger_type"] == "obs.event":
-                    self.obs_trigger_store.add(
-                        routine.routine_id,
-                        str(values["obs_event_type"]),
-                        filters=values["obs_filters"],
-                        enabled=bool(values["enabled"]),
-                    )
+            routine = self.routine_store.add(
+                str(values["name"]),
+                group_id=group_id,
+                description=str(values["description"]),
+            )
         except (OSError, TypeError, ValueError) as error:
             self._error("Could Not Create Routine", error)
             return None
