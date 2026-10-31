@@ -84,6 +84,7 @@ from products.hub.integrations.music_player import (
 from products.hub.integrations.music_triggers import MusicTriggerStore
 from products.hub.automation.service import AutomationService
 from products.hub.automation.routines import RoutineStore
+from products.hub.automation.quick_actions import QuickActionStore
 from products.hub.automation.models import AutomationExecutionResult, TriggerEvent
 from products.hub.automation.custom_variables import CustomVariableStore
 from products.hub.automation.variable_providers import (
@@ -177,6 +178,7 @@ from products.hub.modules import (
     AutomationSubpageRegistry,
     BackupContributorRegistry,
     ModuleContext,
+    ModuleDockRegistry,
     ModuleRegistry,
     ModuleTabRegistry,
     TriggerProviderRegistry,
@@ -238,6 +240,7 @@ from products.hub.ui.channel_points_page import ChannelPointsPage
 from products.hub.ui.channel_information_page import ChannelInformationPage
 from products.hub.ui.twitch_chat_workspace import TwitchChatWorkspaceLayout
 from products.hub.ui.table_sizing import configure_semantic_columns
+from products.hub.ui.live_workspace import LiveWorkspace, QuickActionsPanel
 from shared.streamhouse_shared.responsive import (
     LAYOUT_MODE_AUTOMATIC,
     LAYOUT_MODE_LANDSCAPE,
@@ -438,6 +441,12 @@ class MainWindow(QMainWindow):
         self.twitch_module.bind_ui_factories(
             workspace=self._create_twitch_workspace,
             commands=self._build_twitch_commands_tab,
+            live_panels={
+                "twitch.chat": self._create_twitch_chat_live_panel,
+                "twitch.activity": self._create_twitch_activity_live_panel,
+                "twitch.chatters": self._create_twitch_chatters_live_panel,
+                "twitch.stream-tools": self._create_twitch_stream_tools_live_panel,
+            },
         )
         self._last_twitch_auth_state = self.twitch_auth.state
         self._last_twitch_bot_auth_state = self.twitch_bot_auth.state
@@ -583,6 +592,7 @@ class MainWindow(QMainWindow):
         )
         self.action_registry = ActionRegistry()
         self.module_tab_registry = ModuleTabRegistry()
+        self.module_dock_registry = ModuleDockRegistry()
         self.automation_subpage_registry = AutomationSubpageRegistry()
         self.trigger_provider_registry = TriggerProviderRegistry()
         self.backup_contributor_registry = BackupContributorRegistry()
@@ -897,6 +907,7 @@ class MainWindow(QMainWindow):
         self._detach_twitch_workspace()
         self._build_automation_page()
         self._build_counters_page()
+        self._build_live_workspace()
         self._build_module_tabs()
         self._build_timers_page()
         self._build_wiki_page()
@@ -913,6 +924,7 @@ class MainWindow(QMainWindow):
         self.navigation_group.setExclusive(True)
         for button in (
             self.ui.dashboardButton,
+            self.live_button,
             self.ui.twitchButton,
             self.automation_button,
             self.wiki_button,
@@ -2887,6 +2899,7 @@ class MainWindow(QMainWindow):
                 automation=self.automation_service,
                 trigger_providers=self.trigger_provider_registry,
                 tabs=self.module_tab_registry,
+                docks=self.module_dock_registry,
                 automation_pages=self.automation_subpage_registry,
                 backup=self.backup_contributor_registry,
                 data_root=data_root,
@@ -2905,7 +2918,7 @@ class MainWindow(QMainWindow):
     def _build_module_tabs(self) -> None:
         self.module_navigation_buttons: dict[str, QPushButton] = {}
         self.module_pages: dict[str, QWidget] = {}
-        insert_at = 4
+        insert_at = 3
         for contribution in self.module_tab_registry.contributions():
             page = contribution.factory(self)
             if not isinstance(page, QWidget):
@@ -2938,6 +2951,72 @@ class MainWindow(QMainWindow):
         if isinstance(parent, QWidget):
             self.ui.twitchPage.setParent(parent)
         return self.ui.twitchPage
+
+    def _create_twitch_chat_live_panel(self, parent: object) -> object:
+        index = self.ui.twitchDetailTabs.indexOf(self.ui.twitchChatTab)
+        if index >= 0:
+            self.ui.twitchDetailTabs.removeTab(index)
+        if isinstance(parent, QWidget):
+            self.ui.twitchChatTab.setParent(parent)
+        return self.ui.twitchChatTab
+
+    def _create_twitch_activity_live_panel(self, parent: object) -> object:
+        if isinstance(parent, QWidget):
+            self.activity_panel.setParent(parent)
+        return self.activity_panel
+
+    def _create_twitch_chatters_live_panel(self, parent: object) -> object:
+        if isinstance(parent, QWidget):
+            self.chatter_panel.setParent(parent)
+        return self.chatter_panel
+
+    def _create_twitch_stream_tools_live_panel(self, parent: object) -> object:
+        self.ui.twitchPageLayout.removeWidget(self.stream_tools_container)
+        if isinstance(parent, QWidget):
+            self.stream_tools_container.setParent(parent)
+        return self.stream_tools_container
+
+    def _build_live_workspace(self) -> None:
+        self.live_button = QPushButton("Live")
+        self.live_button.setCheckable(True)
+        self.live_button.clicked.connect(self.show_live)
+        self.quick_action_store = QuickActionStore(
+            self.data_root / "automation" / "quick_actions.json"
+        )
+        self.quick_actions_panel = QuickActionsPanel(
+            self.quick_action_store,
+            self.automation_page.routine_store,
+            self,
+        )
+        self.quick_actions_panel.routine_requested.connect(
+            self._run_live_quick_action
+        )
+        self.live_workspace = LiveWorkspace(
+            self.module_dock_registry.contributions(),
+            self.quick_actions_panel,
+            self.window_state_store.settings,
+            self,
+        )
+        chat_index = self.channel_tabs.indexOf(self.twitch_channel_splitter)
+        if chat_index >= 0 and "twitch.chat" in self.live_workspace.docks:
+            self.channel_tabs.removeTab(chat_index)
+            self.twitch_channel_splitter.hide()
+        self.ui.verticalLayout.insertWidget(1, self.live_button)
+        self.ui.verticalLayout.removeWidget(self.automation_button)
+        self.ui.verticalLayout.insertWidget(2, self.automation_button)
+        self.ui.mainStack.addWidget(self.live_workspace)
+
+    @Slot(str)
+    def _run_live_quick_action(self, routine_id: str) -> None:
+        try:
+            result = self.automation_service.run_routine(routine_id)
+        except (OSError, ValueError) as error:
+            self.statusBar().showMessage(f"Quick Action could not run: {error}", 5_000)
+            return
+        routine = self.automation_page.routine_store.get(routine_id)
+        label = routine.name if routine is not None else "Quick Action"
+        self.automation_page.record_execution(result, label)
+        self.statusBar().showMessage(f"Ran {label}.", 3_000)
 
     def _service_connected(self, service: str) -> bool:
         if service == "obs":
@@ -6316,6 +6395,7 @@ class MainWindow(QMainWindow):
     def _show_startup_page(self) -> None:
         page_actions = {
             "Dashboard": self.show_dashboard,
+            "Live": self.show_live,
             "Twitch": self.show_twitch,
             "Automation": self.show_automation,
             "Timers": self.show_timers,
@@ -6329,6 +6409,11 @@ class MainWindow(QMainWindow):
     def show_dashboard(self) -> None:
         self.ui.mainStack.setCurrentWidget(self.ui.dashboardPage)
         self.ui.dashboardButton.setChecked(True)
+
+    @Slot()
+    def show_live(self) -> None:
+        self.ui.mainStack.setCurrentWidget(self.live_workspace)
+        self.live_button.setChecked(True)
 
     @Slot()
     def show_twitch(self) -> None:

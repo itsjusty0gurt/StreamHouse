@@ -42,6 +42,47 @@ class ModuleTabRegistry:
 
 
 @dataclass(frozen=True, slots=True)
+class ModuleDockContribution:
+    dock_id: str
+    owner_module_id: str
+    title: str
+    factory: Callable[[object], object] = field(repr=False, compare=False)
+    default_area: str = "right"
+    allowed_areas: frozenset[str] = frozenset({"left", "right", "top", "bottom"})
+    floatable: bool = True
+    visible_by_default: bool = True
+    order: int = 500
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "dock_id", validate_stable_id(self.dock_id, label="Dock ID"))
+        object.__setattr__(
+            self,
+            "owner_module_id",
+            validate_stable_id(self.owner_module_id, label="Owner module ID"),
+        )
+        if not self.title.strip():
+            raise ValueError("Module dock title cannot be blank.")
+        valid_areas = {"left", "right", "top", "bottom"}
+        if self.default_area not in valid_areas or not self.allowed_areas <= valid_areas:
+            raise ValueError("Module dock areas must be left, right, top, or bottom.")
+
+
+class ModuleDockRegistry:
+    def __init__(self) -> None:
+        self._docks: dict[str, ModuleDockContribution] = {}
+
+    def register(self, contribution: ModuleDockContribution) -> None:
+        if contribution.dock_id in self._docks:
+            raise ValueError(f'Dock "{contribution.dock_id}" is already registered.')
+        self._docks[contribution.dock_id] = contribution
+
+    def contributions(self) -> tuple[ModuleDockContribution, ...]:
+        return tuple(
+            sorted(self._docks.values(), key=lambda item: (item.order, item.dock_id))
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class AutomationSubpageContribution:
     page_id: str
     owner_module_id: str

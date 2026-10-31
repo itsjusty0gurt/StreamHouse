@@ -23,6 +23,8 @@ from products.hub.modules.contributions import (
     BackupContributorRegistry,
     ModuleTabContribution,
     ModuleTabRegistry,
+    ModuleDockContribution,
+    ModuleDockRegistry,
     TriggerProviderContribution,
     TriggerProviderRegistry,
 )
@@ -59,6 +61,8 @@ __all__ = [
     "ModuleStatus",
     "ModuleTabContribution",
     "ModuleTabRegistry",
+    "ModuleDockContribution",
+    "ModuleDockRegistry",
     "RestartRequired",
     "TriggerProviderContribution",
     "TriggerProviderRegistry",

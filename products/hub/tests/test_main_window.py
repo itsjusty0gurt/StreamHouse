@@ -318,6 +318,7 @@ class MainWindowTests(unittest.TestCase):
         self.assertEqual(self.window.windowTitle(), "Streamhouse Hub")
         cases = (
             (self.window.ui.dashboardButton, self.window.ui.dashboardPage),
+            (self.window.live_button, self.window.live_workspace),
             (self.window.ui.twitchButton, self.window.ui.twitchPage),
             (self.window.automation_button, self.window.automation_page),
             (self.window.connections_button, self.window.connections_page),
@@ -336,6 +337,46 @@ class MainWindowTests(unittest.TestCase):
                 1,
             )
         self.assertEqual(self.window.statusBar().currentMessage(), "")
+
+    def test_live_navigation_precedes_automation_and_module_tabs(self) -> None:
+        labels = [
+            item.widget().text()
+            for index in range(self.window.ui.verticalLayout.count())
+            if (item := self.window.ui.verticalLayout.itemAt(index)).widget() is not None
+            and isinstance(item.widget(), QPushButton)
+        ]
+        self.assertLess(labels.index("Dashboard"), labels.index("Live"))
+        self.assertLess(labels.index("Live"), labels.index("Automation"))
+        self.assertLess(labels.index("Automation"), labels.index("Twitch"))
+
+    def test_live_workspace_reuses_twitch_widgets_and_runs_quick_action(self) -> None:
+        self.assertIs(
+            self.window.live_workspace.docks["twitch.chat"].widget(),
+            self.window.ui.twitchChatTab,
+        )
+        self.assertIs(
+            self.window.live_workspace.docks["twitch.activity"].widget(),
+            self.window.activity_panel,
+        )
+        self.assertEqual(
+            self.window.channel_tabs.indexOf(self.window.twitch_channel_splitter),
+            -1,
+        )
+        routine = self.window.automation_page.routine_store.add("Live Test")
+        action = self.window.quick_action_store.add("Run Test", routine.routine_id)
+        self.window.quick_actions_panel.refresh()
+        result = Mock()
+        self.window.automation_service.run_routine = Mock(return_value=result)
+        self.window.automation_page.record_execution = Mock()
+
+        self.window.quick_actions_panel._buttons[action.action_id].click()
+
+        self.window.automation_service.run_routine.assert_called_once_with(
+            routine.routine_id
+        )
+        self.window.automation_page.record_execution.assert_called_once_with(
+            result, "Live Test"
+        )
 
     def test_startup_resets_obsolete_twitch_triggers(self) -> None:
         payload = json.loads(
@@ -579,47 +620,37 @@ class MainWindowTests(unittest.TestCase):
         self.assertTrue(self.window.automation_button.isChecked())
 
     def test_twitch_chat_keeps_stacked_side_column_across_layouts(self) -> None:
-        chat = self.window.ui.twitchDetailTabs
-        side = self.window.channel_side_splitter
         chatters = self.window.chatter_panel
         activity = self.window.activity_panel
-        self.window.twitch_channel_splitter.setSizes([680, 320])
 
         for portrait in (True, False, True):
             self.window._apply_responsive_layout(portrait)
-            self.assertEqual(
-                self.window.twitch_channel_splitter.orientation(),
-                Qt.Orientation.Horizontal,
+            self.assertIs(
+                self.window.live_workspace.docks["twitch.chatters"].widget(),
+                chatters,
             )
-            self.assertEqual(side.orientation(), Qt.Orientation.Vertical)
-            self.assertEqual(self.window.twitch_channel_splitter.count(), 2)
-            self.assertEqual(side.count(), 2)
-            self.assertIs(self.window.twitch_channel_splitter.widget(0), chat)
-            self.assertIs(self.window.twitch_channel_splitter.widget(1), side)
-            self.assertIs(side.widget(0), chatters)
-            self.assertIs(side.widget(1), activity)
+            self.assertIs(
+                self.window.live_workspace.docks["twitch.activity"].widget(),
+                activity,
+            )
+            self.assertFalse(
+                self.window.live_workspace.docks["twitch.chat"].isFloating()
+            )
 
-        self.assertEqual(chat.sizePolicy().horizontalStretch(), 2)
-        self.assertEqual(side.sizePolicy().horizontalStretch(), 1)
-        self.assertEqual(chat.minimumWidth(), 300)
-        self.assertEqual(side.minimumWidth(), 180)
-        self.assertFalse(self.window.twitch_channel_splitter.isCollapsible(0))
-        self.assertFalse(self.window.twitch_channel_splitter.isCollapsible(1))
-        self.assertFalse(side.isCollapsible(0))
-        self.assertFalse(side.isCollapsible(1))
-        self.window.ui.mainStack.setCurrentWidget(self.window.ui.twitchPage)
+        self.window.ui.mainStack.setCurrentWidget(self.window.live_workspace)
         self.window.resize(1080, 1600)
         self.window.show()
         self.application.processEvents()
-        chat_size, side_size = self.window.twitch_channel_splitter.sizes()
-        chatter_size, activity_size = side.sizes()
-        self.assertGreater(chat_size, side_size)
-        self.assertGreater(chatter_size, 0)
-        self.assertGreater(activity_size, 0)
-        self.assertTrue(
-            self.window.ui.twitchPage.isAncestorOf(self.window.ad_manager_group)
+        self.assertIs(chatters.parentWidget(), self.window.live_workspace.docks["twitch.chatters"])
+        self.assertIs(activity.parentWidget(), self.window.live_workspace.docks["twitch.activity"])
+        self.assertIs(
+            self.window.stream_tools_container.parentWidget(),
+            self.window.live_workspace.docks["twitch.stream-tools"],
         )
-        self.assertTrue(self.window.ad_manager_group.isVisible())
+        self.assertFalse(
+            self.window.live_workspace.docks["twitch.stream-tools"].isHidden()
+        )
+        self.assertFalse(self.window.ad_manager_group.isHidden())
 
     def test_automation_page_edits_grouped_routine_and_shows_tasks(self) -> None:
         store = self.twitch_command_trigger_store.routine_store
@@ -2883,7 +2914,6 @@ class MainWindowTests(unittest.TestCase):
         self.assertEqual(
             channel_tab_names,
             [
-                "Chat",
                 "Analytics",
                 "Raid",
                 "Channel Information",
@@ -2959,6 +2989,7 @@ class MainWindowTests(unittest.TestCase):
             [button.text() for button in self.window.navigation_group.buttons()],
             [
                 "Dashboard",
+                "Live",
                 "Automation",
                 "Wiki",
                 "Connections",
@@ -2968,7 +2999,7 @@ class MainWindowTests(unittest.TestCase):
                 "OBS",
             ],
         )
-        self.assertEqual(self.window.channel_tabs.count(), 6)
+        self.assertEqual(self.window.channel_tabs.count(), 5)
         self.assertNotIn(
             "Soundboard",
             [
@@ -3721,11 +3752,11 @@ class MainWindowTests(unittest.TestCase):
         )
         self.assertIs(
             self.window.chatter_list.parentWidget().parentWidget(),
-            self.window.channel_side_splitter,
+            self.window.live_workspace.docks["twitch.chatters"],
         )
-        self.assertEqual(
-            self.window.channel_side_splitter.orientation(),
-            Qt.Orientation.Vertical,
+        self.assertIs(
+            self.window.activity_panel.parentWidget(),
+            self.window.live_workspace.docks["twitch.activity"],
         )
         self.assertLessEqual(
             self.window.activity_feed_list.parentWidget().minimumWidth(),
@@ -4294,7 +4325,7 @@ class MainWindowTests(unittest.TestCase):
             self.window.ui.toggleDeveloperToolsButton.text(),
             "Close Developer Tools",
         )
-        self.assertEqual(self.window.ui.twitchDetailTabs.count(), 1)
+        self.assertEqual(self.window.ui.twitchDetailTabs.count(), 0)
         self.assertEqual(self.window.developer_dock.widget().count(), 3)
 
         self.window.ui.showDeveloperToolsCheck.setChecked(False)
@@ -4736,12 +4767,12 @@ class MainWindowTests(unittest.TestCase):
         )
         self.window.show_twitch()
         self.assertIs(
-            self.window.twitch_channel_splitter.widget(1),
-            self.window.channel_side_splitter,
+            self.window.live_workspace.docks["twitch.chatters"].widget(),
+            self.window.chatter_list.parentWidget(),
         )
         self.assertIs(
-            self.window.channel_side_splitter.widget(0),
-            self.window.chatter_list.parentWidget(),
+            self.window.live_workspace.docks["twitch.activity"].widget(),
+            self.window.activity_panel,
         )
 
     def test_twitch_group_shows_account_chat_eventsub_and_scope_health(self) -> None:

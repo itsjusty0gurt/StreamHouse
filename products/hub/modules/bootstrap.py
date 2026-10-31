@@ -15,6 +15,7 @@ CORE_MODULE_CAPABILITIES = frozenset(
         "automation",
         "automation_pages",
         "backup",
+        "docks",
         "tabs",
         "tasks",
         "triggers",

@@ -63,7 +63,7 @@ Hub Core owns shared orchestration rather than provider-specific behavior.
 | Module tab, trigger-provider, and Backup contributions | **IMPLEMENTED** | `products/hub/modules/contributions.py` |
 | Trusted first-party module discovery | **IMPLEMENTED** | `BundledModuleDiscovery` plus bundled allowlist |
 | Module management page | **PLANNED** | Core shell; enablement currently has no complete user-facing Modules page |
-| General dock contribution/persistence | **PLANNED** | Contract direction documented, not implemented |
+| General dock contribution/persistence | **IMPLEMENTED** | Core Live host plus module dock registry and persisted Qt layout |
 | Third-party marketplace/loader/hot unload | **PLANNED/DEFERRED** | Explicitly outside the 0.3 foundation |
 
 `MainWindow` remains the large Qt composition root. It may construct and wire
@@ -184,8 +184,9 @@ supported runtime architecture.
 - **IMPLEMENTED** — modules can contribute primary tabs; OBS contributes one.
 - **PLANNED** — reorderable, scrollable top navigation region.
 - **PLANNED** — bottom-pinned Modules, Settings, and Wiki entries.
-- **PLANNED** — optional docks for live-use panels such as platform chat and
-  Broadcaster controls; docks do not replace main tabs.
+- **IMPLEMENTED** — Core Live workspace with rearrangeable, floatable,
+  show/hide module panels, layout restore/reset, and routine-backed Quick Actions.
+  Docks supplement rather than replace module configuration tabs.
 - **PARTIAL** — Twitch contains working Chat, Analytics, Raid,
   Channel Information, Channel Points, and Users areas. Automation hosts
   Commands and Counters; the proposed Stream Info/Engagement/Moderation
@@ -230,7 +231,7 @@ The detailed open questions remain in
 
 - **PLANNED** — user-facing Modules page and restart-required enablement workflow.
 - **PLANNED** — navigation ordering and module tab persistence.
-- **PLANNED** — dock contribution and recovery contract.
+- **IMPLEMENTED** — dock contribution and recovery contract for the Live workspace.
 - **PLANNED** — evidence-based later module conversions after the accepted OBS foundation.
 - **PROPOSED** — Broadcaster/PRISM provider modules and live-use panels.
 - **PROPOSED** — stronger generic provider routing only after more than one real provider exists.
@@ -242,7 +243,8 @@ The detailed open questions remain in
 2. **IMPLEMENTED** — Core 0.3 module contracts and trusted discovery on `develop`.
 3. **IMPLEMENTED/ACCEPTED** — OBS is the first accepted bundled module; packaged
    startup and public-data compatibility passed final acceptance.
-4. **PLANNED** — Modules/navigation/docking UX only when contracts are proven.
+4. **PARTIAL** — Live docking UX is implemented; Modules and navigation-ordering
+   work remains planned.
 5. **PROPOSED** — additional first-party modules and future products through Core contracts.
 
 This roadmap expresses direction, not release promises or dates.

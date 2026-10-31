@@ -111,6 +111,10 @@ class WindowStateStore:
                         )
                         header.resizeSection(column, width)
                     variables_table.setProperty("columnWidthsRestored", True)
+        live_workspace = window.findChild(QWidget, "liveWorkspace")
+        restore_live = getattr(live_workspace, "restore_layout", None)
+        if callable(restore_live):
+            restore_live()
         return restored
 
     def save(self, window: QMainWindow) -> None:
@@ -175,4 +179,8 @@ class WindowStateStore:
                     for column in range(variables_table.model().columnCount())
                 ],
             )
+        live_workspace = window.findChild(QWidget, "liveWorkspace")
+        save_live = getattr(live_workspace, "save_layout", None)
+        if callable(save_live):
+            save_live()
         self.settings.sync()

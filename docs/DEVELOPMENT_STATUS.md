@@ -15,17 +15,20 @@
 3. **Current architecture milestone:** OBS and Twitch are accepted bundled Hub
    modules. Twitch owns its catalogs, auth/transport lifecycle, UI, Commands,
    Variables, triggers, Backup contributions, reconnect, and shutdown.
-4. **Accepted Twitch code:** feature commit
+4. **Live workspace milestone:** Core now hosts a dockable Live workspace.
+   Twitch contributes its existing Chat, Activity, Chatters, and Stream Status
+   widgets; Core contributes persisted routine-backed Quick Actions.
+5. **Accepted Twitch code:** feature commit
    `dba19eb5e6a8da2160664440dff9917e37bd2965`, integrated into `develop` by
    merge commit `a018ae414beced099066c22bf10ca7d7b93d5511`.
-5. **Most important unresolved issue:** one Windows forced-termination test
+6. **Most important unresolved issue:** one Windows forced-termination test
    currently retains a crash-log handle.
-6. **Latest OBS acceptance:** 372 unique relevant tests and 70 subtests passed;
+7. **Latest OBS acceptance:** 372 unique relevant tests and 70 subtests passed;
    packaged Hub/AI smoke passed; packaged startup exited 0 with OBS disabled and
    again after re-enabling; compilation and `git diff --check` passed.
-7. **Immediate next steps:** investigate the independent Windows
+8. **Immediate next steps:** investigate the independent Windows
    forced-termination and Counter test cleanup issues as separate tasks.
-8. **Read next:** [master reference](STREAMHOUSE_MASTER_REFERENCE.md),
+9. **Read next:** [master reference](STREAMHOUSE_MASTER_REFERENCE.md),
    [architecture](ARCHITECTURE.md), [0.3 foundation](architecture/hub-0.3-foundation.md),
    [implementation map](architecture/overview.md), and
    [development policy](architecture/development-policy.md).
@@ -34,8 +37,8 @@
 
 | Item | Verified value |
 | --- | --- |
-| Date | 2026-10-29 (America/Edmonton) |
-| Branch | `develop`; accepted Twitch feature retained at `feature/twitch-module-conversion` |
+| Date | 2026-10-30 (America/Edmonton) |
+| Branch | `feature/live-workspace`, based on `develop` at `38b46f9f8d3f1be50b44df5c93e5770b1e25d764` |
 | Twitch Phase 3 starting HEAD | `c5319fceb3b1251d29ee0aa36f7066cf7a4ea3f9` |
 | Feature upstream | `origin/feature/twitch-module-conversion` |
 | Working tree at task start | clean |
@@ -71,6 +74,15 @@ enter a concise Reconnecting state and use one owned retry timer. Raw transport
 details remain in Logs and are not appended to Chat.
 
 ## Completed milestones
+
+- Core Live workspace docking is implemented with module-contributed panels,
+  Qt layout persistence/reset, safe missing-provider restoration, and Core
+  Quick Actions that run existing routines through Automation. Twitch's live
+  widgets are reparented into docks rather than duplicated; its provider tab
+  remains for deeper Twitch management. The final relevant gate passed 320
+  tests plus 23 subtests; the normal Windows package passed manual move,
+  hide/show, restart restore, reset, Quick Action execution, and clean-shutdown
+  smoke checks.
 
 - Public Hub tags `v0.1.0-alpha`, `v0.2.0-alpha`, and `v0.2.1-alpha` exist.
 - 0.3 development metadata is `0.3.0-alpha`.

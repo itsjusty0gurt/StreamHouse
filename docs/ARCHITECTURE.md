@@ -236,7 +236,7 @@ listeners, and releases single-instance ownership through the outer runner.
 | OBS | First accepted bundled module | Preserve public contracts and use the proven Core contribution lifecycle |
 | Twitch/Music | Core-wired services | No conversion scheduled in current task |
 | Navigation | Main buttons/stack plus contributed OBS tab | Reorderable scrolling top; pinned Modules/Settings/Wiki |
-| Docks | Developer dock only; no module dock registry | Optional live-use dock contributions |
+| Docks | Core-owned Live workspace, module dock registry, persisted Qt layout, and Quick Actions | More provider live-use panels without direct module coupling |
 | Module management | Persisted enablement and restart semantics | User-facing Modules page |
 | Third-party modules | Explicitly unsupported | Trust/signing/marketplace remains deferred |
 | Broadcaster abstraction | OBS-specific actions plus Core registry | Add only after another real provider proves requirements |

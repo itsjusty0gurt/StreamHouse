@@ -240,9 +240,19 @@ def test_twitch_ui_and_backup_contributions_follow_module_availability(
     module = TwitchModule()
     module.auth.restore = Mock()
     module.bot_auth.restore = Mock()
+    live_panels = {
+        dock_id: (lambda parent, value=dock_id: (value, parent))
+        for dock_id in (
+            "twitch.chat",
+            "twitch.activity",
+            "twitch.chatters",
+            "twitch.stream-tools",
+        )
+    }
     module.bind_ui_factories(
         workspace=lambda parent: ("workspace", parent),
         commands=lambda parent: ("commands", parent),
+        live_panels=live_panels,
     )
     registry = _registry(tmp_path / "modules.json", module, enabled=enabled)
     context, tasks, variables, providers, trigger_store, routines = _contracts(
@@ -250,6 +260,8 @@ def test_twitch_ui_and_backup_contributions_follow_module_availability(
     )
     module.bind_trigger_store(trigger_store)
     tabs = ModuleTabRegistry()
+    from products.hub.modules import ModuleDockRegistry
+    docks = ModuleDockRegistry()
     automation_pages = AutomationSubpageRegistry()
     backup = BackupContributorRegistry()
     context = ModuleContext(
@@ -262,6 +274,7 @@ def test_twitch_ui_and_backup_contributions_follow_module_availability(
         automation=context.automation,
         trigger_providers=providers,
         tabs=tabs,
+        docks=docks,
         automation_pages=automation_pages,
         backup=backup,
         data_root=tmp_path,
@@ -276,6 +289,16 @@ def test_twitch_ui_and_backup_contributions_follow_module_availability(
     assert automation_pages.contributions()[0].current_availability().available is enabled
     assert [item.tab_id for item in tabs.contributions()] == (
         ["twitch.workspace"] if enabled else []
+    )
+    assert [item.dock_id for item in docks.contributions()] == (
+        [
+            "twitch.chat",
+            "twitch.activity",
+            "twitch.chatters",
+            "twitch.stream-tools",
+        ]
+        if enabled
+        else []
     )
     assert {item.contributor_id for item in backup.contributions()} == {
         "twitch.channel_information",
