@@ -171,7 +171,25 @@ class LiveWorkspace(QWidget):
         self.host.setParent(self, Qt.WindowType.Widget)
         self.host.setObjectName("liveWorkspaceHost")
         self.host.setDockNestingEnabled(True)
-        self.host.setCentralWidget(QWidget(self.host))
+        # Live is entirely dock-backed. Leaving the host without a central
+        # widget lets the primary Chat dock consume the usable middle area
+        # instead of reserving an empty center pane.
+        self.host.setCorner(
+            Qt.Corner.TopLeftCorner,
+            Qt.DockWidgetArea.TopDockWidgetArea,
+        )
+        self.host.setCorner(
+            Qt.Corner.TopRightCorner,
+            Qt.DockWidgetArea.TopDockWidgetArea,
+        )
+        self.host.setCorner(
+            Qt.Corner.BottomLeftCorner,
+            Qt.DockWidgetArea.BottomDockWidgetArea,
+        )
+        self.host.setCorner(
+            Qt.Corner.BottomRightCorner,
+            Qt.DockWidgetArea.BottomDockWidgetArea,
+        )
         self.docks: dict[str, QDockWidget] = {}
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -228,17 +246,92 @@ class LiveWorkspace(QWidget):
     def _apply_default_layout(self) -> None:
         for dock in self.docks.values():
             self.host.removeDockWidget(dock)
-            self.host.addDockWidget(_DOCK_AREAS[str(dock.property("defaultArea"))], dock)
             dock.setFloating(False)
-            dock.setVisible(bool(dock.property("visibleByDefault")))
+
+        stream_tools = self.docks.get("twitch.stream-tools")
+        quick_actions = self.docks.get("core.quick-actions")
+        chat = self.docks.get("twitch.chat")
         activity = self.docks.get("twitch.activity")
         chatters = self.docks.get("twitch.chatters")
-        if activity is not None and chatters is not None:
-            self.host.tabifyDockWidget(activity, chatters)
-            activity.raise_()
-        chat = self.docks.get("twitch.chat")
-        if chat is not None:
-            self.host.resizeDocks([chat], [700], Qt.Orientation.Horizontal)
+        arranged = {
+            dock
+            for dock in (
+                stream_tools,
+                quick_actions,
+                chat,
+                activity,
+                chatters,
+            )
+            if dock is not None
+        }
+
+        if stream_tools is not None:
+            self.host.addDockWidget(
+                Qt.DockWidgetArea.TopDockWidgetArea,
+                stream_tools,
+            )
+        if quick_actions is not None:
+            self.host.addDockWidget(
+                Qt.DockWidgetArea.BottomDockWidgetArea,
+                quick_actions,
+            )
+
+        middle_layout = [
+            (dock, size)
+            for dock, size in (
+                (chat, 700),
+                (activity, 260),
+                (chatters, 170),
+            )
+            if dock is not None
+        ]
+        middle_docks = [dock for dock, _size in middle_layout]
+        if middle_docks:
+            first = middle_docks[0]
+            self.host.addDockWidget(
+                _DOCK_AREAS[str(first.property("defaultArea"))],
+                first,
+            )
+        for left, right in zip(middle_docks, middle_docks[1:]):
+            # Adding a former tab peer to a different area first clears Qt's
+            # retained tab relationship before placing it in this split row.
+            self.host.addDockWidget(
+                Qt.DockWidgetArea.BottomDockWidgetArea,
+                right,
+            )
+            self.host.splitDockWidget(left, right, Qt.Orientation.Horizontal)
+
+        for dock in self.docks.values():
+            if dock not in arranged:
+                self.host.addDockWidget(
+                    _DOCK_AREAS[str(dock.property("defaultArea"))],
+                    dock,
+                )
+            dock.setVisible(bool(dock.property("visibleByDefault")))
+
+        if middle_docks:
+            self.host.resizeDocks(
+                middle_docks,
+                [size for _dock, size in middle_layout],
+                Qt.Orientation.Horizontal,
+            )
+
+        vertical_layout = [
+            (dock, size)
+            for dock, size in (
+                (stream_tools, 170),
+                (chat or activity or chatters, 520),
+                (quick_actions, 125),
+            )
+            if dock is not None
+        ]
+        vertical_docks = [dock for dock, _size in vertical_layout]
+        if vertical_docks:
+            self.host.resizeDocks(
+                vertical_docks,
+                [size for _dock, size in vertical_layout],
+                Qt.Orientation.Vertical,
+            )
 
     def reset_to_default(self) -> None:
         self.settings.remove(self.STATE_KEY)

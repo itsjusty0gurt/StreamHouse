@@ -35,6 +35,39 @@ def _chat_contribution() -> ModuleDockContribution:
     )
 
 
+def _contribution(
+    dock_id: str,
+    title: str,
+    default_area: str,
+) -> ModuleDockContribution:
+    return ModuleDockContribution(
+        dock_id=dock_id,
+        owner_module_id="streamhouse.twitch",
+        title=title,
+        factory=lambda parent: QWidget(parent),
+        default_area=default_area,
+    )
+
+
+def _live_contributions() -> list[ModuleDockContribution]:
+    return [
+        _chat_contribution(),
+        _contribution("twitch.activity", "Twitch Activity", "right"),
+        _contribution("twitch.chatters", "Twitch Chatters", "right"),
+        _contribution(
+            "twitch.stream-tools",
+            "Twitch Stream Status",
+            "top",
+        ),
+    ]
+
+
+def _show_workspace(workspace: LiveWorkspace) -> None:
+    workspace.resize(1200, 800)
+    workspace.show()
+    _app().processEvents()
+
+
 def test_quick_action_store_round_trip_and_panel_runs_canonical_routine(tmp_path: Path) -> None:
     _app()
     store = QuickActionStore(tmp_path / "quick_actions.json")
@@ -80,6 +113,77 @@ def test_live_workspace_persists_dock_area_visibility_and_resets(tmp_path: Path)
     second.reset_to_default()
     assert second.host.dockWidgetArea(second.docks["twitch.chat"]) == Qt.DockWidgetArea.LeftDockWidgetArea
     assert not second.docks["twitch.chat"].isHidden()
+
+
+def test_default_layout_uses_full_width_rows_and_descending_middle_columns(
+    tmp_path: Path,
+) -> None:
+    _app()
+    settings = QSettings(str(tmp_path / "window.ini"), QSettings.Format.IniFormat)
+    workspace = LiveWorkspace(
+        _live_contributions(),
+        _quick_panel(tmp_path),
+        settings,
+    )
+    _show_workspace(workspace)
+
+    stream_tools = workspace.docks["twitch.stream-tools"]
+    chat = workspace.docks["twitch.chat"]
+    activity = workspace.docks["twitch.activity"]
+    chatters = workspace.docks["twitch.chatters"]
+    quick_actions = workspace.docks["core.quick-actions"]
+
+    assert (
+        workspace.host.dockWidgetArea(stream_tools)
+        == Qt.DockWidgetArea.TopDockWidgetArea
+    )
+    assert (
+        workspace.host.dockWidgetArea(quick_actions)
+        == Qt.DockWidgetArea.BottomDockWidgetArea
+    )
+    assert chat.x() < activity.x() < chatters.x()
+    assert chat.width() > activity.width() > chatters.width()
+    assert workspace.host.tabifiedDockWidgets(activity) == []
+    assert all(dock.isVisible() for dock in (chat, activity, chatters))
+    assert stream_tools.y() < chat.y() < quick_actions.y()
+    assert stream_tools.width() >= workspace.host.width() - 10
+    assert quick_actions.width() >= workspace.host.width() - 10
+    assert quick_actions.height() < chat.height()
+
+
+def test_reset_restores_default_geometry_after_dock_changes(tmp_path: Path) -> None:
+    _app()
+    settings = QSettings(str(tmp_path / "window.ini"), QSettings.Format.IniFormat)
+    workspace = LiveWorkspace(
+        _live_contributions(),
+        _quick_panel(tmp_path),
+        settings,
+    )
+    _show_workspace(workspace)
+    chat = workspace.docks["twitch.chat"]
+    activity = workspace.docks["twitch.activity"]
+    chatters = workspace.docks["twitch.chatters"]
+    quick_actions = workspace.docks["core.quick-actions"]
+
+    workspace.host.tabifyDockWidget(chat, activity)
+    workspace.host.tabifyDockWidget(activity, chatters)
+    chatters.hide()
+    workspace.host.addDockWidget(Qt.DockWidgetArea.TopDockWidgetArea, quick_actions)
+    workspace.save_layout()
+
+    workspace.reset_to_default()
+    _app().processEvents()
+
+    assert chat.x() < activity.x() < chatters.x()
+    assert chat.width() > activity.width() > chatters.width()
+    assert workspace.host.tabifiedDockWidgets(activity) == []
+    assert not chatters.isHidden()
+    assert (
+        workspace.host.dockWidgetArea(quick_actions)
+        == Qt.DockWidgetArea.BottomDockWidgetArea
+    )
+    assert not settings.contains(LiveWorkspace.STATE_KEY)
+    assert not settings.contains(LiveWorkspace.DOCKS_KEY)
 
 
 def test_missing_module_dock_does_not_break_or_overwrite_saved_layout(tmp_path: Path) -> None:
