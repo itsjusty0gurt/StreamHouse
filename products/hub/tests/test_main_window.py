@@ -2798,6 +2798,7 @@ class MainWindowTests(unittest.TestCase):
             )
         }
         self.window._refresh_memory_viewer_list()
+        self.application.processEvents()
         self.assertEqual(self.window.memory_viewer_list.count(), 1)
         self.window.memory_viewer_list.setCurrentRow(0)
         self.assertEqual(self.window.memory_name_label.text(), "KnownViewer")
@@ -2808,6 +2809,7 @@ class MainWindowTests(unittest.TestCase):
         self.assertEqual(self.window.memory_tags_edit.text(), "friend")
 
         self.window.memory_search_edit.setText("missing")
+        self.application.processEvents()
         self.assertEqual(self.window.memory_viewer_list.count(), 0)
 
     def test_memory_viewer_refresh_is_stable_during_task_context_menu(self) -> None:
@@ -2832,6 +2834,7 @@ class MainWindowTests(unittest.TestCase):
             )
         }
         self.window._refresh_memory_viewer_list()
+        self.application.processEvents()
         self.window.memory_viewer_list.setCurrentRow(0)
         selection_changes = QSignalSpy(
             self.window.memory_viewer_list.currentItemChanged
@@ -2844,9 +2847,11 @@ class MainWindowTests(unittest.TestCase):
         )
 
         menu = Mock()
-        menu.exec.side_effect = lambda *_args: self.window._apply_chatter_groups(
-            result
-        )
+        def apply_snapshot_during_menu(*_args) -> None:
+            self.window._apply_chatter_groups(result)
+            self.application.processEvents()
+
+        menu.exec.side_effect = apply_snapshot_during_menu
         with (
             patch.object(page.task_list, "itemAt", return_value=task_item),
             patch(
@@ -2905,6 +2910,79 @@ class MainWindowTests(unittest.TestCase):
             return_value=False,
         ):
             self.window._refresh_memory_viewer_list()
+
+    def test_memory_viewer_refresh_survives_live_navigation_and_dock_changes(
+        self,
+    ) -> None:
+        chat_dock = self.window.live_workspace.docks["twitch.chat"]
+        for cycle in range(40):
+            user_id = str(cycle % 5)
+            self.chatter_history_store.records[user_id] = ChatterRecord(
+                user_id=user_id,
+                user_name=f"Viewer {user_id} update {cycle}",
+                first_seen="2026-07-01T12:00:00+00:00",
+                last_seen=f"2026-07-12T12:00:{cycle:02d}+00:00",
+            )
+            result = ChannelSnapshotResult(
+                request_id=self.window.channel_snapshot_request_id,
+                snapshot={"stream": None},
+                chatters=tuple(
+                    {
+                        "user_id": record.user_id,
+                        "user_name": record.user_name,
+                    }
+                    for record in self.chatter_history_store.records.values()
+                ),
+                can_read_chatters=True,
+            )
+            self.window._apply_chatter_groups(result)
+            if cycle % 3 == 0:
+                self.window.show_live()
+                chat_dock.setVisible(not chat_dock.isVisible())
+                chat_dock.setVisible(True)
+            elif cycle % 3 == 1:
+                self.window.show_twitch()
+                self.window.channel_tabs.setCurrentWidget(
+                    self.window.chat_user_page
+                )
+            else:
+                self.window.show_dashboard()
+            self.application.processEvents()
+
+        self.assertEqual(
+            self.window.memory_viewer_list.count(),
+            len(self.chatter_history_store.records),
+        )
+        self.assertFalse(self.window._memory_viewer_refresh_timer.isActive())
+
+    def test_memory_viewer_refresh_reuses_rows_and_cancels_for_shutdown(
+        self,
+    ) -> None:
+        record = ChatterRecord(
+            user_id="42",
+            user_name="KnownViewer",
+            first_seen="2026-07-01T12:00:00+00:00",
+            last_seen="2026-07-12T12:00:00+00:00",
+        )
+        self.chatter_history_store.records = {"42": record}
+        self.window._refresh_memory_viewer_list()
+        self.application.processEvents()
+        item = self.window.memory_viewer_list.item(0)
+
+        record.user_name = "RenamedViewer"
+        for _attempt in range(10):
+            self.window._refresh_memory_viewer_list()
+        self.application.processEvents()
+
+        self.assertIs(self.window.memory_viewer_list.item(0), item)
+        self.assertEqual(item.text(), "RenamedViewer")
+        self.window._refresh_memory_viewer_list()
+        self.assertTrue(self.window._memory_viewer_refresh_timer.isActive())
+        self.window._shutting_down = True
+        self.window._memory_viewer_refresh_timer.stop()
+        self.chatter_history_store.records = {}
+        self.application.processEvents()
+        self.assertEqual(self.window.memory_viewer_list.count(), 1)
 
     def test_channel_workspace_keeps_stream_sessions_inside_analytics(self) -> None:
         channel_tab_names = [
@@ -3674,6 +3752,7 @@ class MainWindowTests(unittest.TestCase):
         self.window.settings.ai_viewer_memory_enabled = True
 
         self.window._refresh_memory_viewer_list()
+        self.application.processEvents()
         self.window.memory_viewer_list.setCurrentRow(0)
 
         self.assertTrue(self.window.add_memory_button.isEnabled())

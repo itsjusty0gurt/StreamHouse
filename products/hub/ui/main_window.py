@@ -848,6 +848,11 @@ class MainWindow(QMainWindow):
         self.stream_started_at: datetime | None = None
         self.ui = Ui_MainWindow()
         self.ui.setupUi(self)
+        self._memory_viewer_refresh_timer = QTimer(self)
+        self._memory_viewer_refresh_timer.setSingleShot(True)
+        self._memory_viewer_refresh_timer.timeout.connect(
+            self._apply_memory_viewer_list_refresh
+        )
         self.window_chrome = install_window_chrome(
             self,
             native_windows_frame=True,
@@ -6474,6 +6479,23 @@ class MainWindow(QMainWindow):
         if QThread.currentThread() != self.thread():
             self.memory_viewer_refresh_requested.emit(_text)
             return
+        if (
+            self._shutting_down
+            or not hasattr(self, "memory_viewer_list")
+            or not isValid(self._memory_viewer_refresh_timer)
+        ):
+            return
+        viewer_list = self.memory_viewer_list
+        if not isValid(viewer_list):
+            return
+        if self._memory_viewer_refreshing:
+            self._memory_viewer_refresh_pending = True
+            return
+        if not self._memory_viewer_refresh_timer.isActive():
+            self._memory_viewer_refresh_timer.start(0)
+
+    @Slot()
+    def _apply_memory_viewer_list_refresh(self) -> None:
         if self._shutting_down or not hasattr(self, "memory_viewer_list"):
             return
         viewer_list = self.memory_viewer_list
@@ -6491,33 +6513,76 @@ class MainWindow(QMainWindow):
                 if selected_item is not None
                 else ""
             )
+            # Do not retain a wrapper to an item that may be removed below.
+            selected_item = None
             query = self.memory_search_edit.text().strip().casefold()
+            records = sorted(
+                self.chatter_history.records.values(),
+                key=lambda record: record.user_name.casefold(),
+            )
+            desired = [
+                (record.user_id, record.user_name or record.user_id)
+                for record in records
+                if not query or query in record.user_name.casefold()
+            ]
+            removed_items: list[QListWidgetItem] = []
             signal_blocker = QSignalBlocker(viewer_list)
             try:
-                viewer_list.clear()
                 selected_row = -1
-                records = sorted(
-                    self.chatter_history.records.values(),
-                    key=lambda record: record.user_name.casefold(),
-                )
-                for record in records:
-                    if query and query not in record.user_name.casefold():
-                        continue
-                    item = QListWidgetItem(record.user_name or record.user_id)
-                    item.setData(Qt.ItemDataRole.UserRole, record.user_id)
-                    viewer_list.addItem(item)
-                    if record.user_id == selected_id:
-                        selected_row = viewer_list.count() - 1
+                for row, (user_id, label) in enumerate(desired):
+                    item = viewer_list.item(row)
+                    item_id = (
+                        str(item.data(Qt.ItemDataRole.UserRole))
+                        if item is not None
+                        else ""
+                    )
+                    if item_id != user_id:
+                        matching_row = next(
+                            (
+                                candidate_row
+                                for candidate_row in range(
+                                    row + 1,
+                                    viewer_list.count(),
+                                )
+                                if str(
+                                    viewer_list.item(candidate_row).data(
+                                        Qt.ItemDataRole.UserRole
+                                    )
+                                )
+                                == user_id
+                            ),
+                            -1,
+                        )
+                        if matching_row >= 0:
+                            item = viewer_list.takeItem(matching_row)
+                            viewer_list.insertItem(row, item)
+                        else:
+                            item = QListWidgetItem()
+                            item.setData(Qt.ItemDataRole.UserRole, user_id)
+                            viewer_list.insertItem(row, item)
+                    item.setText(label)
+                    if user_id == selected_id:
+                        selected_row = row
+                while viewer_list.count() > len(desired):
+                    removed = viewer_list.takeItem(viewer_list.count() - 1)
+                    if removed is not None:
+                        removed_items.append(removed)
                 if selected_row >= 0:
                     viewer_list.setCurrentRow(selected_row)
+                else:
+                    viewer_list.setCurrentRow(-1)
             finally:
                 del signal_blocker
+            # Items removed with takeItem remain valid until their Python
+            # wrappers are released, avoiding QListWidget.clear() deleting a
+            # selected native item beneath a live Shiboken wrapper.
+            removed_items.clear()
             self._show_memory_viewer(viewer_list.currentItem(), None)
         finally:
             self._memory_viewer_refreshing = False
             if self._memory_viewer_refresh_pending and not self._shutting_down:
                 self._memory_viewer_refresh_pending = False
-                QTimer.singleShot(0, self._refresh_memory_viewer_list)
+                self._memory_viewer_refresh_timer.start(0)
 
     @Slot(object, object)
     def _show_memory_viewer(self, current: object, _previous: object) -> None:
@@ -6759,7 +6824,10 @@ class MainWindow(QMainWindow):
         self.chatter_history.merge_records(source_id, target_id)
         self.user_groups.merge_users(source_id, target_id)
         self._save_chatter_history()
-        self._refresh_memory_viewer_list()
+        # This user-initiated flow needs the reconciled rows immediately so it
+        # can select the merge target. Snapshot-driven refreshes remain queued
+        # and coalesced outside their callback stack.
+        self._apply_memory_viewer_list_refresh()
         for row in range(self.memory_viewer_list.count()):
             item = self.memory_viewer_list.item(row)
             if str(item.data(Qt.ItemDataRole.UserRole)) == target_id:
@@ -8740,6 +8808,7 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event: QCloseEvent) -> None:
         self._shutting_down = True
+        self._memory_viewer_refresh_timer.stop()
         self.counter_service.unsubscribe_changes(self._counter_change_callback)
         self.activity_age_timer.stop()
         self._activity_rows.clear()

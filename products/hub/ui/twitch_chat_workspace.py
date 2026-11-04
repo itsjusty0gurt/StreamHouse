@@ -21,21 +21,26 @@ class TwitchChatWorkspaceLayout:
     def _configure(self) -> None:
         self.chat_splitter.setOrientation(Qt.Orientation.Horizontal)
         self.chat_splitter.setChildrenCollapsible(False)
-        self.chat_splitter.setCollapsible(0, False)
-        self.chat_splitter.setCollapsible(1, False)
-        self.chat_splitter.setStretchFactor(0, 2)
-        self.chat_splitter.setStretchFactor(1, 1)
-        self.chat_splitter.setSizes([680, 320])
+        self._configure_children(self.chat_splitter, (2, 1), (680, 320))
         self.chat_panel.setMinimumWidth(300)
 
         self.side_splitter.setOrientation(Qt.Orientation.Vertical)
         self.side_splitter.setChildrenCollapsible(False)
-        self.side_splitter.setCollapsible(0, False)
-        self.side_splitter.setCollapsible(1, False)
-        self.side_splitter.setStretchFactor(0, 2)
-        self.side_splitter.setStretchFactor(1, 3)
-        self.side_splitter.setSizes([240, 360])
+        self._configure_children(self.side_splitter, (2, 3), (240, 360))
         self.side_splitter.setMinimumWidth(180)
+
+    @staticmethod
+    def _configure_children(
+        splitter: QSplitter,
+        stretch: tuple[int, ...],
+        sizes: tuple[int, ...],
+    ) -> None:
+        count = splitter.count()
+        for index in range(min(count, len(stretch))):
+            splitter.setCollapsible(index, False)
+            splitter.setStretchFactor(index, stretch[index])
+        if count:
+            splitter.setSizes(list(sizes[:count]))
 
     def apply_responsive_layout(self) -> None:
         """Keep the workspace side-by-side after mode or saved-state changes."""
@@ -44,12 +49,9 @@ class TwitchChatWorkspaceLayout:
         )
         self.chat_splitter.setOrientation(Qt.Orientation.Horizontal)
         self.side_splitter.setOrientation(Qt.Orientation.Vertical)
-        for splitter in (self.chat_splitter, self.side_splitter):
-            splitter.setCollapsible(0, False)
-            splitter.setCollapsible(1, False)
-        self.chat_splitter.setStretchFactor(0, 2)
-        self.chat_splitter.setStretchFactor(1, 1)
-        if restored_vertical_split:
+        self._configure_children(self.chat_splitter, (2, 1), (680, 320))
+        self._configure_children(self.side_splitter, (2, 3), (240, 360))
+        if restored_vertical_split and self.chat_splitter.count():
             # Pre-alpha portrait builds persisted a vertical Chat/content split.
             # That geometry is not meaningful for the side-column layout.
             self.chat_splitter.setSizes([680, 320])
