@@ -1,6 +1,8 @@
 import io
 import logging
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 from shared.streamhouse_runtime.logger import Logger
@@ -93,6 +95,60 @@ class LoggerTests(unittest.TestCase):
 
         self.assertIsNone(result)
         warning.assert_called_once()
+
+    def test_shutdown_flushes_and_closes_file_handlers(self) -> None:
+        with TemporaryDirectory() as temporary:
+            log_path = Path(temporary) / "shutdown.log"
+            handler = logging.FileHandler(log_path, encoding="utf-8")
+            self.test_logger.addHandler(handler)
+            self.test_logger.info("saved before shutdown")
+
+            Logger.shutdown()
+
+            self.assertIsNone(handler.stream)
+            self.assertEqual(
+                log_path.read_text(encoding="utf-8").strip(),
+                "saved before shutdown",
+            )
+
+    def test_shutdown_is_idempotent(self) -> None:
+        handler = logging.StreamHandler(io.StringIO())
+        self.test_logger.addHandler(handler)
+
+        Logger.shutdown()
+        Logger.shutdown()
+
+        self.assertEqual(self.test_logger.handlers, [])
+        self.assertIsNone(Logger._logger)
+
+    def test_shutdown_tolerates_invalid_non_owned_console_stream(self) -> None:
+        class InvalidConsoleStream(io.StringIO):
+            def flush(self) -> None:
+                raise OSError(22, "Invalid argument")
+
+        handler = logging.StreamHandler(InvalidConsoleStream())
+        setattr(handler, Logger._NON_OWNED_STREAM_MARKER, True)
+        self.test_logger.addHandler(handler)
+
+        Logger.shutdown()
+
+        self.assertEqual(self.test_logger.handlers, [])
+        self.assertIsNone(handler.stream)
+        self.assertIsNone(Logger._logger)
+
+    def test_shutdown_does_not_hide_owned_handler_flush_errors(self) -> None:
+        class FailingOwnedHandler(logging.Handler):
+            def flush(self) -> None:
+                raise OSError(22, "Invalid argument")
+
+        handler = FailingOwnedHandler()
+        self.test_logger.addHandler(handler)
+
+        with self.assertRaises(OSError):
+            Logger.shutdown()
+
+        self.assertEqual(self.test_logger.handlers, [])
+        self.assertIsNone(Logger._logger)
 
 
 if __name__ == "__main__":

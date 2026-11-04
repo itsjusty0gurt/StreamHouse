@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import logging
 import platform
 import sys
@@ -148,6 +149,7 @@ class Logger:
     _session_log_path: ClassVar[Path | None] = None
     _product_name: ClassVar[str] = "Streamhouse"
     _product_version: ClassVar[str] = VERSION
+    _NON_OWNED_STREAM_MARKER = "_streamhouse_non_owned_stream"
 
     @classmethod
     def setup(
@@ -238,6 +240,7 @@ class Logger:
         )
 
         console_handler = logging.StreamHandler(sys.stdout)
+        setattr(console_handler, cls._NON_OWNED_STREAM_MARKER, True)
         console_handler.setLevel(level)
         console_handler.setFormatter(console_formatter)
         console_handler.addFilter(default_fields_filter)
@@ -303,16 +306,54 @@ class Logger:
     @classmethod
     def shutdown(cls) -> None:
         """Flush and close Streamhouse-owned handlers."""
-        if cls._logger is None:
+        logger = cls._logger
+        if logger is None:
             return
-        for handler in list(cls._logger.handlers):
-            try:
-                handler.flush()
-                handler.close()
-            finally:
-                cls._logger.removeHandler(handler)
+
+        # Publish shutdown state before touching handlers so a repeated call is
+        # safe even if an owned handler reports a real close failure.
         cls._logger = None
         cls._session_log_path = None
+        pending_error: Exception | None = None
+        for handler in list(logger.handlers):
+            logger.removeHandler(handler)
+            non_owned_stream = bool(
+                getattr(handler, cls._NON_OWNED_STREAM_MARKER, False)
+            )
+            try:
+                handler.flush()
+            except (OSError, ValueError) as error:
+                if not cls._is_invalid_non_owned_stream(error, handler):
+                    pending_error = pending_error or error
+            finally:
+                if non_owned_stream and isinstance(
+                    handler,
+                    logging.StreamHandler,
+                ):
+                    # StreamHandler does not own or close stdout/stderr. Drop
+                    # the invalid PyInstaller stream reference so Python's
+                    # later logging atexit hook cannot flush it again.
+                    handler.stream = None
+                try:
+                    handler.close()
+                except Exception as error:
+                    pending_error = pending_error or error
+
+        if pending_error is not None:
+            raise pending_error
+
+    @classmethod
+    def _is_invalid_non_owned_stream(
+        cls,
+        error: OSError | ValueError,
+        handler: logging.Handler,
+    ) -> bool:
+        if not getattr(handler, cls._NON_OWNED_STREAM_MARKER, False):
+            return False
+        if isinstance(error, OSError):
+            return error.errno in {errno.EBADF, errno.EINVAL}
+        stream = getattr(handler, "stream", None)
+        return bool(getattr(stream, "closed", False))
 
     @classmethod
     def _clean_source(cls, source: str) -> str:
