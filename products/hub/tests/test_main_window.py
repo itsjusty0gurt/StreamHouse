@@ -456,6 +456,28 @@ class MainWindowTests(unittest.TestCase):
             result, "Live Test"
         )
 
+    def test_live_quick_action_with_missing_routine_fails_safely(self) -> None:
+        action = self.window.quick_action_store.add(
+            "Missing Routine",
+            "missing-routine-id",
+        )
+        self.window.quick_actions_panel.refresh()
+        self.window.automation_service.run_routine = Mock(
+            side_effect=ValueError("The selected routine no longer exists.")
+        )
+        self.window.automation_page.record_execution = Mock()
+
+        self.window.quick_actions_panel._buttons[action.action_id].click()
+
+        self.window.automation_service.run_routine.assert_called_once_with(
+            "missing-routine-id"
+        )
+        self.window.automation_page.record_execution.assert_not_called()
+        self.assertIn(
+            "Quick Action could not run",
+            self.window.statusBar().currentMessage(),
+        )
+
     def test_startup_resets_obsolete_twitch_triggers(self) -> None:
         payload = json.loads(
             self.twitch_event_trigger_store.path.read_text(encoding="utf-8")

@@ -182,8 +182,10 @@ supported runtime architecture.
 
 - **IMPLEMENTED** — current tab/button navigation remains the primary UI.
 - **IMPLEMENTED** — modules can contribute primary tabs; OBS contributes one.
-- **PLANNED** — reorderable, scrollable top navigation region.
-- **PLANNED** — bottom-pinned Modules, Settings, and Wiki entries.
+- **PARTIAL** — Core fixes Dashboard, Live, and Automation first, followed by
+  ordered enabled module tabs; user drag-reordering and overflow scrolling remain planned.
+- **PARTIAL** — Wiki and Settings are bottom-pinned; the user-facing Modules
+  page remains planned.
 - **IMPLEMENTED** — Core Live workspace with rearrangeable, floatable,
   show/hide module panels, layout restore/reset, and routine-backed Quick Actions.
   Docks supplement rather than replace module configuration tabs.
@@ -230,7 +232,8 @@ The detailed open questions remain in
 [hub-0.3-foundation.md](architecture/hub-0.3-foundation.md). High-level items:
 
 - **PLANNED** — user-facing Modules page and restart-required enablement workflow.
-- **PLANNED** — navigation ordering and module tab persistence.
+- **PARTIAL** — default navigation ordering is implemented; user-defined order
+  persistence remains planned.
 - **IMPLEMENTED** — dock contribution and recovery contract for the Live workspace.
 - **PLANNED** — evidence-based later module conversions after the accepted OBS foundation.
 - **PROPOSED** — Broadcaster/PRISM provider modules and live-use panels.
@@ -243,8 +246,8 @@ The detailed open questions remain in
 2. **IMPLEMENTED** — Core 0.3 module contracts and trusted discovery on `develop`.
 3. **IMPLEMENTED/ACCEPTED** — OBS is the first accepted bundled module; packaged
    startup and public-data compatibility passed final acceptance.
-4. **PARTIAL** — Live docking UX is implemented; Modules and navigation-ordering
-   work remains planned.
+4. **PARTIAL** — Live docking and default navigation grouping are implemented;
+   the Modules page and user-controlled navigation ordering remain planned.
 5. **PROPOSED** — additional first-party modules and future products through Core contracts.
 
 This roadmap expresses direction, not release promises or dates.

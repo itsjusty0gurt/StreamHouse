@@ -42,9 +42,10 @@ keeps their established event and thread boundaries intact.
 Dock IDs and Quick Action IDs are stable persistence identities. Disabled or
 missing modules do not prevent Live from opening; saved state referencing their
 docks is not overwritten. Twitch's main tab remains available for deeper
-provider controls, but its live Chat presentation now lives in Live. Navigation
-reordering, unified chat, Deck hardware, and additional providers remain
-separate work.
+provider controls, but its live Chat presentation now lives in Live. Core gives
+Live a fixed primary-navigation position after Dashboard; user-controlled
+navigation reordering, unified chat, Deck hardware, and additional providers
+remain separate work.
 
 ## Affected components
 
@@ -56,6 +57,9 @@ separate work.
 
 ## Validation status
 
-Focused module, persistence, Live workspace, MainWindow, Automation, packaged
-build, and manual smoke results are recorded in the implementing task and Git
-commit.
+Final feature-branch acceptance on 2026-11-04 passed 46 focused tests plus 2
+subtests and 238 MainWindow tests plus 7 subtests. The normal Windows package
+built successfully and exited 0 in isolated offscreen startup/shutdown smoke.
+Earlier packaged acceptance covered the requested default layout, reset,
+custom-layout persistence, and clean shutdown; final acceptance did not repeat a
+desktop visual pass.

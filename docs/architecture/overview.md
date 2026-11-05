@@ -2,7 +2,7 @@
 
 > Canonical implementation map for maintainers and coding agents.
 >
-> Last verified: 2026-10-27 after final Twitch module acceptance. This records
+> Last verified: 2026-11-04 during final Live workspace acceptance. This records
 > an implementation audit, not a released-version claim.
 > Update this file when a change moves ownership, adds a persisted format,
 > changes an inter-process contract, or introduces a new service/trigger/task.
@@ -1398,17 +1398,18 @@ removed after hosted relay deployments have been upgraded.
 
 ### Streamhouse Hub shell
 
-Primary left navigation:
+Primary left navigation is Core-owned and ordered as:
 
 - Dashboard
 - Live
 - Automation
 - Twitch (module-contributed when enabled)
-- OBS (module-contributed when enabled)
-- Wiki
-- Connections
-- Logs
-- Settings
+- subsequent enabled module tabs in contribution order
+
+The expanding spacer separates those primary entries from the bottom-pinned
+utility entries **Wiki** and **Settings**. A user-facing Modules page is not yet
+implemented. Connections remains reachable from Dashboard, while Logs and
+developer tooling stay outside the normal user-facing navigation.
 
 The Hub Dashboard is a standalone lightweight landing page owned by
 `products/hub/ui/dashboard_page.py`. It shows the authoritative Hub version and
