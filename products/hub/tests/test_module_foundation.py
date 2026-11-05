@@ -17,6 +17,8 @@ from products.hub.modules import (
     BundledModuleSpec,
     ModuleContext,
     ModuleDescriptor,
+    ModuleDockContribution,
+    ModuleDockRegistry,
     ModuleEnablementStore,
     ModuleLifecycle,
     ModuleRegistry,
@@ -90,6 +92,33 @@ def _context(
 def test_descriptor_requires_namespaced_stable_id() -> None:
     with pytest.raises(ValueError, match="namespaced"):
         _descriptor("obs")
+
+
+def test_dock_registry_orders_contributions_and_rejects_duplicates() -> None:
+    registry = ModuleDockRegistry()
+    later = ModuleDockContribution(
+        dock_id="twitch.activity",
+        owner_module_id="streamhouse.twitch",
+        title="Activity",
+        factory=lambda _parent: object(),
+        order=200,
+    )
+    earlier = ModuleDockContribution(
+        dock_id="twitch.chat",
+        owner_module_id="streamhouse.twitch",
+        title="Chat",
+        factory=lambda _parent: object(),
+        order=100,
+    )
+    registry.register(later)
+    registry.register(earlier)
+
+    assert [item.dock_id for item in registry.contributions()] == [
+        "twitch.chat",
+        "twitch.activity",
+    ]
+    with pytest.raises(ValueError, match="already registered"):
+        registry.register(earlier)
 
 
 def test_registry_rejects_non_bundled_module_in_first_party_foundation(tmp_path: Path) -> None:

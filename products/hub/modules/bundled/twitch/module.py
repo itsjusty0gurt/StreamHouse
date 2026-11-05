@@ -16,6 +16,7 @@ from products.hub.modules.contracts import Availability, ModuleContext, ModuleDe
 from products.hub.modules.contributions import (
     AutomationSubpageContribution,
     BackupContributor,
+    ModuleDockContribution,
     ModuleTabContribution,
     TriggerProviderContribution,
 )
@@ -80,6 +81,7 @@ class TwitchModule:
                 "automation",
                 "automation_pages",
                 "backup",
+                "docks",
                 "tabs",
                 "tasks",
                 "triggers",
@@ -126,6 +128,7 @@ class TwitchModule:
         self._channel_snapshot: dict[str, object] = {}
         self._workspace_factory: Callable[[object], object] | None = None
         self._commands_page_factory: Callable[[object], object] | None = None
+        self._live_panel_factories: Mapping[str, Callable[[object], object]] = {}
         self._command_thread_pool = QThreadPool()
         self._command_thread_pool.setMaxThreadCount(1)
         self._command_workers: set[CommandExecutionWorker] = set()
@@ -178,11 +181,13 @@ class TwitchModule:
         *,
         workspace: Callable[[object], object],
         commands: Callable[[object], object],
+        live_panels: Mapping[str, Callable[[object], object]] | None = None,
     ) -> None:
         if self._catalog_registered:
             raise RuntimeError("Twitch UI factories must be bound before registration.")
         self._workspace_factory = workspace
         self._commands_page_factory = commands
+        self._live_panel_factories = dict(live_panels or {})
 
     def bind_runtime_callbacks(
         self,
@@ -346,6 +351,27 @@ class TwitchModule:
                     factory=self._workspace_factory,
                 )
             )
+        if context.docks is not None:
+            definitions = (
+                ("twitch.chat", "Twitch Chat", "left", 100),
+                ("twitch.activity", "Twitch Activity", "right", 200),
+                ("twitch.chatters", "Twitch Chatters", "right", 210),
+                ("twitch.stream-tools", "Twitch Stream Status", "top", 300),
+            )
+            for dock_id, title, area, order in definitions:
+                factory = self._live_panel_factories.get(dock_id)
+                if factory is None:
+                    raise ValueError(f'The {title} Live panel factory is unavailable.')
+                context.docks.register(
+                    ModuleDockContribution(
+                        dock_id=dock_id,
+                        owner_module_id=TWITCH_MODULE_ID,
+                        title=title,
+                        default_area=area,
+                        order=order,
+                        factory=factory,
+                    )
+                )
 
     def configure(self, context: ModuleContext) -> None:
         self._context = context

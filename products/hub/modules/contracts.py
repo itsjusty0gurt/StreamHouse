@@ -108,6 +108,7 @@ class ModuleContext:
     automation: object | None = None
     trigger_providers: object | None = None
     tabs: object | None = None
+    docks: object | None = None
     automation_pages: object | None = None
     backup: object | None = None
     data_root: object | None = None

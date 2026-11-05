@@ -2,7 +2,7 @@
 
 > Canonical implementation map for maintainers and coding agents.
 >
-> Last verified: 2026-10-27 after final Twitch module acceptance. This records
+> Last verified: 2026-11-04 during final Live workspace acceptance. This records
 > an implementation audit, not a released-version claim.
 > Update this file when a change moves ownership, adds a persisted format,
 > changes an inter-process contract, or introduces a new service/trigger/task.
@@ -200,7 +200,7 @@ normal writable composition.
    `products.hub.ui.main_window.MainWindow`, the Core composition root.
 3. `MainWindow` registers static catalogs for all compatible modules before
    Automation UI construction, then registers/configures enabled bundled modules
-   and renders their tab contributions.
+   and renders their tab and Live-dock contributions.
 4. After Qt bridges and UI consumers exist, Core starts enabled modules. The
    Twitch module restores broadcaster/bot identities and starts its maintenance
    and transport lifecycle; disabled Twitch registers no live runtime.
@@ -215,7 +215,7 @@ normal writable composition.
 - the shared `RoutineStore`
 - `CustomVariableStore`
 - automation queue store/manager
-- Core module/action/tab/trigger-provider/Backup-contributor registries
+- Core module/action/tab/dock/trigger-provider/Backup-contributor registries
 - soundboard store/local server/relay client
 - chatter, activity, and stream-session stores
 - training/test-report remote proxies
@@ -1398,15 +1398,18 @@ removed after hosted relay deployments have been upgraded.
 
 ### Streamhouse Hub shell
 
-Primary left navigation:
+Primary left navigation is Core-owned and ordered as:
 
 - Dashboard
-- Twitch (module-contributed when enabled)
+- Live
 - Automation
-- Wiki
-- Connections
-- Logs
-- Settings
+- Twitch (module-contributed when enabled)
+- subsequent enabled module tabs in contribution order
+
+The expanding spacer separates those primary entries from the bottom-pinned
+utility entries **Wiki** and **Settings**. A user-facing Modules page is not yet
+implemented. Connections remains reachable from Dashboard, while Logs and
+developer tooling stay outside the normal user-facing navigation.
 
 The Hub Dashboard is a standalone lightweight landing page owned by
 `products/hub/ui/dashboard_page.py`. It shows the authoritative Hub version and
@@ -1418,9 +1421,18 @@ Its Help & About area and the Logs header expose the same Create Support Bundle,
 Copy Diagnostic Summary, and Report a Bug flows. An abnormal-shutdown notice on
 Dashboard offers those actions without blocking startup.
 
+The Core-owned **Live** workspace embeds a `QMainWindow` dock host. Core owns
+dock registration, visibility, layout persistence/recovery, and reset. Enabled
+modules contribute only their provider-owned content widgets. Twitch contributes
+its existing Chat, Activity, Chatters, and Stream Status widgets without creating
+a second Twitch runtime or copied UI. Core Quick Actions persist stable routine
+references in `automation/quick_actions.json` and invoke them through the normal
+`AutomationService` queue/execution path. A disabled or missing module omits its
+docks without preventing the remaining layout from opening; Core preserves a
+saved layout that references absent docks rather than overwriting it.
+
 Twitch top tabs:
 
-- Chat
 - Analytics
 - Raid
 - Channel Information

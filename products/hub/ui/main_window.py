@@ -84,6 +84,7 @@ from products.hub.integrations.music_player import (
 from products.hub.integrations.music_triggers import MusicTriggerStore
 from products.hub.automation.service import AutomationService
 from products.hub.automation.routines import RoutineStore
+from products.hub.automation.quick_actions import QuickActionStore
 from products.hub.automation.models import AutomationExecutionResult, TriggerEvent
 from products.hub.automation.custom_variables import CustomVariableStore
 from products.hub.automation.variable_providers import (
@@ -177,6 +178,7 @@ from products.hub.modules import (
     AutomationSubpageRegistry,
     BackupContributorRegistry,
     ModuleContext,
+    ModuleDockRegistry,
     ModuleRegistry,
     ModuleTabRegistry,
     TriggerProviderRegistry,
@@ -238,6 +240,7 @@ from products.hub.ui.channel_points_page import ChannelPointsPage
 from products.hub.ui.channel_information_page import ChannelInformationPage
 from products.hub.ui.twitch_chat_workspace import TwitchChatWorkspaceLayout
 from products.hub.ui.table_sizing import configure_semantic_columns
+from products.hub.ui.live_workspace import LiveWorkspace, QuickActionsPanel
 from shared.streamhouse_shared.responsive import (
     LAYOUT_MODE_AUTOMATIC,
     LAYOUT_MODE_LANDSCAPE,
@@ -438,6 +441,12 @@ class MainWindow(QMainWindow):
         self.twitch_module.bind_ui_factories(
             workspace=self._create_twitch_workspace,
             commands=self._build_twitch_commands_tab,
+            live_panels={
+                "twitch.chat": self._create_twitch_chat_live_panel,
+                "twitch.activity": self._create_twitch_activity_live_panel,
+                "twitch.chatters": self._create_twitch_chatters_live_panel,
+                "twitch.stream-tools": self._create_twitch_stream_tools_live_panel,
+            },
         )
         self._last_twitch_auth_state = self.twitch_auth.state
         self._last_twitch_bot_auth_state = self.twitch_bot_auth.state
@@ -583,6 +592,7 @@ class MainWindow(QMainWindow):
         )
         self.action_registry = ActionRegistry()
         self.module_tab_registry = ModuleTabRegistry()
+        self.module_dock_registry = ModuleDockRegistry()
         self.automation_subpage_registry = AutomationSubpageRegistry()
         self.trigger_provider_registry = TriggerProviderRegistry()
         self.backup_contributor_registry = BackupContributorRegistry()
@@ -838,6 +848,11 @@ class MainWindow(QMainWindow):
         self.stream_started_at: datetime | None = None
         self.ui = Ui_MainWindow()
         self.ui.setupUi(self)
+        self._memory_viewer_refresh_timer = QTimer(self)
+        self._memory_viewer_refresh_timer.setSingleShot(True)
+        self._memory_viewer_refresh_timer.timeout.connect(
+            self._apply_memory_viewer_list_refresh
+        )
         self.window_chrome = install_window_chrome(
             self,
             native_windows_frame=True,
@@ -897,9 +912,11 @@ class MainWindow(QMainWindow):
         self._detach_twitch_workspace()
         self._build_automation_page()
         self._build_counters_page()
+        self._build_live_workspace()
         self._build_module_tabs()
         self._build_timers_page()
         self._build_wiki_page()
+        self._arrange_main_navigation()
         self._build_release_tools()
         self._build_ai_settings()
         self._build_responsive_settings()
@@ -912,14 +929,10 @@ class MainWindow(QMainWindow):
         self.navigation_group = QButtonGroup(self)
         self.navigation_group.setExclusive(True)
         for button in (
-            self.ui.dashboardButton,
-            self.ui.twitchButton,
-            self.automation_button,
-            self.wiki_button,
+            *self.primary_navigation_buttons,
+            *self.utility_navigation_buttons,
             self.connections_button,
             self.ui.logsButton,
-            self.ui.settingsButton,
-            *self.module_navigation_buttons.values(),
         ):
             self.navigation_group.addButton(button)
 
@@ -1369,13 +1382,8 @@ class MainWindow(QMainWindow):
                 QSizePolicy.Policy.Expanding,
             )
         for button in (
-            self.ui.dashboardButton,
-            self.ui.twitchButton,
-            self.automation_button,
-            self.wiki_button,
-            self.connections_button,
-            self.ui.logsButton,
-            self.ui.settingsButton,
+            *self.primary_navigation_buttons,
+            *self.utility_navigation_buttons,
         ):
             button.setMinimumWidth(0)
             button.setSizePolicy(
@@ -2851,7 +2859,7 @@ class MainWindow(QMainWindow):
     def _build_automation_page(self) -> None:
         self.automation_button = QPushButton("Automation")
         self.automation_button.setCheckable(True)
-        self.ui.verticalLayout.insertWidget(3, self.automation_button)
+        self.ui.verticalLayout.addWidget(self.automation_button)
         self.automation_page = AutomationPage(
             self.twitch_command_trigger_store.routine_store,
             self.twitch_command_trigger_store,
@@ -2887,6 +2895,7 @@ class MainWindow(QMainWindow):
                 automation=self.automation_service,
                 trigger_providers=self.trigger_provider_registry,
                 tabs=self.module_tab_registry,
+                docks=self.module_dock_registry,
                 automation_pages=self.automation_subpage_registry,
                 backup=self.backup_contributor_registry,
                 data_root=data_root,
@@ -2905,7 +2914,6 @@ class MainWindow(QMainWindow):
     def _build_module_tabs(self) -> None:
         self.module_navigation_buttons: dict[str, QPushButton] = {}
         self.module_pages: dict[str, QWidget] = {}
-        insert_at = 4
         for contribution in self.module_tab_registry.contributions():
             page = contribution.factory(self)
             if not isinstance(page, QWidget):
@@ -2919,13 +2927,12 @@ class MainWindow(QMainWindow):
                     target
                 )
             )
-            self.ui.verticalLayout.insertWidget(insert_at, button)
+            self.ui.verticalLayout.addWidget(button)
             self.ui.mainStack.addWidget(page)
             self.module_navigation_buttons[contribution.tab_id] = button
             self.module_pages[contribution.tab_id] = page
             if contribution.tab_id == "twitch.workspace":
                 self.ui.twitchButton = button
-            insert_at += 1
 
     def _detach_twitch_workspace(self) -> None:
         legacy_button = self.ui.twitchButton
@@ -2938,6 +2945,72 @@ class MainWindow(QMainWindow):
         if isinstance(parent, QWidget):
             self.ui.twitchPage.setParent(parent)
         return self.ui.twitchPage
+
+    def _create_twitch_chat_live_panel(self, parent: object) -> object:
+        index = self.ui.twitchDetailTabs.indexOf(self.ui.twitchChatTab)
+        if index >= 0:
+            self.ui.twitchDetailTabs.removeTab(index)
+        if isinstance(parent, QWidget):
+            self.ui.twitchChatTab.setParent(parent)
+        return self.ui.twitchChatTab
+
+    def _create_twitch_activity_live_panel(self, parent: object) -> object:
+        if isinstance(parent, QWidget):
+            self.activity_panel.setParent(parent)
+        return self.activity_panel
+
+    def _create_twitch_chatters_live_panel(self, parent: object) -> object:
+        if isinstance(parent, QWidget):
+            self.chatter_panel.setParent(parent)
+        return self.chatter_panel
+
+    def _create_twitch_stream_tools_live_panel(self, parent: object) -> object:
+        self.ui.twitchPageLayout.removeWidget(self.stream_tools_container)
+        if isinstance(parent, QWidget):
+            self.stream_tools_container.setParent(parent)
+        return self.stream_tools_container
+
+    def _build_live_workspace(self) -> None:
+        self.live_button = QPushButton("Live")
+        self.live_button.setCheckable(True)
+        self.live_button.clicked.connect(self.show_live)
+        self.quick_action_store = QuickActionStore(
+            self.data_root / "automation" / "quick_actions.json"
+        )
+        self.quick_actions_panel = QuickActionsPanel(
+            self.quick_action_store,
+            self.automation_page.routine_store,
+            self,
+        )
+        self.quick_actions_panel.routine_requested.connect(
+            self._run_live_quick_action
+        )
+        self.live_workspace = LiveWorkspace(
+            self.module_dock_registry.contributions(),
+            self.quick_actions_panel,
+            self.window_state_store.settings,
+            self,
+        )
+        chat_index = self.channel_tabs.indexOf(self.twitch_channel_splitter)
+        if chat_index >= 0 and "twitch.chat" in self.live_workspace.docks:
+            self.channel_tabs.removeTab(chat_index)
+            self.twitch_channel_splitter.hide()
+        self.ui.verticalLayout.addWidget(self.live_button)
+        self.ui.verticalLayout.removeWidget(self.automation_button)
+        self.ui.verticalLayout.addWidget(self.automation_button)
+        self.ui.mainStack.addWidget(self.live_workspace)
+
+    @Slot(str)
+    def _run_live_quick_action(self, routine_id: str) -> None:
+        try:
+            result = self.automation_service.run_routine(routine_id)
+        except (OSError, ValueError) as error:
+            self.statusBar().showMessage(f"Quick Action could not run: {error}", 5_000)
+            return
+        routine = self.automation_page.routine_store.get(routine_id)
+        label = routine.name if routine is not None else "Quick Action"
+        self.automation_page.record_execution(result, label)
+        self.statusBar().showMessage(f"Ran {label}.", 3_000)
 
     def _service_connected(self, service: str) -> bool:
         if service == "obs":
@@ -2963,13 +3036,52 @@ class MainWindow(QMainWindow):
     def _build_wiki_page(self) -> None:
         self.wiki_button = QPushButton("Wiki")
         self.wiki_button.setCheckable(True)
-        self.ui.verticalLayout.insertWidget(5, self.wiki_button)
+        self.ui.verticalLayout.addWidget(self.wiki_button)
         self.wiki_page = WikiPage(
             self.task_registry,
             self.variable_registry,
             self,
         )
         self.ui.mainStack.addWidget(self.wiki_page)
+
+    def _arrange_main_navigation(self) -> None:
+        """Apply the Core-owned primary and pinned utility navigation policy."""
+
+        module_buttons = tuple(
+            self.module_navigation_buttons[contribution.tab_id]
+            for contribution in self.module_tab_registry.contributions()
+            if contribution.tab_id in self.module_navigation_buttons
+        )
+        self.primary_navigation_buttons = (
+            self.ui.dashboardButton,
+            self.live_button,
+            self.automation_button,
+            *module_buttons,
+        )
+        self.utility_navigation_buttons = (
+            self.wiki_button,
+            self.ui.settingsButton,
+        )
+        hidden_shell_buttons = (
+            self.connections_button,
+            self.ui.logsButton,
+        )
+        layout = self.ui.verticalLayout
+        for button in (
+            *self.primary_navigation_buttons,
+            *self.utility_navigation_buttons,
+            *hidden_shell_buttons,
+        ):
+            layout.removeWidget(button)
+
+        for index, button in enumerate(self.primary_navigation_buttons):
+            layout.insertWidget(index, button)
+            button.show()
+        for button in self.utility_navigation_buttons:
+            layout.addWidget(button)
+            button.show()
+        for button in hidden_shell_buttons:
+            button.hide()
 
     def _build_timers_page(self) -> None:
         self.timers_page = TimersPage(
@@ -6316,6 +6428,7 @@ class MainWindow(QMainWindow):
     def _show_startup_page(self) -> None:
         page_actions = {
             "Dashboard": self.show_dashboard,
+            "Live": self.show_live,
             "Twitch": self.show_twitch,
             "Automation": self.show_automation,
             "Timers": self.show_timers,
@@ -6329,6 +6442,11 @@ class MainWindow(QMainWindow):
     def show_dashboard(self) -> None:
         self.ui.mainStack.setCurrentWidget(self.ui.dashboardPage)
         self.ui.dashboardButton.setChecked(True)
+
+    @Slot()
+    def show_live(self) -> None:
+        self.ui.mainStack.setCurrentWidget(self.live_workspace)
+        self.live_button.setChecked(True)
 
     @Slot()
     def show_twitch(self) -> None:
@@ -6389,6 +6507,23 @@ class MainWindow(QMainWindow):
         if QThread.currentThread() != self.thread():
             self.memory_viewer_refresh_requested.emit(_text)
             return
+        if (
+            self._shutting_down
+            or not hasattr(self, "memory_viewer_list")
+            or not isValid(self._memory_viewer_refresh_timer)
+        ):
+            return
+        viewer_list = self.memory_viewer_list
+        if not isValid(viewer_list):
+            return
+        if self._memory_viewer_refreshing:
+            self._memory_viewer_refresh_pending = True
+            return
+        if not self._memory_viewer_refresh_timer.isActive():
+            self._memory_viewer_refresh_timer.start(0)
+
+    @Slot()
+    def _apply_memory_viewer_list_refresh(self) -> None:
         if self._shutting_down or not hasattr(self, "memory_viewer_list"):
             return
         viewer_list = self.memory_viewer_list
@@ -6406,33 +6541,76 @@ class MainWindow(QMainWindow):
                 if selected_item is not None
                 else ""
             )
+            # Do not retain a wrapper to an item that may be removed below.
+            selected_item = None
             query = self.memory_search_edit.text().strip().casefold()
+            records = sorted(
+                self.chatter_history.records.values(),
+                key=lambda record: record.user_name.casefold(),
+            )
+            desired = [
+                (record.user_id, record.user_name or record.user_id)
+                for record in records
+                if not query or query in record.user_name.casefold()
+            ]
+            removed_items: list[QListWidgetItem] = []
             signal_blocker = QSignalBlocker(viewer_list)
             try:
-                viewer_list.clear()
                 selected_row = -1
-                records = sorted(
-                    self.chatter_history.records.values(),
-                    key=lambda record: record.user_name.casefold(),
-                )
-                for record in records:
-                    if query and query not in record.user_name.casefold():
-                        continue
-                    item = QListWidgetItem(record.user_name or record.user_id)
-                    item.setData(Qt.ItemDataRole.UserRole, record.user_id)
-                    viewer_list.addItem(item)
-                    if record.user_id == selected_id:
-                        selected_row = viewer_list.count() - 1
+                for row, (user_id, label) in enumerate(desired):
+                    item = viewer_list.item(row)
+                    item_id = (
+                        str(item.data(Qt.ItemDataRole.UserRole))
+                        if item is not None
+                        else ""
+                    )
+                    if item_id != user_id:
+                        matching_row = next(
+                            (
+                                candidate_row
+                                for candidate_row in range(
+                                    row + 1,
+                                    viewer_list.count(),
+                                )
+                                if str(
+                                    viewer_list.item(candidate_row).data(
+                                        Qt.ItemDataRole.UserRole
+                                    )
+                                )
+                                == user_id
+                            ),
+                            -1,
+                        )
+                        if matching_row >= 0:
+                            item = viewer_list.takeItem(matching_row)
+                            viewer_list.insertItem(row, item)
+                        else:
+                            item = QListWidgetItem()
+                            item.setData(Qt.ItemDataRole.UserRole, user_id)
+                            viewer_list.insertItem(row, item)
+                    item.setText(label)
+                    if user_id == selected_id:
+                        selected_row = row
+                while viewer_list.count() > len(desired):
+                    removed = viewer_list.takeItem(viewer_list.count() - 1)
+                    if removed is not None:
+                        removed_items.append(removed)
                 if selected_row >= 0:
                     viewer_list.setCurrentRow(selected_row)
+                else:
+                    viewer_list.setCurrentRow(-1)
             finally:
                 del signal_blocker
+            # Items removed with takeItem remain valid until their Python
+            # wrappers are released, avoiding QListWidget.clear() deleting a
+            # selected native item beneath a live Shiboken wrapper.
+            removed_items.clear()
             self._show_memory_viewer(viewer_list.currentItem(), None)
         finally:
             self._memory_viewer_refreshing = False
             if self._memory_viewer_refresh_pending and not self._shutting_down:
                 self._memory_viewer_refresh_pending = False
-                QTimer.singleShot(0, self._refresh_memory_viewer_list)
+                self._memory_viewer_refresh_timer.start(0)
 
     @Slot(object, object)
     def _show_memory_viewer(self, current: object, _previous: object) -> None:
@@ -6674,7 +6852,10 @@ class MainWindow(QMainWindow):
         self.chatter_history.merge_records(source_id, target_id)
         self.user_groups.merge_users(source_id, target_id)
         self._save_chatter_history()
-        self._refresh_memory_viewer_list()
+        # This user-initiated flow needs the reconciled rows immediately so it
+        # can select the merge target. Snapshot-driven refreshes remain queued
+        # and coalesced outside their callback stack.
+        self._apply_memory_viewer_list_refresh()
         for row in range(self.memory_viewer_list.count()):
             item = self.memory_viewer_list.item(row)
             if str(item.data(Qt.ItemDataRole.UserRole)) == target_id:
@@ -8655,6 +8836,7 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event: QCloseEvent) -> None:
         self._shutting_down = True
+        self._memory_viewer_refresh_timer.stop()
         self.counter_service.unsubscribe_changes(self._counter_change_callback)
         self.activity_age_timer.stop()
         self._activity_rows.clear()

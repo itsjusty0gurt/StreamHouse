@@ -15,17 +15,21 @@
 3. **Current architecture milestone:** OBS and Twitch are accepted bundled Hub
    modules. Twitch owns its catalogs, auth/transport lifecycle, UI, Commands,
    Variables, triggers, Backup contributions, reconnect, and shutdown.
-4. **Accepted Twitch code:** feature commit
+4. **Live workspace milestone:** Core now hosts a dockable Live workspace.
+   Twitch contributes its existing Chat, Activity, Chatters, and Stream Status
+   widgets; Core contributes persisted routine-backed Quick Actions. Final
+   feature source acceptance passed at `c2e4f2ae212c0b6633374fbacb265764ea032762`.
+5. **Accepted Twitch code:** feature commit
    `dba19eb5e6a8da2160664440dff9917e37bd2965`, integrated into `develop` by
    merge commit `a018ae414beced099066c22bf10ca7d7b93d5511`.
-5. **Most important unresolved issue:** one Windows forced-termination test
+6. **Most important unresolved issue:** one Windows forced-termination test
    currently retains a crash-log handle.
-6. **Latest OBS acceptance:** 372 unique relevant tests and 70 subtests passed;
+7. **Latest OBS acceptance:** 372 unique relevant tests and 70 subtests passed;
    packaged Hub/AI smoke passed; packaged startup exited 0 with OBS disabled and
    again after re-enabling; compilation and `git diff --check` passed.
-7. **Immediate next steps:** investigate the independent Windows
+8. **Immediate next steps:** investigate the independent Windows
    forced-termination and Counter test cleanup issues as separate tasks.
-8. **Read next:** [master reference](STREAMHOUSE_MASTER_REFERENCE.md),
+9. **Read next:** [master reference](STREAMHOUSE_MASTER_REFERENCE.md),
    [architecture](ARCHITECTURE.md), [0.3 foundation](architecture/hub-0.3-foundation.md),
    [implementation map](architecture/overview.md), and
    [development policy](architecture/development-policy.md).
@@ -34,13 +38,13 @@
 
 | Item | Verified value |
 | --- | --- |
-| Date | 2026-10-29 (America/Edmonton) |
-| Branch | `develop`; accepted Twitch feature retained at `feature/twitch-module-conversion` |
+| Date | 2026-11-04 |
+| Live acceptance source | `feature/live-workspace` at `c2e4f2ae212c0b6633374fbacb265764ea032762`, based on `develop` at `38b46f9f8d3f1be50b44df5c93e5770b1e25d764` |
 | Twitch Phase 3 starting HEAD | `c5319fceb3b1251d29ee0aa36f7066cf7a4ea3f9` |
-| Feature upstream | `origin/feature/twitch-module-conversion` |
+| Feature upstream | `origin/feature/live-workspace` |
 | Working tree at task start | clean |
 | Hub development version | `0.3.0-alpha` / Windows `0.3.0.0` |
-| Pre-merge integration baseline | `develop` at `94f4c78be353aa0417449a5bf214a403950a84bb` |
+| Pre-merge integration baseline | `develop` at `38b46f9f8d3f1be50b44df5c93e5770b1e25d764` |
 | Latest published Hub tag | `v0.2.1-alpha` at `b1c25a21ef34de8029d6216eb96c47274c2a4c58` |
 
 ## Active development focus
@@ -71,6 +75,17 @@ enter a concise Reconnecting state and use one owned retry timer. Raw transport
 details remain in Logs and are not appended to Chat.
 
 ## Completed milestones
+
+- Core Live workspace docking is implemented with module-contributed panels,
+  Qt layout persistence/reset, safe missing-provider restoration, and Core
+  Quick Actions that run existing routines through Automation. Twitch's live
+  widgets are reparented into docks rather than duplicated; its provider tab
+  remains for deeper Twitch management. Docks tile instead of tab-stacking, the
+  default layout prioritizes Chat, and compact separators preserve practical
+  resizing. Core navigation now orders Dashboard, Live, Automation, and enabled
+  module tabs above bottom-pinned Wiki and Settings. Final acceptance passed 46
+  focused tests plus 2 subtests and 238 MainWindow tests plus 7 subtests; the
+  normal Windows package built and passed isolated offscreen startup/shutdown.
 
 - Public Hub tags `v0.1.0-alpha`, `v0.2.0-alpha`, and `v0.2.1-alpha` exist.
 - 0.3 development metadata is `0.3.0-alpha`.
@@ -250,6 +265,9 @@ Reproduction/validation requirements:
 | Post-merge packaged smoke | Exit code 0 with Twitch re-enabled |
 | Hub smoke-maintenance focused/broader gate | Users suite passed in five consecutive runs (100 tests, 125 subtests total); Users/Counter gate passed 67 tests and 35 subtests; relevant MainWindow slice passed 7 tests unrestricted after the known restricted QtWebEngine breakpoint |
 | Hub smoke-maintenance package | Normal Hub build and automated packaged startup/shutdown smoke passed; the follow-up visual click-through remained blocked by an already-running installed single instance and was not forced |
+| Final Live focused acceptance | 46 passed, 2 subtests passed |
+| Final Live MainWindow acceptance | 238 passed, 7 subtests passed |
+| Final Live package | Normal build passed; isolated offscreen startup/shutdown exited 0 with no fatal log, dump, Hub, or QtWebEngine remainder |
 | Python compilation | Passed for `products/hub` and `shared` |
 | `git diff --check` | Passed |
 
@@ -259,7 +277,8 @@ Reproduction/validation requirements:
    tests.
 2. Make static OBS presentation adapters provider-neutral only where another
    module or a concrete maintenance benefit justifies the abstraction.
-3. Consider Modules-page, navigation, or docking work as separate scoped changes.
+3. Treat the Modules page, user-controlled navigation ordering, and additional
+   provider Live panels as separate scoped changes.
 
 ## Maintenance rules
 

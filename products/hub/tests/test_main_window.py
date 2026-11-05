@@ -63,9 +63,12 @@ from products.hub.automation.models import (
 from products.hub.obs_service.triggers import OBS_TRIGGER_TYPES
 from products.hub.obs_service.models import ObsConnectionState, ObsEvent
 from products.hub.modules import (
+    ModuleContext,
+    ModuleDescriptor,
     ModuleEnablementStore,
     ModuleLifecycle,
     ModuleRegistry,
+    ModuleTabContribution,
     TriggerProviderRegistry,
 )
 from products.hub.modules.bootstrap import CORE_MODULE_CAPABILITIES
@@ -131,6 +134,38 @@ from products.hub.streamhouse_hub.ai_lifecycle import AIConnectionState
 from products.hub.ui.twitch_command_dialog import TwitchCommandDialog, TwitchCommandManagerDialog
 
 _REAL_SETTINGS_LOAD_FOR_STARTUP = SettingsStore.load_for_startup
+
+
+class _NavigationTestModule:
+    descriptor = ModuleDescriptor(
+        module_id="streamhouse.youtube",
+        display_name="YouTube",
+        version="0.1.0",
+        category="Streaming",
+    )
+
+    def register_catalog(self, _context: ModuleContext) -> None:
+        return
+
+    def register(self, context: ModuleContext) -> None:
+        context.tabs.register(
+            ModuleTabContribution(
+                tab_id="youtube.workspace",
+                owner_module_id=self.descriptor.module_id,
+                label="YouTube",
+                order=450,
+                factory=lambda parent: QWidget(parent),
+            )
+        )
+
+    def configure(self, _context: ModuleContext) -> None:
+        return
+
+    def start(self) -> None:
+        return
+
+    def stop(self) -> None:
+        return
 
 
 class MainWindowTests(unittest.TestCase):
@@ -219,6 +254,7 @@ class MainWindowTests(unittest.TestCase):
             "test_obs_catalog_precedes_enabled_main_window_ui",
             "test_disabled_obs_catalog_precedes_main_window_ui_without_runtime",
             "test_disabled_twitch_catalog_precedes_main_window_ui_without_runtime",
+            "test_disabled_twitch_keeps_navigation_groups_ordered",
         }:
             if self._testMethodName.startswith("test_disabled_obs"):
                 enablement.set_enabled(OBS_MODULE_ID, False)
@@ -231,6 +267,8 @@ class MainWindowTests(unittest.TestCase):
         )
         module_registry.register(self.obs_module)
         module_registry.register(self.twitch_module)
+        if self._testMethodName == "test_additional_module_tab_joins_primary_navigation":
+            module_registry.register(_NavigationTestModule())
         if self._testMethodName == "test_startup_resets_obsolete_twitch_triggers":
             routine = self.twitch_command_trigger_store.routine_store.add(
                 "Obsolete Twitch trigger"
@@ -318,6 +356,7 @@ class MainWindowTests(unittest.TestCase):
         self.assertEqual(self.window.windowTitle(), "Streamhouse Hub")
         cases = (
             (self.window.ui.dashboardButton, self.window.ui.dashboardPage),
+            (self.window.live_button, self.window.live_workspace),
             (self.window.ui.twitchButton, self.window.ui.twitchPage),
             (self.window.automation_button, self.window.automation_page),
             (self.window.connections_button, self.window.connections_page),
@@ -336,6 +375,108 @@ class MainWindowTests(unittest.TestCase):
                 1,
             )
         self.assertEqual(self.window.statusBar().currentMessage(), "")
+
+    def test_live_navigation_precedes_automation_and_module_tabs(self) -> None:
+        self.assertEqual(
+            [button.text() for button in self.window.primary_navigation_buttons],
+            ["Dashboard", "Live", "Automation", "Twitch", "OBS"],
+        )
+        self.assertEqual(
+            [button.text() for button in self.window.utility_navigation_buttons],
+            ["Wiki", "Settings"],
+        )
+        spacer_index = self.window.ui.verticalLayout.indexOf(
+            self.window.ui.verticalSpacer
+        )
+        self.assertTrue(
+            all(
+                self.window.ui.verticalLayout.indexOf(button) < spacer_index
+                for button in self.window.primary_navigation_buttons
+            )
+        )
+        self.assertTrue(
+            all(
+                self.window.ui.verticalLayout.indexOf(button) > spacer_index
+                for button in self.window.utility_navigation_buttons
+            )
+        )
+        self.assertTrue(self.window.connections_button.isHidden())
+        self.assertTrue(self.window.ui.logsButton.isHidden())
+
+    def test_additional_module_tab_joins_primary_navigation(self) -> None:
+        self.assertEqual(
+            [button.text() for button in self.window.primary_navigation_buttons],
+            ["Dashboard", "Live", "Automation", "Twitch", "OBS", "YouTube"],
+        )
+        youtube_button = self.window.module_navigation_buttons["youtube.workspace"]
+        youtube_button.click()
+        self.assertIs(
+            self.window.ui.mainStack.currentWidget(),
+            self.window.module_pages["youtube.workspace"],
+        )
+        self.assertTrue(youtube_button.isChecked())
+
+    def test_disabled_twitch_keeps_navigation_groups_ordered(self) -> None:
+        self.assertEqual(
+            [button.text() for button in self.window.primary_navigation_buttons],
+            ["Dashboard", "Live", "Automation", "OBS"],
+        )
+        self.assertEqual(
+            [button.text() for button in self.window.utility_navigation_buttons],
+            ["Wiki", "Settings"],
+        )
+        self.assertNotIn("twitch.workspace", self.window.module_navigation_buttons)
+
+    def test_live_workspace_reuses_twitch_widgets_and_runs_quick_action(self) -> None:
+        self.assertIs(
+            self.window.live_workspace.docks["twitch.chat"].widget(),
+            self.window.ui.twitchChatTab,
+        )
+        self.assertIs(
+            self.window.live_workspace.docks["twitch.activity"].widget(),
+            self.window.activity_panel,
+        )
+        self.assertEqual(
+            self.window.channel_tabs.indexOf(self.window.twitch_channel_splitter),
+            -1,
+        )
+        routine = self.window.automation_page.routine_store.add("Live Test")
+        action = self.window.quick_action_store.add("Run Test", routine.routine_id)
+        self.window.quick_actions_panel.refresh()
+        result = Mock()
+        self.window.automation_service.run_routine = Mock(return_value=result)
+        self.window.automation_page.record_execution = Mock()
+
+        self.window.quick_actions_panel._buttons[action.action_id].click()
+
+        self.window.automation_service.run_routine.assert_called_once_with(
+            routine.routine_id
+        )
+        self.window.automation_page.record_execution.assert_called_once_with(
+            result, "Live Test"
+        )
+
+    def test_live_quick_action_with_missing_routine_fails_safely(self) -> None:
+        action = self.window.quick_action_store.add(
+            "Missing Routine",
+            "missing-routine-id",
+        )
+        self.window.quick_actions_panel.refresh()
+        self.window.automation_service.run_routine = Mock(
+            side_effect=ValueError("The selected routine no longer exists.")
+        )
+        self.window.automation_page.record_execution = Mock()
+
+        self.window.quick_actions_panel._buttons[action.action_id].click()
+
+        self.window.automation_service.run_routine.assert_called_once_with(
+            "missing-routine-id"
+        )
+        self.window.automation_page.record_execution.assert_not_called()
+        self.assertIn(
+            "Quick Action could not run",
+            self.window.statusBar().currentMessage(),
+        )
 
     def test_startup_resets_obsolete_twitch_triggers(self) -> None:
         payload = json.loads(
@@ -540,13 +681,8 @@ class MainWindowTests(unittest.TestCase):
 
     def test_timers_live_under_automation_navigation(self) -> None:
         navigation_buttons = (
-            self.window.ui.dashboardButton,
-            self.window.ui.twitchButton,
-            self.window.automation_button,
-            self.window.wiki_button,
-            self.window.connections_button,
-            self.window.ui.logsButton,
-            self.window.ui.settingsButton,
+            *self.window.primary_navigation_buttons,
+            *self.window.utility_navigation_buttons,
         )
 
         for portrait in (True, False):
@@ -579,47 +715,37 @@ class MainWindowTests(unittest.TestCase):
         self.assertTrue(self.window.automation_button.isChecked())
 
     def test_twitch_chat_keeps_stacked_side_column_across_layouts(self) -> None:
-        chat = self.window.ui.twitchDetailTabs
-        side = self.window.channel_side_splitter
         chatters = self.window.chatter_panel
         activity = self.window.activity_panel
-        self.window.twitch_channel_splitter.setSizes([680, 320])
 
         for portrait in (True, False, True):
             self.window._apply_responsive_layout(portrait)
-            self.assertEqual(
-                self.window.twitch_channel_splitter.orientation(),
-                Qt.Orientation.Horizontal,
+            self.assertIs(
+                self.window.live_workspace.docks["twitch.chatters"].widget(),
+                chatters,
             )
-            self.assertEqual(side.orientation(), Qt.Orientation.Vertical)
-            self.assertEqual(self.window.twitch_channel_splitter.count(), 2)
-            self.assertEqual(side.count(), 2)
-            self.assertIs(self.window.twitch_channel_splitter.widget(0), chat)
-            self.assertIs(self.window.twitch_channel_splitter.widget(1), side)
-            self.assertIs(side.widget(0), chatters)
-            self.assertIs(side.widget(1), activity)
+            self.assertIs(
+                self.window.live_workspace.docks["twitch.activity"].widget(),
+                activity,
+            )
+            self.assertFalse(
+                self.window.live_workspace.docks["twitch.chat"].isFloating()
+            )
 
-        self.assertEqual(chat.sizePolicy().horizontalStretch(), 2)
-        self.assertEqual(side.sizePolicy().horizontalStretch(), 1)
-        self.assertEqual(chat.minimumWidth(), 300)
-        self.assertEqual(side.minimumWidth(), 180)
-        self.assertFalse(self.window.twitch_channel_splitter.isCollapsible(0))
-        self.assertFalse(self.window.twitch_channel_splitter.isCollapsible(1))
-        self.assertFalse(side.isCollapsible(0))
-        self.assertFalse(side.isCollapsible(1))
-        self.window.ui.mainStack.setCurrentWidget(self.window.ui.twitchPage)
+        self.window.ui.mainStack.setCurrentWidget(self.window.live_workspace)
         self.window.resize(1080, 1600)
         self.window.show()
         self.application.processEvents()
-        chat_size, side_size = self.window.twitch_channel_splitter.sizes()
-        chatter_size, activity_size = side.sizes()
-        self.assertGreater(chat_size, side_size)
-        self.assertGreater(chatter_size, 0)
-        self.assertGreater(activity_size, 0)
-        self.assertTrue(
-            self.window.ui.twitchPage.isAncestorOf(self.window.ad_manager_group)
+        self.assertIs(chatters.parentWidget(), self.window.live_workspace.docks["twitch.chatters"])
+        self.assertIs(activity.parentWidget(), self.window.live_workspace.docks["twitch.activity"])
+        self.assertIs(
+            self.window.stream_tools_container.parentWidget(),
+            self.window.live_workspace.docks["twitch.stream-tools"],
         )
-        self.assertTrue(self.window.ad_manager_group.isVisible())
+        self.assertFalse(
+            self.window.live_workspace.docks["twitch.stream-tools"].isHidden()
+        )
+        self.assertFalse(self.window.ad_manager_group.isHidden())
 
     def test_automation_page_edits_grouped_routine_and_shows_tasks(self) -> None:
         store = self.twitch_command_trigger_store.routine_store
@@ -2767,6 +2893,7 @@ class MainWindowTests(unittest.TestCase):
             )
         }
         self.window._refresh_memory_viewer_list()
+        self.application.processEvents()
         self.assertEqual(self.window.memory_viewer_list.count(), 1)
         self.window.memory_viewer_list.setCurrentRow(0)
         self.assertEqual(self.window.memory_name_label.text(), "KnownViewer")
@@ -2777,6 +2904,7 @@ class MainWindowTests(unittest.TestCase):
         self.assertEqual(self.window.memory_tags_edit.text(), "friend")
 
         self.window.memory_search_edit.setText("missing")
+        self.application.processEvents()
         self.assertEqual(self.window.memory_viewer_list.count(), 0)
 
     def test_memory_viewer_refresh_is_stable_during_task_context_menu(self) -> None:
@@ -2801,6 +2929,7 @@ class MainWindowTests(unittest.TestCase):
             )
         }
         self.window._refresh_memory_viewer_list()
+        self.application.processEvents()
         self.window.memory_viewer_list.setCurrentRow(0)
         selection_changes = QSignalSpy(
             self.window.memory_viewer_list.currentItemChanged
@@ -2813,9 +2942,11 @@ class MainWindowTests(unittest.TestCase):
         )
 
         menu = Mock()
-        menu.exec.side_effect = lambda *_args: self.window._apply_chatter_groups(
-            result
-        )
+        def apply_snapshot_during_menu(*_args) -> None:
+            self.window._apply_chatter_groups(result)
+            self.application.processEvents()
+
+        menu.exec.side_effect = apply_snapshot_during_menu
         with (
             patch.object(page.task_list, "itemAt", return_value=task_item),
             patch(
@@ -2875,6 +3006,79 @@ class MainWindowTests(unittest.TestCase):
         ):
             self.window._refresh_memory_viewer_list()
 
+    def test_memory_viewer_refresh_survives_live_navigation_and_dock_changes(
+        self,
+    ) -> None:
+        chat_dock = self.window.live_workspace.docks["twitch.chat"]
+        for cycle in range(40):
+            user_id = str(cycle % 5)
+            self.chatter_history_store.records[user_id] = ChatterRecord(
+                user_id=user_id,
+                user_name=f"Viewer {user_id} update {cycle}",
+                first_seen="2026-07-01T12:00:00+00:00",
+                last_seen=f"2026-07-12T12:00:{cycle:02d}+00:00",
+            )
+            result = ChannelSnapshotResult(
+                request_id=self.window.channel_snapshot_request_id,
+                snapshot={"stream": None},
+                chatters=tuple(
+                    {
+                        "user_id": record.user_id,
+                        "user_name": record.user_name,
+                    }
+                    for record in self.chatter_history_store.records.values()
+                ),
+                can_read_chatters=True,
+            )
+            self.window._apply_chatter_groups(result)
+            if cycle % 3 == 0:
+                self.window.show_live()
+                chat_dock.setVisible(not chat_dock.isVisible())
+                chat_dock.setVisible(True)
+            elif cycle % 3 == 1:
+                self.window.show_twitch()
+                self.window.channel_tabs.setCurrentWidget(
+                    self.window.chat_user_page
+                )
+            else:
+                self.window.show_dashboard()
+            self.application.processEvents()
+
+        self.assertEqual(
+            self.window.memory_viewer_list.count(),
+            len(self.chatter_history_store.records),
+        )
+        self.assertFalse(self.window._memory_viewer_refresh_timer.isActive())
+
+    def test_memory_viewer_refresh_reuses_rows_and_cancels_for_shutdown(
+        self,
+    ) -> None:
+        record = ChatterRecord(
+            user_id="42",
+            user_name="KnownViewer",
+            first_seen="2026-07-01T12:00:00+00:00",
+            last_seen="2026-07-12T12:00:00+00:00",
+        )
+        self.chatter_history_store.records = {"42": record}
+        self.window._refresh_memory_viewer_list()
+        self.application.processEvents()
+        item = self.window.memory_viewer_list.item(0)
+
+        record.user_name = "RenamedViewer"
+        for _attempt in range(10):
+            self.window._refresh_memory_viewer_list()
+        self.application.processEvents()
+
+        self.assertIs(self.window.memory_viewer_list.item(0), item)
+        self.assertEqual(item.text(), "RenamedViewer")
+        self.window._refresh_memory_viewer_list()
+        self.assertTrue(self.window._memory_viewer_refresh_timer.isActive())
+        self.window._shutting_down = True
+        self.window._memory_viewer_refresh_timer.stop()
+        self.chatter_history_store.records = {}
+        self.application.processEvents()
+        self.assertEqual(self.window.memory_viewer_list.count(), 1)
+
     def test_channel_workspace_keeps_stream_sessions_inside_analytics(self) -> None:
         channel_tab_names = [
             self.window.channel_tabs.tabText(index)
@@ -2883,7 +3087,6 @@ class MainWindowTests(unittest.TestCase):
         self.assertEqual(
             channel_tab_names,
             [
-                "Chat",
                 "Analytics",
                 "Raid",
                 "Channel Information",
@@ -2956,19 +3159,22 @@ class MainWindowTests(unittest.TestCase):
         self.assertEqual(self.window.ui.mainStack.indexOf(self.window.ai_page), -1)
         self.assertTrue(self.window.ai_page.isHidden())
         self.assertEqual(
-            [button.text() for button in self.window.navigation_group.buttons()],
+            [
+                button.text()
+                for button in self.window.navigation_group.buttons()
+                if not button.isHidden()
+            ],
             [
                 "Dashboard",
+                "Live",
                 "Automation",
-                "Wiki",
-                "Connections",
-                "Logs",
-                "Settings",
                 "Twitch",
                 "OBS",
+                "Wiki",
+                "Settings",
             ],
         )
-        self.assertEqual(self.window.channel_tabs.count(), 6)
+        self.assertEqual(self.window.channel_tabs.count(), 5)
         self.assertNotIn(
             "Soundboard",
             [
@@ -3643,6 +3849,7 @@ class MainWindowTests(unittest.TestCase):
         self.window.settings.ai_viewer_memory_enabled = True
 
         self.window._refresh_memory_viewer_list()
+        self.application.processEvents()
         self.window.memory_viewer_list.setCurrentRow(0)
 
         self.assertTrue(self.window.add_memory_button.isEnabled())
@@ -3721,11 +3928,11 @@ class MainWindowTests(unittest.TestCase):
         )
         self.assertIs(
             self.window.chatter_list.parentWidget().parentWidget(),
-            self.window.channel_side_splitter,
+            self.window.live_workspace.docks["twitch.chatters"],
         )
-        self.assertEqual(
-            self.window.channel_side_splitter.orientation(),
-            Qt.Orientation.Vertical,
+        self.assertIs(
+            self.window.activity_panel.parentWidget(),
+            self.window.live_workspace.docks["twitch.activity"],
         )
         self.assertLessEqual(
             self.window.activity_feed_list.parentWidget().minimumWidth(),
@@ -4294,7 +4501,7 @@ class MainWindowTests(unittest.TestCase):
             self.window.ui.toggleDeveloperToolsButton.text(),
             "Close Developer Tools",
         )
-        self.assertEqual(self.window.ui.twitchDetailTabs.count(), 1)
+        self.assertEqual(self.window.ui.twitchDetailTabs.count(), 0)
         self.assertEqual(self.window.developer_dock.widget().count(), 3)
 
         self.window.ui.showDeveloperToolsCheck.setChecked(False)
@@ -4736,12 +4943,12 @@ class MainWindowTests(unittest.TestCase):
         )
         self.window.show_twitch()
         self.assertIs(
-            self.window.twitch_channel_splitter.widget(1),
-            self.window.channel_side_splitter,
+            self.window.live_workspace.docks["twitch.chatters"].widget(),
+            self.window.chatter_list.parentWidget(),
         )
         self.assertIs(
-            self.window.channel_side_splitter.widget(0),
-            self.window.chatter_list.parentWidget(),
+            self.window.live_workspace.docks["twitch.activity"].widget(),
+            self.window.activity_panel,
         )
 
     def test_twitch_group_shows_account_chat_eventsub_and_scope_health(self) -> None:
