@@ -4,8 +4,8 @@ from types import SimpleNamespace
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QSettings, Qt
-from PySide6.QtWidgets import QApplication, QWidget
+from PySide6.QtCore import QRect, QSettings, Qt
+from PySide6.QtWidgets import QApplication, QStyle, QWidget
 
 from products.hub.automation.quick_actions import QuickActionStore
 from products.hub.modules.contributions import ModuleDockContribution
@@ -66,6 +66,21 @@ def _show_workspace(workspace: LiveWorkspace) -> None:
     workspace.resize(1200, 800)
     workspace.show()
     _app().processEvents()
+
+
+def _assert_docked_panels_do_not_overlap(workspace: LiveWorkspace) -> None:
+    visible_docks = [
+        dock
+        for dock in workspace.docks.values()
+        if dock.isVisible() and not dock.isFloating()
+    ]
+    for index, first in enumerate(visible_docks):
+        first_geometry = QRect(first.geometry())
+        for second in visible_docks[index + 1 :]:
+            overlap = first_geometry.intersected(second.geometry())
+            assert overlap.width() <= 0 or overlap.height() <= 0, (
+                f"{first.objectName()} overlaps {second.objectName()}: {overlap}"
+            )
 
 
 def test_quick_action_store_round_trip_and_panel_runs_canonical_routine(tmp_path: Path) -> None:
@@ -149,6 +164,55 @@ def test_default_layout_uses_full_width_rows_and_descending_middle_columns(
     assert stream_tools.width() >= workspace.host.width() - 10
     assert quick_actions.width() >= workspace.host.width() - 10
     assert quick_actions.height() < chat.height()
+    _assert_docked_panels_do_not_overlap(workspace)
+
+
+def test_dock_moves_reflow_without_tab_stacking_or_overlap(tmp_path: Path) -> None:
+    _app()
+    settings = QSettings(str(tmp_path / "window.ini"), QSettings.Format.IniFormat)
+    workspace = LiveWorkspace(
+        _live_contributions(),
+        _quick_panel(tmp_path),
+        settings,
+    )
+    _show_workspace(workspace)
+
+    assert not (
+        workspace.host.dockOptions()
+        & workspace.host.DockOption.AllowTabbedDocks
+    )
+    for dock_id, area in (
+        ("twitch.chat", Qt.DockWidgetArea.TopDockWidgetArea),
+        ("twitch.chat", Qt.DockWidgetArea.BottomDockWidgetArea),
+        ("twitch.chat", Qt.DockWidgetArea.LeftDockWidgetArea),
+        ("twitch.chat", Qt.DockWidgetArea.RightDockWidgetArea),
+        ("twitch.stream-tools", Qt.DockWidgetArea.LeftDockWidgetArea),
+        ("twitch.activity", Qt.DockWidgetArea.TopDockWidgetArea),
+        ("twitch.chatters", Qt.DockWidgetArea.BottomDockWidgetArea),
+        ("core.quick-actions", Qt.DockWidgetArea.RightDockWidgetArea),
+    ):
+        dock = workspace.docks[dock_id]
+        workspace.host.addDockWidget(area, dock)
+        _app().processEvents()
+        assert workspace.host.dockWidgetArea(dock) == area
+        _assert_docked_panels_do_not_overlap(workspace)
+
+
+def test_live_dock_separator_is_compact_but_resizable(tmp_path: Path) -> None:
+    _app()
+    settings = QSettings(str(tmp_path / "window.ini"), QSettings.Format.IniFormat)
+    workspace = LiveWorkspace(
+        _live_contributions(),
+        _quick_panel(tmp_path),
+        settings,
+    )
+
+    separator_extent = workspace.host.style().pixelMetric(
+        QStyle.PixelMetric.PM_DockWidgetSeparatorExtent,
+        None,
+        workspace.host,
+    )
+    assert separator_extent == 4
 
 
 def test_reset_restores_default_geometry_after_dock_changes(tmp_path: Path) -> None:

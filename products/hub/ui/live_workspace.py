@@ -17,6 +17,8 @@ from PySide6.QtWidgets import (
     QMenu,
     QMessageBox,
     QPushButton,
+    QProxyStyle,
+    QStyle,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -32,6 +34,17 @@ _DOCK_AREAS = {
     "top": Qt.DockWidgetArea.TopDockWidgetArea,
     "bottom": Qt.DockWidgetArea.BottomDockWidgetArea,
 }
+
+
+class _LiveDockStyle(QProxyStyle):
+    """Keep Live dock splitters compact without changing floating frames."""
+
+    SEPARATOR_EXTENT = 4
+
+    def pixelMetric(self, metric, option=None, widget=None) -> int:
+        if metric == QStyle.PixelMetric.PM_DockWidgetSeparatorExtent:
+            return self.SEPARATOR_EXTENT
+        return super().pixelMetric(metric, option, widget)
 
 
 class QuickActionDialog(QDialog):
@@ -170,7 +183,13 @@ class LiveWorkspace(QWidget):
         self.host = QMainWindow()
         self.host.setParent(self, Qt.WindowType.Widget)
         self.host.setObjectName("liveWorkspaceHost")
-        self.host.setDockNestingEnabled(True)
+        self.host.setDockOptions(
+            QMainWindow.DockOption.AnimatedDocks
+            | QMainWindow.DockOption.AllowNestedDocks
+        )
+        self._dock_style = _LiveDockStyle()
+        self._dock_style.setParent(self.host)
+        self.host.setStyle(self._dock_style)
         # Live is entirely dock-backed. Leaving the host without a central
         # widget lets the primary Chat dock consume the usable middle area
         # instead of reserving an empty center pane.
