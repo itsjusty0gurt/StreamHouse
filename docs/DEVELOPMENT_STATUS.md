@@ -78,7 +78,12 @@ details remain in Logs and are not appended to Chat.
 
 - Core Live workspace docking is implemented with module-contributed panels,
   Qt layout persistence/reset, safe missing-provider restoration, and Core
-  Quick Actions that run existing routines through Automation. Twitch's live
+  Quick Actions that run existing routines through Automation. Quick Actions
+  now use a compact square-tile grid that follows dock orientation, persists
+  four accessibility size presets and stable drag order, supports simple color
+  and built-in icon customization, and preserves unavailable routine links for
+  repair. Schema-v1 Quick Actions upgrade to schema v2 without changing stable
+  action/routine IDs or order. Twitch's live
   widgets are reparented into docks rather than duplicated; its provider tab
   remains for deeper Twitch management. Docks tile instead of tab-stacking, the
   default layout prioritizes Chat, and compact separators preserve practical

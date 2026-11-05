@@ -2,13 +2,17 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable
 
-from PySide6.QtCore import QByteArray, QSettings, Qt, Signal
+from PySide6.QtCore import QByteArray, QMimeData, QPoint, QSettings, QSize, Qt, Signal
+from PySide6.QtGui import QColor, QDrag, QIcon
 from PySide6.QtWidgets import (
+    QApplication,
     QComboBox,
+    QColorDialog,
     QDialog,
     QDialogButtonBox,
     QDockWidget,
     QFormLayout,
+    QFrame,
     QGridLayout,
     QHBoxLayout,
     QLabel,
@@ -48,18 +52,47 @@ class _LiveDockStyle(QProxyStyle):
 
 
 class QuickActionDialog(QDialog):
+    ICON_CHOICES = (
+        ("None", ""),
+        ("Play", "play"),
+        ("Confirm", "confirm"),
+        ("Stop", "stop"),
+        ("Info", "info"),
+        ("Alert", "alert"),
+    )
+
     def __init__(self, routines: Iterable[object], action: QuickAction | None = None, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Edit Quick Action" if action else "Add Quick Action")
         layout = QFormLayout(self)
         self.label_edit = QLineEdit(action.label if action else "", self)
         self.routine_combo = QComboBox(self)
+        routines = list(routines)
+        available_ids = {str(routine.routine_id) for routine in routines}
+        if action is not None and action.routine_id not in available_ids:
+            self.routine_combo.addItem("Unavailable routine", action.routine_id)
         for routine in routines:
             self.routine_combo.addItem(str(routine.name), str(routine.routine_id))
         if action is not None:
             index = self.routine_combo.findData(action.routine_id)
             if index >= 0:
                 self.routine_combo.setCurrentIndex(index)
+        self.icon_combo = QComboBox(self)
+        for label, value in self.ICON_CHOICES:
+            self.icon_combo.addItem(label, value)
+        if action is not None:
+            icon_index = self.icon_combo.findData(action.icon)
+            if icon_index >= 0:
+                self.icon_combo.setCurrentIndex(icon_index)
+        self._color = action.color if action else ""
+        color_row = QHBoxLayout()
+        self.color_button = QPushButton(self)
+        self.color_button.clicked.connect(self._choose_color)
+        self.clear_color_button = QPushButton("Use Default", self)
+        self.clear_color_button.clicked.connect(self._clear_color)
+        color_row.addWidget(self.color_button, 1)
+        color_row.addWidget(self.clear_color_button)
+        self._update_color_button()
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel,
             self,
@@ -68,56 +101,430 @@ class QuickActionDialog(QDialog):
         buttons.rejected.connect(self.reject)
         layout.addRow("Label", self.label_edit)
         layout.addRow("Routine", self.routine_combo)
+        layout.addRow("Icon", self.icon_combo)
+        layout.addRow("Tile color", color_row)
         layout.addRow(buttons)
 
-    def values(self) -> tuple[str, str]:
-        return self.label_edit.text(), str(self.routine_combo.currentData() or "")
+    def _choose_color(self) -> None:
+        initial = QColor(self._color) if self._color else QColor("#6b4f9f")
+        selected = QColorDialog.getColor(initial, self, "Quick Action Tile Color")
+        if selected.isValid():
+            self._color = selected.name(QColor.NameFormat.HexRgb)
+            self._update_color_button()
+
+    def _update_color_button(self) -> None:
+        self.color_button.setText(self._color or "Use default")
+        if self._color:
+            self.color_button.setStyleSheet(f"background-color:{self._color};")
+        else:
+            self.color_button.setStyleSheet("")
+
+    def _clear_color(self) -> None:
+        self._color = ""
+        self._update_color_button()
+
+    def values(self) -> tuple[str, str, str, str]:
+        return (
+            self.label_edit.text(),
+            str(self.routine_combo.currentData() or ""),
+            self._color,
+            str(self.icon_combo.currentData() or ""),
+        )
+
+
+class QuickActionTile(QToolButton):
+    """Square routine shortcut with a clean drag representation."""
+
+    MIME_TYPE = "application/x-streamhouse-quick-action"
+
+    def __init__(self, action_id: str, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.action_id = action_id
+        self._press_position = QPoint()
+        self._drag_started = False
+        self.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextUnderIcon)
+        self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802 - Qt API
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._press_position = event.position().toPoint()
+            self._drag_started = False
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event) -> None:  # noqa: N802 - Qt API
+        if not (event.buttons() & Qt.MouseButton.LeftButton):
+            super().mouseMoveEvent(event)
+            return
+        distance = (event.position().toPoint() - self._press_position).manhattanLength()
+        if distance < QApplication.startDragDistance():
+            super().mouseMoveEvent(event)
+            return
+        self._drag_started = True
+        mime = QMimeData()
+        mime.setData(self.MIME_TYPE, self.action_id.encode("utf-8"))
+        drag = QDrag(self)
+        drag.setMimeData(mime)
+        pixmap = self.grab()
+        drag.setPixmap(pixmap)
+        drag.setHotSpot(QPoint(pixmap.width() // 2, pixmap.height() // 2))
+        drag.exec(Qt.DropAction.MoveAction)
+
+    def mouseReleaseEvent(self, event) -> None:  # noqa: N802 - Qt API
+        if self._drag_started:
+            self._drag_started = False
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+
+class _QuickActionGrid(QWidget):
+    """Projects stable action order into horizontal or vertical wrapping geometry."""
+
+    reorder_requested = Signal(str, int)
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setAcceptDrops(True)
+        self._orientation = Qt.Orientation.Horizontal
+        self._tile_size = 72
+        self._tiles: list[QuickActionTile] = []
+        self._layout = QGridLayout(self)
+        self._layout.setContentsMargins(4, 4, 4, 4)
+        self._layout.setHorizontalSpacing(6)
+        self._layout.setVerticalSpacing(6)
+        self._drop_line = QFrame(self)
+        self._drop_line.setObjectName("quickActionDropIndicator")
+        self._drop_line.setStyleSheet(
+            "background:#bf94ff; border:none; border-radius:1px;"
+        )
+        self._drop_line.hide()
+
+    @property
+    def orientation(self) -> Qt.Orientation:
+        return self._orientation
+
+    def set_orientation(self, orientation: Qt.Orientation) -> None:
+        if orientation == self._orientation:
+            return
+        self._orientation = orientation
+        self._relayout()
+
+    def set_tile_size(self, size: int) -> None:
+        self._tile_size = int(size)
+        for tile in self._tiles:
+            tile.setFixedSize(self._tile_size, self._tile_size)
+            tile.setIconSize(QSize(self._tile_size // 3, self._tile_size // 3))
+        self._relayout()
+
+    def set_tiles(self, tiles: list[QuickActionTile]) -> None:
+        for tile in self._tiles:
+            self._layout.removeWidget(tile)
+        self._tiles = list(tiles)
+        for tile in self._tiles:
+            tile.setParent(self)
+            tile.setFixedSize(self._tile_size, self._tile_size)
+            tile.setIconSize(QSize(self._tile_size // 3, self._tile_size // 3))
+            tile.show()
+        self._relayout()
+
+    def logical_order(self) -> list[str]:
+        return [tile.action_id for tile in self._tiles]
+
+    def minimumSizeHint(self) -> QSize:  # noqa: N802 - Qt API
+        extent = self._tile_size + 8
+        return QSize(extent, extent)
+
+    def sizeHint(self) -> QSize:  # noqa: N802 - Qt API
+        count = max(1, min(4, len(self._tiles)))
+        step = self._tile_size + self._layout.horizontalSpacing()
+        if self._orientation == Qt.Orientation.Horizontal:
+            return QSize(count * step + 8, self._tile_size + 8)
+        return QSize(self._tile_size + 8, count * step + 8)
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 - Qt API
+        super().resizeEvent(event)
+        self._relayout()
+
+    def _relayout(self) -> None:
+        while self._layout.count():
+            self._layout.takeAt(0)
+        if not self._tiles:
+            self.updateGeometry()
+            return
+        step = self._tile_size + max(
+            self._layout.horizontalSpacing(), self._layout.verticalSpacing()
+        )
+        if self._orientation == Qt.Orientation.Horizontal:
+            columns = max(1, (max(self.width(), self._tile_size) - 8) // step)
+            for index, tile in enumerate(self._tiles):
+                self._layout.addWidget(tile, index // columns, index % columns)
+        else:
+            rows = max(1, (max(self.height(), self._tile_size) - 8) // step)
+            for index, tile in enumerate(self._tiles):
+                self._layout.addWidget(tile, index % rows, index // rows)
+        self.updateGeometry()
+
+    def dragEnterEvent(self, event) -> None:  # noqa: N802 - Qt API
+        if event.mimeData().hasFormat(QuickActionTile.MIME_TYPE):
+            event.acceptProposedAction()
+            return
+        event.ignore()
+
+    def dragMoveEvent(self, event) -> None:  # noqa: N802 - Qt API
+        if not event.mimeData().hasFormat(QuickActionTile.MIME_TYPE):
+            self._clear_drop_indicator()
+            event.ignore()
+            return
+        insertion_index = self._insertion_index(event.position().toPoint())
+        self._show_drop_indicator(insertion_index)
+        event.acceptProposedAction()
+
+    def dragLeaveEvent(self, event) -> None:  # noqa: N802 - Qt API
+        self._clear_drop_indicator()
+        super().dragLeaveEvent(event)
+
+    def dropEvent(self, event) -> None:  # noqa: N802 - Qt API
+        if not event.mimeData().hasFormat(QuickActionTile.MIME_TYPE):
+            self._clear_drop_indicator()
+            event.ignore()
+            return
+        action_id = bytes(
+            event.mimeData().data(QuickActionTile.MIME_TYPE)
+        ).decode("utf-8")
+        insertion_index = self._insertion_index(event.position().toPoint())
+        self._clear_drop_indicator()
+        self.reorder_requested.emit(action_id, insertion_index)
+        event.acceptProposedAction()
+
+    def _insertion_index(self, point: QPoint) -> int:
+        if not self._tiles:
+            return 0
+        target_index = min(
+            range(len(self._tiles)),
+            key=lambda index: (
+                self._tiles[index].geometry().center() - point
+            ).manhattanLength(),
+        )
+        rect = self._tiles[target_index].geometry()
+        if self._orientation == Qt.Orientation.Horizontal:
+            after = point.x() >= rect.center().x()
+        else:
+            after = point.y() >= rect.center().y()
+        return target_index + int(after)
+
+    def _show_drop_indicator(self, insertion_index: int) -> None:
+        if not self._tiles:
+            self._drop_line.hide()
+            return
+        if insertion_index >= len(self._tiles):
+            rect = self._tiles[-1].geometry()
+            trailing = True
+        else:
+            rect = self._tiles[insertion_index].geometry()
+            trailing = False
+        if self._orientation == Qt.Orientation.Horizontal:
+            x = rect.right() + 3 if trailing else rect.left() - 3
+            self._drop_line.setGeometry(x, rect.top(), 3, rect.height())
+        else:
+            y = rect.bottom() + 3 if trailing else rect.top() - 3
+            self._drop_line.setGeometry(rect.left(), y, rect.width(), 3)
+        self._drop_line.raise_()
+        self._drop_line.show()
+
+    def _clear_drop_indicator(self) -> None:
+        self._drop_line.hide()
 
 
 class QuickActionsPanel(QWidget):
     routine_requested = Signal(str)
+    unavailable_requested = Signal(str)
+
+    TILE_SIZES = {
+        "small": 56,
+        "medium": 72,
+        "large": 88,
+        "extra_large": 104,
+    }
+    SIZE_LABELS = {
+        "small": "Small",
+        "medium": "Medium",
+        "large": "Large",
+        "extra_large": "Extra Large",
+    }
+    SIZE_ABBREVIATIONS = {
+        "small": "S",
+        "medium": "M",
+        "large": "L",
+        "extra_large": "XL",
+    }
+    ICON_PIXMAPS = {
+        "play": QStyle.StandardPixmap.SP_MediaPlay,
+        "confirm": QStyle.StandardPixmap.SP_DialogApplyButton,
+        "stop": QStyle.StandardPixmap.SP_MediaStop,
+        "info": QStyle.StandardPixmap.SP_MessageBoxInformation,
+        "alert": QStyle.StandardPixmap.SP_MessageBoxWarning,
+    }
 
     def __init__(self, store: QuickActionStore, routine_store: object, parent=None) -> None:
         super().__init__(parent)
         self.store = store
         self.routine_store = routine_store
-        self._buttons: dict[str, QPushButton] = {}
+        self._buttons: dict[str, QuickActionTile] = {}
+        self._dock_area = Qt.DockWidgetArea.BottomDockWidgetArea
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(4)
         header = QHBoxLayout()
-        header.addWidget(QLabel("Run frequently used routines without leaving Live.", self), 1)
-        self.add_button = QPushButton("Add", self)
+        header.setSpacing(4)
+        self.size_button = QToolButton(self)
+        self.size_button.setToolTip("Quick Action tile size")
+        self.size_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.size_menu = QMenu(self.size_button)
+        self._size_actions = {}
+        for value in self.store.BUTTON_SIZES:
+            action = self.size_menu.addAction(self.SIZE_LABELS[value])
+            action.setCheckable(True)
+            action.triggered.connect(
+                lambda _checked=False, selected=value: self.set_button_size(selected)
+            )
+            self._size_actions[value] = action
+        self.size_button.setMenu(self.size_menu)
+        header.addWidget(self.size_button)
+        header.addStretch()
+        self.add_button = QToolButton(self)
+        self.add_button.setText("+")
+        self.add_button.setToolTip("Add Quick Action")
+        self.add_button.setAccessibleName("Add Quick Action")
         self.add_button.clicked.connect(self.add_action)
         header.addWidget(self.add_button)
         layout.addLayout(header)
-        self.grid = QGridLayout()
-        layout.addLayout(self.grid)
-        layout.addStretch()
+        self.grid = _QuickActionGrid(self)
+        self.grid.reorder_requested.connect(self._reorder_action)
+        layout.addWidget(self.grid, 1)
         try:
             self.store.load()
         except (OSError, TypeError, ValueError):
             self.store.actions = []
+            self.store.button_size = self.store.DEFAULT_BUTTON_SIZE
+        self._set_size_selection(self.store.button_size)
+        self.grid.set_tile_size(self.TILE_SIZES[self.store.button_size])
         self.refresh()
 
     def refresh(self) -> None:
-        while self.grid.count():
-            item = self.grid.takeAt(0)
-            widget = item.widget()
-            if widget is not None:
-                widget.deleteLater()
-        self._buttons.clear()
-        for index, action in enumerate(self.store.actions):
-            button = QPushButton(action.label, self)
-            button.setObjectName(f"quickAction_{action.action_id}")
-            button.clicked.connect(
-                lambda _checked=False, routine_id=action.routine_id: self.routine_requested.emit(routine_id)
-            )
-            button.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-            button.customContextMenuRequested.connect(
-                lambda point, action_id=action.action_id, source=button: self._show_menu(action_id, source, point)
-            )
-            self.grid.addWidget(button, index // 2, index % 2)
-            self._buttons[action.action_id] = button
+        previous_buttons = dict(self._buttons)
+        current_buttons: dict[str, QuickActionTile] = {}
+        routine_ids = {
+            str(routine.routine_id) for routine in self.routine_store.routines
+        }
+        tiles: list[QuickActionTile] = []
+        for action in self.store.actions:
+            available = action.routine_id in routine_ids
+            button = previous_buttons.pop(action.action_id, None)
+            if button is None:
+                button = QuickActionTile(action.action_id, self.grid)
+                button.setObjectName(f"quickAction_{action.action_id}")
+                button.clicked.connect(
+                    lambda _checked=False, action_id=action.action_id: self._activate_action(action_id)
+                )
+                button.customContextMenuRequested.connect(
+                    lambda point, action_id=action.action_id, source=button: self._show_menu(action_id, source, point)
+                )
+            button.setText(action.label)
+            self._apply_tile_presentation(button, action, available)
+            current_buttons[action.action_id] = button
+            tiles.append(button)
+        for obsolete_button in previous_buttons.values():
+            obsolete_button.deleteLater()
+        self._buttons = current_buttons
+        self.grid.set_tiles(tiles)
         self.add_button.setEnabled(len(self.store.actions) < self.store.MAX_ACTIONS)
+
+    def set_dock_area(self, area: Qt.DockWidgetArea) -> None:
+        if area == Qt.DockWidgetArea.NoDockWidgetArea:
+            return
+        self._dock_area = area
+        orientation = (
+            Qt.Orientation.Horizontal
+            if area
+            in {
+                Qt.DockWidgetArea.TopDockWidgetArea,
+                Qt.DockWidgetArea.BottomDockWidgetArea,
+            }
+            else Qt.Orientation.Vertical
+        )
+        self.grid.set_orientation(orientation)
+
+    def _apply_tile_presentation(
+        self,
+        button: QuickActionTile,
+        action: QuickAction,
+        available: bool,
+    ) -> None:
+        icon = self.ICON_PIXMAPS.get(action.icon)
+        button.setIcon(self.style().standardIcon(icon) if icon is not None else QIcon())
+        if icon is None:
+            button.setIconSize(QSize(0, 0))
+        color = QColor(action.color) if action.color else QColor("#4d3c68")
+        lightness = color.lightness()
+        foreground = "#111111" if lightness > 150 else "#ffffff"
+        border = "#dc6b6b" if not available else color.lighter(125).name()
+        button.setStyleSheet(
+            "QToolButton {"
+            f"background:{color.name()}; color:{foreground}; border:2px solid {border};"
+            "border-radius:8px; padding:4px; font-weight:600;"
+            "} QToolButton:hover { border-color:#bf94ff; }"
+            "QToolButton:pressed { background:#342947; }"
+        )
+        if available:
+            button.setToolTip(action.label)
+        else:
+            button.setText(f"Unavailable\n{action.label}")
+            button.setToolTip(
+                "The linked routine is unavailable. Right-click to relink or remove this action."
+            )
+
+    def _activate_action(self, action_id: str) -> None:
+        action = next(
+            (item for item in self.store.actions if item.action_id == action_id),
+            None,
+        )
+        if action is None:
+            return
+        routine_ids = {
+            str(routine.routine_id) for routine in self.routine_store.routines
+        }
+        if action.routine_id not in routine_ids:
+            self.unavailable_requested.emit(action.label)
+            return
+        self.routine_requested.emit(action.routine_id)
+
+    def set_button_size(self, value: str) -> None:
+        value = str(value)
+        if value not in self.TILE_SIZES:
+            return
+        try:
+            self.store.set_button_size(value)
+        except (OSError, ValueError) as error:
+            QMessageBox.warning(self, "Quick Actions", str(error))
+            return
+        self._set_size_selection(value)
+        self.grid.set_tile_size(self.TILE_SIZES[value])
+
+    def _set_size_selection(self, value: str) -> None:
+        for name, action in self._size_actions.items():
+            action.setChecked(name == value)
+        label = self.SIZE_LABELS[value]
+        self.size_button.setText(self.SIZE_ABBREVIATIONS[value])
+        self.size_button.setToolTip(f"Tile size: {label}")
+        self.size_button.setAccessibleName(f"Quick Action tile size: {label}")
+
+    def _reorder_action(self, action_id: str, insertion_index: int) -> None:
+        try:
+            self.store.reorder(action_id, insertion_index)
+        except (OSError, ValueError) as error:
+            QMessageBox.warning(self, "Quick Actions", str(error))
+            return
+        self.refresh()
 
     def add_action(self) -> None:
         dialog = QuickActionDialog(self.routine_store.routines, parent=self)
@@ -259,13 +666,23 @@ class LiveWorkspace(QWidget):
         dock.setProperty("visibleByDefault", contribution.visible_by_default)
         dock.setWidget(content)
         self.host.addDockWidget(_DOCK_AREAS[contribution.default_area], dock)
+        dock_area_setter = getattr(content, "set_dock_area", None)
+        if callable(dock_area_setter):
+            dock.dockLocationChanged.connect(dock_area_setter)
+            dock_area_setter(_DOCK_AREAS[contribution.default_area])
         self.docks[contribution.dock_id] = dock
         self.panels_menu.addAction(dock.toggleViewAction())
 
     def _apply_default_layout(self) -> None:
         for dock in self.docks.values():
+            # On Windows, removing a floating dock before clearing its
+            # top-level state can leave the native window detached even after
+            # addDockWidget() is called again.  Reattach it while Qt still
+            # knows its owning QMainWindow, then rebuild the default splits.
+            if dock.isFloating():
+                dock.setFloating(False)
+            dock.hide()
             self.host.removeDockWidget(dock)
-            dock.setFloating(False)
 
         stream_tools = self.docks.get("twitch.stream-tools")
         quick_actions = self.docks.get("core.quick-actions")
@@ -326,6 +743,9 @@ class LiveWorkspace(QWidget):
                     _DOCK_AREAS[str(dock.property("defaultArea"))],
                     dock,
                 )
+            # Keep the final state explicit for docks contributed while this
+            # layout pass was in progress.
+            dock.setFloating(False)
             dock.setVisible(bool(dock.property("visibleByDefault")))
 
         if middle_docks:

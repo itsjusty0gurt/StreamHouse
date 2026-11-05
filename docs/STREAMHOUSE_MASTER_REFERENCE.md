@@ -187,7 +187,8 @@ supported runtime architecture.
 - **PARTIAL** — Wiki and Settings are bottom-pinned; the user-facing Modules
   page remains planned.
 - **IMPLEMENTED** — Core Live workspace with rearrangeable, floatable,
-  show/hide module panels, layout restore/reset, and routine-backed Quick Actions.
+  show/hide module panels, layout restore/reset, and an orientation-aware grid
+  of square, customizable, reorderable routine-backed Quick Actions.
   Docks supplement rather than replace module configuration tabs.
 - **PARTIAL** — Twitch contains working Chat, Analytics, Raid,
   Channel Information, Channel Points, and Users areas. Automation hosts

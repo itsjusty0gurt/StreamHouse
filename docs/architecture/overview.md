@@ -1427,9 +1427,15 @@ modules contribute only their provider-owned content widgets. Twitch contributes
 its existing Chat, Activity, Chatters, and Stream Status widgets without creating
 a second Twitch runtime or copied UI. Core Quick Actions persist stable routine
 references in `automation/quick_actions.json` and invoke them through the normal
-`AutomationService` queue/execution path. A disabled or missing module omits its
-docks without preventing the remaining layout from opening; Core preserves a
-saved layout that references absent docks rather than overwriting it.
+`AutomationService` queue/execution path. Schema v2 keeps action order as an
+ordered list of stable action IDs, adds one global tile-size preset plus optional
+per-action color and built-in icon metadata, and upgrades schema-v1 actions in
+place without changing their IDs, labels, routine references, or order. The
+square-tile grid projects that logical order horizontally in top/bottom docks
+and vertically in left/right docks; dock movement and resizing never rewrite
+the saved order. A disabled or missing module omits its docks without preventing
+the remaining layout from opening; Core preserves a saved layout that references
+absent docks rather than overwriting it.
 
 Twitch top tabs:
 

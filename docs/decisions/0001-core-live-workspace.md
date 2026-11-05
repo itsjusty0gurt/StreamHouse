@@ -17,9 +17,11 @@ Hub Core owns a **Live** navigation page, its Qt dock host, contribution
 registry, layout persistence, visibility controls, and reset behavior. Modules
 own their panel widgets and provider behavior and contribute those widgets
 through stable dock IDs. The initial Twitch panels reuse the existing Chat,
-Activity, Chatters, and Stream Status widgets. Core also owns a small Quick
-Actions panel whose buttons reference stable routine IDs and execute through
-the normal Automation service.
+Activity, Chatters, and Stream Status widgets. Core also owns a compact Quick
+Actions grid whose square tiles reference stable routine IDs and execute through
+the normal Automation service. The grid follows dock orientation, while tile
+size, logical order, labels, optional built-in icons, and colors are persisted
+independently of Qt dock geometry.
 
 ## Rationale
 
@@ -46,6 +48,12 @@ provider controls, but its live Chat presentation now lives in Live. Core gives
 Live a fixed primary-navigation position after Dashboard; user-controlled
 navigation reordering, unified chat, Deck hardware, and additional providers
 remain separate work.
+
+Quick Actions schema v2 is the current runtime format. Schema-v1 files are an
+upgrade input: their stable action IDs, routine IDs, labels, and list order are
+preserved while the global medium tile size and empty color/icon customization
+defaults are added. Missing routines do not delete or repoint tiles; the tile is
+shown as unavailable and remains editable or removable.
 
 ## Affected components
 

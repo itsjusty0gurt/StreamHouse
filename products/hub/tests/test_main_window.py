@@ -462,19 +462,15 @@ class MainWindowTests(unittest.TestCase):
             "missing-routine-id",
         )
         self.window.quick_actions_panel.refresh()
-        self.window.automation_service.run_routine = Mock(
-            side_effect=ValueError("The selected routine no longer exists.")
-        )
+        self.window.automation_service.run_routine = Mock()
         self.window.automation_page.record_execution = Mock()
 
         self.window.quick_actions_panel._buttons[action.action_id].click()
 
-        self.window.automation_service.run_routine.assert_called_once_with(
-            "missing-routine-id"
-        )
+        self.window.automation_service.run_routine.assert_not_called()
         self.window.automation_page.record_execution.assert_not_called()
         self.assertIn(
-            "Quick Action could not run",
+            'Quick Action "Missing Routine" is unavailable',
             self.window.statusBar().currentMessage(),
         )
 

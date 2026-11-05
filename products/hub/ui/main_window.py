@@ -2985,6 +2985,9 @@ class MainWindow(QMainWindow):
         self.quick_actions_panel.routine_requested.connect(
             self._run_live_quick_action
         )
+        self.quick_actions_panel.unavailable_requested.connect(
+            self._show_unavailable_quick_action
+        )
         self.live_workspace = LiveWorkspace(
             self.module_dock_registry.contributions(),
             self.quick_actions_panel,
@@ -3011,6 +3014,13 @@ class MainWindow(QMainWindow):
         label = routine.name if routine is not None else "Quick Action"
         self.automation_page.record_execution(result, label)
         self.statusBar().showMessage(f"Ran {label}.", 3_000)
+
+    @Slot(str)
+    def _show_unavailable_quick_action(self, label: str) -> None:
+        self.statusBar().showMessage(
+            f'Quick Action "{label}" is unavailable. Right-click it to relink or remove it.',
+            5_000,
+        )
 
     def _service_connected(self, service: str) -> bool:
         if service == "obs":
@@ -6445,6 +6455,7 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def show_live(self) -> None:
+        self.quick_actions_panel.refresh()
         self.ui.mainStack.setCurrentWidget(self.live_workspace)
         self.live_button.setChecked(True)
 
