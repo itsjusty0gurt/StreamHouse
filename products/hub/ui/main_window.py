@@ -916,6 +916,7 @@ class MainWindow(QMainWindow):
         self._build_module_tabs()
         self._build_timers_page()
         self._build_wiki_page()
+        self._arrange_main_navigation()
         self._build_release_tools()
         self._build_ai_settings()
         self._build_responsive_settings()
@@ -928,15 +929,10 @@ class MainWindow(QMainWindow):
         self.navigation_group = QButtonGroup(self)
         self.navigation_group.setExclusive(True)
         for button in (
-            self.ui.dashboardButton,
-            self.live_button,
-            self.ui.twitchButton,
-            self.automation_button,
-            self.wiki_button,
+            *self.primary_navigation_buttons,
+            *self.utility_navigation_buttons,
             self.connections_button,
             self.ui.logsButton,
-            self.ui.settingsButton,
-            *self.module_navigation_buttons.values(),
         ):
             self.navigation_group.addButton(button)
 
@@ -1386,13 +1382,8 @@ class MainWindow(QMainWindow):
                 QSizePolicy.Policy.Expanding,
             )
         for button in (
-            self.ui.dashboardButton,
-            self.ui.twitchButton,
-            self.automation_button,
-            self.wiki_button,
-            self.connections_button,
-            self.ui.logsButton,
-            self.ui.settingsButton,
+            *self.primary_navigation_buttons,
+            *self.utility_navigation_buttons,
         ):
             button.setMinimumWidth(0)
             button.setSizePolicy(
@@ -2868,7 +2859,7 @@ class MainWindow(QMainWindow):
     def _build_automation_page(self) -> None:
         self.automation_button = QPushButton("Automation")
         self.automation_button.setCheckable(True)
-        self.ui.verticalLayout.insertWidget(3, self.automation_button)
+        self.ui.verticalLayout.addWidget(self.automation_button)
         self.automation_page = AutomationPage(
             self.twitch_command_trigger_store.routine_store,
             self.twitch_command_trigger_store,
@@ -2923,7 +2914,6 @@ class MainWindow(QMainWindow):
     def _build_module_tabs(self) -> None:
         self.module_navigation_buttons: dict[str, QPushButton] = {}
         self.module_pages: dict[str, QWidget] = {}
-        insert_at = 3
         for contribution in self.module_tab_registry.contributions():
             page = contribution.factory(self)
             if not isinstance(page, QWidget):
@@ -2937,13 +2927,12 @@ class MainWindow(QMainWindow):
                     target
                 )
             )
-            self.ui.verticalLayout.insertWidget(insert_at, button)
+            self.ui.verticalLayout.addWidget(button)
             self.ui.mainStack.addWidget(page)
             self.module_navigation_buttons[contribution.tab_id] = button
             self.module_pages[contribution.tab_id] = page
             if contribution.tab_id == "twitch.workspace":
                 self.ui.twitchButton = button
-            insert_at += 1
 
     def _detach_twitch_workspace(self) -> None:
         legacy_button = self.ui.twitchButton
@@ -3006,9 +2995,9 @@ class MainWindow(QMainWindow):
         if chat_index >= 0 and "twitch.chat" in self.live_workspace.docks:
             self.channel_tabs.removeTab(chat_index)
             self.twitch_channel_splitter.hide()
-        self.ui.verticalLayout.insertWidget(1, self.live_button)
+        self.ui.verticalLayout.addWidget(self.live_button)
         self.ui.verticalLayout.removeWidget(self.automation_button)
-        self.ui.verticalLayout.insertWidget(2, self.automation_button)
+        self.ui.verticalLayout.addWidget(self.automation_button)
         self.ui.mainStack.addWidget(self.live_workspace)
 
     @Slot(str)
@@ -3047,13 +3036,52 @@ class MainWindow(QMainWindow):
     def _build_wiki_page(self) -> None:
         self.wiki_button = QPushButton("Wiki")
         self.wiki_button.setCheckable(True)
-        self.ui.verticalLayout.insertWidget(5, self.wiki_button)
+        self.ui.verticalLayout.addWidget(self.wiki_button)
         self.wiki_page = WikiPage(
             self.task_registry,
             self.variable_registry,
             self,
         )
         self.ui.mainStack.addWidget(self.wiki_page)
+
+    def _arrange_main_navigation(self) -> None:
+        """Apply the Core-owned primary and pinned utility navigation policy."""
+
+        module_buttons = tuple(
+            self.module_navigation_buttons[contribution.tab_id]
+            for contribution in self.module_tab_registry.contributions()
+            if contribution.tab_id in self.module_navigation_buttons
+        )
+        self.primary_navigation_buttons = (
+            self.ui.dashboardButton,
+            self.live_button,
+            self.automation_button,
+            *module_buttons,
+        )
+        self.utility_navigation_buttons = (
+            self.wiki_button,
+            self.ui.settingsButton,
+        )
+        hidden_shell_buttons = (
+            self.connections_button,
+            self.ui.logsButton,
+        )
+        layout = self.ui.verticalLayout
+        for button in (
+            *self.primary_navigation_buttons,
+            *self.utility_navigation_buttons,
+            *hidden_shell_buttons,
+        ):
+            layout.removeWidget(button)
+
+        for index, button in enumerate(self.primary_navigation_buttons):
+            layout.insertWidget(index, button)
+            button.show()
+        for button in self.utility_navigation_buttons:
+            layout.addWidget(button)
+            button.show()
+        for button in hidden_shell_buttons:
+            button.hide()
 
     def _build_timers_page(self) -> None:
         self.timers_page = TimersPage(

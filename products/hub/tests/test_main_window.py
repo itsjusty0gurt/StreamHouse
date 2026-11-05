@@ -63,9 +63,12 @@ from products.hub.automation.models import (
 from products.hub.obs_service.triggers import OBS_TRIGGER_TYPES
 from products.hub.obs_service.models import ObsConnectionState, ObsEvent
 from products.hub.modules import (
+    ModuleContext,
+    ModuleDescriptor,
     ModuleEnablementStore,
     ModuleLifecycle,
     ModuleRegistry,
+    ModuleTabContribution,
     TriggerProviderRegistry,
 )
 from products.hub.modules.bootstrap import CORE_MODULE_CAPABILITIES
@@ -131,6 +134,38 @@ from products.hub.streamhouse_hub.ai_lifecycle import AIConnectionState
 from products.hub.ui.twitch_command_dialog import TwitchCommandDialog, TwitchCommandManagerDialog
 
 _REAL_SETTINGS_LOAD_FOR_STARTUP = SettingsStore.load_for_startup
+
+
+class _NavigationTestModule:
+    descriptor = ModuleDescriptor(
+        module_id="streamhouse.youtube",
+        display_name="YouTube",
+        version="0.1.0",
+        category="Streaming",
+    )
+
+    def register_catalog(self, _context: ModuleContext) -> None:
+        return
+
+    def register(self, context: ModuleContext) -> None:
+        context.tabs.register(
+            ModuleTabContribution(
+                tab_id="youtube.workspace",
+                owner_module_id=self.descriptor.module_id,
+                label="YouTube",
+                order=450,
+                factory=lambda parent: QWidget(parent),
+            )
+        )
+
+    def configure(self, _context: ModuleContext) -> None:
+        return
+
+    def start(self) -> None:
+        return
+
+    def stop(self) -> None:
+        return
 
 
 class MainWindowTests(unittest.TestCase):
@@ -219,6 +254,7 @@ class MainWindowTests(unittest.TestCase):
             "test_obs_catalog_precedes_enabled_main_window_ui",
             "test_disabled_obs_catalog_precedes_main_window_ui_without_runtime",
             "test_disabled_twitch_catalog_precedes_main_window_ui_without_runtime",
+            "test_disabled_twitch_keeps_navigation_groups_ordered",
         }:
             if self._testMethodName.startswith("test_disabled_obs"):
                 enablement.set_enabled(OBS_MODULE_ID, False)
@@ -231,6 +267,8 @@ class MainWindowTests(unittest.TestCase):
         )
         module_registry.register(self.obs_module)
         module_registry.register(self.twitch_module)
+        if self._testMethodName == "test_additional_module_tab_joins_primary_navigation":
+            module_registry.register(_NavigationTestModule())
         if self._testMethodName == "test_startup_resets_obsolete_twitch_triggers":
             routine = self.twitch_command_trigger_store.routine_store.add(
                 "Obsolete Twitch trigger"
@@ -339,15 +377,55 @@ class MainWindowTests(unittest.TestCase):
         self.assertEqual(self.window.statusBar().currentMessage(), "")
 
     def test_live_navigation_precedes_automation_and_module_tabs(self) -> None:
-        labels = [
-            item.widget().text()
-            for index in range(self.window.ui.verticalLayout.count())
-            if (item := self.window.ui.verticalLayout.itemAt(index)).widget() is not None
-            and isinstance(item.widget(), QPushButton)
-        ]
-        self.assertLess(labels.index("Dashboard"), labels.index("Live"))
-        self.assertLess(labels.index("Live"), labels.index("Automation"))
-        self.assertLess(labels.index("Automation"), labels.index("Twitch"))
+        self.assertEqual(
+            [button.text() for button in self.window.primary_navigation_buttons],
+            ["Dashboard", "Live", "Automation", "Twitch", "OBS"],
+        )
+        self.assertEqual(
+            [button.text() for button in self.window.utility_navigation_buttons],
+            ["Wiki", "Settings"],
+        )
+        spacer_index = self.window.ui.verticalLayout.indexOf(
+            self.window.ui.verticalSpacer
+        )
+        self.assertTrue(
+            all(
+                self.window.ui.verticalLayout.indexOf(button) < spacer_index
+                for button in self.window.primary_navigation_buttons
+            )
+        )
+        self.assertTrue(
+            all(
+                self.window.ui.verticalLayout.indexOf(button) > spacer_index
+                for button in self.window.utility_navigation_buttons
+            )
+        )
+        self.assertTrue(self.window.connections_button.isHidden())
+        self.assertTrue(self.window.ui.logsButton.isHidden())
+
+    def test_additional_module_tab_joins_primary_navigation(self) -> None:
+        self.assertEqual(
+            [button.text() for button in self.window.primary_navigation_buttons],
+            ["Dashboard", "Live", "Automation", "Twitch", "OBS", "YouTube"],
+        )
+        youtube_button = self.window.module_navigation_buttons["youtube.workspace"]
+        youtube_button.click()
+        self.assertIs(
+            self.window.ui.mainStack.currentWidget(),
+            self.window.module_pages["youtube.workspace"],
+        )
+        self.assertTrue(youtube_button.isChecked())
+
+    def test_disabled_twitch_keeps_navigation_groups_ordered(self) -> None:
+        self.assertEqual(
+            [button.text() for button in self.window.primary_navigation_buttons],
+            ["Dashboard", "Live", "Automation", "OBS"],
+        )
+        self.assertEqual(
+            [button.text() for button in self.window.utility_navigation_buttons],
+            ["Wiki", "Settings"],
+        )
+        self.assertNotIn("twitch.workspace", self.window.module_navigation_buttons)
 
     def test_live_workspace_reuses_twitch_widgets_and_runs_quick_action(self) -> None:
         self.assertIs(
@@ -581,13 +659,8 @@ class MainWindowTests(unittest.TestCase):
 
     def test_timers_live_under_automation_navigation(self) -> None:
         navigation_buttons = (
-            self.window.ui.dashboardButton,
-            self.window.ui.twitchButton,
-            self.window.automation_button,
-            self.window.wiki_button,
-            self.window.connections_button,
-            self.window.ui.logsButton,
-            self.window.ui.settingsButton,
+            *self.window.primary_navigation_buttons,
+            *self.window.utility_navigation_buttons,
         )
 
         for portrait in (True, False):
@@ -3064,17 +3137,19 @@ class MainWindowTests(unittest.TestCase):
         self.assertEqual(self.window.ui.mainStack.indexOf(self.window.ai_page), -1)
         self.assertTrue(self.window.ai_page.isHidden())
         self.assertEqual(
-            [button.text() for button in self.window.navigation_group.buttons()],
+            [
+                button.text()
+                for button in self.window.navigation_group.buttons()
+                if not button.isHidden()
+            ],
             [
                 "Dashboard",
                 "Live",
                 "Automation",
-                "Wiki",
-                "Connections",
-                "Logs",
-                "Settings",
                 "Twitch",
                 "OBS",
+                "Wiki",
+                "Settings",
             ],
         )
         self.assertEqual(self.window.channel_tabs.count(), 5)
