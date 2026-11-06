@@ -743,6 +743,23 @@ class MainWindowTests(unittest.TestCase):
         )
         self.assertFalse(self.window.ad_manager_group.isHidden())
 
+    def test_first_live_show_realizes_all_default_docks(self) -> None:
+        self.window.live_workspace._defer_default_layout_until_shown()
+        self.window.show_dashboard()
+        self.window.show()
+        self.application.processEvents()
+
+        self.window.show_live()
+        self.application.processEvents()
+
+        self.assertTrue(
+            all(
+                dock.isVisible()
+                for dock in self.window.live_workspace.docks.values()
+                if bool(dock.property("visibleByDefault"))
+            )
+        )
+
     def test_automation_page_edits_grouped_routine_and_shows_tasks(self) -> None:
         store = self.twitch_command_trigger_store.routine_store
         group = store.add_group("Chat Commands")

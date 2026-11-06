@@ -744,9 +744,6 @@ class LiveWorkspace(QWidget):
                     _DOCK_AREAS[str(dock.property("defaultArea"))],
                     dock,
                 )
-            # Keep the final state explicit for docks contributed while this
-            # layout pass was in progress.
-            dock.setFloating(False)
             dock.setVisible(bool(dock.property("visibleByDefault")))
 
         if middle_docks:
