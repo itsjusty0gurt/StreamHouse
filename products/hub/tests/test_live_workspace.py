@@ -466,6 +466,57 @@ def test_live_workspace_persists_dock_area_visibility_and_resets(tmp_path: Path)
     assert not second.docks["twitch.chat"].isHidden()
 
 
+def test_missing_saved_state_defers_default_until_workspace_is_shown(
+    tmp_path: Path,
+) -> None:
+    _app()
+    settings = QSettings(str(tmp_path / "window.ini"), QSettings.Format.IniFormat)
+    workspace = LiveWorkspace(
+        _live_contributions(),
+        _quick_panel(tmp_path),
+        settings,
+    )
+    chat = workspace.docks["twitch.chat"]
+
+    assert not workspace.restore_layout()
+    assert chat.isHidden()
+
+    _show_workspace(workspace)
+
+    assert not chat.isFloating()
+    assert not chat.isHidden()
+    assert (
+        workspace.host.dockWidgetArea(chat)
+        == Qt.DockWidgetArea.LeftDockWidgetArea
+    )
+
+
+def test_saved_custom_floating_chat_layout_is_not_replaced_by_default(
+    tmp_path: Path,
+) -> None:
+    _app()
+    settings = QSettings(str(tmp_path / "window.ini"), QSettings.Format.IniFormat)
+    first = LiveWorkspace(
+        _live_contributions(),
+        _quick_panel(tmp_path),
+        settings,
+    )
+    _show_workspace(first)
+    first.docks["twitch.chat"].setFloating(True)
+    assert first.docks["twitch.chat"].isFloating()
+    assert first.save_layout()
+
+    restored = LiveWorkspace(
+        _live_contributions(),
+        _quick_panel(tmp_path),
+        settings,
+    )
+    assert restored.restore_layout()
+    _show_workspace(restored)
+
+    assert restored.docks["twitch.chat"].isFloating()
+
+
 def test_default_layout_uses_full_width_rows_and_descending_middle_columns(
     tmp_path: Path,
 ) -> None:

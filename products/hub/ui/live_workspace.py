@@ -583,6 +583,7 @@ class LiveWorkspace(QWidget):
         super().__init__(parent)
         self.setObjectName("liveWorkspace")
         self.settings = settings
+        self._default_layout_pending = False
         # QMainWindow defaults to a top-level window type even with a parent.
         # Live embeds it as a page widget so its dock layout participates in
         # the surrounding QStackedWidget geometry instead of becoming a hidden
@@ -775,13 +776,31 @@ class LiveWorkspace(QWidget):
     def reset_to_default(self) -> None:
         self.settings.remove(self.STATE_KEY)
         self.settings.remove(self.DOCKS_KEY)
+        self._default_layout_pending = False
         self._apply_default_layout()
 
     def restore_layout(self) -> bool:
         state = self.settings.value(self.STATE_KEY)
         if not isinstance(state, QByteArray):
+            self._defer_default_layout_until_shown()
             return False
-        return self.host.restoreState(state, self.STATE_VERSION)
+        restored = self.host.restoreState(state, self.STATE_VERSION)
+        if not restored:
+            self._defer_default_layout_until_shown()
+        return restored
+
+    def _defer_default_layout_until_shown(self) -> None:
+        """Wait for real host geometry before realizing native dock windows."""
+        self._default_layout_pending = True
+        for dock in self.docks.values():
+            dock.hide()
+
+    def showEvent(self, event) -> None:  # noqa: N802 - Qt API
+        super().showEvent(event)
+        if not self._default_layout_pending:
+            return
+        self._default_layout_pending = False
+        self._apply_default_layout()
 
     def save_layout(self) -> bool:
         current = set(self.docks)
