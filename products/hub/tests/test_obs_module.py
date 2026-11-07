@@ -3,10 +3,16 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import Mock
 
+import pytest
+from PySide6.QtCore import QCoreApplication
+
+from products.hub.automation.core_tasks import WaitTask
 from products.hub.automation.models import TaskDefinition, TriggerEvent
 from products.hub.automation.routines import RoutineStore
+from products.hub.automation.service import AutomationService
 from products.hub.automation.tasks import TaskRegistry
 from products.hub.automation.variable_registry import VariableRegistry
+from products.hub.core.events import Events
 from products.hub.modules import (
     ActionRegistry,
     BackupContributorRegistry,
@@ -20,7 +26,7 @@ from products.hub.modules import (
 from products.hub.modules.bootstrap import CORE_MODULE_CAPABILITIES
 from products.hub.modules.bundled.obs import OBS_MODULE_ID, ObsModule
 from products.hub.obs_service.config import ObsConnectionConfig
-from products.hub.obs_service.models import ObsConnectionState, ObsRequestResult
+from products.hub.obs_service.models import ObsConnectionState, ObsEvent, ObsRequestResult
 
 
 def _registry(path: Path, module: ObsModule, *, enabled: bool = True) -> ModuleRegistry:
@@ -159,3 +165,112 @@ def test_obs_action_ids_reject_duplicate_registration(tmp_path: Path) -> None:
         assert "already registered" in str(error)
     else:
         raise AssertionError("duplicate OBS actions must be rejected")
+
+
+@pytest.mark.parametrize(
+    ("event_type", "filters", "matching_data", "nonmatching_data"),
+    (
+        (
+            "CurrentProgramSceneChanged",
+            {"sceneName": "Gameplay"},
+            {"sceneName": "Gameplay"},
+            {"sceneName": "Intermission"},
+        ),
+        (
+            "InputMuteStateChanged",
+            {"inputName": "Mic/Aux"},
+            {"inputName": "Mic/Aux", "inputMuted": True},
+            {"inputName": "Desktop Audio", "inputMuted": True},
+        ),
+    ),
+)
+def test_obs_event_automation_runs_after_websocket_event_callback(
+    tmp_path: Path,
+    event_type: str,
+    filters: dict[str, str],
+    matching_data: dict[str, object],
+    nonmatching_data: dict[str, object],
+) -> None:
+    application = QCoreApplication.instance() or QCoreApplication([])
+    module = ObsModule()
+    tasks = TaskRegistry()
+    variables = VariableRegistry()
+    routines = RoutineStore(tmp_path / "automation" / "routines.json")
+    automation = AutomationService(routines, tasks)
+    context = ModuleContext(
+        core_version="0.3.0-alpha",
+        events=object(),
+        variables=variables,
+        tasks=tasks,
+        actions=ActionRegistry(),
+        routine_store=routines,
+        automation=automation,
+        trigger_providers=TriggerProviderRegistry(),
+        tabs=ModuleTabRegistry(),
+        backup=BackupContributorRegistry(),
+        data_root=tmp_path,
+    )
+    tasks.register(WaitTask())
+    module.register_catalog(context)
+
+    routine = routines.add("Preview the destination scene")
+    routines.add_task(
+        routine.routine_id,
+        task_type="core.wait",
+        name="Wait",
+        config={"duration": "1", "unit": "milliseconds"},
+    )
+    routines.add_task(
+        routine.routine_id,
+        task_type="obs.set_preview_scene",
+        name="Preview destination",
+        config={"scene": "Gameplay"},
+    )
+    module.trigger_store.add(  # type: ignore[union-attr]
+        routine.routine_id,
+        event_type,
+        filters=filters,
+    )
+
+    callback_active = True
+    request_phases: list[str] = []
+
+    def request_and_wait(
+        request_type: str,
+        request_data: dict[str, object] | None = None,
+        **_kwargs: object,
+    ) -> ObsRequestResult:
+        request_phases.append("inside" if callback_active else "after")
+        return ObsRequestResult(
+            "request-1",
+            request_type,
+            True,
+            100,
+            response_data=dict(request_data or {}),
+        )
+
+    module.service.request_and_wait = Mock(side_effect=request_and_wait)  # type: ignore[method-assign]
+    synchronous_consumer = Mock()
+    module.start()
+    Events.subscribe("obs_event", synchronous_consumer)
+    try:
+        module.service._publish_event(  # noqa: SLF001 - exercise the WebSocket event boundary
+            event_type,
+            matching_data,
+        )
+        assert synchronous_consumer.call_count == 1
+        assert request_phases == []
+
+        callback_active = False
+        application.processEvents()
+        assert request_phases == ["after"]
+
+        module.service._publish_event(  # noqa: SLF001 - verify destination filtering
+            event_type,
+            nonmatching_data,
+        )
+        application.processEvents()
+        assert request_phases == ["after"]
+    finally:
+        Events.unsubscribe("obs_event", synchronous_consumer)
+        module.stop()

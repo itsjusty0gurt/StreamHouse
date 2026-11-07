@@ -110,6 +110,9 @@ details remain in Logs and are not appended to Chat.
 - Twitch Keyword / Phrase triggers now match the visible text of `/me` action
   messages while preserving action presentation metadata and excluding actions
   from command invocation.
+- OBS-triggered routines are queued after the originating WebSocket event
+  callback returns, so their OBS tasks can complete requests without reentering
+  the socket callback or requiring an artificial Wait task.
 - Routine deletion now preserves the routine-list position and selects the next
   nearby routine instead of rebuilding back at the top.
 - Counter Variables now expose scope-aware `.unit` values for channel lifetime,

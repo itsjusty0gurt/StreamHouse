@@ -1228,6 +1228,13 @@ failures. Source visibility confirms both scene-item lookup and the final state
 change. The acknowledgement is the ordering boundary; tasks do not wait for a
 separate OBS state-change event.
 
+OBS publishes normalized events synchronously for ordinary bus consumers, but
+the module queues Automation trigger evaluation onto the OBS service's Qt
+context. This lets the originating WebSocket message callback return before a
+matched routine can issue another OBS request. The boundary applies to every
+OBS Automation event and preserves event order without adding task delays or
+changing the global synchronous event bus.
+
 Dedicated input-setting tasks use `SetInputSettings` with overlay semantics so
 they change only their owned setting. This includes text, image-file, media-file,
 Color Source color, and Browser Source URL updates; templated values resolve

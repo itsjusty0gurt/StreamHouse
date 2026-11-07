@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections import deque
 from dataclasses import asdict
 from pathlib import Path
 from typing import Mapping
@@ -62,6 +63,8 @@ class ObsModule:
         self._context: ModuleContext | None = None
         self._runtime_available = False
         self._events_subscribed = False
+        self._pending_automation_events: deque[ObsEvent] = deque()
+        self._automation_dispatch_scheduled = False
 
     def register_catalog(self, context: ModuleContext) -> None:
         self._context = context
@@ -164,6 +167,7 @@ class ObsModule:
 
     def stop(self) -> None:
         self._runtime_available = False
+        self._pending_automation_events.clear()
         if self._events_subscribed:
             Events.unsubscribe("obs_event", self._handle_event)
             try:
@@ -212,6 +216,30 @@ class ObsModule:
             context.integration_status_changed("obs", state)
 
     def _handle_event(self, obs_event: ObsEvent) -> None:
+        if not self._runtime_available or self.trigger_store is None:
+            return
+        deferred_event = ObsEvent(
+            obs_event.event_type,
+            dict(obs_event.event_data),
+        )
+        self._pending_automation_events.append(deferred_event)
+        if self._automation_dispatch_scheduled:
+            return
+        self._automation_dispatch_scheduled = True
+        QTimer.singleShot(
+            0,
+            self.service,
+            self._dispatch_pending_events,
+        )
+
+    def _dispatch_pending_events(self) -> None:
+        try:
+            while self._runtime_available and self._pending_automation_events:
+                self._dispatch_event(self._pending_automation_events.popleft())
+        finally:
+            self._automation_dispatch_scheduled = False
+
+    def _dispatch_event(self, obs_event: ObsEvent) -> None:
         if not self._runtime_available or self.trigger_store is None:
             return
         context = self._context

@@ -4378,6 +4378,7 @@ class MainWindowTests(unittest.TestCase):
                 {"inputName": "Mic/Aux", "inputMuted": True},
             )
         )
+        self.application.processEvents()
 
         self.window.twitch_service.send_message.assert_called_once_with(
             "Mic muted: true while playing Science & Technology",
