@@ -176,6 +176,32 @@ class TwitchAuthServiceTests(unittest.TestCase):
         store.save.assert_called_once_with(new_token)
         self.assertFalse(service.recover_unauthorized())
 
+    def test_synchronous_recovery_rejects_a_different_account_identity(self) -> None:
+        old_token = TwitchToken(
+            "old", "refresh", 999, [], user_id="bot-1", login="testbot"
+        )
+        wrong_account = TwitchToken(
+            "new", "new-refresh", 9999, [], user_id="other-1", login="otherbot"
+        )
+        client = Mock()
+        client.refresh.return_value = wrong_account
+        client.validate.return_value = wrong_account
+        store = Mock()
+        service = TwitchAuthService(
+            client=client,
+            store=store,
+            account_label="Bot account",
+        )
+        service.token = old_token
+        service.state = TwitchAuthState.SIGNED_IN
+
+        self.assertIsNone(service.recover_unauthorized_and_wait(old_token))
+
+        self.assertIsNone(service.token)
+        self.assertIs(service.state, TwitchAuthState.ERROR)
+        store.save.assert_not_called()
+        store.clear.assert_called_once_with()
+
     def test_maintenance_validation_is_not_an_auth_state_transition(self) -> None:
         token = TwitchToken(
             "access", "refresh", 9_999_999_999, [], user_id="42", login="channel"

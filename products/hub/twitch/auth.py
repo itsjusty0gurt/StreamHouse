@@ -139,6 +139,7 @@ class TwitchAuthService:
         self._cancel = threading.Event()
         self._worker: threading.Thread | None = None
         self._worker_lock = threading.Lock()
+        self._token_refresh_lock = threading.Lock()
         self._last_unauthorized_recovery = 0.0
         self._stopped = False
 
@@ -185,6 +186,56 @@ class TwitchAuthService:
             return False
         self._last_unauthorized_recovery = now
         return True
+
+    def recover_unauthorized_and_wait(
+        self,
+        rejected_token: TwitchToken,
+    ) -> TwitchToken | None:
+        """Refresh a rejected token once and return the usable current token.
+
+        Outgoing API operations that must retry the rejected request use this
+        synchronous boundary. The lock makes concurrent 401 responses for the
+        same token a single refresh: later callers reuse the token published by
+        the first recovery instead of starting another refresh.
+        """
+
+        with self._token_refresh_lock:
+            current = self.token
+            if current is None:
+                return None
+            if current is not rejected_token:
+                return current
+            if not current.refresh_token or self._stopped:
+                self._mark_unauthorized(current)
+                return None
+            try:
+                refreshed = self.client.refresh(current)
+                validated = self.client.validate(refreshed)
+            except (HTTPError, URLError, OSError, ValueError) as error:
+                self._mark_unauthorized(current, error)
+                return None
+            if current.user_id and validated.user_id != current.user_id:
+                self._mark_unauthorized(
+                    current,
+                    ValueError("Twitch refreshed a different account identity."),
+                )
+                return None
+            if self._cancel.is_set() or self._stopped or self.token is not current:
+                return None
+            self.token = validated
+            self.store.save(validated)
+            Logger.info(
+                f"Refreshed {self.account_label} after an unauthorized API response.",
+                source="TWITCH",
+            )
+            self._set_state(TwitchAuthState.SIGNED_IN, validated.login)
+            return validated
+
+    def reject_unauthorized_token(self, rejected_token: TwitchToken) -> None:
+        """Invalidate a token that remained unauthorized after one recovery."""
+
+        with self._token_refresh_lock:
+            self._mark_unauthorized(rejected_token)
 
     def sign_out(self) -> None:
         self._cancel.set()
@@ -264,30 +315,30 @@ class TwitchAuthService:
             )
 
     def _refresh_after_unauthorized(self, token: TwitchToken) -> None:
-        try:
-            refreshed = self.client.refresh(token)
-            validated = self.client.validate(refreshed)
-            if self._cancel.is_set() or self._stopped:
-                return
-            self.token = validated
-            self.store.save(validated)
-            Logger.info(
-                "Refreshed Twitch login after an unauthorized API response.",
-                source="TWITCH",
-            )
-            self._set_state(TwitchAuthState.SIGNED_IN, validated.login)
-        except (HTTPError, URLError, OSError, ValueError) as error:
-            self.token = None
-            self.store.clear()
-            Logger.warning(
-                "Twitch session recovery failed: "
-                f"{redact_secret_text(str(error))}",
-                source="TWITCH",
-            )
-            self._set_state(
-                TwitchAuthState.ERROR,
-                "Twitch session recovery failed. Sign in again.",
-            )
+        self.recover_unauthorized_and_wait(token)
+
+    def _mark_unauthorized(
+        self,
+        rejected_token: TwitchToken,
+        error: Exception | None = None,
+    ) -> None:
+        if self.token is not rejected_token:
+            return
+        self.token = None
+        self.store.clear()
+        detail = (
+            f": {redact_secret_text(str(error))}"
+            if error is not None
+            else ""
+        )
+        Logger.warning(
+            f"{self.account_label} session recovery failed{detail}",
+            source="TWITCH",
+        )
+        self._set_state(
+            TwitchAuthState.ERROR,
+            f"{self.account_label} authentication requires attention. Sign in again.",
+        )
 
     def _device_flow(self) -> None:
         try:

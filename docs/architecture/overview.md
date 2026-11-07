@@ -1109,7 +1109,13 @@ The polling loop follows RFC 8628:
 
 `products/hub/twitch/token_store.py` encrypts tokens with Windows DPAPI. Signing out is the
 only normal operation that deletes credentials. API 401 recovery refreshes with
-a cooldown against refresh loops.
+a cooldown against refresh loops. Outgoing chat sent through a configured bot
+identity has a token-specific recovery boundary: the first HTTP 401 performs one
+serialized bot-token refresh and retries that message once with the same bot
+identity. Concurrent rejections of the same token share the refreshed
+credential. A failed refresh or second 401 invalidates only the rejected bot
+credential and moves bot authentication to its attention-required state; it
+does not alter broadcaster authentication or rebuild healthy transports.
 
 ### Live transport
 

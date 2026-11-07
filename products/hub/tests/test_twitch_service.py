@@ -1,11 +1,13 @@
 import io
 import logging
+import threading
 import unittest
+from urllib.error import HTTPError
 from unittest.mock import Mock, patch
 
 from products.hub.core.events import Events
 from shared.streamhouse_runtime.logger import Logger
-from products.hub.twitch.auth import TwitchToken
+from products.hub.twitch.auth import TwitchAuthService, TwitchAuthState, TwitchToken
 from products.hub.twitch.models import TwitchEventTransport, TwitchMessage
 from datetime import datetime, timezone
 from products.hub.twitch.service import TwitchConnectionState, TwitchService
@@ -17,6 +19,43 @@ from products.hub.twitch.slash_commands import (
 
 
 class TwitchServiceTests(unittest.TestCase):
+    @staticmethod
+    def _http_error(code: int) -> HTTPError:
+        return HTTPError(
+            "https://api.twitch.tv/helix/chat/messages",
+            code,
+            "Unauthorized" if code == 401 else "Request failed",
+            {},
+            None,
+        )
+
+    @staticmethod
+    def _chat_service(
+        broadcaster: TwitchToken,
+        bot: TwitchToken | None,
+        helix: Mock,
+        *,
+        bot_client: Mock | None = None,
+        bot_store: Mock | None = None,
+    ) -> tuple[TwitchService, TwitchAuthService | None]:
+        bot_auth = None
+        if bot is not None:
+            bot_auth = TwitchAuthService(
+                client=bot_client or Mock(),
+                store=bot_store or Mock(),
+                account_label="Bot account",
+            )
+            bot_auth.token = bot
+            bot_auth.state = TwitchAuthState.SIGNED_IN
+        service = TwitchService(
+            auth=Mock(token=broadcaster),
+            bot_auth=bot_auth,
+            helix=helix,
+        )
+        service.state = TwitchConnectionState.CONNECTED
+        service.broadcaster_user_id = broadcaster.user_id
+        return service, bot_auth
+
     def test_cheermote_asset_cache_uses_prefix_tier_and_rejects_stale_load(
         self,
     ) -> None:
@@ -227,6 +266,192 @@ class TwitchServiceTests(unittest.TestCase):
             )
         finally:
             service.disconnect()
+
+    def test_bot_chat_401_refreshes_and_retries_once_with_bot_identity(self) -> None:
+        broadcaster = TwitchToken(
+            "broadcaster-access", "broadcaster-refresh", 999, [],
+            user_id="channel-1", login="streamer",
+        )
+        bot = TwitchToken(
+            "expired-bot-access", "bot-refresh", 999, [],
+            user_id="bot-1", login="testbot",
+        )
+        refreshed = TwitchToken(
+            "fresh-bot-access", "bot-refresh-2", 9999, [],
+            user_id="bot-1", login="testbot",
+        )
+        helix = Mock()
+        helix.send_chat_message.side_effect = [self._http_error(401), "message-1"]
+        client = Mock()
+        client.refresh.return_value = refreshed
+        client.validate.return_value = refreshed
+        store = Mock()
+        service, bot_auth = self._chat_service(
+            broadcaster, bot, helix, bot_client=client, bot_store=store
+        )
+
+        self.assertTrue(service.send_message("Hello after refresh"))
+
+        self.assertIsNotNone(bot_auth)
+        self.assertIs(bot_auth.token, refreshed)
+        client.refresh.assert_called_once_with(bot)
+        store.save.assert_called_once_with(refreshed)
+        self.assertEqual(
+            helix.send_chat_message.call_args_list,
+            [
+                unittest.mock.call(
+                    "channel-1", "bot-1", "Hello after refresh", bot
+                ),
+                unittest.mock.call(
+                    "channel-1", "bot-1", "Hello after refresh", refreshed
+                ),
+            ],
+        )
+        self.assertEqual(service.auth.token.access_token, "broadcaster-access")
+
+    def test_bot_chat_refresh_failure_does_not_retry_or_touch_broadcaster(self) -> None:
+        broadcaster = TwitchToken(
+            "broadcaster-access", "broadcaster-refresh", 999, [],
+            user_id="channel-1", login="streamer",
+        )
+        bot = TwitchToken(
+            "expired-bot-access", "bot-refresh", 999, [],
+            user_id="bot-1", login="testbot",
+        )
+        helix = Mock()
+        helix.send_chat_message.side_effect = self._http_error(401)
+        client = Mock()
+        client.refresh.side_effect = self._http_error(401)
+        store = Mock()
+        service, bot_auth = self._chat_service(
+            broadcaster, bot, helix, bot_client=client, bot_store=store
+        )
+
+        self.assertFalse(service.send_message("Cannot refresh"))
+
+        self.assertIsNotNone(bot_auth)
+        self.assertIsNone(bot_auth.token)
+        self.assertIs(bot_auth.state, TwitchAuthState.ERROR)
+        self.assertEqual(helix.send_chat_message.call_count, 1)
+        client.refresh.assert_called_once_with(bot)
+        store.clear.assert_called_once_with()
+        self.assertIs(service.auth.token, broadcaster)
+
+    def test_bot_chat_retry_401_stops_and_marks_bot_auth_for_attention(self) -> None:
+        broadcaster = TwitchToken(
+            "broadcaster-access", "broadcaster-refresh", 999, [],
+            user_id="channel-1", login="streamer",
+        )
+        bot = TwitchToken(
+            "expired-bot-access", "bot-refresh", 999, [],
+            user_id="bot-1", login="testbot",
+        )
+        refreshed = TwitchToken(
+            "still-rejected", "bot-refresh-2", 9999, [],
+            user_id="bot-1", login="testbot",
+        )
+        helix = Mock()
+        helix.send_chat_message.side_effect = self._http_error(401)
+        client = Mock()
+        client.refresh.return_value = refreshed
+        client.validate.return_value = refreshed
+        service, bot_auth = self._chat_service(
+            broadcaster, bot, helix, bot_client=client
+        )
+
+        self.assertFalse(service.send_message("Still unauthorized"))
+
+        self.assertIsNotNone(bot_auth)
+        self.assertIsNone(bot_auth.token)
+        self.assertIs(bot_auth.state, TwitchAuthState.ERROR)
+        self.assertEqual(helix.send_chat_message.call_count, 2)
+        client.refresh.assert_called_once_with(bot)
+
+    def test_non_401_bot_chat_failure_does_not_refresh(self) -> None:
+        broadcaster = TwitchToken(
+            "broadcaster-access", "broadcaster-refresh", 999, [],
+            user_id="channel-1", login="streamer",
+        )
+        bot = TwitchToken(
+            "bot-access", "bot-refresh", 999, [],
+            user_id="bot-1", login="testbot",
+        )
+        helix = Mock()
+        helix.send_chat_message.side_effect = self._http_error(500)
+        client = Mock()
+        service, _bot_auth = self._chat_service(
+            broadcaster, bot, helix, bot_client=client
+        )
+
+        self.assertFalse(service.send_message("Server failed"))
+
+        client.refresh.assert_not_called()
+        self.assertEqual(helix.send_chat_message.call_count, 1)
+
+    def test_broadcaster_only_chat_401_does_not_use_bot_recovery(self) -> None:
+        broadcaster = TwitchToken(
+            "broadcaster-access", "broadcaster-refresh", 999, [],
+            user_id="channel-1", login="streamer",
+        )
+        helix = Mock()
+        helix.send_chat_message.side_effect = self._http_error(401)
+        service, bot_auth = self._chat_service(broadcaster, None, helix)
+
+        self.assertFalse(service.send_message("Broadcaster message"))
+
+        self.assertIsNone(bot_auth)
+        self.assertEqual(helix.send_chat_message.call_count, 1)
+        self.assertIs(service.auth.token, broadcaster)
+
+    def test_concurrent_bot_chat_401s_share_one_refresh_and_retry_each_once(self) -> None:
+        broadcaster = TwitchToken(
+            "broadcaster-access", "broadcaster-refresh", 999, [],
+            user_id="channel-1", login="streamer",
+        )
+        bot = TwitchToken(
+            "expired-bot-access", "bot-refresh", 999, [],
+            user_id="bot-1", login="testbot",
+        )
+        refreshed = TwitchToken(
+            "fresh-bot-access", "bot-refresh-2", 9999, [],
+            user_id="bot-1", login="testbot",
+        )
+        first_attempts = threading.Barrier(2)
+        successful_messages: list[str] = []
+
+        def send(_channel_id, _sender_id, message, token):
+            if token is bot:
+                first_attempts.wait(timeout=2)
+                raise self._http_error(401)
+            successful_messages.append(message)
+            return f"message-{message}"
+
+        helix = Mock()
+        helix.send_chat_message.side_effect = send
+        client = Mock()
+        client.refresh.return_value = refreshed
+        client.validate.return_value = refreshed
+        service, _bot_auth = self._chat_service(
+            broadcaster, bot, helix, bot_client=client
+        )
+        results: list[bool] = []
+        threads = [
+            threading.Thread(
+                target=lambda text=text: results.append(service.send_message(text))
+            )
+            for text in ("first", "second")
+        ]
+
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=3)
+
+        self.assertFalse(any(thread.is_alive() for thread in threads))
+        self.assertEqual(results, [True, True])
+        client.refresh.assert_called_once_with(bot)
+        self.assertCountEqual(successful_messages, ["first", "second"])
+        self.assertEqual(helix.send_chat_message.call_count, 4)
 
     @patch("products.hub.twitch.service.TwitchEventSubSocket")
     def test_welcome_keeps_identity_selected_when_socket_opened(

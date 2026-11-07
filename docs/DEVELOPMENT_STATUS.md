@@ -131,6 +131,12 @@ details remain in Logs and are not appended to Chat.
 - Twitch reconnect/renewal now distinguishes native EventSub transfer from an
   unexpected interruption, deduplicates recovery work, preserves pending event
   correlation, and cancels late reconnect/auth work during shutdown or sign-out.
+- Outgoing chat using a configured Twitch bot now recovers a rejected bot token
+  independently: an HTTP 401 performs one serialized refresh and one retry with
+  the same bot identity. Refresh failure or a second 401 stops without a loop,
+  leaves broadcaster auth untouched, and marks bot authentication as requiring
+  attention. Deterministic service/auth coverage includes concurrent sends;
+  real credentials were not invalidated to force a live 401.
 - Final Twitch module acceptance passed for the code at `dba19eb5`, including
   enabled, disabled, and same-data-root re-enabled packaged startup.
 

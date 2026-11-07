@@ -402,17 +402,17 @@ class TwitchService:
         if not clean_text:
             self._report_error("A chat message is required.", change_state=False)
             return False
-        try:
-            self.helix.send_chat_message(
-                self.broadcaster_user_id,
-                token.user_id,
-                clean_text,
-                token,
-            )
-        except (HTTPError, URLError, OSError, ValueError) as error:
-            self._report_error(f"Could not send Twitch message: {error}", change_state=False)
-            return False
-        return True
+        sent, _message_id = self._send_chat_message_request(
+            clean_text,
+            token,
+            recover_bot=(
+                as_bot
+                and self.bot_auth is not None
+                and self.bot_auth.token is token
+            ),
+            error_label="Could not send Twitch message",
+        )
+        return sent
 
     def send_pinned_message(self, text: str) -> tuple[bool, bool]:
         """Send through the bot account, then pin as the broadcaster."""
@@ -431,18 +431,16 @@ class TwitchService:
             or not self.broadcaster_user_id
         ):
             return False, False
-        try:
-            message_id = self.helix.send_chat_message(
-                self.broadcaster_user_id,
-                chat_token.user_id,
-                clean_text,
-                chat_token,
-            )
-        except (HTTPError, URLError, OSError, ValueError) as error:
-            self._report_error(
-                f"Could not send pinned Twitch message: {error}",
-                change_state=False,
-            )
+        sent, message_id = self._send_chat_message_request(
+            clean_text,
+            chat_token,
+            recover_bot=(
+                self.bot_auth is not None
+                and self.bot_auth.token is chat_token
+            ),
+            error_label="Could not send pinned Twitch message",
+        )
+        if not sent:
             return False, False
         if not message_id:
             Logger.warning(
@@ -465,6 +463,67 @@ class TwitchService:
             )
             return True, False
         return True, True
+
+    def _send_chat_message_request(
+        self,
+        text: str,
+        token: TwitchToken,
+        *,
+        recover_bot: bool,
+        error_label: str,
+    ) -> tuple[bool, str]:
+        try:
+            message_id = self.helix.send_chat_message(
+                self.broadcaster_user_id,
+                token.user_id,
+                text,
+                token,
+            )
+            return True, str(message_id or "")
+        except HTTPError as error:
+            if error.code != 401 or not recover_bot or self.bot_auth is None:
+                self._report_error(f"{error_label}: {error}", change_state=False)
+                return False, ""
+            Logger.info(
+                "Bot account token was rejected; attempting one refresh before retrying chat.",
+                source="TWITCH",
+            )
+            refreshed = self.bot_auth.recover_unauthorized_and_wait(token)
+            if refreshed is None or refreshed.user_id != token.user_id:
+                self._report_error(
+                    f"{error_label}: Bot account authentication requires attention.",
+                    change_state=False,
+                )
+                return False, ""
+            try:
+                message_id = self.helix.send_chat_message(
+                    self.broadcaster_user_id,
+                    refreshed.user_id,
+                    text,
+                    refreshed,
+                )
+            except HTTPError as retry_error:
+                if retry_error.code == 401:
+                    self.bot_auth.reject_unauthorized_token(refreshed)
+                self._report_error(
+                    f"{error_label}: {retry_error}",
+                    change_state=False,
+                )
+                return False, ""
+            except (URLError, OSError, ValueError) as retry_error:
+                self._report_error(
+                    f"{error_label}: {retry_error}",
+                    change_state=False,
+                )
+                return False, ""
+            Logger.info(
+                "Outgoing bot chat succeeded after authentication recovery.",
+                source="TWITCH",
+            )
+            return True, str(message_id or "")
+        except (URLError, OSError, ValueError) as error:
+            self._report_error(f"{error_label}: {error}", change_state=False)
+            return False, ""
 
     def _chat_token(self):
         if self.bot_auth is not None and self.bot_auth.token is not None:
