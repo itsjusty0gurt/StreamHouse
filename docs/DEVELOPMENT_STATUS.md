@@ -125,9 +125,9 @@ details remain in Logs and are not appended to Chat.
   current stream, viewer lifetime, and viewer current-stream totals while
   preserving the existing numeric Variables.
 - The Twitch Users page no longer forces a full unchanged table rebuild whenever
-  it is shown, existing Twitch trigger event types are fixed while editing, and
-  Dev Tools test viewers use stable distinct identities so First Message can be
-  simulated without weakening production eligibility rules.
+  it is shown, existing Twitch and OBS trigger event types are fixed while
+  editing, and Dev Tools test viewers use stable distinct identities so First
+  Message can be simulated without weakening production eligibility rules.
 - Channel-snapshot viewer-list refreshes now run on the Qt GUI thread, suppress
   transient selection callbacks while native list items are rebuilt, coalesce
   reentrant requests, and ignore shutdown/deleted-widget callbacks. This closes

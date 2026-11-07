@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import tempfile
+from pathlib import Path
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
@@ -9,7 +11,11 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication, QComboBox
 
-from products.hub.obs_service.triggers import ObsAutomationTrigger
+from products.hub.automation.routines import RoutineStore
+from products.hub.obs_service.triggers import (
+    ObsAutomationTrigger,
+    ObsTriggerStore,
+)
 from products.hub.ui.automation_page import ObsTriggerDialog
 
 
@@ -96,6 +102,62 @@ class ObsTriggerDialogTests(unittest.TestCase):
         self.assertGreaterEqual(scene.findText("Gameplay"), 0)
         scene.setCurrentIndex(0)
         self.assertEqual(dialog.values()["filters"], {})
+
+    def test_new_trigger_can_choose_event_type(self) -> None:
+        dialog = ObsTriggerDialog(initial_event_type="ConnectionOpened")
+
+        self.assertTrue(dialog.event_combo.isEnabled())
+        dialog.event_combo.setCurrentIndex(
+            dialog.event_combo.findData("CurrentProgramSceneChanged")
+        )
+
+        self.assertEqual(
+            dialog.values()["event_type"],
+            "CurrentProgramSceneChanged",
+        )
+
+    def test_existing_trigger_locks_event_but_keeps_scene_filter_editable(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            routines = RoutineStore(root / "routines.json")
+            routine = routines.add("Scene routine")
+            store = ObsTriggerStore(root / "obs-triggers.json", routines)
+            trigger = store.add(
+                routine.routine_id,
+                "CurrentProgramSceneChanged",
+                filters={"sceneName": "Gameplay"},
+            )
+            dialog = ObsTriggerDialog(
+                trigger=trigger,
+                obs_service=FakeObsService(),
+            )
+
+            self.assertFalse(dialog.event_combo.isEnabled())
+            self.assertEqual(
+                dialog.event_combo.currentData(),
+                "CurrentProgramSceneChanged",
+            )
+            self.assertIn("fixed", dialog.event_combo.toolTip().casefold())
+            scene = dialog.filter_widgets["sceneName"]
+            self.assertTrue(scene.isEditable())
+            scene.setCurrentText("Starting Soon")
+            values = dialog.values()
+            saved = store.update(trigger.trigger_id, **values)
+
+            self.assertEqual(saved.event_type, "CurrentProgramSceneChanged")
+            self.assertEqual(saved.filters, {"sceneName": "Starting Soon"})
+            reloaded = ObsTriggerStore(store.path, routines)
+            reloaded.load()
+            persisted = reloaded.get(trigger.trigger_id)
+            self.assertIsNotNone(persisted)
+            self.assertEqual(
+                persisted.event_type,
+                "CurrentProgramSceneChanged",
+            )
+            self.assertEqual(
+                persisted.filters,
+                {"sceneName": "Starting Soon"},
+            )
 
     def test_source_visibility_resolves_scene_items_and_preserves_unknown_filters(self) -> None:
         trigger = ObsAutomationTrigger(

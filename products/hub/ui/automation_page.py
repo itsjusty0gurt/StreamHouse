@@ -717,6 +717,12 @@ class ObsTriggerDialog(QDialog):
             self.event_combo.setCurrentIndex(
                 max(self.event_combo.findData(selected_event_type), 0)
             )
+        if trigger is not None:
+            self.event_combo.setEnabled(False)
+            self.event_combo.setToolTip(
+                "The event type is fixed for an existing trigger. "
+                "Create a new trigger to choose a different event."
+            )
         form.addRow("OBS event", self.event_combo)
         form.addRow("", self.enabled_check)
         layout.addLayout(form)
