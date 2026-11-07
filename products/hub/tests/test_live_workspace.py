@@ -7,7 +7,7 @@ from unittest.mock import patch
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QMimeData, QPoint, QPointF, QRect, QSettings, Qt
-from PySide6.QtWidgets import QApplication, QDialog, QStyle, QWidget
+from PySide6.QtWidgets import QApplication, QDialog, QMainWindow, QStyle, QWidget
 
 from products.hub.automation.quick_actions import QuickActionStore
 from products.hub.modules.contributions import ModuleDockContribution
@@ -432,6 +432,83 @@ def test_quick_actions_minimum_size_allows_compact_single_tile_dock(
     assert dock.minimumSizeHint().height() < 150
 
 
+def test_quick_action_minimum_tracks_tile_size_and_dock_orientation(
+    tmp_path: Path,
+) -> None:
+    _app()
+    panel = _populated_quick_panel(tmp_path, 8)
+    workspace = LiveWorkspace(
+        [],
+        panel,
+        QSettings(str(tmp_path / "window.ini"), QSettings.Format.IniFormat),
+    )
+    _show_workspace(workspace)
+    dock = workspace.docks["core.quick-actions"]
+
+    horizontal_extents = []
+    for name, tile_size in panel.TILE_SIZES.items():
+        panel.set_button_size(name)
+        _app().processEvents()
+        minimum = panel.grid.minimumSizeHint()
+        assert minimum.width() == 0
+        assert minimum.height() == tile_size + 8
+        horizontal_extents.append(dock.minimumSizeHint().height())
+        assert all(
+            button.width() == button.height() == tile_size
+            for button in panel._buttons.values()
+        )
+
+    assert horizontal_extents == sorted(horizontal_extents)
+    assert len(set(horizontal_extents)) == len(horizontal_extents)
+
+    workspace.host.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, dock)
+    _app().processEvents()
+    vertical_extents = []
+    for name, tile_size in panel.TILE_SIZES.items():
+        panel.set_button_size(name)
+        _app().processEvents()
+        minimum = panel.grid.minimumSizeHint()
+        assert minimum.width() == tile_size + 8
+        assert minimum.height() == 0
+        vertical_extents.append(dock.minimumSizeHint().width())
+
+    assert vertical_extents == sorted(vertical_extents)
+    assert len(set(vertical_extents)) == len(vertical_extents)
+
+
+def test_quick_action_primary_minimum_does_not_grow_with_action_count(
+    tmp_path: Path,
+) -> None:
+    _app()
+    one = _populated_quick_panel(tmp_path / "one", 1)
+    many = _populated_quick_panel(tmp_path / "many", 12)
+
+    for panel in (one, many):
+        panel.set_button_size("small")
+        panel.set_dock_area(Qt.DockWidgetArea.BottomDockWidgetArea)
+    assert (
+        one.grid.minimumSizeHint().height()
+        == many.grid.minimumSizeHint().height()
+    )
+    assert (
+        one.grid.minimumSizeHint().width()
+        == many.grid.minimumSizeHint().width()
+        == 0
+    )
+
+    for panel in (one, many):
+        panel.set_dock_area(Qt.DockWidgetArea.LeftDockWidgetArea)
+    assert (
+        one.grid.minimumSizeHint().width()
+        == many.grid.minimumSizeHint().width()
+    )
+    assert (
+        one.grid.minimumSizeHint().height()
+        == many.grid.minimumSizeHint().height()
+        == 0
+    )
+
+
 def test_live_workspace_persists_dock_area_visibility_and_resets(tmp_path: Path) -> None:
     _app()
     settings = QSettings(str(tmp_path / "window.ini"), QSettings.Format.IniFormat)
@@ -593,6 +670,49 @@ def test_dock_moves_reflow_without_tab_stacking_or_overlap(tmp_path: Path) -> No
     )
     _app().processEvents()
     assert quick_panel.grid.orientation == Qt.Orientation.Horizontal
+
+
+def test_hiding_quick_actions_reflows_immediately_without_persistence_loop(
+    tmp_path: Path,
+) -> None:
+    _app()
+    settings = QSettings(str(tmp_path / "window.ini"), QSettings.Format.IniFormat)
+    workspace = LiveWorkspace(
+        _live_contributions(),
+        _populated_quick_panel(tmp_path, 8),
+        settings,
+    )
+    _show_workspace(workspace)
+    quick_actions = workspace.docks["core.quick-actions"]
+    chat = workspace.docks["twitch.chat"]
+    stream_tools = workspace.docks["twitch.stream-tools"]
+
+    assert not (
+        workspace.host.dockOptions()
+        & QMainWindow.DockOption.AnimatedDocks
+    )
+    quick_actions.hide()
+    _app().processEvents()
+
+    assert quick_actions.isHidden()
+    assert chat.y() - stream_tools.geometry().bottom() - 1 <= 4
+    assert chat.geometry().bottom() >= workspace.host.height() - 1
+    assert not settings.contains(LiveWorkspace.STATE_KEY)
+    _assert_docked_panels_do_not_overlap(workspace)
+
+    for _ in range(4):
+        quick_actions.show()
+        _app().processEvents()
+        quick_actions.hide()
+        _app().processEvents()
+        assert chat.y() - stream_tools.geometry().bottom() - 1 <= 4
+        assert chat.geometry().bottom() >= workspace.host.height() - 1
+        _assert_docked_panels_do_not_overlap(workspace)
+
+    quick_actions.show()
+    _app().processEvents()
+    assert not quick_actions.isHidden()
+    assert not settings.contains(LiveWorkspace.STATE_KEY)
 
 
 def test_live_dock_separator_is_compact_but_resizable(tmp_path: Path) -> None:

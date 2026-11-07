@@ -55,6 +55,12 @@ preserved while the global medium tile size and empty color/icon customization
 defaults are added. Missing routines do not delete or repoint tiles; the tile is
 shown as unavailable and remains editable or removable.
 
+Quick Actions constrain only the dock dimension perpendicular to their flow:
+top/bottom docks require one current-size tile of height, while left/right docks
+require one current-size tile of width. Action count affects wrapping, not the
+dock minimum. Live disables Qt dock animations so visibility and placement
+changes reflow the dock tree immediately, including WebEngine-backed panels.
+
 ## Affected components
 
 - `products/hub/modules/contributions.py`

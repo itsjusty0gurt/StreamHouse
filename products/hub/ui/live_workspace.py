@@ -6,8 +6,9 @@ from PySide6.QtCore import QByteArray, QMimeData, QPoint, QSettings, QSize, Qt, 
 from PySide6.QtGui import QColor, QDrag, QIcon
 from PySide6.QtWidgets import (
     QApplication,
-    QComboBox,
+    QBoxLayout,
     QColorDialog,
+    QComboBox,
     QDialog,
     QDialogButtonBox,
     QDockWidget,
@@ -22,6 +23,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QProxyStyle,
+    QSizePolicy,
     QStyle,
     QToolButton,
     QVBoxLayout,
@@ -232,7 +234,9 @@ class _QuickActionGrid(QWidget):
 
     def minimumSizeHint(self) -> QSize:  # noqa: N802 - Qt API
         extent = self._tile_size + 8
-        return QSize(extent, extent)
+        if self._orientation == Qt.Orientation.Horizontal:
+            return QSize(0, extent)
+        return QSize(extent, 0)
 
     def sizeHint(self) -> QSize:  # noqa: N802 - Qt API
         count = max(1, min(4, len(self._tiles)))
@@ -371,10 +375,16 @@ class QuickActionsPanel(QWidget):
         self.routine_store = routine_store
         self._buttons: dict[str, QuickActionTile] = {}
         self._dock_area = Qt.DockWidgetArea.BottomDockWidgetArea
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(4, 4, 4, 4)
-        layout.setSpacing(4)
-        header = QHBoxLayout()
+        self._layout = QBoxLayout(QBoxLayout.Direction.LeftToRight, self)
+        self._layout.setContentsMargins(4, 4, 4, 4)
+        self._layout.setSpacing(4)
+        self._header = QWidget(self)
+        self._header_layout = QBoxLayout(
+            QBoxLayout.Direction.TopToBottom,
+            self._header,
+        )
+        header = self._header_layout
+        header.setContentsMargins(0, 0, 0, 0)
         header.setSpacing(4)
         self.size_button = QToolButton(self)
         self.size_button.setToolTip("Quick Action tile size")
@@ -397,10 +407,10 @@ class QuickActionsPanel(QWidget):
         self.add_button.setAccessibleName("Add Quick Action")
         self.add_button.clicked.connect(self.add_action)
         header.addWidget(self.add_button)
-        layout.addLayout(header)
+        self._layout.addWidget(self._header)
         self.grid = _QuickActionGrid(self)
         self.grid.reorder_requested.connect(self._reorder_action)
-        layout.addWidget(self.grid, 1)
+        self._layout.addWidget(self.grid, 1)
         try:
             self.store.load()
         except (OSError, TypeError, ValueError):
@@ -452,7 +462,28 @@ class QuickActionsPanel(QWidget):
             }
             else Qt.Orientation.Vertical
         )
+        direction = (
+            QBoxLayout.Direction.LeftToRight
+            if orientation == Qt.Orientation.Horizontal
+            else QBoxLayout.Direction.TopToBottom
+        )
+        self._layout.setDirection(direction)
+        if orientation == Qt.Orientation.Horizontal:
+            self._header.setSizePolicy(
+                QSizePolicy.Policy.Fixed,
+                QSizePolicy.Policy.Preferred,
+            )
+        else:
+            self._header.setSizePolicy(
+                QSizePolicy.Policy.Preferred,
+                QSizePolicy.Policy.Fixed,
+            )
         self.grid.set_orientation(orientation)
+        self._layout.invalidate()
+        self.updateGeometry()
+        parent = self.parentWidget()
+        if parent is not None:
+            parent.updateGeometry()
 
     def _apply_tile_presentation(
         self,
@@ -509,6 +540,11 @@ class QuickActionsPanel(QWidget):
             return
         self._set_size_selection(value)
         self.grid.set_tile_size(self.TILE_SIZES[value])
+        self._layout.invalidate()
+        self.updateGeometry()
+        parent = self.parentWidget()
+        if parent is not None:
+            parent.updateGeometry()
 
     def _set_size_selection(self, value: str) -> None:
         for name, action in self._size_actions.items():
@@ -592,8 +628,7 @@ class LiveWorkspace(QWidget):
         self.host.setParent(self, Qt.WindowType.Widget)
         self.host.setObjectName("liveWorkspaceHost")
         self.host.setDockOptions(
-            QMainWindow.DockOption.AnimatedDocks
-            | QMainWindow.DockOption.AllowNestedDocks
+            QMainWindow.DockOption.AllowNestedDocks
         )
         self._dock_style = _LiveDockStyle()
         self._dock_style.setParent(self.host)
