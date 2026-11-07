@@ -112,7 +112,9 @@ details remain in Logs and are not appended to Chat.
   from command invocation.
 - OBS-triggered routines are queued after the originating WebSocket event
   callback returns, so their OBS tasks can complete requests without reentering
-  the socket callback or requiring an artificial Wait task.
+  the socket callback or requiring an artificial Wait task. Real OBS acceptance
+  on 2026-11-06 repeatedly verified a `CurrentProgramSceneChanged` routine with
+  show/hide/toggle-source requests and no `GetSceneItemId` timeout.
 - Routine deletion now preserves the routine-list position and selects the next
   nearby routine instead of rebuilding back at the top.
 - Counter Variables now expose scope-aware `.unit` values for channel lifetime,
@@ -240,9 +242,6 @@ Reproduction/validation requirements:
 - **Known test isolation issue:** the complete gate can deliver late AI
   memory-expiry log callbacks into the Python-script logger mock. The affected
   Python-script logging test passes in isolation; no assertion was weakened.
-- **Acceptance limitation:** no preexisting live OBS trigger was available for
-  nondestructive manual firing. Automated persistence, matching, filtering,
-  context, and MainWindow dispatch coverage passed.
 - **Architecture debt:** `MainWindow` remains large, and Core Automation UI
   contains provider-specific editor/presentation adapters.
 
@@ -271,6 +270,7 @@ Reproduction/validation requirements:
 | Post-merge Twitch/module/Automation/Backup/Variables/OBS gate | 404 passed, 138 subtests passed |
 | Post-merge MainWindow/startup slice | 55 passed, 5 subtests passed |
 | Post-merge packaged smoke | Exit code 0 with Twitch re-enabled |
+| OBS event/request reentrancy acceptance | Automated OBS/Automation gate passed; repeated real `CurrentProgramSceneChanged` show/hide/toggle-source routines completed without request timeout |
 | Hub smoke-maintenance focused/broader gate | Users suite passed in five consecutive runs (100 tests, 125 subtests total); Users/Counter gate passed 67 tests and 35 subtests; relevant MainWindow slice passed 7 tests unrestricted after the known restricted QtWebEngine breakpoint |
 | Hub smoke-maintenance package | Normal Hub build and automated packaged startup/shutdown smoke passed; the follow-up visual click-through remained blocked by an already-running installed single instance and was not forced |
 | Final Live focused acceptance | 46 passed, 2 subtests passed |
