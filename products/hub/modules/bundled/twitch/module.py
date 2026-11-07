@@ -558,10 +558,18 @@ class TwitchModule:
         ):
             self._publish_trigger(trigger, f"First message from {message.username}")
 
-    def publish_keyword_phrase(self, message: TwitchMessage) -> None:
+    def publish_keyword_phrase(
+        self,
+        message: TwitchMessage,
+        *,
+        is_bot: bool = False,
+    ) -> None:
         if not self._started or self.trigger_store is None:
             return
-        for trigger in self.trigger_store.evaluate_keyword_phrase(message):
+        for trigger in self.trigger_store.evaluate_keyword_phrase(
+            message,
+            is_bot=is_bot,
+        ):
             self._publish_trigger(trigger, f"Keyword / Phrase match from {message.username}")
 
     def publish_outgoing_raid_started(self, event: object) -> None:

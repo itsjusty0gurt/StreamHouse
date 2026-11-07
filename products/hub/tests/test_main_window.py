@@ -111,6 +111,7 @@ from products.hub.integrations.music_player import (
 from products.hub.integrations.music_triggers import MUSIC_TRIGGER_TYPES
 from products.hub.ui.automation_page import (
     AutomationPage,
+    KeywordPhraseTriggerDialog,
     NewRoutineDialog,
     RunHistoryDetailsDialog,
     TaskEditorDialog,
@@ -5576,7 +5577,34 @@ class MainWindowTests(unittest.TestCase):
         )
 
         self.window._handle_twitch_first_message.assert_not_called()
-        self.window._handle_twitch_keyword_phrase.assert_not_called()
+        self.window._handle_twitch_keyword_phrase.assert_called_once()
+        self.assertTrue(
+            self.window._handle_twitch_keyword_phrase.call_args.kwargs["is_bot"]
+        )
+
+    def test_keyword_trigger_dialog_defaults_to_ignoring_bots(self) -> None:
+        dialog = KeywordPhraseTriggerDialog(self.window)
+        try:
+            self.assertTrue(dialog.ignore_bots_check.isChecked())
+            dialog.phrase_edit.setText("catch it using")
+            dialog.ignore_bots_check.setChecked(False)
+            self.assertFalse(dialog.values()["ignore_bots"])
+        finally:
+            dialog.close()
+
+        routine = self.twitch_command_trigger_store.routine_store.add(
+            "Bot-enabled keyword"
+        )
+        trigger = self.twitch_event_trigger_store.add_keyword_phrase(
+            routine.routine_id,
+            "catch it using",
+            ignore_bots=False,
+        )
+        edit_dialog = KeywordPhraseTriggerDialog(self.window, trigger)
+        try:
+            self.assertFalse(edit_dialog.ignore_bots_check.isChecked())
+        finally:
+            edit_dialog.close()
 
     def test_live_overview_cards_and_ad_manager_show_schedule(self) -> None:
         now = datetime.now(timezone.utc)
@@ -6222,6 +6250,55 @@ class MainWindowTests(unittest.TestCase):
         self.assertEqual(trigger.context["keyword.before"], "I think")
         self.assertEqual(trigger.context["keyword.after"], "is better than tea")
         self.assertNotIn("command_data", trigger.context)
+
+    def test_bot_enabled_keyword_does_not_enable_bot_chat_commands(self) -> None:
+        keyword_routine = self.twitch_command_trigger_store.routine_store.add(
+            "Pokemon catch sound"
+        )
+        self.twitch_event_trigger_store.add_keyword_phrase(
+            keyword_routine.routine_id,
+            "catch it using",
+            ignore_bots=False,
+        )
+        self.twitch_command_trigger_store.add(
+            "catch",
+            "Command response",
+            global_cooldown_seconds=0,
+        )
+        self.window.user_groups.assign_member(
+            SYSTEM_BOTS_GROUP_ID,
+            "pokemon-community-game",
+        )
+        execution = Mock(succeeded=True, handled=True)
+        self.window.automation_service.publish_trigger = Mock(
+            return_value=execution
+        )
+        self.window.automation_page.record_execution = Mock()
+        self.window.settings.ai_response_decisions_enabled = False
+
+        self.window.handle_twitch_message(
+            TwitchMessage(
+                username="PokemonCommunityGame",
+                text="!catch it using a pokeball",
+                received_at=datetime.now(timezone.utc),
+                message_id="bot-message-1",
+                user_id="pokemon-community-game",
+                user_login="pokemoncommunitygame",
+            )
+        )
+
+        published = [
+            call.args[0]
+            for call in self.window.automation_service.publish_trigger.call_args_list
+        ]
+        self.assertEqual(
+            [event.trigger_type for event in published],
+            ["keyword_phrase"],
+        )
+        self.assertEqual(
+            published[0].context["keyword.match"],
+            "catch it using",
+        )
 
     def test_action_message_publishes_keyword_once_without_command(self) -> None:
         routine = self.twitch_command_trigger_store.routine_store.add(

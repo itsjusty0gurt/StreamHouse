@@ -110,6 +110,10 @@ details remain in Logs and are not appended to Chat.
 - Twitch Keyword / Phrase triggers now match the visible text of `/me` action
   messages while preserving action presentation metadata and excluding actions
   from command invocation.
+- Twitch Keyword / Phrase triggers now expose per-trigger **Ignore bot
+  messages**, enabled by default and backward-compatible for existing saved
+  triggers. Explicitly opting one trigger in allows known bot messages without
+  enabling bot Chat Commands or changing other trigger behavior.
 - OBS-triggered routines are queued after the originating WebSocket event
   callback returns, so their OBS tasks can complete requests without reentering
   the socket callback or requiring an artificial Wait task. Real OBS acceptance

@@ -815,6 +815,7 @@ class TwitchEventTriggerStore:
         match_type: str = "contains",
         ignore_case: bool = True,
         whole_word: bool = True,
+        ignore_bots: bool = True,
         enabled: bool = True,
     ) -> TwitchEventAutomationTrigger:
         return self.add(
@@ -825,6 +826,7 @@ class TwitchEventTriggerStore:
                 "match_type": match_type,
                 "ignore_case": str(bool(ignore_case)).lower(),
                 "whole_word": str(bool(whole_word)).lower(),
+                "ignore_bots": str(bool(ignore_bots)).lower(),
             },
             enabled=enabled,
         )
@@ -837,6 +839,7 @@ class TwitchEventTriggerStore:
         match_type: str = "contains",
         ignore_case: bool = True,
         whole_word: bool = True,
+        ignore_bots: bool = True,
         enabled: bool | None = None,
     ) -> TwitchEventAutomationTrigger:
         return self.update(
@@ -847,6 +850,7 @@ class TwitchEventTriggerStore:
                 "match_type": match_type,
                 "ignore_case": str(bool(ignore_case)).lower(),
                 "whole_word": str(bool(whole_word)).lower(),
+                "ignore_bots": str(bool(ignore_bots)).lower(),
             },
             enabled=enabled,
         )
@@ -854,10 +858,14 @@ class TwitchEventTriggerStore:
     def evaluate_keyword_phrase(
         self,
         message: TwitchMessage,
+        *,
+        is_bot: bool = False,
     ) -> tuple[TriggerEvent, ...]:
         matches: list[TriggerEvent] = []
         for trigger in self.triggers:
             if not trigger.enabled or trigger.event_type != KEYWORD_PHRASE_EVENT_TYPE:
+                continue
+            if is_bot and self._filter_bool(trigger.filters, "ignore_bots", True):
                 continue
             phrase = trigger.filters.get("phrase", "")
             span = self._keyword_span(

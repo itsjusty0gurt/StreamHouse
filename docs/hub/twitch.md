@@ -114,7 +114,10 @@ do not receive stale command context. Message-bearing values such as
 Keyword / Phrase is a separate Twitch Chat trigger for matching ordinary chat.
 One trigger handles both single words and multi-word phrases with Contains,
 Exact Message, Starts With, and Ends With modes plus Ignore Case and Whole Word
-controls. A match supplies the normal `user.*` and `chat.*` context plus:
+controls. **Ignore bot messages** is enabled by default, including for saved
+triggers created before the option existed. Turning it off allows known bot
+messages to match only that trigger; it does not permit bots to invoke Chat
+Commands. A match supplies the normal `user.*` and `chat.*` context plus:
 
 - `keyword.message`: the full triggering message;
 - `keyword.match`: the configured canonical text;

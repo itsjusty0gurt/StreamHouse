@@ -1030,7 +1030,7 @@ Adding a task requires more than a handler. See **Adding an automation task**.
 | Twitch activity | `TwitchEventTriggerStore` | `twitch/event_triggers.json` | follow, sub/resub/gift, cheer, incoming/outgoing raid, reward, online/offline |
 | Twitch Channel Point Redemption | same as above | same | one broadcaster EventSub subscription, local matching by stable reward ID or Any Custom Reward |
 | Twitch first message | same as above | same | once per viewer per stream with offline grace reset |
-| Twitch Keyword / Phrase | same as above | same | Contains/Exact/Starts With/Ends With chat matching with case and whole-word controls |
+| Twitch Keyword / Phrase | same as above | same | Contains/Exact/Starts With/Ends With chat matching with case, whole-word, and per-trigger bot-message controls |
 | Twitch Ads | same as above | same | 5/3/2/1-minute warnings, EventSub-backed Ads Started, Hub-calculated Ads Ended |
 | Core | `CoreTriggerStore` | `automation/core_triggers.json` | application started/closing |
 | Core Timer | `CoreTriggerStore` + `AutomationTimerScheduler` | `automation/core_triggers.json` | exact intervals or a newly sampled random interval range |
@@ -1062,7 +1062,10 @@ triggers.
 
 Keyword/Phrase is a separate chat concept from Chat Command. Its trigger
 context is fresh for one routine execution, keeps normal `user.*`/`chat.*`
-data, and never manufactures `command.*`. Ads warnings are deduplicated per
+data, and never manufactures `command.*`. Each trigger ignores known bot
+messages by default; disabling **Ignore bot messages** allows bots only for that
+specific Keyword/Phrase trigger. Bot classification never enables Chat Command
+dispatch. Ads warnings are deduplicated per
 scheduled timestamp and reset when Twitch moves the schedule. Ads Ended is an
 estimated Hub event derived from the EventSub start time plus duration because
 Twitch does not publish a public ad-break-end EventSub event.
@@ -1173,7 +1176,10 @@ An accepted non-bot chat message can feed several independent consumers:
 7. opt-in memory buffer/training capture.
 
 Keep these consumers independent. A failure in AI or memory must never prevent
-chat display or command automation.
+chat display or command automation. Known bot messages remain excluded from
+commands, First Message, AI, and memory. They reach Keyword/Phrase evaluation
+only so an individual trigger with **Ignore bot messages** disabled can opt in;
+the backward-compatible default remains to ignore them.
 
 ### Simulation
 

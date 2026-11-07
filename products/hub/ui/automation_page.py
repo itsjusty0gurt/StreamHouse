@@ -421,12 +421,17 @@ class KeywordPhraseTriggerDialog(QDialog):
         self.whole_word_check.setChecked(
             filters.get("whole_word", "true").casefold() == "true"
         )
+        self.ignore_bots_check = QCheckBox("Ignore bot messages")
+        self.ignore_bots_check.setChecked(
+            filters.get("ignore_bots", "true").casefold() == "true"
+        )
         self.enabled_check = QCheckBox("Enabled")
         self.enabled_check.setChecked(trigger.enabled if trigger else True)
         form.addRow("Keyword / Phrase", self.phrase_edit)
         form.addRow("Match", self.match_combo)
         form.addRow("", self.ignore_case_check)
         form.addRow("", self.whole_word_check)
+        form.addRow("", self.ignore_bots_check)
         form.addRow("", self.enabled_check)
         layout.addLayout(form)
         help_label = QLabel(
@@ -459,6 +464,7 @@ class KeywordPhraseTriggerDialog(QDialog):
             "match_type": str(self.match_combo.currentData()),
             "ignore_case": self.ignore_case_check.isChecked(),
             "whole_word": self.whole_word_check.isChecked(),
+            "ignore_bots": self.ignore_bots_check.isChecked(),
             "enabled": self.enabled_check.isChecked(),
         }
 

@@ -1456,6 +1456,60 @@ class TwitchEventTriggerStoreTests(unittest.TestCase):
         self.assertEqual(result[0].context["message_id"], "message-1")
         self.assertNotIn("command_data", result[0].context)
 
+    def test_keyword_phrase_bot_matching_is_opt_in_per_trigger(self) -> None:
+        ignored_routine = self.routines.add("Ignore bot catch messages")
+        allowed_routine = self.routines.add("Allow bot catch messages")
+        ignored = self.store.add_keyword_phrase(
+            ignored_routine.routine_id,
+            "catch it using",
+        )
+        allowed = self.store.add_keyword_phrase(
+            allowed_routine.routine_id,
+            "catch it using",
+            ignore_bots=False,
+        )
+        message = TwitchMessage(
+            username="PokemonCommunityGame",
+            user_id="pokemon-community-game",
+            user_login="pokemoncommunitygame",
+            text="Catch it using !pokecatch",
+            message_id="bot-message-1",
+            received_at=datetime.now(timezone.utc),
+        )
+
+        bot_matches = self.store.evaluate_keyword_phrase(message, is_bot=True)
+        user_matches = self.store.evaluate_keyword_phrase(message, is_bot=False)
+
+        self.assertEqual(
+            [match.trigger_id for match in bot_matches],
+            [allowed.trigger_id],
+        )
+        self.assertCountEqual(
+            [match.trigger_id for match in user_matches],
+            [ignored.trigger_id, allowed.trigger_id],
+        )
+
+    def test_legacy_keyword_trigger_without_bot_setting_defaults_to_ignore(self) -> None:
+        routine = self.routines.add("Legacy keyword")
+        trigger = self.store.add_keyword_phrase(routine.routine_id, "coffee")
+        trigger.filters.pop("ignore_bots")
+        self.store.save()
+
+        loaded = TwitchEventTriggerStore(self.store.path, self.routines)
+        loaded.load()
+        message = TwitchMessage(
+            username="HelperBot",
+            user_id="bot-1",
+            text="coffee",
+            received_at=datetime.now(timezone.utc),
+        )
+
+        self.assertNotIn("ignore_bots", loaded.get(trigger.trigger_id).filters)
+        self.assertEqual(
+            loaded.evaluate_keyword_phrase(message, is_bot=True),
+            (),
+        )
+
     def test_keyword_phrase_matches_normal_and_action_visible_text_once(self) -> None:
         routine = self.routines.add("Coffee response")
         trigger = self.store.add_keyword_phrase(routine.routine_id, "coffee")
@@ -1596,6 +1650,7 @@ class TwitchEventTriggerStoreTests(unittest.TestCase):
             match_type="starts_with",
             ignore_case=False,
             whole_word=True,
+            ignore_bots=False,
         )
         ads_routine = self.routines.add("Ads Started")
         ads = self.store.add(ads_routine.routine_id, "ads.started")
@@ -1606,6 +1661,9 @@ class TwitchEventTriggerStoreTests(unittest.TestCase):
         self.assertEqual(loaded.get(keyword.trigger_id).filters["phrase"], "coffee")
         self.assertEqual(
             loaded.get(keyword.trigger_id).filters["match_type"], "starts_with"
+        )
+        self.assertEqual(
+            loaded.get(keyword.trigger_id).filters["ignore_bots"], "false"
         )
         self.assertEqual(loaded.get(ads.trigger_id).event_type, "ads.started")
 

@@ -4287,8 +4287,7 @@ class MainWindow(QMainWindow):
         )
         if not is_bot and not is_broadcaster:
             self._handle_twitch_first_message(chat_message)
-        if not is_bot:
-            self._handle_twitch_keyword_phrase(chat_message)
+        self._handle_twitch_keyword_phrase(chat_message, is_bot=is_bot)
         training_command = self._handle_sally_training_command(
             chat_message, is_bot
         )
@@ -4386,8 +4385,10 @@ class MainWindow(QMainWindow):
     def _handle_twitch_keyword_phrase(
         self,
         chat_message: TwitchMessage,
+        *,
+        is_bot: bool = False,
     ) -> None:
-        self.twitch_module.publish_keyword_phrase(chat_message)
+        self.twitch_module.publish_keyword_phrase(chat_message, is_bot=is_bot)
 
     def _handle_sally_memory_command(
         self,
