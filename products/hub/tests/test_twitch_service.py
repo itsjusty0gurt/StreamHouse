@@ -281,7 +281,11 @@ class TwitchServiceTests(unittest.TestCase):
             user_id="bot-1", login="testbot",
         )
         helix = Mock()
-        helix.send_chat_message.side_effect = [self._http_error(401), "message-1"]
+        helix.send_chat_message.side_effect = [
+            self._http_error(401),
+            "message-1",
+            "message-2",
+        ]
         client = Mock()
         client.refresh.return_value = refreshed
         client.validate.return_value = refreshed
@@ -291,6 +295,7 @@ class TwitchServiceTests(unittest.TestCase):
         )
 
         self.assertTrue(service.send_message("Hello after refresh"))
+        self.assertTrue(service.send_message("Later message"))
 
         self.assertIsNotNone(bot_auth)
         self.assertIs(bot_auth.token, refreshed)
@@ -304,6 +309,9 @@ class TwitchServiceTests(unittest.TestCase):
                 ),
                 unittest.mock.call(
                     "channel-1", "bot-1", "Hello after refresh", refreshed
+                ),
+                unittest.mock.call(
+                    "channel-1", "bot-1", "Later message", refreshed
                 ),
             ],
         )

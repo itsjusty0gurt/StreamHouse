@@ -139,7 +139,7 @@ class TwitchAuthService:
         self._cancel = threading.Event()
         self._worker: threading.Thread | None = None
         self._worker_lock = threading.Lock()
-        self._token_refresh_lock = threading.Lock()
+        self._token_refresh_lock = threading.RLock()
         self._last_unauthorized_recovery = 0.0
         self._stopped = False
 
@@ -287,12 +287,23 @@ class TwitchAuthService:
             Logger.warning(f"Saved Twitch sign-in expired: {error}", source="TWITCH")
 
     def _maintain_token(self, token: TwitchToken) -> None:
+        with self._token_refresh_lock:
+            if self.token is not token:
+                return
+            self._maintain_token_exclusive(token)
+
+    def _maintain_token_exclusive(self, token: TwitchToken) -> None:
         try:
+            original = token
             refreshed = token.expires_at <= time.time() + 900
             if refreshed:
                 token = self.client.refresh(token)
             validated = self.client.validate(token)
-            if self._cancel.is_set() or self._stopped:
+            if (
+                self._cancel.is_set()
+                or self._stopped
+                or self.token is not original
+            ):
                 return
             self.token = validated
             self.store.save(validated)

@@ -1,6 +1,7 @@
 import io
 import json
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from urllib.error import HTTPError
@@ -266,6 +267,49 @@ class TwitchAuthServiceTests(unittest.TestCase):
 
         self.assertFalse(service.recover_unauthorized())
         self.assertEqual(service._last_unauthorized_recovery, 0.0)
+
+    def test_maintenance_and_waiting_401_recovery_share_one_refresh(self) -> None:
+        old = TwitchToken(
+            "old", "refresh", 1, [], user_id="bot-1", login="testbot"
+        )
+        refreshed = TwitchToken(
+            "new", "refresh-2", 9_999_999_999, [],
+            user_id="bot-1", login="testbot",
+        )
+        refresh_started = threading.Event()
+        allow_refresh = threading.Event()
+        client = Mock()
+
+        def refresh(_token):
+            refresh_started.set()
+            self.assertTrue(allow_refresh.wait(timeout=2))
+            return refreshed
+
+        client.refresh.side_effect = refresh
+        client.validate.return_value = refreshed
+        service = TwitchAuthService(client=client, store=Mock())
+        service.token = old
+        service.state = TwitchAuthState.SIGNED_IN
+        recovery_results: list[TwitchToken | None] = []
+        maintenance = threading.Thread(target=service._maintain_token, args=(old,))
+        recovery = threading.Thread(
+            target=lambda: recovery_results.append(
+                service.recover_unauthorized_and_wait(old)
+            )
+        )
+
+        maintenance.start()
+        self.assertTrue(refresh_started.wait(timeout=2))
+        recovery.start()
+        allow_refresh.set()
+        maintenance.join(timeout=2)
+        recovery.join(timeout=2)
+
+        self.assertFalse(maintenance.is_alive())
+        self.assertFalse(recovery.is_alive())
+        client.refresh.assert_called_once_with(old)
+        self.assertEqual(recovery_results, [refreshed])
+        self.assertIs(service.token, refreshed)
 
     def test_maintenance_failure_keeps_technical_detail_out_of_auth_state(self) -> None:
         token = TwitchToken("access", "refresh", 1, [], login="channel")
