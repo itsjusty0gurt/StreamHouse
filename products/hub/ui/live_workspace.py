@@ -360,7 +360,7 @@ class _QuickActionGrid(QWidget):
 class QuickActionsPanel(QWidget):
     routine_requested = Signal(str)
     unavailable_requested = Signal(str)
-    preferred_extent_changed = Signal()
+    preferred_extent_changed = Signal(int)
 
     TILE_SIZES = {
         "small": 56,
@@ -503,7 +503,7 @@ class QuickActionsPanel(QWidget):
         parent = self.parentWidget()
         if parent is not None:
             parent.updateGeometry()
-        self.preferred_extent_changed.emit()
+        self.preferred_extent_changed.emit(self.preferred_cross_extent())
 
     def _apply_tile_presentation(
         self,
@@ -565,7 +565,14 @@ class QuickActionsPanel(QWidget):
         parent = self.parentWidget()
         if parent is not None:
             parent.updateGeometry()
-        self.preferred_extent_changed.emit()
+        self.preferred_extent_changed.emit(self.preferred_cross_extent())
+
+    def preferred_cross_extent(self) -> int:
+        margins = self._layout.contentsMargins()
+        minimum = self.grid.minimumSizeHint()
+        if self.grid.orientation == Qt.Orientation.Horizontal:
+            return minimum.height() + margins.top() + margins.bottom()
+        return minimum.width() + margins.left() + margins.right()
 
     def _set_size_selection(self, value: str) -> None:
         for name, action in self._size_actions.items():
@@ -892,7 +899,7 @@ class LiveWorkspace(QWidget):
             Qt.Orientation.Vertical,
         )
 
-    def _resize_quick_actions_to_contents(self) -> None:
+    def _resize_quick_actions_to_contents(self, content_extent: int) -> None:
         """Resize the dock's cross-axis to one tile at the selected preset."""
         dock = self.docks.get("core.quick-actions")
         if dock is None or not dock.isVisible() or dock.isFloating():
@@ -923,7 +930,11 @@ class LiveWorkspace(QWidget):
             if horizontal_flow
             else item.minimumSizeHint().width()
         )
-        target = max(1, minimum_extent(dock))
+        content_widget = dock.widget()
+        chrome = 0
+        if content_widget is not None:
+            chrome = max(0, extent(dock) - extent(content_widget))
+        target = max(1, int(content_extent) + chrome)
         peers = [
             candidate
             for candidate in self.docks.values()
