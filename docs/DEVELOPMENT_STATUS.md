@@ -84,8 +84,10 @@ details remain in Logs and are not appended to Chat.
   and built-in icon customization, and preserves unavailable routine links for
   repair. Their dock minimum follows one tile at the selected size, action count
   wraps without enlarging that minimum, and dock visibility reflows without Qt
-  animation stalls. Schema-v1 Quick Actions upgrade to schema v2 without
-  changing stable action/routine IDs or order. Twitch's live
+  animation stalls or a reserved empty center band. Hiding Quick Actions gives
+  its freed height to the middle row without shifting that row downward.
+  Schema-v1 Quick Actions upgrade to schema v2 without changing stable
+  action/routine IDs or order. Twitch's live
   widgets are reparented into docks rather than duplicated; its provider tab
   remains for deeper Twitch management. Docks tile instead of tab-stacking, the
   default layout prioritizes Chat, and compact separators preserve practical

@@ -683,6 +683,11 @@ class LiveWorkspace(QWidget):
         for contribution in all_contributions:
             self._add_contribution(contribution)
         self._apply_default_layout()
+        quick_actions_dock = self.docks.get("core.quick-actions")
+        if quick_actions_dock is not None:
+            quick_actions_dock.visibilityChanged.connect(
+                self._quick_actions_visibility_changed
+            )
 
     def _add_contribution(self, contribution: ModuleDockContribution) -> None:
         content = contribution.factory(self.host)
@@ -737,17 +742,6 @@ class LiveWorkspace(QWidget):
             if dock is not None
         }
 
-        if stream_tools is not None:
-            self.host.addDockWidget(
-                Qt.DockWidgetArea.TopDockWidgetArea,
-                stream_tools,
-            )
-        if quick_actions is not None:
-            self.host.addDockWidget(
-                Qt.DockWidgetArea.BottomDockWidgetArea,
-                quick_actions,
-            )
-
         middle_layout = [
             (dock, size)
             for dock, size in (
@@ -758,19 +752,34 @@ class LiveWorkspace(QWidget):
             if dock is not None
         ]
         middle_docks = [dock for dock, _size in middle_layout]
-        if middle_docks:
-            first = middle_docks[0]
+        middle_anchor = middle_docks[0] if middle_docks else None
+        root = stream_tools or middle_anchor or quick_actions
+        if root is not None:
             self.host.addDockWidget(
-                _DOCK_AREAS[str(first.property("defaultArea"))],
-                first,
+                Qt.DockWidgetArea.TopDockWidgetArea,
+                root,
             )
+
+        if stream_tools is not None and middle_anchor is not None:
+            self.host.splitDockWidget(
+                stream_tools,
+                middle_anchor,
+                Qt.Orientation.Vertical,
+            )
+        if quick_actions is not None and middle_anchor is not None:
+            self.host.splitDockWidget(
+                middle_anchor,
+                quick_actions,
+                Qt.Orientation.Vertical,
+            )
+        elif quick_actions is not None and stream_tools is not None:
+            self.host.splitDockWidget(
+                stream_tools,
+                quick_actions,
+                Qt.Orientation.Vertical,
+            )
+
         for left, right in zip(middle_docks, middle_docks[1:]):
-            # Adding a former tab peer to a different area first clears Qt's
-            # retained tab relationship before placing it in this split row.
-            self.host.addDockWidget(
-                Qt.DockWidgetArea.BottomDockWidgetArea,
-                right,
-            )
             self.host.splitDockWidget(left, right, Qt.Orientation.Horizontal)
 
         for dock in self.docks.values():
@@ -792,8 +801,13 @@ class LiveWorkspace(QWidget):
             (dock, size)
             for dock, size in (
                 (stream_tools, 170),
-                (chat or activity or chatters, 520),
-                (quick_actions, 125),
+                (middle_anchor, 520),
+                (
+                    quick_actions,
+                    max(1, quick_actions.minimumSizeHint().height())
+                    if quick_actions is not None
+                    else 1,
+                ),
             )
             if dock is not None
         ]
@@ -810,6 +824,48 @@ class LiveWorkspace(QWidget):
         self.settings.remove(self.DOCKS_KEY)
         self._default_layout_pending = False
         self._apply_default_layout()
+
+    def _quick_actions_visibility_changed(self, visible: bool) -> None:
+        """Give freed Quick Actions space to the middle row, not the top row."""
+        if not self.host.isVisible():
+            return
+        stream_tools = self.docks.get("twitch.stream-tools")
+        middle = (
+            self.docks.get("twitch.chat")
+            or self.docks.get("twitch.activity")
+            or self.docks.get("twitch.chatters")
+        )
+        quick_actions = self.docks.get("core.quick-actions")
+        if middle is None or quick_actions is None:
+            return
+        if (
+            middle.isFloating()
+            or quick_actions.isFloating()
+            or self.host.dockWidgetArea(middle)
+            != self.host.dockWidgetArea(quick_actions)
+        ):
+            return
+        if stream_tools is not None and (
+            stream_tools.isFloating()
+            or self.host.dockWidgetArea(stream_tools)
+            != self.host.dockWidgetArea(middle)
+        ):
+            stream_tools = None
+
+        vertical_docks = [
+            dock for dock in (stream_tools, middle) if dock is not None
+        ]
+        vertical_sizes = [max(1, dock.height()) for dock in vertical_docks]
+        if visible:
+            vertical_docks.append(quick_actions)
+            vertical_sizes.append(max(1, quick_actions.minimumSizeHint().height()))
+        elif vertical_sizes:
+            vertical_sizes[-1] += max(1, quick_actions.height())
+        self.host.resizeDocks(
+            vertical_docks,
+            vertical_sizes,
+            Qt.Orientation.Vertical,
+        )
 
     def restore_layout(self) -> bool:
         state = self.settings.value(self.STATE_KEY)

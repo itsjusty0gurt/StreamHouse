@@ -539,8 +539,15 @@ def test_live_workspace_persists_dock_area_visibility_and_resets(tmp_path: Path)
     assert second.docks["twitch.chat"].isHidden()
 
     second.reset_to_default()
-    assert second.host.dockWidgetArea(second.docks["twitch.chat"]) == Qt.DockWidgetArea.LeftDockWidgetArea
-    assert not second.docks["twitch.chat"].isHidden()
+    reset_chat = second.docks["twitch.chat"]
+    reset_quick = second.docks["core.quick-actions"]
+    assert not reset_chat.isHidden()
+    assert not reset_chat.isFloating()
+    assert (
+        second.host.dockWidgetArea(reset_quick)
+        == Qt.DockWidgetArea.TopDockWidgetArea
+    )
+    assert restored_quick_panel.grid.orientation == Qt.Orientation.Horizontal
 
 
 def test_missing_saved_state_defers_default_until_workspace_is_shown(
@@ -562,10 +569,7 @@ def test_missing_saved_state_defers_default_until_workspace_is_shown(
 
     assert not chat.isFloating()
     assert not chat.isHidden()
-    assert (
-        workspace.host.dockWidgetArea(chat)
-        == Qt.DockWidgetArea.LeftDockWidgetArea
-    )
+    assert chat.y() < workspace.docks["core.quick-actions"].y()
 
 
 def test_saved_custom_floating_chat_layout_is_not_replaced_by_default(
@@ -618,7 +622,7 @@ def test_default_layout_uses_full_width_rows_and_descending_middle_columns(
     )
     assert (
         workspace.host.dockWidgetArea(quick_actions)
-        == Qt.DockWidgetArea.BottomDockWidgetArea
+        == Qt.DockWidgetArea.TopDockWidgetArea
     )
     assert chat.x() < activity.x() < chatters.x()
     assert chat.width() > activity.width() > chatters.width()
@@ -628,6 +632,7 @@ def test_default_layout_uses_full_width_rows_and_descending_middle_columns(
     assert stream_tools.width() >= workspace.host.width() - 10
     assert quick_actions.width() >= workspace.host.width() - 10
     assert quick_actions.height() < chat.height()
+    assert quick_actions.height() <= quick_actions.minimumSizeHint().height() + 40
     _assert_docked_panels_do_not_overlap(workspace)
 
 
@@ -686,6 +691,8 @@ def test_hiding_quick_actions_reflows_immediately_without_persistence_loop(
     quick_actions = workspace.docks["core.quick-actions"]
     chat = workspace.docks["twitch.chat"]
     stream_tools = workspace.docks["twitch.stream-tools"]
+    initial_chat_y = chat.y()
+    initial_chat_height = chat.height()
 
     assert not (
         workspace.host.dockOptions()
@@ -695,6 +702,8 @@ def test_hiding_quick_actions_reflows_immediately_without_persistence_loop(
     _app().processEvents()
 
     assert quick_actions.isHidden()
+    assert abs(chat.y() - initial_chat_y) <= 1
+    assert chat.height() > initial_chat_height
     assert chat.y() - stream_tools.geometry().bottom() - 1 <= 4
     assert chat.geometry().bottom() >= workspace.host.height() - 1
     assert not settings.contains(LiveWorkspace.STATE_KEY)
@@ -762,10 +771,8 @@ def test_reset_restores_default_geometry_after_dock_changes(tmp_path: Path) -> N
     assert workspace.host.tabifiedDockWidgets(activity) == []
     assert not chat.isFloating()
     assert not chatters.isHidden()
-    assert (
-        workspace.host.dockWidgetArea(quick_actions)
-        == Qt.DockWidgetArea.BottomDockWidgetArea
-    )
+    assert chat.y() < quick_actions.y()
+    assert quick_actions.width() >= workspace.host.width() - 10
     assert not settings.contains(LiveWorkspace.STATE_KEY)
     assert not settings.contains(LiveWorkspace.DOCKS_KEY)
 

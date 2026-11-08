@@ -60,6 +60,11 @@ top/bottom docks require one current-size tile of height, while left/right docks
 require one current-size tile of width. Action count affects wrapping, not the
 dock minimum. Live disables Qt dock animations so visibility and placement
 changes reflow the dock tree immediately, including WebEngine-backed panels.
+The built-in default is one nested Qt dock splitter tree rather than separate
+top/left/right/bottom area roots; this preserves the full-width top and bottom
+rows without leaving an empty central drop band when a row is hidden. Hiding
+Quick Actions assigns its released height to the middle row while preserving
+the top row's current user-adjusted height.
 
 ## Affected components
 
