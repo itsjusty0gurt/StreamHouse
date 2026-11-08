@@ -438,7 +438,7 @@ def test_quick_action_minimum_tracks_tile_size_and_dock_orientation(
     _app()
     panel = _populated_quick_panel(tmp_path, 8)
     workspace = LiveWorkspace(
-        [],
+        _live_contributions(),
         panel,
         QSettings(str(tmp_path / "window.ini"), QSettings.Format.IniFormat),
     )
@@ -446,13 +446,16 @@ def test_quick_action_minimum_tracks_tile_size_and_dock_orientation(
     dock = workspace.docks["core.quick-actions"]
 
     horizontal_extents = []
+    horizontal_geometry = []
     for name, tile_size in panel.TILE_SIZES.items():
         panel.set_button_size(name)
+        _app().processEvents()
         _app().processEvents()
         minimum = panel.grid.minimumSizeHint()
         assert minimum.width() == 0
         assert minimum.height() == tile_size + 8
         horizontal_extents.append(dock.minimumSizeHint().height())
+        horizontal_geometry.append(dock.height())
         assert all(
             button.width() == button.height() == tile_size
             for button in panel._buttons.values()
@@ -460,20 +463,32 @@ def test_quick_action_minimum_tracks_tile_size_and_dock_orientation(
 
     assert horizontal_extents == sorted(horizontal_extents)
     assert len(set(horizontal_extents)) == len(horizontal_extents)
+    assert horizontal_geometry == sorted(horizontal_geometry)
+    assert horizontal_geometry == horizontal_extents
+
+    panel.set_button_size("small")
+    _app().processEvents()
+    _app().processEvents()
+    assert dock.height() == horizontal_geometry[0]
 
     workspace.host.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, dock)
     _app().processEvents()
+    _app().processEvents()
     vertical_extents = []
+    vertical_geometry = []
     for name, tile_size in panel.TILE_SIZES.items():
         panel.set_button_size(name)
+        _app().processEvents()
         _app().processEvents()
         minimum = panel.grid.minimumSizeHint()
         assert minimum.width() == tile_size + 8
         assert minimum.height() == 0
         vertical_extents.append(dock.minimumSizeHint().width())
+        vertical_geometry.append(dock.width())
 
     assert vertical_extents == sorted(vertical_extents)
     assert len(set(vertical_extents)) == len(vertical_extents)
+    assert vertical_geometry == vertical_extents
 
 
 def test_quick_action_primary_minimum_does_not_grow_with_action_count(

@@ -2,7 +2,16 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable
 
-from PySide6.QtCore import QByteArray, QMimeData, QPoint, QSettings, QSize, Qt, Signal
+from PySide6.QtCore import (
+    QByteArray,
+    QMimeData,
+    QPoint,
+    QSettings,
+    QSize,
+    QTimer,
+    Qt,
+    Signal,
+)
 from PySide6.QtGui import QColor, QDrag, QIcon
 from PySide6.QtWidgets import (
     QApplication,
@@ -209,10 +218,12 @@ class _QuickActionGrid(QWidget):
         if orientation == self._orientation:
             return
         self._orientation = orientation
+        self._update_minimum_constraint()
         self._relayout()
 
     def set_tile_size(self, size: int) -> None:
         self._tile_size = int(size)
+        self._update_minimum_constraint()
         for tile in self._tiles:
             tile.setFixedSize(self._tile_size, self._tile_size)
             tile.setIconSize(QSize(self._tile_size // 3, self._tile_size // 3))
@@ -237,6 +248,13 @@ class _QuickActionGrid(QWidget):
         if self._orientation == Qt.Orientation.Horizontal:
             return QSize(0, extent)
         return QSize(extent, 0)
+
+    def _update_minimum_constraint(self) -> None:
+        extent = self._tile_size + 8
+        if self._orientation == Qt.Orientation.Horizontal:
+            self.setMinimumSize(0, extent)
+        else:
+            self.setMinimumSize(extent, 0)
 
     def sizeHint(self) -> QSize:  # noqa: N802 - Qt API
         count = max(1, min(4, len(self._tiles)))
@@ -342,6 +360,7 @@ class _QuickActionGrid(QWidget):
 class QuickActionsPanel(QWidget):
     routine_requested = Signal(str)
     unavailable_requested = Signal(str)
+    preferred_extent_changed = Signal()
 
     TILE_SIZES = {
         "small": 56,
@@ -484,6 +503,7 @@ class QuickActionsPanel(QWidget):
         parent = self.parentWidget()
         if parent is not None:
             parent.updateGeometry()
+        self.preferred_extent_changed.emit()
 
     def _apply_tile_presentation(
         self,
@@ -545,6 +565,7 @@ class QuickActionsPanel(QWidget):
         parent = self.parentWidget()
         if parent is not None:
             parent.updateGeometry()
+        self.preferred_extent_changed.emit()
 
     def _set_size_selection(self, value: str) -> None:
         for name, action in self._size_actions.items():
@@ -687,6 +708,10 @@ class LiveWorkspace(QWidget):
         if quick_actions_dock is not None:
             quick_actions_dock.visibilityChanged.connect(
                 self._quick_actions_visibility_changed
+            )
+            quick_actions.preferred_extent_changed.connect(
+                self._resize_quick_actions_to_contents,
+                Qt.ConnectionType.QueuedConnection,
             )
 
     def _add_contribution(self, contribution: ModuleDockContribution) -> None:
@@ -865,6 +890,75 @@ class LiveWorkspace(QWidget):
             vertical_docks,
             vertical_sizes,
             Qt.Orientation.Vertical,
+        )
+
+    def _resize_quick_actions_to_contents(self) -> None:
+        """Resize the dock's cross-axis to one tile at the selected preset."""
+        dock = self.docks.get("core.quick-actions")
+        if dock is None or not dock.isVisible() or dock.isFloating():
+            return
+        content = dock.widget()
+        if content is not None and content.layout() is not None:
+            content.layout().activate()
+        dock.updateGeometry()
+        self.host.layout().invalidate()
+        self.host.layout().activate()
+        area = self.host.dockWidgetArea(dock)
+        horizontal_flow = area in {
+            Qt.DockWidgetArea.TopDockWidgetArea,
+            Qt.DockWidgetArea.BottomDockWidgetArea,
+        }
+        orientation = (
+            Qt.Orientation.Vertical
+            if horizontal_flow
+            else Qt.Orientation.Horizontal
+        )
+        extent = (
+            (lambda item: item.height())
+            if horizontal_flow
+            else (lambda item: item.width())
+        )
+        minimum_extent = (
+            lambda item: item.minimumSizeHint().height()
+            if horizontal_flow
+            else item.minimumSizeHint().width()
+        )
+        target = max(1, minimum_extent(dock))
+        peers = [
+            candidate
+            for candidate in self.docks.values()
+            if candidate is not dock
+            and candidate.isVisible()
+            and not candidate.isFloating()
+            and self.host.dockWidgetArea(candidate) == area
+        ]
+        if not peers:
+            if horizontal_flow:
+                dock.setMaximumHeight(target)
+            else:
+                dock.setMaximumWidth(target)
+            self.host.resizeDocks([dock], [target], orientation)
+            QTimer.singleShot(
+                0,
+                self,
+                lambda target_dock=dock, horizontal=horizontal_flow: (
+                    target_dock.setMaximumHeight(16_777_215)
+                    if horizontal
+                    else target_dock.setMaximumWidth(16_777_215)
+                ),
+            )
+            return
+        recipient = max(peers, key=extent)
+        released = extent(dock) - target
+        recipient_target = max(
+            1,
+            minimum_extent(recipient),
+            extent(recipient) + released,
+        )
+        self.host.resizeDocks(
+            [recipient, dock],
+            [recipient_target, target],
+            orientation,
         )
 
     def restore_layout(self) -> bool:

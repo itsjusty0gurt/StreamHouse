@@ -65,6 +65,10 @@ top/left/right/bottom area roots; this preserves the full-width top and bottom
 rows without leaving an empty central drop band when a row is hidden. Hiding
 Quick Actions assigns its released height to the middle row while preserving
 the top row's current user-adjusted height.
+Quick Actions auto-fits only its cross-axis thickness when its tile preset or
+dock orientation changes, when the default layout is restored, or when the dock
+is shown. Normal Qt layout and manual resizing remain authoritative otherwise;
+the long axis remains available for wrapping.
 
 ## Affected components
 

@@ -86,6 +86,8 @@ details remain in Logs and are not appended to Chat.
   wraps without enlarging that minimum, and dock visibility reflows without Qt
   animation stalls or a reserved empty center band. Hiding Quick Actions gives
   its freed height to the middle row without shifting that row downward.
+  Preset and orientation changes auto-fit only the dock's tile-sized thickness;
+  ordinary layout and manual resizing are not continuously overridden.
   Schema-v1 Quick Actions upgrade to schema v2 without changing stable
   action/routine IDs or order. Twitch's live
   widgets are reparented into docks rather than duplicated; its provider tab
