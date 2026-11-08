@@ -945,17 +945,18 @@ class LiveWorkspace(QWidget):
         ]
         if not peers:
             if horizontal_flow:
-                dock.setMaximumHeight(target)
+                dock.setFixedHeight(target)
             else:
-                dock.setMaximumWidth(target)
+                dock.setFixedWidth(target)
             self.host.resizeDocks([dock], [target], orientation)
             QTimer.singleShot(
                 0,
                 self,
                 lambda target_dock=dock, horizontal=horizontal_flow: (
-                    target_dock.setMaximumHeight(16_777_215)
-                    if horizontal
-                    else target_dock.setMaximumWidth(16_777_215)
+                    self._release_quick_actions_cross_constraint(
+                        target_dock,
+                        horizontal,
+                    )
                 ),
             )
             return
@@ -971,6 +972,18 @@ class LiveWorkspace(QWidget):
             [recipient_target, target],
             orientation,
         )
+
+    @staticmethod
+    def _release_quick_actions_cross_constraint(
+        dock: QDockWidget,
+        horizontal_flow: bool,
+    ) -> None:
+        if horizontal_flow:
+            dock.setMinimumHeight(0)
+            dock.setMaximumHeight(16_777_215)
+        else:
+            dock.setMinimumWidth(0)
+            dock.setMaximumWidth(16_777_215)
 
     def restore_layout(self) -> bool:
         state = self.settings.value(self.STATE_KEY)

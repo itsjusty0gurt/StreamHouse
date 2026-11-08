@@ -489,6 +489,8 @@ def test_quick_action_minimum_tracks_tile_size_and_dock_orientation(
             button.width() <= panel.grid.width()
             for button in panel._buttons.values()
         )
+        first_button = next(iter(panel._buttons.values()))
+        assert first_button.geometry().right() < panel.grid.width()
 
     assert vertical_extents == sorted(vertical_extents)
     assert len(set(vertical_extents)) == len(vertical_extents)
