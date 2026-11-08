@@ -656,6 +656,7 @@ class LiveWorkspace(QWidget):
         self._default_layout_pending = False
         self._quick_actions_orientation_sync_pending = False
         self._quick_actions_area_change_pending = False
+        self._quick_actions_last_area = Qt.DockWidgetArea.NoDockWidgetArea
         # QMainWindow defaults to a top-level window type even with a parent.
         # Live embeds it as a page widget so its dock layout participates in
         # the surrounding QStackedWidget geometry instead of becoming a hidden
@@ -729,6 +730,10 @@ class LiveWorkspace(QWidget):
                 self._resize_quick_actions_to_contents,
                 Qt.ConnectionType.QueuedConnection,
             )
+            self._quick_actions_area_change_pending = False
+            self._quick_actions_last_area = self.host.dockWidgetArea(
+                quick_actions_dock
+            )
 
     def _add_contribution(self, contribution: ModuleDockContribution) -> None:
         content = contribution.factory(self.host)
@@ -785,9 +790,12 @@ class LiveWorkspace(QWidget):
 
     def _quick_actions_dock_area_changed(
         self,
-        _area: Qt.DockWidgetArea,
+        area: Qt.DockWidgetArea,
     ) -> None:
-        self._quick_actions_area_change_pending = True
+        self._quick_actions_area_change_pending = (
+            area != self._quick_actions_last_area
+        )
+        self._quick_actions_last_area = area
 
     def _sync_quick_actions_orientation(self) -> None:
         dock = self.docks.get("core.quick-actions")
@@ -974,7 +982,6 @@ class LiveWorkspace(QWidget):
         dock.updateGeometry()
         self.host.layout().invalidate()
         self.host.layout().activate()
-        area = self.host.dockWidgetArea(dock)
         panel = dock.widget()
         horizontal_flow = (
             not isinstance(panel, QuickActionsPanel)
@@ -990,52 +997,29 @@ class LiveWorkspace(QWidget):
             if horizontal_flow
             else (lambda item: item.width())
         )
-        minimum_extent = (
-            lambda item: item.minimumSizeHint().height()
-            if horizontal_flow
-            else item.minimumSizeHint().width()
-        )
         content_widget = dock.widget()
         chrome = 0
         if content_widget is not None:
             chrome = max(0, extent(dock) - extent(content_widget))
         target = max(1, int(content_extent) + chrome)
-        peers = [
-            candidate
-            for candidate in self.docks.values()
-            if candidate is not dock
-            and candidate.isVisible()
-            and not candidate.isFloating()
-            and self.host.dockWidgetArea(candidate) == area
-        ]
-        if not peers:
-            if horizontal_flow:
-                dock.setFixedHeight(target)
-            else:
-                dock.setFixedWidth(target)
-            self.host.resizeDocks([dock], [target], orientation)
-            QTimer.singleShot(
-                0,
-                self,
-                lambda target_dock=dock, horizontal=horizontal_flow: (
-                    self._release_quick_actions_cross_constraint(
-                        target_dock,
-                        horizontal,
-                    )
-                ),
-            )
-            return
-        recipient = max(peers, key=extent)
-        released = extent(dock) - target
-        recipient_target = max(
-            1,
-            minimum_extent(recipient),
-            extent(recipient) + released,
-        )
-        self.host.resizeDocks(
-            [recipient, dock],
-            [recipient_target, target],
-            orientation,
+        if horizontal_flow:
+            dock.setFixedHeight(target)
+        else:
+            dock.setFixedWidth(target)
+        self.host.resizeDocks([dock], [target], orientation)
+        layout = self.host.layout()
+        layout.invalidate()
+        layout.setGeometry(self.host.rect())
+        layout.activate()
+        QTimer.singleShot(
+            0,
+            self,
+            lambda target_dock=dock, horizontal=horizontal_flow: (
+                self._release_quick_actions_cross_constraint(
+                    target_dock,
+                    horizontal,
+                )
+            ),
         )
 
     @staticmethod
