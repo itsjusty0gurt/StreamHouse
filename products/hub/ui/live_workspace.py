@@ -4,6 +4,7 @@ from collections.abc import Callable, Iterable
 
 from PySide6.QtCore import (
     QByteArray,
+    QEvent,
     QMimeData,
     QPoint,
     QSettings,
@@ -481,6 +482,10 @@ class QuickActionsPanel(QWidget):
             }
             else Qt.Orientation.Vertical
         )
+        self.set_flow_orientation(orientation)
+
+    def set_flow_orientation(self, orientation: Qt.Orientation) -> None:
+        changed = orientation != self.grid.orientation
         direction = (
             QBoxLayout.Direction.LeftToRight
             if orientation == Qt.Orientation.Horizontal
@@ -503,7 +508,8 @@ class QuickActionsPanel(QWidget):
         parent = self.parentWidget()
         if parent is not None:
             parent.updateGeometry()
-        self.preferred_extent_changed.emit(self.preferred_cross_extent())
+        if changed:
+            self.preferred_extent_changed.emit(self.preferred_cross_extent())
 
     def _apply_tile_presentation(
         self,
@@ -648,6 +654,8 @@ class LiveWorkspace(QWidget):
         self.setObjectName("liveWorkspace")
         self.settings = settings
         self._default_layout_pending = False
+        self._quick_actions_orientation_sync_pending = False
+        self._quick_actions_area_change_pending = False
         # QMainWindow defaults to a top-level window type even with a parent.
         # Live embeds it as a page widget so its dock layout participates in
         # the surrounding QStackedWidget geometry instead of becoming a hidden
@@ -713,6 +721,7 @@ class LiveWorkspace(QWidget):
         self._apply_default_layout()
         quick_actions_dock = self.docks.get("core.quick-actions")
         if quick_actions_dock is not None:
+            quick_actions_dock.installEventFilter(self)
             quick_actions_dock.visibilityChanged.connect(
                 self._quick_actions_visibility_changed
             )
@@ -742,9 +751,64 @@ class LiveWorkspace(QWidget):
         dock_area_setter = getattr(content, "set_dock_area", None)
         if callable(dock_area_setter):
             dock.dockLocationChanged.connect(dock_area_setter)
+            if contribution.dock_id == "core.quick-actions":
+                dock.dockLocationChanged.connect(
+                    self._quick_actions_dock_area_changed
+                )
             dock_area_setter(_DOCK_AREAS[contribution.default_area])
         self.docks[contribution.dock_id] = dock
         self.panels_menu.addAction(dock.toggleViewAction())
+
+    def eventFilter(self, watched, event) -> bool:  # noqa: N802 - Qt API
+        quick_actions = self.docks.get("core.quick-actions")
+        if (
+            watched is quick_actions
+            and event.type() == QEvent.Type.Resize
+            and quick_actions is not None
+            and not quick_actions.isFloating()
+        ):
+            if not self._quick_actions_orientation_sync_pending:
+                self._quick_actions_orientation_sync_pending = True
+                QTimer.singleShot(
+                    0,
+                    self,
+                    self._run_quick_actions_orientation_sync,
+                )
+        return super().eventFilter(watched, event)
+
+    def _run_quick_actions_orientation_sync(self) -> None:
+        self._quick_actions_orientation_sync_pending = False
+        if self._quick_actions_area_change_pending:
+            self._quick_actions_area_change_pending = False
+            return
+        self._sync_quick_actions_orientation()
+
+    def _quick_actions_dock_area_changed(
+        self,
+        _area: Qt.DockWidgetArea,
+    ) -> None:
+        self._quick_actions_area_change_pending = True
+
+    def _sync_quick_actions_orientation(self) -> None:
+        dock = self.docks.get("core.quick-actions")
+        if dock is None or dock.isFloating():
+            return
+        panel = dock.widget()
+        if not isinstance(panel, QuickActionsPanel):
+            return
+        area = self.host.dockWidgetArea(dock)
+        if area in {
+            Qt.DockWidgetArea.LeftDockWidgetArea,
+            Qt.DockWidgetArea.RightDockWidgetArea,
+        }:
+            panel.set_flow_orientation(Qt.Orientation.Vertical)
+            return
+        width = dock.width()
+        height = dock.height()
+        if width >= round(height * 1.25):
+            panel.set_flow_orientation(Qt.Orientation.Horizontal)
+        elif height >= round(width * 1.25):
+            panel.set_flow_orientation(Qt.Orientation.Vertical)
 
     def _apply_default_layout(self) -> None:
         for dock in self.docks.values():
@@ -911,10 +975,11 @@ class LiveWorkspace(QWidget):
         self.host.layout().invalidate()
         self.host.layout().activate()
         area = self.host.dockWidgetArea(dock)
-        horizontal_flow = area in {
-            Qt.DockWidgetArea.TopDockWidgetArea,
-            Qt.DockWidgetArea.BottomDockWidgetArea,
-        }
+        panel = dock.widget()
+        horizontal_flow = (
+            not isinstance(panel, QuickActionsPanel)
+            or panel.grid.orientation == Qt.Orientation.Horizontal
+        )
         orientation = (
             Qt.Orientation.Vertical
             if horizontal_flow

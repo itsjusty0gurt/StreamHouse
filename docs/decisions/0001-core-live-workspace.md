@@ -68,7 +68,10 @@ the top row's current user-adjusted height.
 Quick Actions auto-fits only its cross-axis thickness when its tile preset or
 dock orientation changes, when the default layout is restored, or when the dock
 is shown. Normal Qt layout and manual resizing remain authoritative otherwise;
-the long axis remains available for wrapping.
+the long axis remains available for wrapping. Nested splits can remain in Qt's
+same logical dock area even when visually moved from a row to a side column, so
+Quick Actions derives flow from settled dock geometry unless an explicit
+top/bottom/left/right area change provides the orientation directly.
 
 ## Affected components
 

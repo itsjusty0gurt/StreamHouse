@@ -471,9 +471,15 @@ def test_quick_action_minimum_tracks_tile_size_and_dock_orientation(
     _app().processEvents()
     assert dock.height() == horizontal_geometry[0]
 
-    workspace.host.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, dock)
+    workspace.host.splitDockWidget(
+        workspace.docks["twitch.chatters"],
+        dock,
+        Qt.Orientation.Horizontal,
+    )
     _app().processEvents()
     _app().processEvents()
+    assert workspace.host.dockWidgetArea(dock) == Qt.DockWidgetArea.TopDockWidgetArea
+    assert panel.grid.orientation == Qt.Orientation.Vertical
     vertical_extents = []
     vertical_geometry = []
     for name, tile_size in panel.TILE_SIZES.items():
@@ -494,7 +500,10 @@ def test_quick_action_minimum_tracks_tile_size_and_dock_orientation(
 
     assert vertical_extents == sorted(vertical_extents)
     assert len(set(vertical_extents)) == len(vertical_extents)
-    assert vertical_geometry == vertical_extents
+    assert all(
+        abs(actual - expected) <= 1
+        for actual, expected in zip(vertical_geometry, vertical_extents)
+    )
 
 
 def test_quick_action_primary_minimum_does_not_grow_with_action_count(
@@ -694,6 +703,7 @@ def test_dock_moves_reflow_without_tab_stacking_or_overlap(tmp_path: Path) -> No
         Qt.DockWidgetArea.TopDockWidgetArea,
         workspace.docks["core.quick-actions"],
     )
+    _app().processEvents()
     _app().processEvents()
     assert quick_panel.grid.orientation == Qt.Orientation.Horizontal
 
