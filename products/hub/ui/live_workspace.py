@@ -13,7 +13,7 @@ from PySide6.QtCore import (
     Qt,
     Signal,
 )
-from PySide6.QtGui import QColor, QDrag, QIcon
+from PySide6.QtGui import QColor, QCursor, QDrag, QIcon
 from PySide6.QtWidgets import (
     QApplication,
     QBoxLayout,
@@ -641,6 +641,7 @@ class LiveWorkspace(QWidget):
     STATE_VERSION = 1
     STATE_KEY = "window/live_workspace_state"
     DOCKS_KEY = "window/live_workspace_docks"
+    OUTER_DROP_EDGE_EXTENT = 96
 
     def __init__(
         self,
@@ -656,7 +657,14 @@ class LiveWorkspace(QWidget):
         self._quick_actions_orientation_sync_pending = False
         self._quick_actions_area_change_pending = False
         self._quick_actions_last_area = Qt.DockWidgetArea.NoDockWidgetArea
-        self._quick_actions_span_sync_pending = False
+        self._quick_actions_outer_drop_active = False
+        self._quick_actions_outer_drop_area = Qt.DockWidgetArea.NoDockWidgetArea
+        self._quick_actions_drag_button_seen = False
+        self._quick_actions_drop_monitor = QTimer(self)
+        self._quick_actions_drop_monitor.setInterval(16)
+        self._quick_actions_drop_monitor.timeout.connect(
+            self._poll_quick_actions_drop_target
+        )
         # QMainWindow defaults to a top-level window type even with a parent.
         # Live embeds it as a page widget so its dock layout participates in
         # the surrounding QStackedWidget geometry instead of becoming a hidden
@@ -670,6 +678,20 @@ class LiveWorkspace(QWidget):
         self._dock_style = _LiveDockStyle()
         self._dock_style.setParent(self.host)
         self.host.setStyle(self._dock_style)
+        self._quick_actions_outer_preview = QFrame(self.host)
+        self._quick_actions_outer_preview.setObjectName(
+            "quickActionsOuterDockPreview"
+        )
+        self._quick_actions_outer_preview.setAttribute(
+            Qt.WidgetAttribute.WA_TransparentForMouseEvents
+        )
+        self._quick_actions_outer_preview.setStyleSheet(
+            "QFrame#quickActionsOuterDockPreview {"
+            "background: rgba(61, 145, 108, 110);"
+            "border: 2px solid rgba(91, 205, 156, 210);"
+            "}"
+        )
+        self._quick_actions_outer_preview.hide()
         # Live is entirely dock-backed. Leaving the host without a central
         # widget lets the primary Chat dock consume the usable middle area
         # instead of reserving an empty center pane.
@@ -737,6 +759,7 @@ class LiveWorkspace(QWidget):
             self._quick_actions_last_area = self.host.dockWidgetArea(
                 quick_actions_dock
             )
+            self._quick_actions_allowed_areas = quick_actions_dock.allowedAreas()
 
     def _add_contribution(self, contribution: ModuleDockContribution) -> None:
         content = contribution.factory(self.host)
@@ -802,12 +825,156 @@ class LiveWorkspace(QWidget):
 
     def _quick_actions_top_level_changed(self, floating: bool) -> None:
         if floating:
+            self._quick_actions_drag_button_seen = False
+            self._quick_actions_drop_monitor.start()
             return
+        self._quick_actions_drop_monitor.stop()
+        if self._quick_actions_outer_drop_active:
+            self._complete_quick_actions_outer_drop()
+            return
+        self._set_quick_actions_outer_drop_mode(
+            False,
+            Qt.DockWidgetArea.NoDockWidgetArea,
+        )
         # Native drag/drop can preserve the dock's size while changing its
         # splitter parent, so no reliable Resize event follows the drop.  Use
         # the definitive floating -> docked transition to schedule the same
         # settled-geometry orientation/span pass.
         QTimer.singleShot(0, self, self._queue_quick_actions_drop_sync)
+
+    def _update_quick_actions_drop_target_mode(
+        self,
+        host_point: QPoint | None = None,
+    ) -> None:
+        """Expose outer top/bottom bands only while the cursor is at an edge."""
+        dock = self.docks.get("core.quick-actions")
+        if dock is None or not dock.isFloating():
+            self._quick_actions_drop_monitor.stop()
+            self._set_quick_actions_outer_drop_mode(
+                False,
+                Qt.DockWidgetArea.NoDockWidgetArea,
+            )
+            return
+        if host_point is None:
+            host_point = self.host.mapFromGlobal(QCursor.pos())
+        rect = self.host.rect()
+        inside_width = rect.left() <= host_point.x() <= rect.right()
+        edge = min(self.OUTER_DROP_EDGE_EXTENT, max(1, rect.height() // 4))
+        desired_area = Qt.DockWidgetArea.NoDockWidgetArea
+        if inside_width and rect.top() <= host_point.y() <= rect.top() + edge:
+            desired_area = Qt.DockWidgetArea.TopDockWidgetArea
+        elif inside_width and rect.bottom() - edge <= host_point.y() <= rect.bottom():
+            desired_area = Qt.DockWidgetArea.BottomDockWidgetArea
+        self._set_quick_actions_outer_drop_mode(
+            desired_area != Qt.DockWidgetArea.NoDockWidgetArea,
+            desired_area,
+        )
+
+    def _set_quick_actions_outer_drop_mode(
+        self,
+        active: bool,
+        area: Qt.DockWidgetArea,
+    ) -> None:
+        active = bool(active)
+        if (
+            active == self._quick_actions_outer_drop_active
+            and area == self._quick_actions_outer_drop_area
+        ):
+            return
+        self._quick_actions_outer_drop_active = active
+        self._quick_actions_outer_drop_area = (
+            area if active else Qt.DockWidgetArea.NoDockWidgetArea
+        )
+        dock = self.docks.get("core.quick-actions")
+        if dock is None:
+            return
+        allowed = getattr(
+            self,
+            "_quick_actions_allowed_areas",
+            Qt.DockWidgetArea.AllDockWidgetAreas,
+        )
+        dock.setAllowedAreas(
+            Qt.DockWidgetArea.NoDockWidgetArea if active else allowed
+        )
+        if not active:
+            self._quick_actions_outer_preview.hide()
+            return
+
+        # Windows caches QMainWindow's native nested preview once a title-bar
+        # move begins.  Suppress that target in the outer edge zone and show a
+        # stable Hub-owned preview matching the band that release will create.
+        height = max(
+            48,
+            min(dock.height(), max(48, self.host.height() // 3)),
+        )
+        y = 0 if area == Qt.DockWidgetArea.TopDockWidgetArea else self.host.height() - height
+        self._quick_actions_outer_preview.setGeometry(
+            0,
+            max(0, y),
+            self.host.width(),
+            height,
+        )
+        self._quick_actions_outer_preview.raise_()
+        self._quick_actions_outer_preview.show()
+
+    @staticmethod
+    def _native_left_mouse_button_down() -> bool:
+        try:
+            import ctypes
+
+            return bool(ctypes.windll.user32.GetAsyncKeyState(0x01) & 0x8000)
+        except (AttributeError, OSError):
+            return bool(QApplication.mouseButtons() & Qt.MouseButton.LeftButton)
+
+    def _poll_quick_actions_drop_target(self) -> None:
+        dock = self.docks.get("core.quick-actions")
+        if dock is None or not dock.isFloating():
+            self._quick_actions_drop_monitor.stop()
+            return
+        button_down = self._native_left_mouse_button_down()
+        if button_down:
+            self._quick_actions_drag_button_seen = True
+            self._update_quick_actions_drop_target_mode()
+            return
+        if not self._quick_actions_drag_button_seen:
+            return
+        self._quick_actions_drag_button_seen = False
+        if self._quick_actions_outer_drop_active:
+            self._complete_quick_actions_outer_drop()
+        else:
+            self._set_quick_actions_outer_drop_mode(
+                False,
+                Qt.DockWidgetArea.NoDockWidgetArea,
+            )
+
+    def _complete_quick_actions_outer_drop(self) -> None:
+        dock = self.docks.get("core.quick-actions")
+        area = self._quick_actions_outer_drop_area
+        if (
+            dock is None
+            or area
+            not in {
+                Qt.DockWidgetArea.TopDockWidgetArea,
+                Qt.DockWidgetArea.BottomDockWidgetArea,
+            }
+        ):
+            return
+        self._quick_actions_drop_monitor.stop()
+        self._set_quick_actions_outer_drop_mode(
+            False,
+            Qt.DockWidgetArea.NoDockWidgetArea,
+        )
+        self.host.removeDockWidget(dock)
+        self.host.addDockWidget(area, dock)
+        self._quick_actions_last_area = area
+        self._quick_actions_area_change_pending = False
+        panel = dock.widget()
+        if isinstance(panel, QuickActionsPanel):
+            panel.set_dock_area(area)
+        dock.setFloating(False)
+        dock.show()
+        if isinstance(panel, QuickActionsPanel):
+            self._resize_quick_actions_to_contents(panel.preferred_cross_extent())
 
     def _queue_quick_actions_drop_sync(self) -> None:
         QTimer.singleShot(0, self, self._sync_quick_actions_orientation)
@@ -830,55 +997,8 @@ class LiveWorkspace(QWidget):
         height = dock.height()
         if width >= round(height * 1.25):
             panel.set_flow_orientation(Qt.Orientation.Horizontal)
-            self._schedule_quick_actions_horizontal_span()
         elif height >= round(width * 1.25):
             panel.set_flow_orientation(Qt.Orientation.Vertical)
-
-    def _schedule_quick_actions_horizontal_span(self) -> None:
-        if self._quick_actions_span_sync_pending:
-            return
-        self._quick_actions_span_sync_pending = True
-        # A side drop can briefly retain the old horizontal geometry while
-        # QMainWindow rebuilds its splitter tree.  Wait through two queued
-        # layout passes before deciding whether this is truly a horizontal
-        # top/bottom strip.
-        QTimer.singleShot(0, self, self._queue_quick_actions_span_check)
-
-    def _queue_quick_actions_span_check(self) -> None:
-        QTimer.singleShot(0, self, self._normalize_quick_actions_horizontal_span)
-
-    def _normalize_quick_actions_horizontal_span(self) -> None:
-        """Move a horizontal Quick Actions split into an outer full-width band."""
-        self._quick_actions_span_sync_pending = False
-        dock = self.docks.get("core.quick-actions")
-        if dock is None or dock.isFloating() or not dock.isVisible():
-            return
-        panel = dock.widget()
-        if (
-            not isinstance(panel, QuickActionsPanel)
-            or self.host.dockWidgetArea(dock)
-            in {
-                Qt.DockWidgetArea.LeftDockWidgetArea,
-                Qt.DockWidgetArea.RightDockWidgetArea,
-            }
-            or dock.width() < round(dock.height() * 1.25)
-            or dock.width() >= self.host.width() - 10
-        ):
-            return
-        panel.set_flow_orientation(Qt.Orientation.Horizontal)
-
-        desired_area = (
-            Qt.DockWidgetArea.TopDockWidgetArea
-            if dock.geometry().center().y() < self.host.rect().center().y()
-            else Qt.DockWidgetArea.BottomDockWidgetArea
-        )
-        self.host.removeDockWidget(dock)
-        self.host.addDockWidget(desired_area, dock)
-        self._quick_actions_last_area = desired_area
-        self._quick_actions_area_change_pending = False
-        panel.set_dock_area(desired_area)
-        dock.show()
-        self._resize_quick_actions_to_contents(panel.preferred_cross_extent())
 
     def _apply_default_layout(self) -> None:
         for dock in self.docks.values():

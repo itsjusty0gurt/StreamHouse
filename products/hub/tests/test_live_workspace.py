@@ -715,7 +715,7 @@ def test_dock_moves_reflow_without_tab_stacking_or_overlap(tmp_path: Path) -> No
     assert quick_panel.grid.orientation == Qt.Orientation.Horizontal
 
 
-def test_horizontal_quick_actions_drop_normalizes_to_full_workspace_width(
+def test_nested_horizontal_quick_actions_drop_matches_middle_column_preview(
     tmp_path: Path,
 ) -> None:
     _app()
@@ -741,15 +741,13 @@ def test_horizontal_quick_actions_drop_normalizes_to_full_workspace_width(
     panel = quick_actions.widget()
     assert isinstance(panel, QuickActionsPanel)
     assert panel.grid.orientation == Qt.Orientation.Horizontal
-    assert (
-        workspace.host.dockWidgetArea(quick_actions)
-        == Qt.DockWidgetArea.BottomDockWidgetArea
-    )
-    assert quick_actions.width() >= workspace.host.width() - 10
+    assert quick_actions.x() == chat.x()
+    assert quick_actions.width() == chat.width()
+    assert quick_actions.width() < workspace.host.width() - 10
     _assert_docked_panels_do_not_overlap(workspace)
 
 
-def test_native_quick_actions_redock_triggers_full_width_normalization(
+def test_outer_bottom_quick_actions_drop_fills_workspace_width(
     tmp_path: Path,
 ) -> None:
     _app()
@@ -759,16 +757,13 @@ def test_native_quick_actions_redock_triggers_full_width_normalization(
         QSettings(str(tmp_path / "window.ini"), QSettings.Format.IniFormat),
     )
     _show_workspace(workspace)
-    chat = workspace.docks["twitch.chat"]
     quick_actions = workspace.docks["core.quick-actions"]
 
     quick_actions.setFloating(True)
     _app().processEvents()
-    workspace.host.addDockWidget(Qt.DockWidgetArea.TopDockWidgetArea, quick_actions)
-    workspace.host.splitDockWidget(
-        chat,
+    workspace.host.addDockWidget(
+        Qt.DockWidgetArea.BottomDockWidgetArea,
         quick_actions,
-        Qt.Orientation.Vertical,
     )
     quick_actions.setFloating(False)
     for _ in range(6):
@@ -781,6 +776,64 @@ def test_native_quick_actions_redock_triggers_full_width_normalization(
     )
     assert quick_actions.width() >= workspace.host.width() - 10
     _assert_docked_panels_do_not_overlap(workspace)
+
+
+def test_quick_actions_drag_switches_between_nested_and_outer_targets(
+    tmp_path: Path,
+) -> None:
+    _app()
+    workspace = LiveWorkspace(
+        _live_contributions(),
+        _populated_quick_panel(tmp_path, 2),
+        QSettings(str(tmp_path / "window.ini"), QSettings.Format.IniFormat),
+    )
+    _show_workspace(workspace)
+    quick_actions = workspace.docks["core.quick-actions"]
+    quick_actions.setFloating(True)
+    _app().processEvents()
+
+    center = workspace.host.rect().center()
+    workspace._update_quick_actions_drop_target_mode(center)
+    assert workspace.host.dockOptions() & QMainWindow.DockOption.AllowNestedDocks
+
+    bottom_edge = QPoint(center.x(), workspace.host.rect().bottom() - 8)
+    workspace._update_quick_actions_drop_target_mode(bottom_edge)
+    assert (
+        quick_actions.allowedAreas()
+        == Qt.DockWidgetArea.NoDockWidgetArea
+    )
+    assert workspace._quick_actions_outer_preview.isVisible()
+    assert workspace._quick_actions_outer_preview.width() == workspace.host.width()
+
+    workspace._update_quick_actions_drop_target_mode(center)
+    assert quick_actions.allowedAreas() != Qt.DockWidgetArea.NoDockWidgetArea
+    assert not workspace._quick_actions_outer_preview.isVisible()
+
+
+def test_quick_actions_drag_end_always_restores_nested_targets(
+    tmp_path: Path,
+) -> None:
+    _app()
+    workspace = LiveWorkspace(
+        _live_contributions(),
+        _quick_panel(tmp_path),
+        QSettings(str(tmp_path / "window.ini"), QSettings.Format.IniFormat),
+    )
+    _show_workspace(workspace)
+    quick_actions = workspace.docks["core.quick-actions"]
+    quick_actions.setFloating(True)
+    workspace._set_quick_actions_outer_drop_mode(
+        True,
+        Qt.DockWidgetArea.BottomDockWidgetArea,
+    )
+
+    workspace._complete_quick_actions_outer_drop()
+    _app().processEvents()
+
+    assert quick_actions.allowedAreas() != Qt.DockWidgetArea.NoDockWidgetArea
+    assert not workspace._quick_actions_drop_monitor.isActive()
+    assert not quick_actions.isFloating()
+    assert quick_actions.width() >= workspace.host.width() - 10
 
 
 def test_hiding_quick_actions_reflows_immediately_without_persistence_loop(
