@@ -246,16 +246,15 @@ class _QuickActionGrid(QWidget):
 
     def minimumSizeHint(self) -> QSize:  # noqa: N802 - Qt API
         extent = self._tile_size + 8
-        if self._orientation == Qt.Orientation.Horizontal:
-            return QSize(0, extent)
-        return QSize(extent, 0)
+        # A fixed-size tile cannot be rendered in less than one tile on either
+        # axis.  Advertising zero on the current flow axis made Qt's native
+        # left/right docking preview narrower than a tile; correcting the dock
+        # after the drop was too late and left the tile visibly clipped.
+        return QSize(extent, extent)
 
     def _update_minimum_constraint(self) -> None:
         extent = self._tile_size + 8
-        if self._orientation == Qt.Orientation.Horizontal:
-            self.setMinimumSize(0, extent)
-        else:
-            self.setMinimumSize(extent, 0)
+        self.setMinimumSize(extent, extent)
 
     def sizeHint(self) -> QSize:  # noqa: N802 - Qt API
         count = max(1, min(4, len(self._tiles)))

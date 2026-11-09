@@ -428,7 +428,7 @@ def test_quick_actions_minimum_size_allows_compact_single_tile_dock(
 
     assert panel.grid.minimumSizeHint().width() <= 80
     assert panel.grid.minimumSizeHint().height() <= 80
-    assert dock.minimumSizeHint().width() <= 110
+    assert dock.minimumSizeHint().width() <= 150
     assert dock.minimumSizeHint().height() < 150
 
 
@@ -452,7 +452,7 @@ def test_quick_action_minimum_tracks_tile_size_and_dock_orientation(
         _app().processEvents()
         _app().processEvents()
         minimum = panel.grid.minimumSizeHint()
-        assert minimum.width() == 0
+        assert minimum.width() == tile_size + 8
         assert minimum.height() == tile_size + 8
         horizontal_extents.append(dock.minimumSizeHint().height())
         horizontal_geometry.append(dock.height())
@@ -491,7 +491,7 @@ def test_quick_action_minimum_tracks_tile_size_and_dock_orientation(
         _app().processEvents()
         minimum = panel.grid.minimumSizeHint()
         assert minimum.width() == tile_size + 8
-        assert minimum.height() == 0
+        assert minimum.height() == tile_size + 8
         vertical_extents.append(dock.minimumSizeHint().width())
         vertical_geometry.append(dock.width())
         assert all(
@@ -535,11 +535,7 @@ def test_quick_action_primary_minimum_does_not_grow_with_action_count(
         one.grid.minimumSizeHint().height()
         == many.grid.minimumSizeHint().height()
     )
-    assert (
-        one.grid.minimumSizeHint().width()
-        == many.grid.minimumSizeHint().width()
-        == 0
-    )
+    assert one.grid.minimumSizeHint().width() == many.grid.minimumSizeHint().width()
 
     for panel in (one, many):
         panel.set_dock_area(Qt.DockWidgetArea.LeftDockWidgetArea)
@@ -547,11 +543,7 @@ def test_quick_action_primary_minimum_does_not_grow_with_action_count(
         one.grid.minimumSizeHint().width()
         == many.grid.minimumSizeHint().width()
     )
-    assert (
-        one.grid.minimumSizeHint().height()
-        == many.grid.minimumSizeHint().height()
-        == 0
-    )
+    assert one.grid.minimumSizeHint().height() == many.grid.minimumSizeHint().height()
 
 
 def test_live_workspace_persists_dock_area_visibility_and_resets(tmp_path: Path) -> None:
