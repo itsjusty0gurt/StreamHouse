@@ -726,6 +726,9 @@ class LiveWorkspace(QWidget):
             quick_actions_dock.visibilityChanged.connect(
                 self._quick_actions_visibility_changed
             )
+            quick_actions_dock.topLevelChanged.connect(
+                self._quick_actions_top_level_changed
+            )
             quick_actions.preferred_extent_changed.connect(
                 self._resize_quick_actions_to_contents,
                 Qt.ConnectionType.QueuedConnection,
@@ -796,6 +799,18 @@ class LiveWorkspace(QWidget):
             area != self._quick_actions_last_area
         )
         self._quick_actions_last_area = area
+
+    def _quick_actions_top_level_changed(self, floating: bool) -> None:
+        if floating:
+            return
+        # Native drag/drop can preserve the dock's size while changing its
+        # splitter parent, so no reliable Resize event follows the drop.  Use
+        # the definitive floating -> docked transition to schedule the same
+        # settled-geometry orientation/span pass.
+        QTimer.singleShot(0, self, self._queue_quick_actions_drop_sync)
+
+    def _queue_quick_actions_drop_sync(self) -> None:
+        QTimer.singleShot(0, self, self._sync_quick_actions_orientation)
 
     def _sync_quick_actions_orientation(self) -> None:
         dock = self.docks.get("core.quick-actions")
