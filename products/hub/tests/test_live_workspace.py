@@ -456,6 +456,9 @@ def test_quick_action_minimum_tracks_tile_size_and_dock_orientation(
         assert minimum.height() == tile_size + 8
         horizontal_extents.append(dock.minimumSizeHint().height())
         horizontal_geometry.append(dock.height())
+        # This is also the constraint Qt uses for a left/right docking preview
+        # before dockLocationChanged switches the panel to vertical flow.
+        assert dock.minimumWidth() >= panel.preferred_cross_extent()
         assert all(
             button.width() == button.height() == tile_size
             for button in panel._buttons.values()
@@ -496,6 +499,18 @@ def test_quick_action_minimum_tracks_tile_size_and_dock_orientation(
             for button in panel._buttons.values()
         )
         first_button = next(iter(panel._buttons.values()))
+        assert first_button.geometry().right() < panel.grid.width()
+        assert dock.minimumWidth() == vertical_geometry[-1]
+
+        # A stale/saved splitter size must not shrink the side dock below one
+        # complete tile after the temporary auto-fit constraint is released.
+        workspace.host.resizeDocks(
+            [dock],
+            [1],
+            Qt.Orientation.Horizontal,
+        )
+        _app().processEvents()
+        assert dock.width() >= dock.minimumWidth()
         assert first_button.geometry().right() < panel.grid.width()
 
     assert vertical_extents == sorted(vertical_extents)

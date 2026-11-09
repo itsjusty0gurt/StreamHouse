@@ -1002,9 +1002,21 @@ class LiveWorkspace(QWidget):
         if content_widget is not None:
             chrome = max(0, extent(dock) - extent(content_widget))
         target = max(1, int(content_extent) + chrome)
+        # Qt builds the left/right drop preview before dockLocationChanged is
+        # emitted, while this panel still has its horizontal flow.  Keep the
+        # one-tile content width as a real minimum in every orientation so the
+        # preview reserves enough room and the eventual side dock cannot clip
+        # a fixed-size tile.
+        dock.setMinimumWidth(max(1, int(content_extent)))
         if horizontal_flow:
+            dock.setMaximumWidth(16_777_215)
             dock.setFixedHeight(target)
         else:
+            # Likewise, a vertical strip must keep enough width for one tile.
+            # Releasing this minimum to zero lets a saved/nested splitter size
+            # clip fixed-size tiles even though the panel's size hint is wider.
+            dock.setMinimumHeight(0)
+            dock.setMaximumHeight(16_777_215)
             dock.setFixedWidth(target)
         self.host.resizeDocks([dock], [target], orientation)
         layout = self.host.layout()
@@ -1014,10 +1026,11 @@ class LiveWorkspace(QWidget):
         QTimer.singleShot(
             0,
             self,
-            lambda target_dock=dock, horizontal=horizontal_flow: (
+            lambda target_dock=dock, horizontal=horizontal_flow, extent=target: (
                 self._release_quick_actions_cross_constraint(
                     target_dock,
                     horizontal,
+                    extent,
                 )
             ),
         )
@@ -1026,12 +1039,13 @@ class LiveWorkspace(QWidget):
     def _release_quick_actions_cross_constraint(
         dock: QDockWidget,
         horizontal_flow: bool,
+        target: int,
     ) -> None:
         if horizontal_flow:
-            dock.setMinimumHeight(0)
+            dock.setMinimumHeight(target)
             dock.setMaximumHeight(16_777_215)
         else:
-            dock.setMinimumWidth(0)
+            dock.setMinimumWidth(target)
             dock.setMaximumWidth(16_777_215)
 
     def restore_layout(self) -> bool:
