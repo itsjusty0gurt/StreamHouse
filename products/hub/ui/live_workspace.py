@@ -656,6 +656,7 @@ class LiveWorkspace(QWidget):
         self._quick_actions_orientation_sync_pending = False
         self._quick_actions_area_change_pending = False
         self._quick_actions_last_area = Qt.DockWidgetArea.NoDockWidgetArea
+        self._quick_actions_span_sync_pending = False
         # QMainWindow defaults to a top-level window type even with a parent.
         # Live embeds it as a page widget so its dock layout participates in
         # the surrounding QStackedWidget geometry instead of becoming a hidden
@@ -814,8 +815,55 @@ class LiveWorkspace(QWidget):
         height = dock.height()
         if width >= round(height * 1.25):
             panel.set_flow_orientation(Qt.Orientation.Horizontal)
+            self._schedule_quick_actions_horizontal_span()
         elif height >= round(width * 1.25):
             panel.set_flow_orientation(Qt.Orientation.Vertical)
+
+    def _schedule_quick_actions_horizontal_span(self) -> None:
+        if self._quick_actions_span_sync_pending:
+            return
+        self._quick_actions_span_sync_pending = True
+        # A side drop can briefly retain the old horizontal geometry while
+        # QMainWindow rebuilds its splitter tree.  Wait through two queued
+        # layout passes before deciding whether this is truly a horizontal
+        # top/bottom strip.
+        QTimer.singleShot(0, self, self._queue_quick_actions_span_check)
+
+    def _queue_quick_actions_span_check(self) -> None:
+        QTimer.singleShot(0, self, self._normalize_quick_actions_horizontal_span)
+
+    def _normalize_quick_actions_horizontal_span(self) -> None:
+        """Move a horizontal Quick Actions split into an outer full-width band."""
+        self._quick_actions_span_sync_pending = False
+        dock = self.docks.get("core.quick-actions")
+        if dock is None or dock.isFloating() or not dock.isVisible():
+            return
+        panel = dock.widget()
+        if (
+            not isinstance(panel, QuickActionsPanel)
+            or self.host.dockWidgetArea(dock)
+            in {
+                Qt.DockWidgetArea.LeftDockWidgetArea,
+                Qt.DockWidgetArea.RightDockWidgetArea,
+            }
+            or dock.width() < round(dock.height() * 1.25)
+            or dock.width() >= self.host.width() - 10
+        ):
+            return
+        panel.set_flow_orientation(Qt.Orientation.Horizontal)
+
+        desired_area = (
+            Qt.DockWidgetArea.TopDockWidgetArea
+            if dock.geometry().center().y() < self.host.rect().center().y()
+            else Qt.DockWidgetArea.BottomDockWidgetArea
+        )
+        self.host.removeDockWidget(dock)
+        self.host.addDockWidget(desired_area, dock)
+        self._quick_actions_last_area = desired_area
+        self._quick_actions_area_change_pending = False
+        panel.set_dock_area(desired_area)
+        dock.show()
+        self._resize_quick_actions_to_contents(panel.preferred_cross_extent())
 
     def _apply_default_layout(self) -> None:
         for dock in self.docks.values():

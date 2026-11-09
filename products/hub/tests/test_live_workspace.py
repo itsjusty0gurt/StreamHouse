@@ -715,6 +715,40 @@ def test_dock_moves_reflow_without_tab_stacking_or_overlap(tmp_path: Path) -> No
     assert quick_panel.grid.orientation == Qt.Orientation.Horizontal
 
 
+def test_horizontal_quick_actions_drop_normalizes_to_full_workspace_width(
+    tmp_path: Path,
+) -> None:
+    _app()
+    workspace = LiveWorkspace(
+        _live_contributions(),
+        _populated_quick_panel(tmp_path, 2),
+        QSettings(str(tmp_path / "window.ini"), QSettings.Format.IniFormat),
+    )
+    _show_workspace(workspace)
+    chat = workspace.docks["twitch.chat"]
+    quick_actions = workspace.docks["core.quick-actions"]
+
+    # Reproduce dropping the horizontal bar beneath Chat after the middle row
+    # has already been split into Chat / Activity / Chatters columns.
+    workspace.host.splitDockWidget(
+        chat,
+        quick_actions,
+        Qt.Orientation.Vertical,
+    )
+    for _ in range(4):
+        _app().processEvents()
+
+    panel = quick_actions.widget()
+    assert isinstance(panel, QuickActionsPanel)
+    assert panel.grid.orientation == Qt.Orientation.Horizontal
+    assert (
+        workspace.host.dockWidgetArea(quick_actions)
+        == Qt.DockWidgetArea.BottomDockWidgetArea
+    )
+    assert quick_actions.width() >= workspace.host.width() - 10
+    _assert_docked_panels_do_not_overlap(workspace)
+
+
 def test_hiding_quick_actions_reflows_immediately_without_persistence_loop(
     tmp_path: Path,
 ) -> None:
