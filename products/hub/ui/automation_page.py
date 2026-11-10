@@ -4066,6 +4066,9 @@ class AutomationPage(QWidget):
         self.trigger_list.itemSelectionChanged.connect(
             self._trigger_selection_changed
         )
+        self.trigger_list.itemDoubleClicked.connect(
+            self._edit_trigger_item
+        )
         self.trigger_list.customContextMenuRequested.connect(
             self._trigger_context_menu
         )
@@ -5645,6 +5648,12 @@ class AutomationPage(QWidget):
                 card.set_selected(item is current)
         self.edit_trigger_button.setEnabled(bool(trigger_id))
         self.remove_trigger_button.setEnabled(bool(trigger_id))
+
+    def _edit_trigger_item(self, item: QListWidgetItem | None) -> None:
+        if item is None:
+            return
+        self.trigger_list.setCurrentItem(item)
+        self._edit_trigger()
 
     def _edit_trigger(self) -> None:
         routine = self.routine_store.get(self._selected_routine_id)
