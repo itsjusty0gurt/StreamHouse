@@ -60,18 +60,20 @@ top/bottom docks require one current-size tile of height, while left/right docks
 require one current-size tile of width. Action count affects wrapping, not the
 dock minimum. Live disables Qt dock animations so visibility and placement
 changes reflow the dock tree immediately, including WebEngine-backed panels.
-The built-in default is one nested Qt dock splitter tree rather than separate
-top/left/right/bottom area roots; this preserves the full-width top and bottom
-rows without leaving an empty central drop band when a row is hidden. Hiding
-Quick Actions assigns its released height to the middle row while preserving
-the top row's current user-adjusted height.
+The built-in default uses Qt's native dock-area roots: the main workspace is in
+the top area and Quick Actions is a real bottom-area strip. A structural
+zero-size central anchor lets Qt keep those roots distinct without reserving a
+visible center band. Matching corner ownership lets true top/bottom strips span the
+workspace width and true left/right strips span its height. Qt remains solely
+responsible for native dragging and nested dock-tree construction.
 Quick Actions auto-fits only its cross-axis thickness when its tile preset or
 dock orientation changes, when the default layout is restored, or when the dock
 is shown. Normal Qt layout and manual resizing remain authoritative otherwise;
 the long axis remains available for wrapping. Nested splits can remain in Qt's
 same logical dock area even when visually moved from a row to a side column, so
 Quick Actions derives flow from settled dock geometry unless an explicit
-top/bottom/left/right area change provides the orientation directly.
+top/bottom/left/right area change provides the orientation directly. The Hub
+does not intercept native drag release or remove/re-add docks during a drag.
 
 ## Affected components
 

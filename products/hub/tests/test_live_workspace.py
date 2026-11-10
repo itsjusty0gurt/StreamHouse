@@ -456,9 +456,7 @@ def test_quick_action_minimum_tracks_tile_size_and_dock_orientation(
         assert minimum.height() == tile_size + 8
         horizontal_extents.append(dock.minimumSizeHint().height())
         horizontal_geometry.append(dock.height())
-        # This is also the constraint Qt uses for a left/right docking preview
-        # before dockLocationChanged switches the panel to vertical flow.
-        assert dock.minimumWidth() >= panel.preferred_cross_extent()
+        assert dock.minimumHeight() >= panel.preferred_cross_extent()
         assert all(
             button.width() == button.height() == tile_size
             for button in panel._buttons.values()
@@ -545,6 +543,23 @@ def test_quick_action_primary_minimum_does_not_grow_with_action_count(
     )
     assert one.grid.minimumSizeHint().height() == many.grid.minimumSizeHint().height()
 
+    one_workspace = LiveWorkspace(
+        [],
+        one,
+        QSettings(str(tmp_path / "one.ini"), QSettings.Format.IniFormat),
+    )
+    many_workspace = LiveWorkspace(
+        [],
+        many,
+        QSettings(str(tmp_path / "many.ini"), QSettings.Format.IniFormat),
+    )
+    _show_workspace(one_workspace)
+    _show_workspace(many_workspace)
+    assert (
+        one_workspace.docks["core.quick-actions"].minimumSizeHint().width()
+        == many_workspace.docks["core.quick-actions"].minimumSizeHint().width()
+    )
+
 
 def test_live_workspace_persists_dock_area_visibility_and_resets(tmp_path: Path) -> None:
     _app()
@@ -582,7 +597,7 @@ def test_live_workspace_persists_dock_area_visibility_and_resets(tmp_path: Path)
     assert not reset_chat.isFloating()
     assert (
         second.host.dockWidgetArea(reset_quick)
-        == Qt.DockWidgetArea.TopDockWidgetArea
+        == Qt.DockWidgetArea.BottomDockWidgetArea
     )
     assert restored_quick_panel.grid.orientation == Qt.Orientation.Horizontal
 
@@ -659,7 +674,7 @@ def test_default_layout_uses_full_width_rows_and_descending_middle_columns(
     )
     assert (
         workspace.host.dockWidgetArea(quick_actions)
-        == Qt.DockWidgetArea.TopDockWidgetArea
+        == Qt.DockWidgetArea.BottomDockWidgetArea
     )
     assert chat.x() < activity.x() < chatters.x()
     assert chat.width() > activity.width() > chatters.width()
@@ -670,6 +685,21 @@ def test_default_layout_uses_full_width_rows_and_descending_middle_columns(
     assert quick_actions.width() >= workspace.host.width() - 10
     assert quick_actions.height() < chat.height()
     assert quick_actions.height() <= quick_actions.minimumSizeHint().height() + 40
+    central = workspace.host.centralWidget()
+    assert central is not None
+    assert not central.isHidden()
+    assert central.minimumWidth() == central.maximumWidth() == 0
+    assert central.minimumHeight() == central.maximumHeight() == 0
+    assert central.width() == 0 and central.height() == 0
+    middle_bottom = max(
+        dock.geometry().bottom() for dock in (chat, activity, chatters)
+    )
+    separator = workspace.host.style().pixelMetric(
+        QStyle.PixelMetric.PM_DockWidgetSeparatorExtent,
+        None,
+        workspace.host,
+    )
+    assert quick_actions.y() - middle_bottom - 1 <= separator * 2
     _assert_docked_panels_do_not_overlap(workspace)
 
 
@@ -747,9 +777,118 @@ def test_nested_horizontal_quick_actions_drop_matches_middle_column_preview(
     _assert_docked_panels_do_not_overlap(workspace)
 
 
-def test_outer_bottom_quick_actions_drop_fills_workspace_width(
+def test_native_bottom_quick_actions_drop_fills_workspace_width(
     tmp_path: Path,
 ) -> None:
+    _app()
+    workspace = LiveWorkspace(
+        _live_contributions(),
+        _populated_quick_panel(tmp_path, 2),
+        QSettings(str(tmp_path / "window.ini"), QSettings.Format.IniFormat),
+    )
+    _show_workspace(workspace)
+    quick_actions = workspace.docks["core.quick-actions"]
+
+    # Programmatic equivalent of the packaged side -> floating -> bottom path.
+    workspace.host.addDockWidget(
+        Qt.DockWidgetArea.LeftDockWidgetArea,
+        quick_actions,
+    )
+    quick_actions.setFloating(False)
+    _app().processEvents()
+    assert (
+        workspace.host.dockWidgetArea(quick_actions)
+        == Qt.DockWidgetArea.LeftDockWidgetArea
+    )
+
+    quick_actions.setFloating(True)
+    _app().processEvents()
+    assert quick_actions.isFloating()
+    workspace.host.addDockWidget(
+        Qt.DockWidgetArea.BottomDockWidgetArea,
+        quick_actions,
+    )
+    quick_actions.setFloating(False)
+    for _ in range(6):
+        _app().processEvents()
+
+    assert not quick_actions.isFloating()
+    assert quick_actions.isVisible()
+    assert (
+        workspace.host.dockWidgetArea(quick_actions)
+        == Qt.DockWidgetArea.BottomDockWidgetArea
+    )
+    assert quick_actions.width() >= workspace.host.width() - 10
+    assert quick_actions.height() >= quick_actions.minimumHeight()
+    assert quick_actions.height() > 0
+    assert quick_actions.geometry().bottom() <= workspace.host.rect().bottom()
+    _assert_docked_panels_do_not_overlap(workspace)
+
+
+def test_quick_actions_native_redocking_keeps_valid_geometry(
+    tmp_path: Path,
+) -> None:
+    _app()
+    workspace = LiveWorkspace(
+        _live_contributions(),
+        _populated_quick_panel(tmp_path, 2),
+        QSettings(str(tmp_path / "window.ini"), QSettings.Format.IniFormat),
+    )
+    _show_workspace(workspace)
+    quick_actions = workspace.docks["core.quick-actions"]
+    assert workspace.host.dockOptions() & QMainWindow.DockOption.AllowNestedDocks
+    assert quick_actions.allowedAreas() == Qt.DockWidgetArea.AllDockWidgetAreas
+
+    transitions = (
+        Qt.DockWidgetArea.BottomDockWidgetArea,
+        Qt.DockWidgetArea.LeftDockWidgetArea,
+        Qt.DockWidgetArea.BottomDockWidgetArea,
+        Qt.DockWidgetArea.RightDockWidgetArea,
+        Qt.DockWidgetArea.BottomDockWidgetArea,
+        Qt.DockWidgetArea.LeftDockWidgetArea,
+        Qt.DockWidgetArea.RightDockWidgetArea,
+    )
+    panel = quick_actions.widget()
+    assert isinstance(panel, QuickActionsPanel)
+    for area in transitions:
+        quick_actions.setFloating(True)
+        _app().processEvents()
+        assert quick_actions.isFloating()
+        workspace.host.addDockWidget(area, quick_actions)
+        quick_actions.setFloating(False)
+        for _ in range(4):
+            _app().processEvents()
+
+        assert not quick_actions.isFloating()
+        assert quick_actions.isVisible()
+        assert workspace.host.dockWidgetArea(quick_actions) == area
+        assert quick_actions.width() > 0 and quick_actions.height() > 0
+        assert workspace.host.rect().contains(quick_actions.geometry())
+        if area in {
+            Qt.DockWidgetArea.TopDockWidgetArea,
+            Qt.DockWidgetArea.BottomDockWidgetArea,
+        }:
+            assert panel.grid.orientation == Qt.Orientation.Horizontal
+            assert quick_actions.width() >= workspace.host.width() - 10
+            corner = (
+                Qt.Corner.TopLeftCorner
+                if area == Qt.DockWidgetArea.TopDockWidgetArea
+                else Qt.Corner.BottomLeftCorner
+            )
+            assert workspace.host.corner(corner) == area
+        else:
+            assert panel.grid.orientation == Qt.Orientation.Vertical
+            assert quick_actions.height() >= workspace.host.height() - 10
+            corner = (
+                Qt.Corner.TopLeftCorner
+                if area == Qt.DockWidgetArea.LeftDockWidgetArea
+                else Qt.Corner.TopRightCorner
+            )
+            assert workspace.host.corner(corner) == area
+        _assert_docked_panels_do_not_overlap(workspace)
+
+
+def test_native_top_outer_row_is_horizontal_and_full_width(tmp_path: Path) -> None:
     _app()
     workspace = LiveWorkspace(
         _live_contributions(),
@@ -762,78 +901,28 @@ def test_outer_bottom_quick_actions_drop_fills_workspace_width(
     quick_actions.setFloating(True)
     _app().processEvents()
     workspace.host.addDockWidget(
-        Qt.DockWidgetArea.BottomDockWidgetArea,
+        Qt.DockWidgetArea.TopDockWidgetArea,
         quick_actions,
+        Qt.Orientation.Vertical,
     )
     quick_actions.setFloating(False)
-    for _ in range(6):
+    for _ in range(4):
         _app().processEvents()
 
-    assert not quick_actions.isFloating()
+    panel = quick_actions.widget()
+    assert isinstance(panel, QuickActionsPanel)
     assert (
         workspace.host.dockWidgetArea(quick_actions)
-        == Qt.DockWidgetArea.BottomDockWidgetArea
+        == Qt.DockWidgetArea.TopDockWidgetArea
     )
-    assert quick_actions.width() >= workspace.host.width() - 10
-    _assert_docked_panels_do_not_overlap(workspace)
-
-
-def test_quick_actions_drag_switches_between_nested_and_outer_targets(
-    tmp_path: Path,
-) -> None:
-    _app()
-    workspace = LiveWorkspace(
-        _live_contributions(),
-        _populated_quick_panel(tmp_path, 2),
-        QSettings(str(tmp_path / "window.ini"), QSettings.Format.IniFormat),
-    )
-    _show_workspace(workspace)
-    quick_actions = workspace.docks["core.quick-actions"]
-    quick_actions.setFloating(True)
-    _app().processEvents()
-
-    center = workspace.host.rect().center()
-    workspace._update_quick_actions_drop_target_mode(center)
-    assert workspace.host.dockOptions() & QMainWindow.DockOption.AllowNestedDocks
-
-    bottom_edge = QPoint(center.x(), workspace.host.rect().bottom() - 8)
-    workspace._update_quick_actions_drop_target_mode(bottom_edge)
     assert (
-        quick_actions.allowedAreas()
-        == Qt.DockWidgetArea.NoDockWidgetArea
+        workspace.host.corner(Qt.Corner.TopLeftCorner)
+        == Qt.DockWidgetArea.TopDockWidgetArea
     )
-    assert workspace._quick_actions_outer_preview.isVisible()
-    assert workspace._quick_actions_outer_preview.width() == workspace.host.width()
-
-    workspace._update_quick_actions_drop_target_mode(center)
-    assert quick_actions.allowedAreas() != Qt.DockWidgetArea.NoDockWidgetArea
-    assert not workspace._quick_actions_outer_preview.isVisible()
-
-
-def test_quick_actions_drag_end_always_restores_nested_targets(
-    tmp_path: Path,
-) -> None:
-    _app()
-    workspace = LiveWorkspace(
-        _live_contributions(),
-        _quick_panel(tmp_path),
-        QSettings(str(tmp_path / "window.ini"), QSettings.Format.IniFormat),
-    )
-    _show_workspace(workspace)
-    quick_actions = workspace.docks["core.quick-actions"]
-    quick_actions.setFloating(True)
-    workspace._set_quick_actions_outer_drop_mode(
-        True,
-        Qt.DockWidgetArea.BottomDockWidgetArea,
-    )
-
-    workspace._complete_quick_actions_outer_drop()
-    _app().processEvents()
-
-    assert quick_actions.allowedAreas() != Qt.DockWidgetArea.NoDockWidgetArea
-    assert not workspace._quick_actions_drop_monitor.isActive()
-    assert not quick_actions.isFloating()
+    assert panel.grid.orientation == Qt.Orientation.Horizontal
     assert quick_actions.width() >= workspace.host.width() - 10
+    assert workspace.host.rect().contains(quick_actions.geometry())
+    _assert_docked_panels_do_not_overlap(workspace)
 
 
 def test_hiding_quick_actions_reflows_immediately_without_persistence_loop(
@@ -850,7 +939,6 @@ def test_hiding_quick_actions_reflows_immediately_without_persistence_loop(
     quick_actions = workspace.docks["core.quick-actions"]
     chat = workspace.docks["twitch.chat"]
     stream_tools = workspace.docks["twitch.stream-tools"]
-    initial_chat_y = chat.y()
     initial_chat_height = chat.height()
 
     assert not (
@@ -861,10 +949,17 @@ def test_hiding_quick_actions_reflows_immediately_without_persistence_loop(
     _app().processEvents()
 
     assert quick_actions.isHidden()
-    assert abs(chat.y() - initial_chat_y) <= 1
     assert chat.height() > initial_chat_height
     assert chat.y() - stream_tools.geometry().bottom() - 1 <= 4
-    assert chat.geometry().bottom() >= workspace.host.height() - 1
+    separator = workspace.host.style().pixelMetric(
+        QStyle.PixelMetric.PM_DockWidgetSeparatorExtent,
+        None,
+        workspace.host,
+    )
+    assert chat.geometry().bottom() >= workspace.host.height() - separator - 1
+    central = workspace.host.centralWidget()
+    assert central is not None
+    assert central.width() == 0 and central.height() == 0
     assert not settings.contains(LiveWorkspace.STATE_KEY)
     _assert_docked_panels_do_not_overlap(workspace)
 
@@ -874,7 +969,7 @@ def test_hiding_quick_actions_reflows_immediately_without_persistence_loop(
         quick_actions.hide()
         _app().processEvents()
         assert chat.y() - stream_tools.geometry().bottom() - 1 <= 4
-        assert chat.geometry().bottom() >= workspace.host.height() - 1
+        assert chat.geometry().bottom() >= workspace.host.height() - separator - 1
         _assert_docked_panels_do_not_overlap(workspace)
 
     quick_actions.show()

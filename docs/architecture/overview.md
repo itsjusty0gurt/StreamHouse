@@ -1452,9 +1452,11 @@ per-action color and built-in icon metadata, and upgrades schema-v1 actions in
 place without changing their IDs, labels, routine references, or order. The
 square-tile grid projects that logical order horizontally in top/bottom docks
 and vertically in left/right docks; dock movement and resizing never rewrite
-the saved order. A disabled or missing module omits its docks without preventing
-the remaining layout from opening; Core preserves a saved layout that references
-absent docks rather than overwriting it.
+the saved order. Quick Actions uses Qt's native outer dock areas and matching
+corner ownership; Core does not intercept native dock dragging or rebuild the
+dock tree during a drop. A disabled or missing module omits its docks without
+preventing the remaining layout from opening; Core preserves a saved layout
+that references absent docks rather than overwriting it.
 
 Twitch top tabs:
 

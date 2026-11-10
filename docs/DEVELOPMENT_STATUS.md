@@ -88,6 +88,9 @@ details remain in Logs and are not appended to Chat.
   its freed height to the middle row without shifting that row downward.
   Preset and orientation changes auto-fit only the dock's tile-sized thickness;
   ordinary layout and manual resizing are not continuously overridden.
+  Quick Actions uses native Qt dock roots: the default is a real full-width
+  bottom strip, left/right placements own their corresponding corners, and Qt
+  alone owns drag/drop and nested split construction.
   Schema-v1 Quick Actions upgrade to schema v2 without changing stable
   action/routine IDs or order. Twitch's live
   widgets are reparented into docks rather than duplicated; its provider tab
