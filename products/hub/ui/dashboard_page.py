@@ -351,16 +351,15 @@ class DashboardPage(QWidget):
         layout.setContentsMargins(12, 10, 12, 10)
         layout.setSpacing(6)
 
-        title = QLabel("Alpha 0.2 Notes", panel)
+        title = QLabel("Alpha 0.3 Notes", panel)
         title.setObjectName("dashboardAlphaNotesTitle")
         title.setStyleSheet("font-weight:700; color:#d8d8df;")
         self.alpha_notes_label = QLabel(
-            "• Touch Portal integration is local-only and currently supports "
-            "Run Routine.\n"
-            "• Twitch raids start after Twitch's countdown; Hub supports "
-            "Cancel Raid, but Twitch does not provide a public Raid Now API.\n"
-            "• Some advanced features are intentionally planned for later "
-            "Alpha versions.",
+            "• Live provides a dockable streaming workspace with Quick Actions.\n"
+            "• Twitch and OBS are first-party modules; saved Automation stays "
+            "visible when a provider is disabled.\n"
+            "• Twitch Account manages broadcaster and optional bot setup "
+            "independently.",
             panel,
         )
         self.alpha_notes_label.setObjectName("dashboardAlphaNotesText")

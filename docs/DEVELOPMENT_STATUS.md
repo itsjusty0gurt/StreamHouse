@@ -15,20 +15,22 @@
 3. **Current architecture milestone:** OBS and Twitch are accepted bundled Hub
    modules. Twitch owns its catalogs, auth/transport lifecycle, UI, Commands,
    Variables, triggers, Backup contributions, reconnect, and shutdown.
-4. **Live workspace milestone:** Core now hosts a dockable Live workspace.
-   Twitch contributes its existing Chat, Activity, Chatters, and Stream Status
-   widgets; Core contributes persisted routine-backed Quick Actions. Final
-   feature source acceptance passed at `c2e4f2ae212c0b6633374fbacb265764ea032762`.
-5. **Accepted Twitch code:** feature commit
-   `dba19eb5e6a8da2160664440dff9917e37bd2965`, integrated into `develop` by
-   merge commit `a018ae414beced099066c22bf10ca7d7b93d5511`.
-6. **Most important unresolved issue:** one Windows forced-termination test
-   currently retains a crash-log handle.
-7. **Latest OBS acceptance:** 372 unique relevant tests and 70 subtests passed;
-   packaged Hub/AI smoke passed; packaged startup exited 0 with OBS disabled and
-   again after re-enabling; compilation and `git diff --check` passed.
-8. **Immediate next steps:** investigate the independent Windows
-   forced-termination and Counter test cleanup issues as separate tasks.
+4. **0.3 release state:** feature scope is frozen for `0.3.0-alpha`. The
+   module-owned Twitch and OBS integrations, Core Live workspace, native
+   dockable layout, Quick Actions, Twitch Account/onboarding, and the accepted
+   Automation and stability fixes are integrated on `develop`.
+5. **Live workspace milestone:** Core hosts the dockable Live workspace;
+   Twitch contributes Chat, Activity, Chatters, Stream Overview, and Ad Manager,
+   while Core owns persisted routine-backed Quick Actions. Native docking,
+   reset/persistence, and Quick Actions strip behavior are accepted.
+6. **Twitch milestone:** Twitch owns its complete module lifecycle and now
+   exposes a dedicated Account tab for broadcaster and optional bot setup,
+   authorization, recovery, and independent disconnect controls.
+7. **Release blockers:** the accepted 0.3 blockers are cleared. Current release
+   preparation is limited to metadata, notes, focused validation, and packaging.
+8. **Immediate next steps:** tag and publish `v0.3.0-alpha` only after the
+   documented release and upgrade checklist is completed against the exact
+   release commit.
 9. **Read next:** [master reference](STREAMHOUSE_MASTER_REFERENCE.md),
    [architecture](ARCHITECTURE.md), [0.3 foundation](architecture/hub-0.3-foundation.md),
    [implementation map](architecture/overview.md), and
@@ -38,13 +40,12 @@
 
 | Item | Verified value |
 | --- | --- |
-| Date | 2026-11-04 |
-| Live acceptance source | `feature/live-workspace` at `c2e4f2ae212c0b6633374fbacb265764ea032762`, based on `develop` at `38b46f9f8d3f1be50b44df5c93e5770b1e25d764` |
-| Twitch Phase 3 starting HEAD | `c5319fceb3b1251d29ee0aa36f7066cf7a4ea3f9` |
-| Feature upstream | `origin/feature/live-workspace` |
+| Date | 2026-11-10 |
+| 0.3 release-prep baseline | `develop` at `eb1bc1740a4c8352cd2226681f324e411e832565` |
+| Release scope | Frozen; accepted 0.3 feature and blocker work is integrated |
+| Upstream | `origin/develop` |
 | Working tree at task start | clean |
 | Hub development version | `0.3.0-alpha` / Windows `0.3.0.0` |
-| Pre-merge integration baseline | `develop` at `38b46f9f8d3f1be50b44df5c93e5770b1e25d764` |
 | Latest published Hub tag | `v0.2.1-alpha` at `b1c25a21ef34de8029d6216eb96c47274c2a4c58` |
 
 ## Active development focus
@@ -302,17 +303,19 @@ Reproduction/validation requirements:
 | Final Live focused acceptance | 46 passed, 2 subtests passed |
 | Final Live MainWindow acceptance | 238 passed, 7 subtests passed |
 | Final Live package | Normal build passed; isolated offscreen startup/shutdown exited 0 with no fatal log, dump, Hub, or QtWebEngine remainder |
+| 0.3 release-prep gate | 43 passed, 2 subtests passed across release/package-boundary and Dashboard coverage |
+| 0.3 release-prep package | Normal Hub build produced `0.3.0-alpha`; packaged offscreen startup/shutdown smoke passed with no Hub or QtWebEngine remainder |
 | Python compilation | Passed for `products/hub` and `shared` |
 | `git diff --check` | Passed |
 
 ## Next recommended steps
 
-1. Diagnose the independent Windows forced-termination and logger-isolation
-   tests.
-2. Make static OBS presentation adapters provider-neutral only where another
-   module or a concrete maintenance benefit justifies the abstraction.
-3. Treat the Modules page, user-controlled navigation ordering, and additional
-   provider Live panels as separate scoped changes.
+1. Complete the public-Alpha release checklist against the exact release
+   commit, including previous-version upgrade and installer verification.
+2. Tag and publish `v0.3.0-alpha` as a GitHub pre-release only after those
+   checks pass.
+3. Keep Modules-page work, user-controlled navigation ordering, and additional
+   provider Live panels outside the frozen 0.3 scope.
 
 ## Maintenance rules
 

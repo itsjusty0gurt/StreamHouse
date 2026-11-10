@@ -68,6 +68,28 @@
 - Twitch EventSub diagnostics moved into Logs > Twitch Events, separate from
   the developer event simulator
 
+## 0.3.0-alpha - 2026-11-10
+
+- Added a dockable Live workspace with Twitch Chat, Activity, Chatters, Stream
+  Overview, Ad Manager, and customizable routine-backed Quick Actions.
+- Converted Twitch and OBS into first-party bundled modules while keeping
+  saved Automation definitions and Variables interpretable when a provider is
+  disabled.
+- Added a dedicated Twitch Account experience for broadcaster and optional bot
+  setup, with independent identity, authorization, recovery, and disconnect
+  controls.
+- Improved Twitch authentication, reconnect, EventSub, chat recovery, outgoing
+  raids, and the user-facing Raid Out Started Automation event.
+- Improved OBS Automation event delivery so event-triggered routines can make
+  follow-up OBS requests without artificial Wait tasks or request timeouts.
+- Added per-trigger bot-message handling for Keyword / Phrase triggers while
+  keeping bot commands and protected trigger families blocked.
+- Streamlined routine creation and trigger editing, including double-click
+  editing and fixed event identity for existing Twitch and OBS triggers.
+- Improved Backup resilience, table and Variable Picker sizing, routine-list
+  stability, Counter Variables, packaged startup/shutdown, and Windows build
+  reliability.
+
 ## 0.2.1-alpha - 2026-10-22
 
 - Added Twitch Automation triggers for bans, timeouts, unbans, moderator
