@@ -739,6 +739,13 @@ class TwitchService:
             else self.helix.get_user(clean, token)
         )
 
+    def get_account_profile(self, token: TwitchToken) -> dict:
+        """Load the Twitch identity represented by an existing account token."""
+
+        if not token.user_id:
+            raise ValueError("The Twitch account identity is unavailable.")
+        return self.helix.get_user_by_id(token.user_id, token)
+
     def get_user_clips(
         self,
         target_reference: str,

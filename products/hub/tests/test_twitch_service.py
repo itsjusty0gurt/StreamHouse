@@ -125,6 +125,28 @@ class TwitchServiceTests(unittest.TestCase):
             ],
         )
 
+    def test_account_profile_uses_the_supplied_account_identity(self) -> None:
+        broadcaster = TwitchToken(
+            "main-access", "main-refresh", 999, [], user_id="main-1"
+        )
+        bot = TwitchToken("bot-access", "bot-refresh", 999, [], user_id="bot-1")
+        helix = Mock()
+        helix.get_user_by_id.side_effect = lambda user_id, _token: {
+            "id": user_id,
+            "login": "streamer" if user_id == "main-1" else "helperbot",
+        }
+        service = TwitchService(helix=helix)
+
+        self.assertEqual(service.get_account_profile(broadcaster)["id"], "main-1")
+        self.assertEqual(service.get_account_profile(bot)["id"], "bot-1")
+        self.assertEqual(
+            helix.get_user_by_id.call_args_list,
+            [
+                unittest.mock.call("main-1", broadcaster),
+                unittest.mock.call("bot-1", bot),
+            ],
+        )
+
     def test_get_user_information_requires_valid_user_and_channel_metadata(self) -> None:
         token = TwitchToken("access", "refresh", 999, [], user_id="broadcaster-1")
         helix = Mock()

@@ -28,6 +28,10 @@ dependencies are defined in the
   `user:read:chat`, `user:write:chat`, and `user:bot`.
 - Existing tokens survive application and EventSub disconnects. Only explicit
   sign-out deletes credentials.
+- Broadcaster and optional bot setup is presented under **Twitch > Account**.
+  The page uses these module-owned auth services, shows each identity and
+  connection state independently, and loads profile images through the existing
+  Helix client without exposing tokens or diagnostic transport details.
 - When Hub adds scopes, it starts an upgrade flow once and Twitch asks the
   user to approve the additional access.
 - After broadcaster reauthorization, Hub reopens the broadcaster EventSub
@@ -218,9 +222,11 @@ thread.
 
 ## UI responsibilities
 
-- **Twitch** is the module-contributed channel workspace. Its current tabs are
-  Chat, Analytics, Raid, Channel Information, Channel Points, and Users. Session data is
-  currently presented within Analytics. Chat includes the overview, grouped
+- **Twitch** is the module-contributed channel workspace. Its management tabs
+  are Account, Raid, Channel Points, Channel Information, Users, and Analytics,
+  in that order. Account is the default onboarding surface for the broadcaster
+  and optional bot identities. Session data is currently presented within
+  Analytics. Live Chat includes the overview, grouped
   chatters, Activity Feed, and eligible ad controls. In narrow and portrait
   layouts, Chat remains the primary pane while Chatters and Activity stay
   stacked in a resizable side column; they do not move below Chat. The broadcaster
@@ -245,8 +251,9 @@ thread.
 - **Automation > Counters** hosts the Core-owned Counter management page. Its
   store, service, Variables, and task providers remain under
   `products/hub/counters/`.
-- **Connections** contains independent broadcaster and optional bot OAuth
-  controls plus transport details.
+- Twitch authentication is not duplicated on the hidden Core Connections
+  shell; users connect, reauthorize, inspect, or disconnect Twitch identities
+  through **Twitch > Account**.
 - **Logs > Twitch Events** contains an in-memory, restart-cleared view of
   searchable raw EventSub diagnostics and sanitized payload details. Raw
   payloads are not written to application logs or a durable EventSub store.

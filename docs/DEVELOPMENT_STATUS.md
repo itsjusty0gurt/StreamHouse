@@ -74,6 +74,13 @@ EventSub session transfers remain globally connected; unexpected interruptions
 enter a concise Reconnecting state and use one owned retry timer. Raw transport
 details remain in Logs and are not appended to Chat.
 
+The Twitch workspace now opens with a module-owned **Account** tab. It provides
+the primary broadcaster and optional bot connect, reauthorize, identity/avatar,
+status, and independent disconnect controls over the existing auth services.
+The management tab order is Account, Raid, Channel Points, Channel Information,
+Users, and Analytics; Twitch authentication is no longer presented on the
+hidden Core Connections shell.
+
 ## Completed milestones
 
 - Core Live workspace docking is implemented with module-contributed panels,

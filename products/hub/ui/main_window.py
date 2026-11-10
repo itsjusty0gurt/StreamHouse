@@ -1642,7 +1642,11 @@ class MainWindow(QMainWindow):
         health_layout.addRow("", self.health_retry_button)
         twitch_connections_layout.addWidget(health_group)
         twitch_connections_layout.addWidget(self.ui.twitchErrorLabel)
-        self.connections_content_layout.addWidget(self.twitch_connections_group)
+        # Twitch account setup is module-owned and presented in Twitch > Account.
+        # Keep these diagnostic widgets alive for the existing internal health
+        # projection, but do not duplicate Twitch authentication on Connections.
+        self.twitch_connections_group.setParent(self.connections_content)
+        self.twitch_connections_group.hide()
         self.connections_content_layout.addWidget(music_group)
         self.connections_content_layout.addStretch()
         self.ui.mainStack.addWidget(self.connections_page)
@@ -1853,6 +1857,11 @@ class MainWindow(QMainWindow):
             self.channel_tabs,
         )
         self.channel_tabs.addTab(self.twitch_channel_splitter, "Chat")
+        self.twitch_account_page = self.twitch_module.create_account_page(
+            self.channel_tabs
+        )
+        self.channel_tabs.insertTab(0, self.twitch_account_page, "Account")
+        self.channel_tabs.setCurrentWidget(self.twitch_account_page)
         self.ui.twitchPageLayout.setStretchFactor(self.channel_tabs, 1)
         self.chatter_list.setContextMenuPolicy(
             Qt.ContextMenuPolicy.CustomContextMenu
@@ -2167,6 +2176,7 @@ class MainWindow(QMainWindow):
         retention_layout.addWidget(self.analytics_cleanup_button)
         retention_layout.addStretch()
         analytics_layout.addLayout(retention_layout)
+        self.analytics_page = analytics_page
         self.channel_tabs.addTab(analytics_page, "Analytics")
         self._build_raid_tab()
         self._build_channel_information_tab()
@@ -2570,6 +2580,7 @@ class MainWindow(QMainWindow):
     @Slot(int)
     def _channel_workspace_tab_changed(self, index: int) -> None:
         page = self.channel_tabs.widget(index)
+        self.twitch_account_page.set_active(page is self.twitch_account_page)
         if page is self.channel_points_page:
             self.channel_points_page.activate()
         elif page is self.raid_page:
@@ -3179,6 +3190,29 @@ class MainWindow(QMainWindow):
             self.channel_tabs,
         )
         self.channel_tabs.addTab(self.chat_user_page, "Users")
+        self._order_twitch_tabs()
+
+    def _order_twitch_tabs(self) -> None:
+        tabs = (
+            (self.twitch_account_page, "Account"),
+            (self.raid_page, "Raid"),
+            (self.channel_points_page, "Channel Points"),
+            (self.channel_information_page, "Channel Information"),
+            (self.chat_user_page, "Users"),
+            (self.analytics_page, "Analytics"),
+        )
+        current = self.channel_tabs.currentWidget()
+        for page, _label in tabs:
+            index = self.channel_tabs.indexOf(page)
+            if index >= 0:
+                self.channel_tabs.removeTab(index)
+        for page, label in tabs:
+            self.channel_tabs.addTab(page, label)
+        self.channel_tabs.setCurrentWidget(
+            current
+            if current in {page for page, _label in tabs}
+            else self.twitch_account_page
+        )
 
     @Slot(object)
     def _handle_music_automation_event(self, music_event: MusicPlayerEvent) -> None:
@@ -3966,6 +4000,12 @@ class MainWindow(QMainWindow):
             self.permission_upgrade_started = True
             QTimer.singleShot(100, self, self.twitch_auth.sign_in)
         self.ui.twitchSignOutButton.setEnabled(signed_in or waiting)
+        self.twitch_account_page.set_main_auth_state(
+            state,
+            detail,
+            missing_scopes,
+            self.twitch_auth.token,
+        )
         runtime_connected = self.twitch_module.reconcile_broadcaster_auth(
             state,
             previous_auth_state,
@@ -4038,6 +4078,12 @@ class MainWindow(QMainWindow):
             else "Sign in with a Bot Account"
         )
         self.twitch_bot_sign_out_button.setEnabled(signed_in or waiting)
+        self.twitch_account_page.set_bot_auth_state(
+            state,
+            detail,
+            missing,
+            self.twitch_bot_auth.token,
+        )
         if state is TwitchAuthState.ERROR:
             self.handle_twitch_error(f"Bot sign-in failed: {detail}")
         self._refresh_twitch_health()
@@ -4238,6 +4284,7 @@ class MainWindow(QMainWindow):
             else "Stopped"
         )
         self._refresh_twitch_health(connection_state=state)
+        self.twitch_account_page.set_connection_state(state)
         self._refresh_twitch_chat_empty_state(connection_state=state)
 
     @Slot(object)
@@ -6473,6 +6520,9 @@ class MainWindow(QMainWindow):
             return
         self.ui.mainStack.setCurrentWidget(page)
         button.setChecked(True)
+        self.twitch_account_page.set_active(
+            self.channel_tabs.currentWidget() is self.twitch_account_page
+        )
 
     @Slot()
     def show_automation(self) -> None:

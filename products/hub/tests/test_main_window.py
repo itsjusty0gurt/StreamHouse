@@ -3101,11 +3101,12 @@ class MainWindowTests(unittest.TestCase):
         self.assertEqual(
             channel_tab_names,
             [
-                "Analytics",
+                "Account",
                 "Raid",
-                "Channel Information",
                 "Channel Points",
+                "Channel Information",
                 "Users",
+                "Analytics",
             ],
         )
         self.assertEqual(
@@ -3188,7 +3189,7 @@ class MainWindowTests(unittest.TestCase):
                 "Settings",
             ],
         )
-        self.assertEqual(self.window.channel_tabs.count(), 5)
+        self.assertEqual(self.window.channel_tabs.count(), 6)
         self.assertNotIn(
             "Soundboard",
             [
@@ -4742,11 +4743,19 @@ class MainWindowTests(unittest.TestCase):
         )
 
         self.assertEqual(
-            self.window.twitch_bot_account_status_label.text(),
-            "@testbot — Connected",
+            self.window.twitch_account_page.bot_card.status_label.text(),
+            "Connected",
         )
-        self.assertFalse(self.window.twitch_bot_sign_in_button.isEnabled())
-        self.assertTrue(self.window.twitch_bot_sign_out_button.isEnabled())
+        self.assertEqual(
+            self.window.twitch_account_page.bot_card.login_label.text(),
+            "@testbot",
+        )
+        self.assertFalse(
+            self.window.twitch_account_page.bot_card.connect_button.isEnabled()
+        )
+        self.assertTrue(
+            self.window.twitch_account_page.bot_card.disconnect_button.isEnabled()
+        )
 
         self.window.response_decision_thread_pool.start = Mock()
         self.window.handle_twitch_message(
@@ -4935,28 +4944,25 @@ class MainWindowTests(unittest.TestCase):
             "Twitch: Connected to #mychannel",
         )
 
-    def test_connections_are_on_separate_page_from_channel_workspace(self) -> None:
+    def test_twitch_account_setup_is_module_owned_not_on_connections(self) -> None:
         self.window.show_connections()
 
         self.assertIs(
             self.window.ui.mainStack.currentWidget(),
             self.window.connections_page,
         )
-        self.assertIs(
-            self.window.ui.twitchConnectionGroup.parentWidget(),
-            self.window.twitch_connections_group,
-        )
-        self.assertTrue(
-            self.window.twitch_connections_group.isAncestorOf(
-                self.window.twitch_bot_account_group
+        self.assertTrue(self.window.twitch_connections_group.isHidden())
+        self.assertFalse(
+            self.window.connections_content_layout.indexOf(
+                self.window.twitch_connections_group
             )
-        )
-        self.assertTrue(
-            self.window.twitch_connections_group.isAncestorOf(
-                self.window.twitch_health_group
-            )
+            >= 0
         )
         self.window.show_twitch()
+        self.assertIs(
+            self.window.channel_tabs.currentWidget(),
+            self.window.twitch_account_page,
+        )
         self.assertIs(
             self.window.live_workspace.docks["twitch.chatters"].widget(),
             self.window.chatter_list.parentWidget(),
@@ -4966,7 +4972,7 @@ class MainWindowTests(unittest.TestCase):
             self.window.activity_panel,
         )
 
-    def test_twitch_group_shows_account_chat_eventsub_and_scope_health(self) -> None:
+    def test_twitch_account_page_shows_accounts_without_secrets(self) -> None:
         secret = "token-that-must-not-appear"
         self.window.twitch_auth.token = Mock(
             scopes=list(TWITCH_SCOPES),
@@ -4998,22 +5004,24 @@ class MainWindowTests(unittest.TestCase):
         )
 
         self.assertEqual(
-            self.window.ui.twitchConnectionGroup.title(),
-            "Main / Broadcaster Account",
+            self.window.twitch_account_page.main_card.status_label.text(),
+            "Connected",
         )
-        self.assertEqual(self.window.twitch_bot_account_group.title(), "Bot Account")
-        self.assertEqual(self.window.health_auth_label.text(), "Connected")
-        self.assertEqual(self.window.health_bot_auth_label.text(), "Connected")
-        self.assertEqual(self.window.health_chat_label.text(), "Connected")
-        self.assertEqual(self.window.health_eventsub_label.text(), "Connected")
-        self.assertEqual(self.window.health_permissions_label.text(), "Ready")
+        self.assertEqual(
+            self.window.twitch_account_page.bot_card.status_label.text(),
+            "Connected",
+        )
         visible_text = " ".join(
             child.text()
-            for child in self.window.twitch_connections_group.findChildren(QLabel)
+            for child in self.window.twitch_account_page.findChildren(QLabel)
         )
         self.assertNotIn(secret, visible_text)
-        self.assertTrue(self.window.ui.twitchSignOutButton.isEnabled())
-        self.assertTrue(self.window.twitch_bot_sign_out_button.isEnabled())
+        self.assertTrue(
+            self.window.twitch_account_page.main_card.disconnect_button.isEnabled()
+        )
+        self.assertTrue(
+            self.window.twitch_account_page.bot_card.disconnect_button.isEnabled()
+        )
 
     def test_twitch_health_distinguishes_missing_scopes_and_disconnected_service(self) -> None:
         self.window.twitch_auth.token = Mock(

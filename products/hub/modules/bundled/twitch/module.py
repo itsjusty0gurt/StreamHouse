@@ -202,6 +202,15 @@ class TwitchModule:
         self._refresh_channel_snapshot = refresh_channel_snapshot
         self._update_stream_overview = update_stream_overview
 
+    def create_account_page(self, parent: object) -> object:
+        """Create the module-owned Twitch account setup surface."""
+
+        from products.hub.modules.bundled.twitch.account_page import (
+            TwitchAccountPage,
+        )
+
+        return TwitchAccountPage(self.auth, self.bot_auth, self.service, parent)
+
     def register_catalog(self, context: ModuleContext) -> None:
         if self._catalog_registered:
             raise ValueError("The Twitch static catalog is already registered.")

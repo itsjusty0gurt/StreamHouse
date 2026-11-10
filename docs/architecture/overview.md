@@ -141,7 +141,7 @@ trigger and routine setup, but their stored records remain separate.
 | `products/hub/core/` | Hub event bus, settings, DPAPI secrets, backup, diagnostics, and resources |
 | `products/hub/modules/` | Core module contracts, trusted discovery, lifecycle, actions, and contribution registries. Packaged discovery uses the explicit first-party allowlist because PyInstaller embeds Python packages without source directories. |
 | `products/hub/modules/bundled/obs/` | Bundled OBS module entry point, Variables provider, connection/status page, and lifecycle ownership |
-| `products/hub/modules/bundled/twitch/` | Twitch descriptor, static task/trigger/Variable catalogs, broadcaster/bot auth, token maintenance, Twitch service/transports, trigger correlation, and runtime shutdown |
+| `products/hub/modules/bundled/twitch/` | Twitch descriptor, static task/trigger/Variable catalogs, broadcaster/bot auth and Account UI, token maintenance, Twitch service/transports, trigger correlation, and runtime shutdown |
 | `products/hub/obs_service/` | OBS module WebSocket transport, public-data configuration/store, triggers, and task handlers |
 | `products/hub/soundboard/` | Local soundboard models/store/server and hosted relay client |
 | `products/hub/twitch/` | OAuth, Helix, EventSub, normalized Twitch models, commands, triggers, analytics/history |
@@ -1427,8 +1427,10 @@ Primary left navigation is Core-owned and ordered as:
 
 The expanding spacer separates those primary entries from the bottom-pinned
 utility entries **Wiki** and **Settings**. A user-facing Modules page is not yet
-implemented. Connections remains reachable from Dashboard, while Logs and
-developer tooling stay outside the normal user-facing navigation.
+implemented. The hidden Connections shell remains reachable from Dashboard for
+the optional local Music Player integration; Twitch setup lives in its
+module-owned **Twitch > Account** tab. Logs and developer tooling stay outside
+the normal user-facing navigation.
 
 The Hub Dashboard is a standalone lightweight landing page owned by
 `products/hub/ui/dashboard_page.py`. It shows the authoritative Hub version and
