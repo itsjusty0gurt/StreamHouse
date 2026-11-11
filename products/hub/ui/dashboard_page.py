@@ -355,11 +355,18 @@ class DashboardPage(QWidget):
         title.setObjectName("dashboardAlphaNotesTitle")
         title.setStyleSheet("font-weight:700; color:#d8d8df;")
         self.alpha_notes_label = QLabel(
-            "• Live provides a dockable streaming workspace with Quick Actions.\n"
+            "• Live combines Twitch panels and Quick Actions in a native, "
+            "dockable workspace.\n"
             "• Twitch and OBS are first-party modules; saved Automation stays "
             "visible when a provider is disabled.\n"
-            "• Twitch Account manages broadcaster and optional bot setup "
-            "independently.",
+            "• Twitch Account guides onboarding and manages broadcaster and "
+            "optional bot accounts independently.\n"
+            "• Twitch authentication, recovery, outgoing raids, and Raid Out "
+            "Started Automation are more reliable.\n"
+            "• OBS event-triggered routines can safely make follow-up requests; "
+            "Keyword / Phrase triggers can opt into bot messages per trigger.\n"
+            "• Routine and trigger editing, packaged startup and shutdown, and "
+            "Windows build stability are improved.",
             panel,
         )
         self.alpha_notes_label.setObjectName("dashboardAlphaNotesText")
