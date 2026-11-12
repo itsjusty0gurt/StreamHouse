@@ -42,6 +42,7 @@ from products.hub.automation.logic_tasks import LOGIC_TASK_LABELS
 from products.hub.automation.file_tasks import FILE_TASK_LABELS
 from products.hub.automation.control_tasks import CONTROL_TASK_LABELS
 from products.hub.automation.value_tasks import VALUE_TASK_LABELS
+from products.hub.core.external_process import start_external_process
 from shared.streamhouse_runtime.logger import Logger
 
 
@@ -92,7 +93,7 @@ class LaunchApplicationTask:
             startupinfo = subprocess.STARTUPINFO()
             startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
             startupinfo.wShowWindow = 7
-        subprocess.Popen(
+        start_external_process(
             [executable, *arguments],
             cwd=working_directory or None,
             startupinfo=startupinfo,
