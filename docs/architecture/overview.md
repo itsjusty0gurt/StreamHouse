@@ -2070,6 +2070,12 @@ The build includes Qt's offscreen platform DLL so packaged smoke tests can run
 without displaying windows. `STREAMHOUSE_SMOKE_TEST=1` schedules a clean automatic
 exit.
 
+Core Automation launches system-installed applications through the external
+process boundary in `products/hub/core/external_process.py`. Frozen launches
+remove only bundle-anchored PyInstaller/PySide search paths from the child
+environment and temporarily restore the standard Windows DLL search directory
+during process creation; Hub's own packaged environment is left unchanged.
+
 Release archives and checksums:
 
 ```powershell

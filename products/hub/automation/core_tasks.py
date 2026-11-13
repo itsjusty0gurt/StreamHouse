@@ -42,6 +42,7 @@ from products.hub.automation.logic_tasks import LOGIC_TASK_LABELS
 from products.hub.automation.file_tasks import FILE_TASK_LABELS
 from products.hub.automation.control_tasks import CONTROL_TASK_LABELS
 from products.hub.automation.value_tasks import VALUE_TASK_LABELS
+from products.hub.core.external_process import start_external_process
 from shared.streamhouse_runtime.logger import Logger
 
 
@@ -87,12 +88,16 @@ class LaunchApplicationTask:
                 return _result(task, True, f"{image} is already running.")
         arguments = shlex.split(str(task.config.get("arguments", "")), posix=False)
         working_directory = str(task.config.get("working_directory", "")).strip()
+        if not working_directory:
+            executable_path = Path(executable).expanduser()
+            if executable_path.is_absolute():
+                working_directory = str(executable_path.parent)
         startupinfo = None
         if os.name == "nt" and bool(task.config.get("start_minimized", False)):
             startupinfo = subprocess.STARTUPINFO()
             startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
             startupinfo.wShowWindow = 7
-        subprocess.Popen(
+        start_external_process(
             [executable, *arguments],
             cwd=working_directory or None,
             startupinfo=startupinfo,
