@@ -612,6 +612,148 @@ class AutomationServiceTests(unittest.TestCase):
             ["second", "first"],
         )
 
+    def test_if_tree_moves_real_tasks_between_root_and_branches(self) -> None:
+        routine = self.store.add("Tree")
+        condition = self.store.add_task(
+            routine.routine_id,
+            task_type="core.if",
+            name="If live",
+            config={"left": "{stream.live}", "operator": "equals", "right": "true"},
+        )
+        child = self.store.add_task(
+            routine.routine_id,
+            task_type="test.example",
+            name="Child",
+        )
+
+        self.store.move_task_to_branch(
+            routine.routine_id,
+            child.task_id,
+            condition.task_id,
+            "then",
+            0,
+        )
+        nested = self.store.get(routine.routine_id).tasks[0].then_tasks[0]
+        self.assertEqual(nested.task_id, child.task_id)
+
+        self.store.move_task_to_branch(
+            routine.routine_id,
+            child.task_id,
+            "",
+            "root",
+            1,
+        )
+        self.assertEqual(
+            [task.task_id for task in self.store.get(routine.routine_id).tasks],
+            [condition.task_id, child.task_id],
+        )
+
+    def test_if_tree_moves_between_nested_branches_and_rejects_cycles(self) -> None:
+        routine = self.store.add("Nested move")
+        inner = TaskDefinition(
+            "inner",
+            "core.if",
+            "Inner",
+            {"left": "1", "operator": "equals", "right": "1"},
+        )
+        outer = self.store.add_task(
+            routine.routine_id,
+            task_type="core.if",
+            name="Outer",
+            config={"left": "1", "operator": "equals", "right": "1"},
+            then_tasks=[inner],
+            else_tasks=[TaskDefinition("child", "test.example", "Child")],
+        )
+
+        self.store.move_task_to_branch(
+            routine.routine_id,
+            "child",
+            "inner",
+            "then",
+            0,
+        )
+        saved = self.store.get(routine.routine_id).tasks[0]
+        self.assertEqual(saved.then_tasks[0].then_tasks[0].task_id, "child")
+        with self.assertRaisesRegex(ValueError, "own subtree"):
+            self.store.move_task_to_branch(
+                routine.routine_id,
+                outer.task_id,
+                "inner",
+                "else",
+                0,
+            )
+
+    def test_nested_task_edit_duplicate_and_delete_preserve_sibling_ownership(self) -> None:
+        routine = self.store.add("Nested lifecycle")
+        condition = self.store.add_task(
+            routine.routine_id,
+            task_type="core.if",
+            name="If",
+            config={"left": "1", "operator": "equals", "right": "1"},
+            then_tasks=[TaskDefinition("child", "test.example", "Child")],
+        )
+
+        updated = self.store.update_task(
+            routine.routine_id,
+            "child",
+            name="Edited",
+        )
+        copied = self.store.duplicate_task(routine.routine_id, updated.task_id)
+        self.assertNotEqual(copied.task_id, updated.task_id)
+        self.assertEqual(
+            [task.name for task in self.store.get(routine.routine_id).tasks[0].then_tasks],
+            ["Edited", "Edited Copy"],
+        )
+        self.assertTrue(self.store.delete_task(routine.routine_id, updated.task_id))
+        self.assertEqual(
+            [task.task_id for task in self.store.get(routine.routine_id).tasks[0].then_tasks],
+            [copied.task_id],
+        )
+        self.assertEqual(self.store.get(routine.routine_id).tasks[0].task_id, condition.task_id)
+
+    def test_else_if_chain_preserves_final_else_and_stable_ids(self) -> None:
+        routine = self.store.add("Branches")
+        condition = self.store.add_task(
+            routine.routine_id,
+            task_type="core.if",
+            name="If reward",
+            config={"left": "{event.reward}", "operator": "equals", "right": "coffee"},
+            else_tasks=[TaskDefinition("fallback", "test.example", "Fallback")],
+        )
+
+        else_if = self.store.add_else_if_branch(
+            routine.routine_id,
+            condition.task_id,
+        )
+        saved = self.store.get(routine.routine_id).tasks[0]
+
+        self.assertEqual(saved.task_id, condition.task_id)
+        self.assertEqual(saved.else_tasks[0].task_id, else_if.task_id)
+        self.assertEqual(saved.else_tasks[0].config["branch_role"], "else_if")
+        self.assertEqual(saved.else_tasks[0].else_tasks[0].task_id, "fallback")
+
+        self.assertTrue(
+            self.store.delete_else_if_branch(routine.routine_id, else_if.task_id)
+        )
+        restored = self.store.get(routine.routine_id).tasks[0]
+        self.assertEqual(restored.else_tasks[0].task_id, "fallback")
+
+    def test_released_single_if_condition_normalizes_without_schema_bump(self) -> None:
+        routine = self.store.add("Old If")
+        condition = self.store.add_task(
+            routine.routine_id,
+            task_type="core.if",
+            name="If old",
+            config={"left": "coffee", "operator": "equals", "right": "coffee"},
+        )
+        payload = json.loads(self.store.path.read_text(encoding="utf-8"))
+        saved = payload["routines"][0]["tasks"][0]
+
+        self.assertEqual(payload["version"], 5)
+        self.assertEqual(saved["task_id"], condition.task_id)
+        self.assertEqual(saved["config"]["condition_join"], "and")
+        self.assertEqual(saved["config"]["conditions"][0]["left"], "coffee")
+
     def test_previous_routine_schema_is_rejected_without_compatibility(self) -> None:
         self.store.path.write_text(
             json.dumps({"version": 4, "groups": [], "routines": []}),

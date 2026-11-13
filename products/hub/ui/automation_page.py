@@ -9,7 +9,7 @@ from pathlib import Path
 import re
 from uuid import uuid4
 
-from PySide6.QtCore import QPoint, QTimer, Qt, Signal
+from PySide6.QtCore import QByteArray, QMimeData, QPoint, QTimer, Qt, Signal
 from PySide6.QtGui import QDrag, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -63,6 +63,10 @@ from products.hub.automation.core_triggers import (
     CoreTriggerStore,
 )
 from products.hub.automation.routines import RoutineDefinition, RoutineStore
+from products.hub.automation.conditions import (
+    condition_definitions,
+    primary_condition_subject,
+)
 from products.hub.automation.service import AutomationService
 from products.hub.automation.tasks import TaskRegistry
 from products.hub.automation.task_catalog import VARIABLE_INPUT_FIELDS
@@ -155,6 +159,7 @@ from products.hub.ui.twitch_command_dialog import TwitchCommandDialog, TwitchCom
 from products.hub.ui.counters_page import CounterDefinitionDialog
 from products.hub.ui.variables_page import VariablesPage
 from products.hub.ui.variable_picker import VariablePickerButton
+from products.hub.ui.condition_builder import ConditionBuilderWidget
 from products.hub.ui.page_header import PageHeader
 from products.hub.ui.table_sizing import configure_semantic_columns
 
@@ -1860,6 +1865,7 @@ class TaskEditorDialog(QDialog):
         variable_registry: VariableRegistry | None = None,
         output_definitions: tuple[VariableDefinition, ...] = (),
         user_groups=None,
+        fixed_condition_subject: str = "",
     ) -> None:
         super().__init__(parent)
         self.task = task
@@ -1872,14 +1878,19 @@ class TaskEditorDialog(QDialog):
         self.variable_registry = variable_registry
         self._output_definitions = output_definitions
         self.user_groups = user_groups
+        self.fixed_condition_subject = fixed_condition_subject
         self._obs_request_generation = 0
         self._obs_refresh_scheduled = False
         self.field_widgets: dict[str, dict[str, QWidget]] = {}
         self.variable_picker_buttons: dict[str, VariablePickerButton] = {}
         self.setWindowTitle("Edit Task" if task else "Add Task")
-        self.setMinimumWidth(
-            360 if self.task_type == "obs.set_source_transform" else 620
-        )
+        if self.task_type == "core.if":
+            self.setMinimumSize(680, 500)
+            self.resize(720, 560)
+        else:
+            self.setMinimumWidth(
+                360 if self.task_type == "obs.set_source_transform" else 620
+            )
         layout = QVBoxLayout(self)
         form = QFormLayout()
         task_label = QLabel(self.LABELS.get(self.task_type, self.task_type))
@@ -1901,21 +1912,6 @@ class TaskEditorDialog(QDialog):
         layout.addLayout(obs_toolbar)
 
         layout.addWidget(self._build_page(self.task_type))
-        if self.task_type == "core.if":
-            self.then_tasks_editor = NestedTaskListEditor(
-                "THEN",
-                task.then_tasks if task is not None else [],
-                self,
-            )
-            self.else_tasks_editor = NestedTaskListEditor(
-                "ELSE (optional)",
-                task.else_tasks if task is not None else [],
-                self,
-            )
-            self.then_tasks_editor.setMinimumHeight(150)
-            self.else_tasks_editor.setMinimumHeight(150)
-            layout.addWidget(self.then_tasks_editor)
-            layout.addWidget(self.else_tasks_editor)
         if self.task_type == "core.play_audio":
             self._audio_preview = PlayAudioTask()
             preview_row = QHBoxLayout()
@@ -1973,6 +1969,25 @@ class TaskEditorDialog(QDialog):
         self._schedule_obs_refresh()
 
     def _build_page(self, task_type: str) -> QWidget:
+        if task_type == "core.if":
+            config = normalize_task_config(
+                task_type,
+                self.task.config if self.task is not None else {},
+            )
+            self.condition_builder = ConditionBuilderWidget(
+                config,
+                registry=self.variable_registry,
+                context=self.variables,
+                extra_definitions=self._output_definitions,
+                user_groups=self.user_groups,
+                fixed_subject=self.fixed_condition_subject,
+                parent=self,
+            )
+            self.field_widgets[task_type] = self.condition_builder.first_row_widgets()
+            first_row = self.condition_builder.rows[0]
+            self.variable_picker_buttons["left"] = first_row.left_picker
+            self.variable_picker_buttons["right"] = first_row.right_picker
+            return self.condition_builder
         page = QWidget()
         form = QFormLayout(page)
         if task_type == "obs.set_source_transform":
@@ -2345,30 +2360,6 @@ class TaskEditorDialog(QDialog):
             target_type = self.field_widgets[self.task_type]["target_type"]
             if isinstance(target_type, QComboBox):
                 target_type.currentIndexChanged.connect(self._refresh_obs_choices)
-        if self.task_type == "core.if":
-            fields = self.field_widgets[self.task_type]
-            operator = fields["operator"]
-
-            def update_if_condition(_value: object = None) -> None:
-                operation = str(operator.currentData())
-                membership = operation == "user_in_group"
-                fields["left"].setEnabled(not membership)
-                fields["right"].setEnabled(operation not in IF_UNARY_OPERATORS)
-                fields["group_id"].setEnabled(membership)
-                fields["ignore_case"].setEnabled(
-                    operation
-                    in {
-                        "equals",
-                        "not_equals",
-                        "contains",
-                        "not_contains",
-                        "starts_with",
-                        "ends_with",
-                    }
-                )
-
-            operator.currentIndexChanged.connect(update_if_condition)
-            update_if_condition()
         if self.task_type == "core.logic_while":
             fields = self.field_widgets[self.task_type]
             operator = fields["operator"]
@@ -2744,6 +2735,19 @@ class TaskEditorDialog(QDialog):
 
     def values(self) -> dict[str, object]:
         task_type = self.task_type
+        if task_type == "core.if":
+            name = self.name_edit.text().strip()
+            if not name:
+                raise ValueError("Task name is required.")
+            config = self.condition_builder.value()
+            if self.task is not None and self.task.config.get("branch_role"):
+                config["branch_role"] = self.task.config["branch_role"]
+            return {
+                "task_type": task_type,
+                "name": name,
+                "config": config,
+                "enabled": self.enabled_check.isChecked(),
+            }
         config: dict[str, object] = {}
         fields = self.field_widgets.get(task_type, {})
         for spec in self.SCHEMAS.get(task_type, ()):
@@ -2783,12 +2787,6 @@ class TaskEditorDialog(QDialog):
             ):
                 raise ValueError(f"{spec.get('label', key)} is required.")
             config[key] = value
-        if task_type == "core.if" and config.get("operator") == "user_in_group":
-            group_id = str(config.get("group_id", "")).strip()
-            if not group_id:
-                raise ValueError("User Group is required.")
-            if self.user_groups is None or self.user_groups.get_group(group_id) is None:
-                raise ValueError("Missing Group: choose an existing user group.")
         if task_type == "core.logic_random_choice" and not config.get("choices"):
             raise ValueError("Add at least one weighted choice and select its routine.")
         if (
@@ -2842,9 +2840,6 @@ class TaskEditorDialog(QDialog):
             "config": config,
             "enabled": self.enabled_check.isChecked(),
         }
-        if task_type == "core.if":
-            values["then_tasks"] = self.then_tasks_editor.value()
-            values["else_tasks"] = self.else_tasks_editor.value()
         return values
 
 
@@ -3145,7 +3140,8 @@ class RoutineTreeWidget(QTreeWidget):
 class TaskCardListWidget(QListWidget):
     """Full-card task reordering with a card-based drag preview."""
 
-    task_dropped = Signal(str, str, int)
+    MIME_TYPE = "application/x-streamhouse-automation-task"
+    task_moved = Signal(str, str, str, str, str, str, int)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -3157,6 +3153,16 @@ class TaskCardListWidget(QListWidget):
         )
         self._drop_line.hide()
 
+    def configure_location(
+        self,
+        routine_id: str,
+        parent_task_id: str = "",
+        branch: str = "root",
+    ) -> None:
+        self.setProperty("routine_id", routine_id)
+        self.setProperty("parent_task_id", parent_task_id)
+        self.setProperty("branch", branch)
+
     def startDrag(self, supported_actions) -> None:  # noqa: N802 - Qt API
         item = self.currentItem()
         card = self.itemWidget(item) if item is not None else None
@@ -3164,7 +3170,16 @@ class TaskCardListWidget(QListWidget):
             super().startDrag(supported_actions)
             return
         drag = QDrag(self)
-        drag.setMimeData(self.model().mimeData(self.selectedIndexes()))
+        mime = self.model().mimeData(self.selectedIndexes())
+        payload = {
+            "routine_id": str(self.property("routine_id") or ""),
+            "task_id": str(item.data(Qt.ItemDataRole.UserRole) or ""),
+            "parent_task_id": str(self.property("parent_task_id") or ""),
+            "branch": str(self.property("branch") or "root"),
+            "index": self.row(item),
+        }
+        mime.setData(self.MIME_TYPE, QByteArray(json.dumps(payload).encode("utf-8")))
+        drag.setMimeData(mime)
         pixmap = card.grab()
         drag.setPixmap(pixmap)
         drag.setHotSpot(QPoint(pixmap.width() // 2, pixmap.height() // 2))
@@ -3174,16 +3189,20 @@ class TaskCardListWidget(QListWidget):
             self._clear_drop_indicator()
 
     def dragMoveEvent(self, event) -> None:  # noqa: N802 - Qt API
-        super().dragMoveEvent(event)
-        source = self.currentItem()
-        if source is None:
+        payload = self._drag_payload(event.mimeData())
+        if payload is None:
+            super().dragMoveEvent(event)
             self._clear_drop_indicator()
             return
         point = event.position().toPoint()
         target = self._drop_target(point)
         if target is None:
-            self._clear_drop_indicator()
-            event.ignore()
+            if self.count():
+                self._clear_drop_indicator()
+                event.ignore()
+                return
+            self._show_drop_indicator(1)
+            event.acceptProposedAction()
             return
         _destination_index, before = self._drop_destination(target, point.y())
         rect = self.visualItemRect(target)
@@ -3197,35 +3216,57 @@ class TaskCardListWidget(QListWidget):
 
     def dropEvent(self, event) -> None:  # noqa: N802 - Qt API
         self._clear_drop_indicator()
-        source = self.currentItem()
+        payload = self._drag_payload(event.mimeData())
+        if payload is None:
+            super().dropEvent(event)
+            return
         point = event.position().toPoint()
         target = self._drop_target(point)
-        if source is None or target is None or source is target:
-            event.ignore()
-            return
-        source_row = self.row(source)
-        destination_index, _before = self._drop_destination(target, point.y())
-        if source_row < destination_index:
-            destination_index -= 1
-        destination_index = max(0, min(destination_index, self.count() - 1))
-        if destination_index == source_row:
-            event.ignore()
-            return
-        task_id = str(source.data(Qt.ItemDataRole.UserRole) or "")
+        destination_index = (
+            self._drop_destination(target, point.y())[0]
+            if target is not None
+            else 0
+        )
+        destination_index = max(0, min(destination_index, self.count()))
+        task_id = str(payload.get("task_id", ""))
         routine_id = str(self.property("routine_id") or "")
         if not routine_id or not task_id:
             event.ignore()
             return
+        source_parent = str(payload.get("parent_task_id", ""))
+        source_branch = str(payload.get("branch", "root"))
+        destination_parent = str(self.property("parent_task_id") or "")
+        destination_branch = str(self.property("branch") or "root")
         QTimer.singleShot(
             0,
             self,
-            lambda: self.task_dropped.emit(
+            lambda: self.task_moved.emit(
                 routine_id,
                 task_id,
+                source_parent,
+                source_branch,
+                destination_parent,
+                destination_branch,
                 destination_index,
             ),
         )
         event.acceptProposedAction()
+
+    def dragEnterEvent(self, event) -> None:  # noqa: N802 - Qt API
+        if self._drag_payload(event.mimeData()) is not None:
+            event.acceptProposedAction()
+            return
+        super().dragEnterEvent(event)
+
+    @classmethod
+    def _drag_payload(cls, mime: QMimeData) -> dict[str, object] | None:
+        if not mime.hasFormat(cls.MIME_TYPE):
+            return None
+        try:
+            value = json.loads(bytes(mime.data(cls.MIME_TYPE)).decode("utf-8"))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return None
+        return value if isinstance(value, dict) else None
 
     def _drop_target(self, point: QPoint) -> QListWidgetItem | None:
         target = self.itemAt(point)
@@ -3500,6 +3541,11 @@ class AutomationPage(QWidget):
         self.user_groups = user_groups
         self.history: list[dict[str, object]] = []
         self._selected_routine_id = ""
+        self._selected_task_id = ""
+        self._task_items_by_id: dict[
+            str, tuple[TaskCardListWidget, QListWidgetItem]
+        ] = {}
+        self._collapsed_if_task_ids: set[str] = set()
         self._group_expansion_state: dict[str, bool] = {}
         self.setObjectName("automationPage")
         self._build_ui()
@@ -4111,17 +4157,21 @@ class AutomationPage(QWidget):
         self.task_list.itemDoubleClicked.connect(lambda _item: self._edit_task())
         self.task_list.itemSelectionChanged.connect(self._task_selection_changed)
         self.task_list.customContextMenuRequested.connect(self._task_context_menu)
-        self.task_list.task_dropped.connect(self._task_dropped)
+        self.task_list.task_moved.connect(self._task_moved)
         self._install_task_shortcuts()
 
-    def _task_selection_changed(self) -> None:
+    def _task_selection_changed(self, source: TaskCardListWidget | None = None) -> None:
+        source = source or self.task_list
+        current = source.currentItem()
+        if current is not None:
+            self._selected_task_id = str(
+                current.data(Qt.ItemDataRole.UserRole) or ""
+            )
         self.test_task_button.setEnabled(self._selected_task() is not None)
-        current = self.task_list.currentItem()
-        for index in range(self.task_list.count()):
-            item = self.task_list.item(index)
-            widget = self.task_list.itemWidget(item)
+        for task_id, (task_list, item) in self._task_items_by_id.items():
+            widget = task_list.itemWidget(item)
             if hasattr(widget, "set_selected"):
-                widget.set_selected(item is current)
+                widget.set_selected(task_id == self._selected_task_id)
 
     def _build_settings_editor(self) -> None:
         tab = QWidget()
@@ -4451,7 +4501,11 @@ class AutomationPage(QWidget):
             issues.append(
                 "Missing Counter: the referenced counter was deleted or is unavailable"
             )
-        for spec in TaskEditorDialog.SCHEMAS.get(task.task_type, ()):
+        for spec in (
+            ()
+            if task.task_type == "core.if"
+            else TaskEditorDialog.SCHEMAS.get(task.task_type, ())
+        ):
             if not spec.get("required"):
                 continue
             key = str(spec["key"])
@@ -4463,15 +4517,20 @@ class AutomationPage(QWidget):
                 continue
             if not str(task.config.get(key, "")).strip():
                 issues.append(f'{spec.get("label", key)} is required')
-        if (
-            task.task_type == "core.if"
-            and task.config.get("operator") == "user_in_group"
-            and (
-                self.user_groups is None
-                or self.user_groups.get_group(str(task.config.get("group_id", ""))) is None
-            )
-        ):
-            issues.append("Missing Group: the referenced user group was deleted or is unavailable")
+        if task.task_type == "core.if":
+            for condition in condition_definitions(task.config):
+                if condition.operator != "user_in_group" and not condition.left:
+                    issues.append("Condition value or Variable is required")
+                if (
+                    condition.operator == "user_in_group"
+                    and (
+                        self.user_groups is None
+                        or self.user_groups.get_group(condition.group_id) is None
+                    )
+                ):
+                    issues.append(
+                        "Missing Group: the referenced user group was deleted or is unavailable"
+                    )
         if (
             task.task_type == "core.run_routine"
             and str(task.config.get("routine_id", "")).strip()
@@ -4567,21 +4626,176 @@ class AutomationPage(QWidget):
         task: TaskDefinition,
         *,
         nested: bool = False,
+        parent_list: TaskCardListWidget | None = None,
     ) -> QWidget:
         content = self._task_card_content(task)
         if task.task_type != "core.if":
-            return TaskCardWidget(content, nested=nested, parent=self.task_list)
-        return IfTaskCardWidget(
+            return TaskCardWidget(
+                content,
+                nested=nested,
+                parent=parent_list or self.task_list,
+            )
+        branches = self._if_branch_widgets(task)
+        child_count = self._if_child_task_count(task)
+        card = IfTaskCardWidget(
             content,
-            tuple(
-                self._task_card_widget(child, nested=True)
-                for child in task.then_tasks
-            ),
-            tuple(
-                self._task_card_widget(child, nested=True)
-                for child in task.else_tasks
-            ),
-            parent=self.task_list,
+            task.task_id,
+            branches,
+            expanded=task.task_id not in self._collapsed_if_task_ids,
+            branch_count=len(branches),
+            child_task_count=child_count,
+            parent=parent_list or self.task_list,
+        )
+        card.selected_requested.connect(self._select_task)
+        card.edit_requested.connect(self._edit_task_by_id)
+        card.collapse_requested.connect(self._toggle_if_collapsed)
+        card.add_else_if_requested.connect(self._add_else_if)
+        return card
+
+    @classmethod
+    def _if_child_task_count(cls, task: TaskDefinition) -> int:
+        count = 0
+        for child in task.child_tasks:
+            if child.config.get("branch_role") != "else_if":
+                count += 1
+            count += cls._if_child_task_count(child)
+        return count
+
+    def _if_branch_widgets(self, root: TaskDefinition) -> tuple[QWidget, ...]:
+        branches: list[QWidget] = []
+        current = root
+        label = "IF"
+        while True:
+            branches.append(
+                self._if_branch_widget(
+                    label,
+                    current,
+                    "then",
+                    current.then_tasks,
+                    condition_task=current,
+                )
+            )
+            if (
+                len(current.else_tasks) == 1
+                and current.else_tasks[0].task_type == "core.if"
+                and current.else_tasks[0].config.get("branch_role") == "else_if"
+            ):
+                current = current.else_tasks[0]
+                label = "ELSE IF"
+                continue
+            branches.append(
+                self._if_branch_widget(
+                    "ELSE",
+                    current,
+                    "else",
+                    current.else_tasks,
+                )
+            )
+            return tuple(branches)
+
+    def _if_branch_widget(
+        self,
+        label: str,
+        owner: TaskDefinition,
+        branch: str,
+        tasks: list[TaskDefinition],
+        *,
+        condition_task: TaskDefinition | None = None,
+    ) -> QWidget:
+        panel = QFrame(self.task_list)
+        panel.setObjectName("automationIfBranch")
+        panel.setStyleSheet(
+            "QFrame#automationIfBranch { background:#1d1d20; border:1px solid #38383e; "
+            "border-radius:5px; } QLabel { border:none; background:transparent; }"
+        )
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(8, 6, 8, 7)
+        layout.setSpacing(5)
+        header = QHBoxLayout()
+        title = QLabel(label, panel)
+        title.setObjectName("automationIfBranchLabel")
+        title.setStyleSheet("color:#bf94ff; font-weight:750;")
+        header.addWidget(title)
+        if condition_task is not None:
+            summary = QLabel(self._task_card_content(condition_task).summary, panel)
+            summary.setObjectName("automationIfBranchCondition")
+            summary.setStyleSheet("color:#adadb8;")
+            header.addWidget(summary, 1)
+            if condition_task.config.get("branch_role") == "else_if":
+                edit_condition = QPushButton("Edit Condition", panel)
+                edit_condition.setObjectName("automationElseIfEditCondition")
+                edit_condition.clicked.connect(
+                    lambda _checked=False, task_id=condition_task.task_id: (
+                        self._edit_task_by_id(task_id)
+                    )
+                )
+                header.addWidget(edit_condition)
+                remove_condition = QPushButton("Remove Branch", panel)
+                remove_condition.setObjectName("automationElseIfRemoveBranch")
+                remove_condition.clicked.connect(
+                    lambda _checked=False, task_id=condition_task.task_id: (
+                        self._remove_else_if(task_id)
+                    )
+                )
+                header.addWidget(remove_condition)
+        else:
+            header.addStretch(1)
+        add_button = QPushButton("+ Add Task", panel)
+        add_button.setObjectName("automationIfBranchAddTask")
+        add_button.clicked.connect(
+            lambda _checked=False, button=add_button, parent_id=owner.task_id,
+            branch_name=branch: self._show_add_branch_task_menu(
+                button, parent_id, branch_name
+            )
+        )
+        header.addWidget(add_button)
+        layout.addLayout(header)
+
+        task_list = TaskCardListWidget(panel)
+        task_list.setObjectName("automationIfBranchTaskList")
+        task_list.configure_location(
+            self._selected_routine_id,
+            owner.task_id,
+            branch,
+        )
+        task_list.setDragEnabled(True)
+        task_list.setAcceptDrops(True)
+        task_list.setDropIndicatorShown(False)
+        task_list.setDragDropMode(QAbstractItemView.DragDropMode.DragDrop)
+        task_list.setDefaultDropAction(Qt.DropAction.MoveAction)
+        task_list.setSpacing(4)
+        task_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        task_list.setStyleSheet(
+            "QListWidget { background:transparent; border:none; outline:none; }"
+            "QListWidget::item { background:transparent; border:none; padding:0; }"
+            "QListWidget::item:selected { background:transparent; }"
+        )
+        task_list.itemDoubleClicked.connect(lambda _item: self._edit_task())
+        task_list.itemSelectionChanged.connect(
+            lambda current_list=task_list: self._task_selection_changed(current_list)
+        )
+        task_list.customContextMenuRequested.connect(
+            lambda position, current_list=task_list: self._task_context_menu_for_list(
+                current_list,
+                position,
+            )
+        )
+        task_list.task_moved.connect(self._task_moved)
+        self._populate_task_list(task_list, tasks, nested=True)
+        task_list.setMinimumHeight(34)
+        task_list.setFixedHeight(self._nested_list_height(task_list))
+        layout.addWidget(task_list)
+        return panel
+
+    @staticmethod
+    def _nested_list_height(task_list: TaskCardListWidget) -> int:
+        if not task_list.count():
+            return 34
+        return max(
+            34,
+            sum(task_list.sizeHintForRow(index) for index in range(task_list.count()))
+            + (task_list.spacing() * max(task_list.count() - 1, 0))
+            + 4,
         )
 
     def _routine_issues(self, routine, trigger_count: int | None = None) -> list[str]:
@@ -4906,8 +5120,26 @@ class AutomationPage(QWidget):
     def _refresh_tasks(self, routine) -> None:
         self.task_list.blockSignals(True)
         self.task_list.clear()
-        self.task_list.setProperty("routine_id", routine.routine_id)
-        for task in routine.tasks:
+        self._task_items_by_id = {}
+        self._selected_task_id = ""
+        self.task_list.configure_location(routine.routine_id)
+        self._populate_task_list(self.task_list, routine.tasks)
+        self.task_list.blockSignals(False)
+        self.test_task_button.setEnabled(False)
+        self.editor_tabs.setTabText(1, f"Tasks ({len(routine.tasks)})")
+        self.task_hint_label.setText(
+            "No tasks yet. Use + Add Task or right-click here to build the routine."
+        )
+        self.task_hint_label.setVisible(not routine.tasks)
+
+    def _populate_task_list(
+        self,
+        task_list: TaskCardListWidget,
+        tasks: list[TaskDefinition],
+        *,
+        nested: bool = False,
+    ) -> None:
+        for task in tasks:
             content = self._task_card_content(task)
             item = QListWidgetItem(
                 f"{content.category} — {content.task_name} "
@@ -4926,18 +5158,16 @@ class AutomationPage(QWidget):
                 )
                 or "Ready"
             )
-            self.task_list.addItem(item)
-            card = self._task_card_widget(task)
-            self.task_list.setItemWidget(item, card)
+            task_list.addItem(item)
+            card = self._task_card_widget(
+                task,
+                nested=nested,
+                parent_list=task_list,
+            )
+            task_list.setItemWidget(item, card)
             card.adjustSize()
             item.setSizeHint(card.sizeHint())
-        self.task_list.blockSignals(False)
-        self.test_task_button.setEnabled(False)
-        self.editor_tabs.setTabText(1, f"Tasks ({len(routine.tasks)})")
-        self.task_hint_label.setText(
-            "No tasks yet. Use + Add Task or right-click here to build the routine."
-        )
-        self.task_hint_label.setVisible(not routine.tasks)
+            self._task_items_by_id[task.task_id] = (task_list, item)
 
     def _refresh_settings(self, routine) -> None:
         self.settings_name_edit.setText(routine.name)
@@ -5904,11 +6134,12 @@ class AutomationPage(QWidget):
 
     def _selected_task(self) -> TaskDefinition | None:
         routine = self.routine_store.get(self._selected_routine_id)
-        item = self.task_list.currentItem()
-        task_id = str(item.data(Qt.ItemDataRole.UserRole) or "") if item else ""
-        if routine is None or not task_id:
+        if routine is None or not self._selected_task_id:
             return None
-        return next((task for task in routine.tasks if task.task_id == task_id), None)
+        return self.routine_store.get_task(
+            routine.routine_id,
+            self._selected_task_id,
+        )
 
     def _add_task(self, task_type: str = "") -> None:
         routine = self.routine_store.get(self._selected_routine_id)
@@ -5958,6 +6189,95 @@ class AutomationPage(QWidget):
         self.select_routine(routine.routine_id)
         self._select_task(task.task_id)
 
+    def _show_add_branch_task_menu(
+        self,
+        button: QPushButton,
+        parent_task_id: str,
+        branch: str,
+    ) -> None:
+        menu = QMenu(self)
+        self._add_task_submenu(
+            menu,
+            direct_services=True,
+            add_task=lambda task_type: self._add_task_to_branch(
+                parent_task_id,
+                branch,
+                task_type,
+            ),
+            add_configured_task=lambda task_type, name, config: (
+                self._add_configured_task_to_branch(
+                    parent_task_id,
+                    branch,
+                    task_type,
+                    name,
+                    config,
+                )
+            ),
+        )
+        menu.exec(button.mapToGlobal(button.rect().bottomLeft()))
+
+    def _add_task_to_branch(
+        self,
+        parent_task_id: str,
+        branch: str,
+        task_type: str,
+    ) -> None:
+        routine = self.routine_store.get(self._selected_routine_id)
+        if routine is None or not task_type:
+            return
+        dialog = TaskEditorDialog(
+            task_type,
+            self,
+            obs_service=self.obs_service,
+            variables=self._current_variable_values(),
+            routine_store=self.routine_store,
+            queue_store=self.queue_store,
+            counter_service=self.counter_service,
+            variable_registry=self.variable_registry,
+            output_definitions=self._output_definitions_before(routine),
+            user_groups=self.user_groups,
+        )
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        try:
+            task = self.routine_store.add_task_to_branch(
+                routine.routine_id,
+                parent_task_id,
+                branch,
+                **dialog.values(),
+            )
+        except (OSError, TypeError, ValueError) as error:
+            self._error("Could Not Add Task", error)
+            return
+        self.select_routine(routine.routine_id)
+        self._select_task(task.task_id)
+
+    def _add_configured_task_to_branch(
+        self,
+        parent_task_id: str,
+        branch: str,
+        task_type: str,
+        name: str,
+        config: dict[str, object],
+    ) -> None:
+        routine = self.routine_store.get(self._selected_routine_id)
+        if routine is None:
+            return
+        try:
+            task = self.routine_store.add_task_to_branch(
+                routine.routine_id,
+                parent_task_id,
+                branch,
+                task_type=task_type,
+                name=name,
+                config=config,
+            )
+        except (OSError, TypeError, ValueError) as error:
+            self._error("Could Not Add Task", error)
+            return
+        self.select_routine(routine.routine_id)
+        self._select_task(task.task_id)
+
     def _edit_task(self) -> None:
         routine = self.routine_store.get(self._selected_routine_id)
         task = self._selected_task()
@@ -5975,6 +6295,11 @@ class AutomationPage(QWidget):
             self.variable_registry,
             self._output_definitions_before(routine, task.task_id),
             self.user_groups,
+            fixed_condition_subject=(
+                primary_condition_subject(task.config)
+                if task.config.get("branch_role") == "else_if"
+                else ""
+            ),
         )
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
@@ -5987,6 +6312,58 @@ class AutomationPage(QWidget):
             return
         self.select_routine(routine.routine_id)
         self._select_task(updated.task_id)
+
+    def _edit_task_by_id(self, task_id: str) -> None:
+        self._selected_task_id = task_id
+        self._edit_task()
+
+    def _toggle_if_collapsed(self, task_id: str, was_expanded: bool) -> None:
+        if was_expanded:
+            self._collapsed_if_task_ids.add(task_id)
+        else:
+            self._collapsed_if_task_ids.discard(task_id)
+        routine = self.routine_store.get(self._selected_routine_id)
+        if routine is not None:
+            self._refresh_tasks(routine)
+            self._select_task(task_id)
+
+    def _add_else_if(self, task_id: str) -> None:
+        routine = self.routine_store.get(self._selected_routine_id)
+        if routine is None:
+            return
+        try:
+            branch = self.routine_store.add_else_if_branch(
+                routine.routine_id,
+                task_id,
+            )
+        except (OSError, ValueError) as error:
+            self._error("Could Not Add Else If", error)
+            return
+        self.select_routine(routine.routine_id)
+        self._edit_task_by_id(branch.task_id)
+
+    def _remove_else_if(self, task_id: str) -> None:
+        routine = self.routine_store.get(self._selected_routine_id)
+        branch = (
+            self.routine_store.get_task(routine.routine_id, task_id)
+            if routine is not None
+            else None
+        )
+        if routine is None or branch is None:
+            return
+        if QMessageBox.question(
+            self,
+            "Remove Else If Branch",
+            "Remove this Else If branch and its child tasks? "
+            "The following Else/Else If branches will be preserved.",
+        ) != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            self.routine_store.delete_else_if_branch(routine.routine_id, task_id)
+        except (OSError, ValueError) as error:
+            self._error("Could Not Remove Else If", error)
+            return
+        self.select_routine(routine.routine_id)
 
     def _duplicate_task(self) -> None:
         routine = self.routine_store.get(self._selected_routine_id)
@@ -6036,10 +6413,19 @@ class AutomationPage(QWidget):
         task = self._selected_task()
         if routine is None or task is None:
             return
-        index = routine.tasks.index(task)
+        target = self._task_items_by_id.get(task.task_id)
+        if target is None:
+            return
+        task_list, item = target
+        index = task_list.row(item)
+        destination_index = index + offset + (1 if offset > 0 else 0)
         try:
-            self.routine_store.move_task(
-                routine.routine_id, task.task_id, index + offset
+            self.routine_store.move_task_to_branch(
+                routine.routine_id,
+                task.task_id,
+                str(task_list.property("parent_task_id") or ""),
+                str(task_list.property("branch") or "root"),
+                destination_index,
             )
         except (OSError, ValueError) as error:
             self._error("Could Not Move Task", error)
@@ -6047,19 +6433,25 @@ class AutomationPage(QWidget):
         self.select_routine(routine.routine_id)
         self._select_task(task.task_id)
 
-    def _task_dropped(
+    def _task_moved(
         self,
         routine_id: str,
         task_id: str,
+        _source_parent: str,
+        _source_branch: str,
+        destination_parent: str,
+        destination_branch: str,
         destination_index: int,
     ) -> None:
         routine = self.routine_store.get(routine_id)
         if routine is None:
             return
         try:
-            moved = self.routine_store.move_task(
+            moved = self.routine_store.move_task_to_branch(
                 routine.routine_id,
                 task_id,
+                destination_parent,
+                destination_branch,
                 destination_index,
             )
         except (OSError, ValueError) as error:
@@ -6070,20 +6462,50 @@ class AutomationPage(QWidget):
         self._select_task(moved.task_id)
 
     def _task_context_menu(self, position) -> None:
-        item = self.task_list.itemAt(position)
+        self._task_context_menu_for_list(self.task_list, position)
+
+    def _task_context_menu_for_list(
+        self,
+        task_list: TaskCardListWidget,
+        position,
+    ) -> None:
+        item = task_list.itemAt(position)
         if item is not None:
-            self.task_list.setCurrentItem(item)
+            task_list.setCurrentItem(item)
+            self._task_selection_changed(task_list)
         task = self._selected_task() if item is not None else None
         menu = QMenu(self)
-        self._add_task_submenu(menu)
+        parent_task_id = str(task_list.property("parent_task_id") or "")
+        branch = str(task_list.property("branch") or "root")
+        if parent_task_id:
+            self._add_task_submenu(
+                menu,
+                add_task=lambda task_type: self._add_task_to_branch(
+                    parent_task_id,
+                    branch,
+                    task_type,
+                ),
+                add_configured_task=lambda task_type, name, config: (
+                    self._add_configured_task_to_branch(
+                        parent_task_id,
+                        branch,
+                        task_type,
+                        name,
+                        config,
+                    )
+                ),
+            )
+        else:
+            self._add_task_submenu(menu)
         if task is not None:
             menu.addSeparator()
             menu.addAction("Edit", self._edit_task)
             menu.addAction("Test Task…", self._test_selected_task)
             menu.addAction("Duplicate", self._duplicate_task)
             menu.addAction("Copy", self._copy_task)
-            paste_action = menu.addAction("Paste Task", self._paste_task)
-            paste_action.setEnabled(self._clipboard_task_payload() is not None)
+            if not parent_task_id:
+                paste_action = menu.addAction("Paste Task", self._paste_task)
+                paste_action.setEnabled(self._clipboard_task_payload() is not None)
             menu.addAction("Disable Task" if task.enabled else "Enable Task", self._toggle_task)
             menu.addSeparator()
             menu.addAction("Move Up", lambda: self._move_task(-1))
@@ -6091,10 +6513,11 @@ class AutomationPage(QWidget):
             menu.addSeparator()
             menu.addAction("Remove", self._delete_task)
         else:
-            menu.addSeparator()
-            paste_action = menu.addAction("Paste Task", self._paste_task)
-            paste_action.setEnabled(self._clipboard_task_payload() is not None)
-        menu.exec(self.task_list.viewport().mapToGlobal(position))
+            if not parent_task_id:
+                menu.addSeparator()
+                paste_action = menu.addAction("Paste Task", self._paste_task)
+                paste_action.setEnabled(self._clipboard_task_payload() is not None)
+        menu.exec(task_list.viewport().mapToGlobal(position))
 
     @staticmethod
     def _clipboard_task_payload() -> dict[str, object] | None:
@@ -6180,8 +6603,16 @@ class AutomationPage(QWidget):
         )
 
     def _add_task_submenu(
-        self, menu: QMenu, *, direct_services: bool = False
+        self,
+        menu: QMenu,
+        *,
+        direct_services: bool = False,
+        add_task: Callable[[str], None] | None = None,
+        add_configured_task: Callable[[str, str, dict[str, object]], None]
+        | None = None,
     ) -> QMenu:
+        add_task = add_task or self._add_task
+        add_configured_task = add_configured_task or self._add_configured_task
         add_menu = menu if direct_services else menu.addMenu("Add")
         available = set(self.task_registry.registered_types())
         services = (
@@ -6247,7 +6678,7 @@ class AutomationPage(QWidget):
                     for seconds in (30, 60, 90, 180):
                         action = duration_menu.addAction(
                             f"{seconds} seconds",
-                            lambda _checked=False, value=seconds: self._add_configured_task(
+                            lambda _checked=False, value=seconds: add_configured_task(
                                 "twitch.run_commercial",
                                 f"Run {value} second commercial",
                                 {"length": value},
@@ -6257,7 +6688,7 @@ class AutomationPage(QWidget):
                     duration_menu.addSeparator()
                     customize_action = duration_menu.addAction(
                         "Customize…",
-                        lambda _checked=False: self._add_task(
+                        lambda _checked=False: add_task(
                             "twitch.run_commercial"
                         ),
                     )
@@ -6267,17 +6698,24 @@ class AutomationPage(QWidget):
                     continue
                 action = target_menu.addAction(
                     label,
-                    lambda _checked=False, selected=task_type: self._add_task(selected),
+                    lambda _checked=False, selected=task_type: add_task(selected),
                 )
                 action.setEnabled(task_type in available)
         return add_menu
 
     def _select_task(self, task_id: str) -> None:
-        for index in range(self.task_list.count()):
-            item = self.task_list.item(index)
-            if item.data(Qt.ItemDataRole.UserRole) == task_id:
-                self.task_list.setCurrentItem(item)
-                break
+        target = self._task_items_by_id.get(task_id)
+        if target is None:
+            return
+        self._selected_task_id = task_id
+        for task_list, item in self._task_items_by_id.values():
+            task_list.blockSignals(True)
+            item.setSelected(False)
+            task_list.blockSignals(False)
+        task_list, item = target
+        task_list.setCurrentItem(item)
+        item.setSelected(True)
+        self._task_selection_changed(task_list)
 
     def _output_definitions_before(
         self,

@@ -150,7 +150,7 @@ class AutomationLogicTests(unittest.TestCase):
 
     def test_false_if_runs_empty_else_and_continues(self) -> None:
         routine = self.routines.add("Condition")
-        self.add_task(
+        condition = self.add_task(
             routine.routine_id,
             "core.if",
             {"left": "1", "operator": "equals", "right": "2"},
@@ -203,6 +203,79 @@ class AutomationLogicTests(unittest.TestCase):
         condition_result = result.routine_results[0].task_results[0]
         self.assertEqual(condition_result.selected_branch, "then")
         self.assertEqual([child.task_id for child in condition_result.child_results], ["then-output"])
+
+    def test_if_combines_multiple_conditions_with_and_or(self) -> None:
+        routine = self.routines.add("Multiple conditions")
+        condition = self.add_task(
+            routine.routine_id,
+            "core.if",
+            {
+                "condition_join": "and",
+                "conditions": [
+                    {"left": "{command.data}", "operator": "contains", "right": "coffee"},
+                    {"left": "{stream.live}", "operator": "equals", "right": "true"},
+                ],
+            },
+            then_tasks=[TaskDefinition("capture", self.capture.task_type, "Capture")],
+        )
+
+        matched = self.service.run_routine(
+            routine.routine_id,
+            {"command.data": "more coffee", "stream.live": "true"},
+        )
+        missed = self.service.run_routine(
+            routine.routine_id,
+            {"command.data": "more coffee", "stream.live": "false"},
+        )
+        self.routines.update_task(
+            routine.routine_id,
+            condition.task_id,
+            config={
+                "condition_join": "or",
+                "conditions": condition.config["conditions"],
+            },
+        )
+        either = self.service.run_routine(
+            routine.routine_id,
+            {"command.data": "more coffee", "stream.live": "false"},
+        )
+
+        self.assertEqual(matched.routine_results[0].task_results[0].selected_branch, "then")
+        self.assertEqual(missed.routine_results[0].task_results[0].selected_branch, "else")
+        self.assertEqual(either.routine_results[0].task_results[0].selected_branch, "then")
+        self.assertEqual(len(self.capture.contexts), 2)
+
+    def test_else_if_chain_runs_only_first_matching_branch(self) -> None:
+        routine = self.routines.add("Else If")
+        root = self.add_task(
+            routine.routine_id,
+            "core.if",
+            {"left": "{event.reward}", "operator": "equals", "right": "coffee"},
+            then_tasks=[TaskDefinition("coffee", self.capture.task_type, "Coffee")],
+            else_tasks=[TaskDefinition("fallback", self.capture.task_type, "Fallback")],
+        )
+        else_if = self.routines.add_else_if_branch(routine.routine_id, root.task_id)
+        self.routines.update_task(
+            routine.routine_id,
+            else_if.task_id,
+            config={
+                "branch_role": "else_if",
+                "left": "{event.reward}",
+                "operator": "equals",
+                "right": "tea",
+            },
+            then_tasks=[TaskDefinition("tea", self.capture.task_type, "Tea")],
+        )
+
+        result = self.service.run_routine(
+            routine.routine_id,
+            {"event.reward": "tea"},
+        )
+
+        outer = result.routine_results[0].task_results[0]
+        self.assertEqual(outer.selected_branch, "else")
+        self.assertEqual(outer.child_results[0].selected_branch, "then")
+        self.assertEqual(len(self.capture.contexts), 1)
 
     def test_nested_if_failure_stops_parent_sequence(self) -> None:
         class FailTask:

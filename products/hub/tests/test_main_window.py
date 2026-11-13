@@ -12,7 +12,15 @@ from uuid import uuid4
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QCoreApplication, QEvent, QPoint, QRect, Qt
+from PySide6.QtCore import (
+    QByteArray,
+    QCoreApplication,
+    QEvent,
+    QMimeData,
+    QPoint,
+    QRect,
+    Qt,
+)
 from PySide6.QtGui import QContextMenuEvent
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -1569,31 +1577,15 @@ class MainWindowTests(unittest.TestCase):
         )
         page = self.window.automation_page
         page.select_routine(routine.routine_id)
-        page.task_list.setCurrentRow(0)
-        source_item = page.task_list.item(0)
-        target_item = page.task_list.item(1)
-        target_rect = QRect(0, 100, 400, 40)
-        event = Mock()
-        position = Mock()
-        position.toPoint.return_value = QPoint(10, target_rect.bottom())
-        event.position.return_value = position
-
-        with (
-            patch.object(page.task_list, "itemAt", return_value=target_item),
-            patch.object(
-                page.task_list,
-                "visualItemRect",
-                return_value=target_rect,
-            ),
-        ):
-            page.task_list.dropEvent(event)
-
-        self.assertEqual(
-            [task.task_id for task in store.get(routine.routine_id).tasks],
-            [first.task_id, second.task_id],
+        page.task_list.task_moved.emit(
+            routine.routine_id,
+            first.task_id,
+            "",
+            "root",
+            "",
+            "root",
+            2,
         )
-
-        self.application.processEvents()
 
         self.assertEqual(
             [task.task_id for task in store.get(routine.routine_id).tasks],
@@ -1605,7 +1597,6 @@ class MainWindowTests(unittest.TestCase):
             {task.task_id for task in store.get(routine.routine_id).tasks},
             {first.task_id, second.task_id},
         )
-        event.acceptProposedAction.assert_called_once_with()
         self.assertTrue(page.task_list.isEnabled())
 
     def test_task_drop_uses_full_card_halves_and_cleans_indicator(self) -> None:
@@ -1656,8 +1647,25 @@ class MainWindowTests(unittest.TestCase):
 
         def drop(source_row: int, target_row: int, *, before: bool) -> None:
             page.task_list.setCurrentRow(source_row)
+            source = page.task_list.item(source_row)
             target = page.task_list.item(target_row)
             event = Mock()
+            mime = QMimeData()
+            mime.setData(
+                page.task_list.MIME_TYPE,
+                QByteArray(
+                    json.dumps(
+                        {
+                            "routine_id": routine.routine_id,
+                            "task_id": source.data(Qt.ItemDataRole.UserRole),
+                            "parent_task_id": "",
+                            "branch": "root",
+                            "index": source_row,
+                        }
+                    ).encode("utf-8")
+                ),
+            )
+            event.mimeData.return_value = mime
             position = Mock()
             position.toPoint.return_value = QPoint(
                 10,
@@ -1793,12 +1801,20 @@ class MainWindowTests(unittest.TestCase):
 
         self.assertIsInstance(card, IfTaskCardWidget)
         self.assertEqual(card.summary_label.full_text, "{event.viewers} > 20")
-        self.assertEqual(len(card.then_cards), 1)
-        self.assertIsInstance(card.then_cards[0], IfTaskCardWidget)
-        self.assertEqual(len(card.else_cards), 1)
-        self.assertIsInstance(card.else_cards[0], TaskCardWidget)
+        self.assertEqual(len(card.branches), 2)
         self.assertEqual(
-            card.then_cards[0].then_cards[0].name_label.text(),
+            [branch.findChild(QLabel, "automationIfBranchLabel").text()
+             for branch in card.branches],
+            ["IF", "ELSE"],
+        )
+        inner_list, inner_item = page._task_items_by_id["inner-if"]
+        inner_card = inner_list.itemWidget(inner_item)
+        self.assertIsInstance(inner_card, IfTaskCardWidget)
+        fallback_list, fallback_item = page._task_items_by_id["fallback"]
+        self.assertIsInstance(fallback_list.itemWidget(fallback_item), TaskCardWidget)
+        end_list, end_item = page._task_items_by_id["end-here"]
+        self.assertEqual(
+            end_list.itemWidget(end_item).name_label.text(),
             "Core — End Routine",
         )
 
