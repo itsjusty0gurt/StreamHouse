@@ -88,6 +88,10 @@ class LaunchApplicationTask:
                 return _result(task, True, f"{image} is already running.")
         arguments = shlex.split(str(task.config.get("arguments", "")), posix=False)
         working_directory = str(task.config.get("working_directory", "")).strip()
+        if not working_directory:
+            executable_path = Path(executable).expanduser()
+            if executable_path.is_absolute():
+                working_directory = str(executable_path.parent)
         startupinfo = None
         if os.name == "nt" and bool(task.config.get("start_minimized", False)):
             startupinfo = subprocess.STARTUPINFO()

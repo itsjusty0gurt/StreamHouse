@@ -139,6 +139,29 @@ class LaunchApplicationTaskTests(unittest.TestCase):
             startupinfo=None,
         )
 
+    @patch("products.hub.automation.core_tasks.start_external_process")
+    def test_blank_working_directory_uses_executable_folder(self, start) -> None:
+        executable = "C:/Program Files/obs-studio/bin/64bit/obs64.exe"
+        task = TaskDefinition(
+            "launch",
+            "core.launch_application",
+            "Launch OBS",
+            {
+                "executable": executable,
+                "arguments": "--minimize-to-tray",
+                "working_directory": "",
+            },
+        )
+
+        result = LaunchApplicationTask().execute(task, self._trigger())
+
+        self.assertTrue(result.succeeded)
+        start.assert_called_once_with(
+            [executable, "--minimize-to-tray"],
+            cwd=str(Path(executable).parent),
+            startupinfo=None,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
