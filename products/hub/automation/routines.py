@@ -192,6 +192,15 @@ class RoutineStore:
             None,
         )
 
+    def get_task(self, routine_id: str, task_id: str) -> TaskDefinition | None:
+        routine = self.get(routine_id)
+        if routine is None:
+            return None
+        try:
+            return self._find_task(routine, task_id)
+        except ValueError:
+            return None
+
     def get_group(self, group_id: str) -> RoutineGroup | None:
         return next(
             (group for group in self.groups if group.group_id == group_id),
@@ -495,6 +504,103 @@ class RoutineStore:
         saved = self.get(routine_id)
         return self._find_task(saved, task.task_id)  # type: ignore[arg-type]
 
+    def add_task_to_branch(
+        self,
+        routine_id: str,
+        parent_task_id: str,
+        branch: str,
+        *,
+        task_type: str,
+        name: str,
+        config: dict[str, Any] | None = None,
+        enabled: bool = True,
+        index: int | None = None,
+    ) -> TaskDefinition:
+        routines = deepcopy(self.routines)
+        routine = self._find_routine(routines, routine_id)
+        children = self._task_collection(routine, parent_task_id, branch)
+        task = TaskDefinition(
+            task_id=uuid4().hex,
+            task_type=task_type.strip().casefold(),
+            name=self._clean_name(name),
+            config=deepcopy(config or {}),
+            enabled=bool(enabled),
+        )
+        insert_at = len(children) if index is None else max(
+            0, min(int(index), len(children))
+        )
+        children.insert(insert_at, task)
+        self._commit(deepcopy(self.groups), routines)
+        saved = self.get(routine_id)
+        return self._find_task(saved, task.task_id)  # type: ignore[arg-type]
+
+    def add_else_if_branch(
+        self,
+        routine_id: str,
+        parent_task_id: str,
+    ) -> TaskDefinition:
+        """Append an ELSE IF node while preserving the existing final ELSE tasks."""
+
+        from products.hub.automation.conditions import primary_condition_subject
+
+        routines = deepcopy(self.routines)
+        routine = self._find_routine(routines, routine_id)
+        root = self._find_task(routine, parent_task_id)
+        if root.task_type != "core.if":
+            raise ValueError("ELSE IF can only be added to an If task.")
+        current = root
+        while (
+            len(current.else_tasks) == 1
+            and current.else_tasks[0].task_type == "core.if"
+            and current.else_tasks[0].config.get("branch_role") == "else_if"
+        ):
+            current = current.else_tasks[0]
+        subject = primary_condition_subject(root.config)
+        branch = TaskDefinition(
+            task_id=uuid4().hex,
+            task_type="core.if",
+            name="Else If",
+            config={
+                "branch_role": "else_if",
+                "condition_join": "and",
+                "conditions": [
+                    {
+                        "left": subject,
+                        "operator": "equals",
+                        "right": "",
+                        "ignore_case": False,
+                        "group_id": "",
+                    }
+                ],
+            },
+            then_tasks=[],
+            else_tasks=current.else_tasks,
+        )
+        current.else_tasks = [branch]
+        self._commit(deepcopy(self.groups), routines)
+        saved = self.get(routine_id)
+        return self._find_task(saved, branch.task_id)  # type: ignore[arg-type]
+
+    def delete_else_if_branch(
+        self,
+        routine_id: str,
+        task_id: str,
+    ) -> bool:
+        """Remove one ELSE IF node while preserving the following branch chain."""
+
+        routines = deepcopy(self.routines)
+        routine = self._find_routine(routines, routine_id)
+        try:
+            branch = self._find_task(routine, task_id)
+        except ValueError:
+            return False
+        if branch.task_type != "core.if" or branch.config.get("branch_role") != "else_if":
+            raise ValueError("The selected task is not an Else If branch.")
+        siblings, index = self._find_task_container(routine, task_id)
+        siblings[index : index + 1] = branch.else_tasks
+        self._commit(deepcopy(self.groups), routines)
+        return True
+
     def update_task(
         self,
         routine_id: str,
@@ -520,6 +626,8 @@ class RoutineStore:
             task.name = self._clean_name(name)
         if config is not None:
             task.config = deepcopy(config)
+            if task.task_type == "core.if" and task.config.get("branch_role") != "else_if":
+                self._sync_else_if_subjects(task)
         if enabled is not None:
             task.enabled = bool(enabled)
         if then_tasks is not None:
@@ -531,11 +639,31 @@ class RoutineStore:
         return self._find_task(saved, task_id)  # type: ignore[arg-type]
 
     def move_task(self, routine_id: str, task_id: str, index: int) -> TaskDefinition:
+        return self.move_task_to_branch(routine_id, task_id, "", "root", index)
+
+    def move_task_to_branch(
+        self,
+        routine_id: str,
+        task_id: str,
+        parent_task_id: str,
+        branch: str,
+        index: int,
+    ) -> TaskDefinition:
         routines = deepcopy(self.routines)
         routine = self._find_routine(routines, routine_id)
         task = self._find_task(routine, task_id)
-        routine.tasks.remove(task)
-        routine.tasks.insert(max(0, min(int(index), len(routine.tasks))), task)
+        if parent_task_id and any(
+            child.task_id == parent_task_id for child in self._walk_tasks((task,))
+        ):
+            raise ValueError("A task cannot be moved into its own subtree.")
+        source, source_index = self._find_task_container(routine, task_id)
+        destination = self._task_collection(routine, parent_task_id, branch)
+        destination_index = int(index)
+        if source is destination and source_index < destination_index:
+            destination_index -= 1
+        source.pop(source_index)
+        destination_index = max(0, min(destination_index, len(destination)))
+        destination.insert(destination_index, task)
         self._commit(deepcopy(self.groups), routines)
         saved = self.get(routine_id)
         return self._find_task(saved, task_id)  # type: ignore[arg-type]
@@ -567,11 +695,11 @@ class RoutineStore:
         self._renew_task_ids(task)
         task.name = self._clean_name(f"{task.name} Copy")
         task.managed_key = ""
-        source_index = routine.tasks.index(source)
+        source_tasks, source_index = self._find_task_container(routine, task_id)
         insert_at = source_index + 1 if index is None else max(
-            0, min(int(index), len(routine.tasks))
+            0, min(int(index), len(source_tasks))
         )
-        routine.tasks.insert(insert_at, task)
+        source_tasks.insert(insert_at, task)
         self._commit(deepcopy(self.groups), routines)
         saved = self.get(routine_id)
         return self._find_task(saved, task.task_id)  # type: ignore[arg-type]
@@ -587,7 +715,8 @@ class RoutineStore:
             raise ValueError(
                 "A service-managed task must be deleted through its trigger."
             )
-        routine.tasks.remove(task)
+        source_tasks, source_index = self._find_task_container(routine, task_id)
+        source_tasks.pop(source_index)
         self._commit(deepcopy(self.groups), routines)
         return True
 
@@ -826,6 +955,36 @@ class RoutineStore:
             cls._renew_task_ids(child)
 
     @staticmethod
+    def _sync_else_if_subjects(task: TaskDefinition) -> None:
+        from products.hub.automation.conditions import (
+            condition_definitions,
+            normalize_if_config,
+            primary_condition_subject,
+        )
+
+        subject = primary_condition_subject(task.config)
+        current = task
+        while (
+            len(current.else_tasks) == 1
+            and current.else_tasks[0].task_type == "core.if"
+            and current.else_tasks[0].config.get("branch_role") == "else_if"
+        ):
+            current = current.else_tasks[0]
+            config = normalize_if_config(current.config)
+            conditions = list(condition_definitions(config))
+            if conditions:
+                first = conditions[0]
+                conditions[0] = type(first)(
+                    left=subject,
+                    operator=first.operator,
+                    right=first.right,
+                    ignore_case=first.ignore_case,
+                    group_id=first.group_id,
+                )
+            config["conditions"] = [condition.to_dict() for condition in conditions]
+            current.config = config
+
+    @staticmethod
     def _clean_name(name: str) -> str:
         value = name.strip()
         if not value:
@@ -859,9 +1018,56 @@ class RoutineStore:
             raise ValueError("The selected routine no longer exists.")
         return routine
 
-    @staticmethod
-    def _find_task(routine: RoutineDefinition, task_id: str) -> TaskDefinition:
-        task = next((value for value in routine.tasks if value.task_id == task_id), None)
+    @classmethod
+    def _find_task(cls, routine: RoutineDefinition, task_id: str) -> TaskDefinition:
+        task = next(
+            (value for value in cls._walk_tasks(routine.tasks) if value.task_id == task_id),
+            None,
+        )
         if task is None:
             raise ValueError("The selected task no longer exists.")
         return task
+
+    @classmethod
+    def _find_task_container(
+        cls,
+        routine: RoutineDefinition,
+        task_id: str,
+    ) -> tuple[list[TaskDefinition], int]:
+        def locate(tasks: list[TaskDefinition]) -> tuple[list[TaskDefinition], int] | None:
+            for index, task in enumerate(tasks):
+                if task.task_id == task_id:
+                    return tasks, index
+                found = locate(task.then_tasks)
+                if found is not None:
+                    return found
+                found = locate(task.else_tasks)
+                if found is not None:
+                    return found
+            return None
+
+        location = locate(routine.tasks)
+        if location is None:
+            raise ValueError("The selected task no longer exists.")
+        return location
+
+    @classmethod
+    def _task_collection(
+        cls,
+        routine: RoutineDefinition,
+        parent_task_id: str,
+        branch: str,
+    ) -> list[TaskDefinition]:
+        clean_branch = branch.strip().casefold()
+        if not parent_task_id:
+            if clean_branch not in {"", "root"}:
+                raise ValueError("Root tasks require the root branch.")
+            return routine.tasks
+        parent = cls._find_task(routine, parent_task_id)
+        if parent.task_type != "core.if":
+            raise ValueError("Only If tasks may own branch tasks.")
+        if clean_branch == "then":
+            return parent.then_tasks
+        if clean_branch == "else":
+            return parent.else_tasks
+        raise ValueError("Unknown If branch.")

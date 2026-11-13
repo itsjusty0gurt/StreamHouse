@@ -13,6 +13,10 @@ from products.hub.automation.logic_tasks import (
     LOGIC_TASK_LABELS,
     UNARY_OPERATORS,
 )
+from products.hub.automation.conditions import (
+    condition_definitions,
+    condition_join_mode,
+)
 from products.hub.automation.music_tasks import MUSIC_TASK_LABELS
 from products.hub.automation.tasks import (
     TaskCardSummaryFormatter,
@@ -849,8 +853,10 @@ def _unit_abbreviation(unit: object) -> str:
 def _condition_summary(
     config: Mapping[str, Any], resolver: TaskReferenceResolver | None = None
 ) -> str:
-    left = _summary_text(config.get("left", "value")) or "value"
-    operator = str(config.get("operator", "equals"))
+    conditions = condition_definitions(config)
+    condition = conditions[0]
+    left = _summary_text(condition.left or "value") or "value"
+    operator = condition.operator
     label = next(
         (
             text
@@ -860,11 +866,18 @@ def _condition_summary(
         operator.replace("_", " ").title(),
     )
     if operator == "user_in_group":
-        group = _resolved(config, "group_id", "user_group", resolver) or "Missing Group"
-        return f"User Is In Group: {group}"
+        group = (
+            _summary_text(resolver("user_group", condition.group_id))
+            if resolver is not None and condition.group_id
+            else _summary_text(condition.group_id)
+        ) or "Missing Group"
+        summary = f"User Is In Group: {group}"
+        return _with_additional_condition_count(summary, config, len(conditions))
     if operator in UNARY_OPERATORS or operator in IF_UNARY_OPERATORS:
-        return f"{left} {label.casefold()}"
-    right = _summary_text(config.get("right", ""))
+        return _with_additional_condition_count(
+            f"{left} {label.casefold()}", config, len(conditions)
+        )
+    right = _summary_text(condition.right)
     symbols = {
         "equals": "=",
         "not_equals": "≠",
@@ -873,7 +886,22 @@ def _condition_summary(
         "greater_than": ">",
         "greater_or_equal": "≥",
     }
-    return f"{left} {symbols.get(operator, label)} {right}".strip()
+    return _with_additional_condition_count(
+        f"{left} {symbols.get(operator, label)} {right}".strip(),
+        config,
+        len(conditions),
+    )
+
+
+def _with_additional_condition_count(
+    summary: str,
+    config: Mapping[str, Any],
+    count: int,
+) -> str:
+    if count <= 1:
+        return summary
+    join = condition_join_mode(config).upper()
+    return f"{summary} · {join} {count - 1} more"
 
 
 def _generic_card_summary(config: Mapping[str, Any]) -> str:

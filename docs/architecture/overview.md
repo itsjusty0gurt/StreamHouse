@@ -564,9 +564,12 @@ The Tasks frame follows the Activity Feed's compact card language without
 reusing its event widget: stable category colors appear as narrow left accent
 strips, while category text remains visible for accessibility. Normal actions
 are dense one-line cards with an elided configuration summary. Structured
-control flow is rendered as a container: **If** owns and previews its Then and
-optional Else task lists recursively, and each child retains its own category
-card. The selected branch executes inline, shares the current trigger context,
+control flow is rendered as an expandable tree container: **If** owns real
+nested task lists for IF, zero or more ELSE IF branches, and an optional ELSE,
+and each child retains its normal task card and stable task ID. Drag-and-drop
+moves the same persisted task nodes between the routine root and branch lists;
+it does not create hidden routines or visual-only copies. The selected branch
+executes inline, shares the current trigger context,
 `automation.*` outputs, queue identity, and cancellation token, then returns to
 the next task after If. Child failure or cancellation propagates through the
 normal task failure semantics. The real **End Routine** action remains a normal
@@ -595,12 +598,19 @@ a routine) returns successfully and the parent continues. It never ends the
 entire root execution, clears waiting queue items, pauses a queue, or undoes
 completed actions.
 
-`core.if` compares literal values or canonical Variables. Text comparisons may
-ignore case; numeric comparisons parse exact finite decimals rather than binary
+`core.if` compares literal values or canonical Variables through the reusable
+flat condition-list contract (`condition_join` plus `conditions`). Conditions
+can be combined with AND or OR; intentionally deep expression groups and
+temporal/Wait Until semantics are outside this contract. Released 0.3 single
+conditions are normalized at the task-config boundary without changing routine
+or task IDs and without a routine schema bump. Text comparisons may ignore
+case; numeric comparisons parse exact finite decimals rather than binary
 floating-point values. Empty and non-empty checks are unary. Only the selected
 branch executes, an empty branch is valid, and If does not provide jump, label,
-or `goto` behavior. The editor owns child add/edit/delete/reorder controls and
-supports nested If tasks directly.
+or `goto` behavior. ELSE IF is stored as a marked nested `core.if` in the prior
+branch's `else_tasks`, so existing recursive execution, transfer, Backup, and
+restore behavior remains authoritative. The tree editor owns child
+add/edit/delete/reorder controls and supports nested If tasks directly.
 
 Counter tasks use this same pipeline. A command, EventSub subscription, OBS
 event, Core event, or manual routine execution can invoke any routine that

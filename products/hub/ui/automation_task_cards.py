@@ -2,13 +2,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from PySide6.QtCore import QSize, Qt
+from PySide6.QtCore import QSize, Qt, Signal
 from PySide6.QtGui import QFontMetrics, QResizeEvent
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
     QSizePolicy,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -499,26 +500,45 @@ class TaskCardWidget(QFrame):
         _set_selected(self, selected)
 
 
+class _IfHeaderFrame(QFrame):
+    clicked = Signal()
+    double_clicked = Signal()
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802 - Qt API
+        self.clicked.emit()
+        super().mousePressEvent(event)
+
+    def mouseDoubleClickEvent(self, event) -> None:  # noqa: N802 - Qt API
+        self.double_clicked.emit()
+        super().mouseDoubleClickEvent(event)
+
+
 class IfTaskCardWidget(QFrame):
-    """Structural card that owns read-only previews of its branch routines."""
+    """Expandable native-looking container for one persisted If subtree."""
+
+    selected_requested = Signal(str)
+    edit_requested = Signal(str)
+    collapse_requested = Signal(str, bool)
+    add_else_if_requested = Signal(str)
 
     def __init__(
         self,
         content: TaskCardContent,
-        then_cards: tuple[QWidget, ...],
-        else_cards: tuple[QWidget, ...],
+        task_id: str,
+        branches: tuple[QWidget, ...],
         *,
-        then_name: str = "",
-        else_name: str = "",
+        expanded: bool = True,
+        branch_count: int = 0,
+        child_task_count: int = 0,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self.content = content
-        self.then_cards = then_cards
-        self.else_cards = else_cards
+        self.task_id = task_id
+        self.branches = branches
+        self.expanded = expanded
         self.setObjectName("automationIfCard")
         self.setProperty("selected", False)
-        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
 
         accent = task_category_accent("Core / Logic")
         self.setStyleSheet(
@@ -544,28 +564,72 @@ class IfTaskCardWidget(QFrame):
         body = QVBoxLayout()
         body.setContentsMargins(10, 7, 9, 9)
         body.setSpacing(6)
-        header = QHBoxLayout()
+        self.header_frame = _IfHeaderFrame(self)
+        self.header_frame.setStyleSheet("border:none; background:transparent;")
+        header = QHBoxLayout(self.header_frame)
+        header.setContentsMargins(0, 0, 0, 0)
         header.setSpacing(8)
+        self.expand_button = QToolButton(self.header_frame)
+        self.expand_button.setText("▾" if expanded else "▸")
+        self.expand_button.setToolTip("Collapse If" if expanded else "Expand If")
+        self.expand_button.clicked.connect(
+            lambda: self.collapse_requested.emit(self.task_id, self.expanded)
+        )
+        header.addWidget(self.expand_button)
         self.name_label = QLabel("Core — IF", self)
         self.name_label.setStyleSheet("font-weight:750; color:#efeff1;")
+        self.name_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         header.addWidget(self.name_label)
         self.summary_label = ElidingLabel(content.summary, self)
         self.summary_label.setStyleSheet("color:#d6d6dc; font-weight:600;")
+        self.summary_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         header.addWidget(self.summary_label, 1)
+        self.tree_summary_label = QLabel(
+            f"{branch_count} {'branch' if branch_count == 1 else 'branches'} · "
+            f"{child_task_count} {'task' if child_task_count == 1 else 'tasks'}",
+            self.header_frame,
+        )
+        self.tree_summary_label.setStyleSheet("color:#85858f; font-size:10px;")
+        self.tree_summary_label.setAttribute(
+            Qt.WidgetAttribute.WA_TransparentForMouseEvents
+        )
+        header.addWidget(self.tree_summary_label)
         self.status_label = QLabel(content.status, self)
         self.status_label.setStyleSheet("color:#d9b957; font-size:10px;")
         self.status_label.setVisible(bool(content.status))
+        self.status_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         header.addWidget(self.status_label)
-        body.addLayout(header)
+        self.add_else_if_button = QToolButton(self.header_frame)
+        self.add_else_if_button.setText("+ ELSE IF")
+        self.add_else_if_button.setToolTip(
+            "Add another value or state for the same IF subject"
+        )
+        self.add_else_if_button.setVisible(expanded)
+        self.add_else_if_button.clicked.connect(
+            lambda: self.add_else_if_requested.emit(self.task_id)
+        )
+        header.addWidget(self.add_else_if_button)
+        body.addWidget(self.header_frame)
 
-        self._add_branch(body, "THEN", then_name, then_cards)
-        if else_cards or else_name:
-            divider = QFrame(self)
-            divider.setFixedHeight(1)
-            divider.setStyleSheet("background:#3c3c42; border:none;")
-            body.addWidget(divider)
-            self._add_branch(body, "ELSE", else_name, else_cards)
+        self.branch_container = QWidget(self)
+        branch_layout = QVBoxLayout(self.branch_container)
+        branch_layout.setContentsMargins(14, 0, 0, 0)
+        branch_layout.setSpacing(7)
+        self.branch_container.setStyleSheet(
+            "border-left:2px solid #4a4149; background:transparent;"
+        )
+        for branch in branches:
+            branch_layout.addWidget(branch)
+        self.branch_container.setVisible(expanded)
+        body.addWidget(self.branch_container)
         outer.addLayout(body, 1)
+
+        self.header_frame.clicked.connect(
+            lambda: self.selected_requested.emit(self.task_id)
+        )
+        self.header_frame.double_clicked.connect(
+            lambda: self.edit_requested.emit(self.task_id)
+        )
 
         self.setToolTip(
             "\n".join(
@@ -576,38 +640,6 @@ class IfTaskCardWidget(QFrame):
             or "Ready"
         )
         self.setAccessibleName(f"Core Logic, If {content.summary}")
-
-    def _add_branch(
-        self,
-        layout: QVBoxLayout,
-        label: str,
-        routine_name: str,
-        cards: tuple[QWidget, ...],
-    ) -> None:
-        branch_label = QLabel(
-            f"{label}  {routine_name}" if routine_name else label,
-            self,
-        )
-        branch_label.setStyleSheet(
-            "color:#adadb8; font-size:10px; font-weight:700; letter-spacing:0.4px;"
-        )
-        layout.addWidget(branch_label)
-        if not cards:
-            empty = QLabel(
-                "No tasks in branch routine"
-                if routine_name
-                else "No branch routine configured",
-                self,
-            )
-            empty.setStyleSheet("color:#777780; font-style:italic;")
-            layout.addWidget(empty)
-            return
-        for card in cards:
-            wrapper = QWidget(self)
-            wrapper_layout = QHBoxLayout(wrapper)
-            wrapper_layout.setContentsMargins(8, 0, 0, 0)
-            wrapper_layout.addWidget(card)
-            layout.addWidget(wrapper)
 
     def set_selected(self, selected: bool) -> None:
         _set_selected(self, selected)

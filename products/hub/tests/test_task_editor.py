@@ -16,6 +16,8 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMessageBox,
     QScrollArea,
+    QSizePolicy,
+    QVBoxLayout,
 )
 from PySide6.QtGui import QTextCursor
 
@@ -724,10 +726,11 @@ class TaskEditorTests(unittest.TestCase):
 
         self.assertFalse(fields["right"].isEnabled())
         self.assertEqual(dialog.name_edit.text(), "If")
-        self.assertEqual(dialog.then_tasks_editor.value(), [])
-        self.assertEqual(dialog.else_tasks_editor.value(), [])
+        self.assertEqual(len(dialog.condition_builder.rows), 1)
+        self.assertFalse(hasattr(dialog, "then_tasks_editor"))
+        self.assertFalse(hasattr(dialog, "else_tasks_editor"))
 
-    def test_if_form_round_trips_owned_nested_tasks_and_reorders_them(self) -> None:
+    def test_if_form_edits_conditions_without_replacing_owned_nested_tasks(self) -> None:
         first = TaskDefinition("first", "core.wait", "First", {"duration": "1"})
         second = TaskDefinition("second", "core.wait", "Second", {"duration": "2"})
         condition = TaskDefinition(
@@ -738,37 +741,97 @@ class TaskEditorTests(unittest.TestCase):
             then_tasks=[first, second],
         )
         dialog = TaskEditorDialog("core.if", task=condition)
-        dialog.then_tasks_editor.task_list.setCurrentRow(1)
-        dialog.then_tasks_editor.move_selected(-1)
+        dialog.condition_builder.add_button.click()
+        second_row = dialog.condition_builder.rows[1]
+        second_row.left_edit.setText("{stream.live}")
+        second_row.operator_combo.setCurrentIndex(
+            second_row.operator_combo.findData("equals")
+        )
+        second_row.right_edit.setText("true")
 
         values = dialog.values()
 
-        self.assertEqual(
-            [task.task_id for task in values["then_tasks"]],
-            ["second", "first"],
-        )
-        self.assertEqual(values["else_tasks"], [])
+        self.assertNotIn("then_tasks", values)
+        self.assertNotIn("else_tasks", values)
+        self.assertEqual(len(values["config"]["conditions"]), 2)
+        self.assertEqual(values["config"]["conditions"][1]["left"], "{stream.live}")
 
-    def test_if_branch_editor_adds_edits_and_deletes_children(self) -> None:
+    def test_if_condition_builder_adds_and_removes_rows(self) -> None:
         dialog = TaskEditorDialog("core.if")
-        editor = dialog.then_tasks_editor
-        added = TaskDefinition("added", "core.wait", "Added")
-        edited = TaskDefinition("added", "core.wait", "Edited")
-        with patch(
-            "products.hub.ui.automation_page.QInputDialog.getItem",
-            return_value=("Wait", True),
-        ), patch.object(editor, "_run_editor", return_value=added):
-            editor.add_task()
-        self.assertEqual([task.name for task in editor.value()], ["Added"])
+        builder = dialog.condition_builder
+        builder.add_button.click()
 
-        editor.task_list.setCurrentRow(0)
-        with patch.object(editor, "_run_editor", return_value=edited):
-            editor.edit_selected()
-        self.assertEqual([task.name for task in editor.value()], ["Edited"])
+        self.assertEqual(len(builder.rows), 2)
+        builder.remove_condition(builder.rows[1])
+        self.assertEqual(len(builder.rows), 1)
 
-        editor.task_list.setCurrentRow(0)
-        editor.delete_selected()
-        self.assertEqual(editor.value(), [])
+    def test_if_condition_builder_uses_roomy_vertical_fields(self) -> None:
+        dialog = TaskEditorDialog("core.if")
+        row = dialog.condition_builder.rows[0]
+        dialog.show()
+        self.application.processEvents()
+
+        self.assertGreaterEqual(dialog.minimumWidth(), 680)
+        self.assertGreaterEqual(dialog.minimumHeight(), 500)
+        self.assertIsInstance(row.layout(), QVBoxLayout)
+        self.assertEqual(row.left_label.text(), "Value / Variable")
+        self.assertEqual(row.operator_label.text(), "Comparison")
+        self.assertEqual(row.right_label.text(), "Compare To")
+        self.assertGreaterEqual(row.operator_combo.minimumContentsLength(), 28)
+        self.assertTrue(dialog.condition_builder.rows_scroll.widgetResizable())
+        self.assertGreaterEqual(row.left_edit.width(), 400)
+        self.assertGreaterEqual(row.operator_combo.width(), 400)
+        self.assertGreaterEqual(row.right_edit.width(), 400)
+        dialog.close()
+
+    def test_if_variable_picker_keeps_long_canonical_name_readable(self) -> None:
+        dialog = TaskEditorDialog("core.if", variable_registry=self.variables())
+        row = dialog.condition_builder.rows[0]
+        placeholder = "{twitch.channel.follower_count}"
+
+        row.left_picker.insert_placeholder(placeholder)
+
+        self.assertEqual(row.left_edit.text(), placeholder)
+        self.assertEqual(
+            row.left_edit.sizePolicy().horizontalPolicy(),
+            QSizePolicy.Policy.Expanding,
+        )
+
+    def test_if_join_label_separates_vertical_condition_cards(self) -> None:
+        dialog = TaskEditorDialog("core.if")
+        builder = dialog.condition_builder
+        builder.add_button.click()
+
+        self.assertEqual(builder.rows[0].join_label.text(), "IF")
+        self.assertEqual(builder.rows[1].join_label.text(), "AND")
+        builder.join_combo.setCurrentIndex(builder.join_combo.findData("or"))
+        self.assertEqual(builder.rows[1].join_label.text(), "OR")
+
+    def test_else_if_editor_keeps_subject_and_branch_identity(self) -> None:
+        branch = TaskDefinition(
+            "else-if",
+            "core.if",
+            "Else If",
+            {
+                "branch_role": "else_if",
+                "condition_join": "or",
+                "conditions": [
+                    {"left": "{event.reward}", "operator": "equals", "right": "tea"}
+                ],
+            },
+        )
+        dialog = TaskEditorDialog(
+            "core.if",
+            task=branch,
+            fixed_condition_subject="{event.reward}",
+        )
+
+        row = dialog.condition_builder.rows[0]
+        self.assertTrue(row.left_edit.isReadOnly())
+        self.assertEqual(row.left_edit.text(), "{event.reward}")
+        values = dialog.values()
+        self.assertEqual(values["config"]["branch_role"], "else_if")
+        self.assertEqual(values["config"]["condition_join"], "or")
 
     def test_switch_form_round_trips_case_routines(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

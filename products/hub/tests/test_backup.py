@@ -501,14 +501,18 @@ class BackupManagerTests(unittest.TestCase):
         restored_condition = next(
             task
             for task in restored_routines.get("parent").tasks
-            if task.config.get("operator") == "user_in_group"
+            if task.config.get("conditions", [{}])[0].get("operator")
+            == "user_in_group"
         )
         self.assertEqual(restored_groups.groups[custom.group_id].name, "Auto Shoutout")
         self.assertEqual(
             restored_groups.memberships["viewer-1"],
             {SYSTEM_REGULARS_GROUP_ID, custom.group_id},
         )
-        self.assertEqual(restored_condition.config["group_id"], custom.group_id)
+        self.assertEqual(
+            restored_condition.config["conditions"][0]["group_id"],
+            custom.group_id,
+        )
 
     def test_current_twitch_trigger_schema_backs_up_and_restores_with_stable_links(
         self,

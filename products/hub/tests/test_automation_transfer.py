@@ -186,7 +186,9 @@ class AutomationTransferTests(unittest.TestCase):
             **destination,
         )
 
-        self.assertEqual(imported.tasks[0].config["group_id"], stable_group_id)
+        condition = imported.tasks[0].config["conditions"][0]
+        self.assertEqual(condition["operator"], "user_in_group")
+        self.assertEqual(condition["group_id"], stable_group_id)
 
     def test_timer_trigger_round_trip_preserves_schedule_configuration(self) -> None:
         routine = self.stores["routine_store"].add("Random promo")

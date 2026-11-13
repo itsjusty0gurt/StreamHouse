@@ -19,6 +19,11 @@ from products.hub.automation.models import (
 from products.hub.automation.variable_registry import placeholder_names, render_placeholders
 from products.hub.automation.variable_registry import VariableDataType
 from products.hub.automation.variable_outputs import automation_output_name
+from products.hub.automation.conditions import (
+    CONDITION_JOIN_ALL,
+    condition_definitions,
+    condition_join_mode,
+)
 
 
 LOGIC_TASK_LABELS = {
@@ -399,22 +404,32 @@ class IfTask:
     def execute(self, task: TaskDefinition, trigger: TriggerEvent) -> TaskExecutionResult:
         try:
             context = _context(trigger)
-            operator = str(task.config.get("operator", "equals"))
-            if operator == "user_in_group":
-                group_id = str(task.config.get("group_id", "")).strip()
-                if self.user_groups is None or self.user_groups.get_group(group_id) is None:
-                    raise ValueError("The selected user group no longer exists.")
-                matched = self.user_groups.is_member(
-                    str(context.get("user.id", "")).strip(), group_id
-                )
-            else:
-                matched = evaluate_if_condition(
-                    str(task.config.get("left", "")),
-                    operator,
-                    str(task.config.get("right", "")),
-                    context,
-                    ignore_case=bool(task.config.get("ignore_case", False)),
-                )
+            results: list[bool] = []
+            for condition in condition_definitions(task.config):
+                if condition.operator == "user_in_group":
+                    if (
+                        self.user_groups is None
+                        or self.user_groups.get_group(condition.group_id) is None
+                    ):
+                        raise ValueError("The selected user group no longer exists.")
+                    result = self.user_groups.is_member(
+                        str(context.get("user.id", "")).strip(),
+                        condition.group_id,
+                    )
+                else:
+                    result = evaluate_if_condition(
+                        condition.left,
+                        condition.operator,
+                        condition.right,
+                        context,
+                        ignore_case=condition.ignore_case,
+                    )
+                results.append(result)
+            matched = (
+                all(results)
+                if condition_join_mode(task.config) == CONDITION_JOIN_ALL
+                else any(results)
+            )
             branch = "then" if matched else "else"
             branch_tasks = tuple(task.then_tasks if matched else task.else_tasks)
             child_results = self.branch_runner(branch_tasks, trigger)

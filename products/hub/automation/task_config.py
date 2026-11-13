@@ -4,6 +4,7 @@ from copy import deepcopy
 from typing import Any, Mapping
 
 from products.hub.counters.models import SCOPES
+from products.hub.automation.conditions import normalize_if_config
 
 
 COUNTER_TASK_TYPES = frozenset(
@@ -35,7 +36,10 @@ def normalize_task_config(
     """
 
     normalized = deepcopy(dict(config or {}))
-    if str(task_type).strip().casefold() not in COUNTER_TASK_TYPES:
+    normalized_type = str(task_type).strip().casefold()
+    if normalized_type == "core.if":
+        return normalize_if_config(normalized)
+    if normalized_type not in COUNTER_TASK_TYPES:
         return normalized
 
     raw_scopes = normalized.get("scopes")

@@ -138,6 +138,12 @@ hidden Core Connections shell.
   show/hide/toggle-source requests and no `GetSceneItemId` timeout.
 - Routine deletion now preserves the routine-list position and selects the next
   nearby routine instead of rebuilding back at the top.
+- **In hands-on acceptance on `feature/automation-if-tree`:** Core If is now an
+  expandable task-tree container with reusable AND/OR condition rows, real
+  nested branch task lists, ELSE IF chaining, and cross-branch drag-and-drop.
+  Released single-condition tasks normalize in place without changing IDs or
+  the routine schema. Continue-Routine branch controls and an If trigger remain
+  intentionally deferred.
 - Counter Variables now expose scope-aware `.unit` values for channel lifetime,
   current stream, viewer lifetime, and viewer current-stream totals while
   preserving the existing numeric Variables.
