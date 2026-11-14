@@ -108,6 +108,9 @@ def export_routine(
                     "timer_minimum_unit": trigger.timer_minimum_unit,
                     "timer_maximum": trigger.timer_maximum,
                     "timer_maximum_unit": trigger.timer_maximum_unit,
+                    "condition_join": trigger.condition_join,
+                    "conditions": trigger.conditions,
+                    "firing_mode": trigger.firing_mode,
                 }
                 for trigger in core_store.for_routine(routine.routine_id)
             ],
@@ -229,6 +232,9 @@ def import_routine(
                 timer_minimum_unit=str(values.get("timer_minimum_unit", "seconds")),
                 timer_maximum=str(values.get("timer_maximum", "")),
                 timer_maximum_unit=str(values.get("timer_maximum_unit", "seconds")),
+                condition_join=str(values.get("condition_join", "and")),
+                conditions=list(values.get("conditions", [])),
+                firing_mode=str(values.get("firing_mode", "")),
             )
             core_ids.append(trigger.trigger_id)
         for values in trigger_values.get("obs", []):

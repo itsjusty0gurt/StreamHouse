@@ -93,3 +93,55 @@ def condition_count(config: Mapping[str, Any]) -> int:
 def primary_condition_subject(config: Mapping[str, Any]) -> str:
     conditions = condition_definitions(config)
     return conditions[0].left if conditions else ""
+
+
+def condition_dependencies(config: Mapping[str, Any]) -> frozenset[str]:
+    """Return canonical Variables referenced by one flat condition set."""
+
+    from products.hub.automation.variable_registry import placeholder_names
+
+    names: set[str] = set()
+    for condition in condition_definitions(config):
+        names.update(placeholder_names(condition.left))
+        names.update(placeholder_names(condition.right))
+    return frozenset(names)
+
+
+def evaluate_condition_set(
+    config: Mapping[str, Any],
+    context: dict[str, str],
+    *,
+    user_groups=None,
+) -> bool:
+    """Evaluate the shared If condition contract for tasks or triggers."""
+
+    # Imported lazily because logic_tasks owns the established comparison
+    # implementation while also consuming the condition data model.
+    from products.hub.automation.logic_tasks import evaluate_if_condition
+
+    results: list[bool] = []
+    for condition in condition_definitions(config):
+        if condition.operator == "user_in_group":
+            if (
+                user_groups is None
+                or user_groups.get_group(condition.group_id) is None
+            ):
+                raise ValueError("The selected user group no longer exists.")
+            result = user_groups.is_member(
+                str(context.get("user.id", "")).strip(),
+                condition.group_id,
+            )
+        else:
+            result = evaluate_if_condition(
+                condition.left,
+                condition.operator,
+                condition.right,
+                context,
+                ignore_case=condition.ignore_case,
+            )
+        results.append(result)
+    return (
+        all(results)
+        if condition_join_mode(config) == CONDITION_JOIN_ALL
+        else any(results)
+    )

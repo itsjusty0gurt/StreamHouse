@@ -5,6 +5,7 @@ from typing import Mapping, Sequence
 
 from products.hub.automation.core_triggers import (
     CORE_TRIGGER_TYPES,
+    IF_TRIGGER_FIRING_MODES,
     MINIMUM_TIMER_MILLISECONDS,
     TIMER_MODES,
     TIMER_UNIT_LABELS,
@@ -245,12 +246,21 @@ def _trigger_entries(variable_registry: VariableRegistry) -> tuple[WikiEntry, ..
         ),
     ]
     for event_type, label in CORE_TRIGGER_TYPES.items():
-        summary = (
-            "Fires on an exact interval or a random interval range."
-            if event_type == "timer"
-            else f"Fires when Hub reports {label.lower()}."
+        if event_type == "timer":
+            summary = "Fires on an exact interval or a random interval range."
+        elif event_type == "if":
+            summary = "Fires when a configured Variable condition changes state."
+        else:
+            summary = f"Fires when Hub reports {label.lower()}."
+        entries.append(
+            _trigger_entry(
+                event_type,
+                label,
+                summary,
+                variables("core.") if event_type == "if" else (),
+                ("core", "conditions") if event_type == "if" else ("core",),
+            )
         )
-        entries.append(_trigger_entry(event_type, label, summary, (), ("core",)))
     twitch_summaries = {
         "channel.raid.outgoing.started": "Runs after Twitch accepts an outgoing raid started from Hub.",
         "channel.ban.permanent": "Runs when a viewer is permanently banned from Twitch chat.",
@@ -407,6 +417,23 @@ def _trigger_entry(
             f"{TIMER_MODES['random']} — enter numeric Minimum and Maximum values and choose each value's unit independently.",
             "Supported units — " + ", ".join(TIMER_UNIT_LABELS.values()) + ".",
         )
+    elif trigger_id == "if":
+        configuration = (
+            "Build one or more conditions with the same Variable Picker and comparison controls as the Core If task.",
+            "Choose All conditions (AND) or Any condition (OR).",
+            "Fire when — " + ", ".join(IF_TRIGGER_FIRING_MODES.values()) + ".",
+        )
+        additional_sections = (
+            WikiSection(
+                "Transition behavior",
+                (
+                    "Hub records the initial Boolean result without firing when it starts or when the trigger is enabled.",
+                    "The trigger fires only when the complete result crosses the selected edge; an unchanged result never repeats.",
+                    "Only global Variables can be watched because no routine trigger context exists before the routine starts.",
+                ),
+            ),
+        )
+    if trigger_id == "timer":
         additional_sections = (
             WikiSection(
                 "Validation",

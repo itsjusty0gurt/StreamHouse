@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from decimal import Decimal, InvalidOperation
 from math import isfinite
 from pathlib import Path
@@ -9,6 +9,11 @@ from uuid import uuid4
 
 from products.hub.automation.models import TriggerEvent
 from products.hub.automation.routines import RoutineStore
+from products.hub.automation.conditions import (
+    condition_definitions,
+    condition_join_mode,
+    normalize_if_config,
+)
 from shared.streamhouse_runtime.json_store import (
     UnsupportedJsonSchemaError,
     atomic_write_json,
@@ -22,6 +27,12 @@ CORE_TRIGGER_TYPES = {
     "application.started": "Application Started",
     "application.closing": "Application Closing",
     "timer": "Timer",
+    "if": "If",
+}
+IF_TRIGGER_FIRING_MODES = {
+    "becomes_true": "Becomes True",
+    "becomes_false": "Becomes False",
+    "changes": "Changes",
 }
 TIMER_MODES = {"fixed": "Exact", "random": "Random"}
 TIMER_UNITS = {
@@ -50,26 +61,58 @@ class CoreAutomationTrigger:
     timer_minimum_unit: str = "seconds"
     timer_maximum: str = ""
     timer_maximum_unit: str = "seconds"
+    condition_join: str = "and"
+    conditions: list[dict[str, object]] = field(default_factory=list)
+    firing_mode: str = ""
 
     @classmethod
     def from_dict(cls, values: Mapping[str, Any]) -> CoreAutomationTrigger:
+        event_type = str(values.get("event_type", "")).strip()
+        condition_config = normalize_if_config(
+            {
+                "condition_join": values.get("condition_join", "and"),
+                "conditions": values.get("conditions", []),
+            }
+        )
         return cls(
             trigger_id=str(values.get("trigger_id", "")),
             routine_id=str(values.get("routine_id", "")),
-            event_type=str(values.get("event_type", "")).strip(),
+            event_type=event_type,
             enabled=bool(values.get("enabled", True)),
             timer_mode=str(values.get("timer_mode", "")).strip(),
             timer_minimum=str(values.get("timer_minimum", "")).strip(),
             timer_minimum_unit=str(values.get("timer_minimum_unit", "seconds")).strip(),
             timer_maximum=str(values.get("timer_maximum", "")).strip(),
             timer_maximum_unit=str(values.get("timer_maximum_unit", "seconds")).strip(),
+            condition_join=(
+                str(condition_config["condition_join"])
+                if event_type == "if"
+                else "and"
+            ),
+            conditions=(
+                list(condition_config["conditions"])
+                if event_type == "if"
+                else []
+            ),
+            firing_mode=(
+                str(values.get("firing_mode", "")).strip().casefold()
+                if event_type == "if"
+                else ""
+            ),
         )
+
+    def condition_config(self) -> dict[str, object]:
+        return {
+            "condition_join": self.condition_join,
+            "conditions": list(self.conditions),
+        }
 
 
 class CoreTriggerStore:
     """Persistent bindings between Streamhouse Hub lifecycle events and routines."""
 
-    VERSION = 2
+    VERSION = 3
+    LEGACY_VERSION = 2
 
     def __init__(
         self,
@@ -80,6 +123,7 @@ class CoreTriggerStore:
         self.routine_store = routine_store or RoutineStore()
         self.triggers: list[CoreAutomationTrigger] = []
         self._change_subscribers: list[Callable[[], None]] = []
+        self._loaded_version = self.VERSION
 
     def subscribe_changes(self, callback: Callable[[], None]) -> None:
         if callback not in self._change_subscribers:
@@ -101,16 +145,23 @@ class CoreTriggerStore:
             return []
         loaded = load_validated_json(self.path, self._parse_payload)
         self.triggers = loaded
+        if self._loaded_version == self.LEGACY_VERSION:
+            self.save()
         return list(loaded)
 
     def _parse_payload(self, payload: object) -> list[CoreAutomationTrigger]:
         if not isinstance(payload, dict):
             raise ValueError("Core triggers must contain a JSON object.")
         version = payload.get("version")
-        if type(version) is not int or version != self.VERSION:
+        if type(version) is not int or version not in {
+            self.LEGACY_VERSION,
+            self.VERSION,
+        }:
             raise UnsupportedJsonSchemaError(
-                f"Unsupported Core trigger version {version}; expected {self.VERSION}."
+                "Unsupported Core trigger version "
+                f"{version}; expected {self.LEGACY_VERSION} or {self.VERSION}."
             )
+        self._loaded_version = version
         values = payload.get("triggers", [])
         if not isinstance(values, list):
             raise ValueError("Core triggers must contain a trigger list.")
@@ -149,6 +200,9 @@ class CoreTriggerStore:
         timer_minimum_unit: str = "seconds",
         timer_maximum: str = "",
         timer_maximum_unit: str = "seconds",
+        condition_join: str = "and",
+        conditions: list[dict[str, object]] | None = None,
+        firing_mode: str = "",
     ) -> CoreAutomationTrigger:
         trigger = CoreAutomationTrigger(
             trigger_id=uuid4().hex,
@@ -160,6 +214,9 @@ class CoreTriggerStore:
             timer_minimum_unit=timer_minimum_unit.strip(),
             timer_maximum=timer_maximum.strip(),
             timer_maximum_unit=timer_maximum_unit.strip(),
+            condition_join=condition_join.strip().casefold(),
+            conditions=list(conditions or []),
+            firing_mode=firing_mode.strip().casefold(),
         )
         self._validate(trigger)
         if self.routine_store.get(routine_id) is None:
@@ -186,6 +243,9 @@ class CoreTriggerStore:
         timer_minimum_unit: str = "seconds",
         timer_maximum: str = "",
         timer_maximum_unit: str = "seconds",
+        condition_join: str = "and",
+        conditions: list[dict[str, object]] | None = None,
+        firing_mode: str = "",
     ) -> CoreAutomationTrigger:
         trigger = self.get(trigger_id)
         if trigger is None:
@@ -200,6 +260,9 @@ class CoreTriggerStore:
             timer_minimum_unit=timer_minimum_unit.strip(),
             timer_maximum=timer_maximum.strip(),
             timer_maximum_unit=timer_maximum_unit.strip(),
+            condition_join=condition_join.strip().casefold(),
+            conditions=list(conditions or []),
+            firing_mode=firing_mode.strip().casefold(),
         )
         self._validate(candidate)
         index = self.triggers.index(trigger)
@@ -269,6 +332,42 @@ class CoreTriggerStore:
             timer_minimum_unit=timer_minimum_unit,
             timer_maximum=timer_maximum,
             timer_maximum_unit=timer_maximum_unit,
+        )
+
+    def add_if(
+        self,
+        routine_id: str,
+        *,
+        condition_join: str,
+        conditions: list[dict[str, object]],
+        firing_mode: str,
+        enabled: bool = True,
+    ) -> CoreAutomationTrigger:
+        return self.add(
+            routine_id,
+            "if",
+            enabled=enabled,
+            condition_join=condition_join,
+            conditions=conditions,
+            firing_mode=firing_mode,
+        )
+
+    def update_if(
+        self,
+        trigger_id: str,
+        *,
+        condition_join: str,
+        conditions: list[dict[str, object]],
+        firing_mode: str,
+        enabled: bool | None = None,
+    ) -> CoreAutomationTrigger:
+        return self.update(
+            trigger_id,
+            event_type="if",
+            enabled=enabled,
+            condition_join=condition_join,
+            conditions=conditions,
+            firing_mode=firing_mode,
         )
 
     def get(self, trigger_id: str) -> CoreAutomationTrigger | None:
@@ -366,6 +465,22 @@ class CoreTriggerStore:
         return f"Every {trigger.timer_minimum} {minimum_unit}"
 
     @staticmethod
+    def if_description(trigger: CoreAutomationTrigger) -> str:
+        conditions = condition_definitions(trigger.condition_config())
+        mode = IF_TRIGGER_FIRING_MODES.get(
+            trigger.firing_mode,
+            trigger.firing_mode.replace("_", " ").title(),
+        )
+        if len(conditions) != 1:
+            return f"{len(conditions)} conditions · {mode}"
+        condition = conditions[0]
+        operator = condition.operator.replace("_", " ").title()
+        summary = f"{condition.left} {operator}"
+        if condition.operator not in {"is_empty", "is_not_empty"}:
+            summary += f" {condition.right}"
+        return f"{summary.strip()} · {mode}"
+
+    @staticmethod
     def _display_unit(value: str, unit: str) -> str:
         try:
             singular = Decimal(value) == 1
@@ -419,5 +534,28 @@ class CoreTriggerStore:
             raise ValueError("That Core program trigger is not supported.")
         if trigger.event_type == "timer":
             CoreTriggerStore.validate_timer(trigger)
+        elif trigger.event_type == "if":
+            if trigger.firing_mode not in IF_TRIGGER_FIRING_MODES:
+                raise ValueError("Choose when the If trigger should fire.")
+            config = trigger.condition_config()
+            if condition_join_mode(config) != trigger.condition_join:
+                raise ValueError("If trigger conditions must use AND or OR.")
+            conditions = condition_definitions(config)
+            if not conditions or not trigger.conditions:
+                raise ValueError("Add at least one If trigger condition.")
+            for condition in conditions:
+                if condition.operator == "user_in_group":
+                    raise ValueError(
+                        "User Group conditions require trigger user context and "
+                        "cannot be used by a Core If trigger."
+                    )
+                if not condition.left:
+                    raise ValueError(
+                        "Every If trigger condition needs a value or Variable."
+                    )
+            if any((trigger.timer_mode, trigger.timer_minimum, trigger.timer_maximum)):
+                raise ValueError("If triggers cannot contain timer settings.")
         elif any((trigger.timer_mode, trigger.timer_minimum, trigger.timer_maximum)):
             raise ValueError("Only Timer triggers may contain timer settings.")
+        elif trigger.conditions or trigger.firing_mode:
+            raise ValueError("Only If triggers may contain conditions.")

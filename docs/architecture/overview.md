@@ -671,6 +671,18 @@ management/status projection over this same store and scheduler. It reads
 immutable runtime deadline status for live countdowns and never owns scheduling
 or another persistence format.
 
+Core **If** is an event-driven Automation trigger over the same flat AND/OR
+condition model used by the Core If task. `CoreIfTriggerRuntime` derives the
+canonical global Variable dependencies, records an initial runtime-only Boolean
+baseline without firing, and emits only false-to-true, true-to-false, or either
+transition according to the configured mode. `VariableRegistry.notify_changed()`
+is the provider-neutral change boundary: custom Variables, counters, Hub/Twitch
+state, Music state, and module-owned OBS state publish their affected canonical
+names. A queued Qt boundary coalesces worker-thread notifications before affected
+triggers are reevaluated; Core never imports Twitch or OBS implementations and
+there is no polling loop. Disabled, edited, or newly enabled triggers establish a
+fresh baseline, and runtime Boolean state is never persisted.
+
 Run History is a bounded, runtime-only view of executions that actually
 started; merely accepting an item into a queue does not create a completed-run
 entry. `RoutineExecutionResult` retains root timing, queue/trigger metadata,
@@ -1044,6 +1056,7 @@ Adding a task requires more than a handler. See **Adding an automation task**.
 | Twitch Ads | same as above | same | 5/3/2/1-minute warnings, EventSub-backed Ads Started, Hub-calculated Ads Ended |
 | Core | `CoreTriggerStore` | `automation/core_triggers.json` | application started/closing |
 | Core Timer | `CoreTriggerStore` + `AutomationTimerScheduler` | `automation/core_triggers.json` | exact intervals or a newly sampled random interval range |
+| Core If | `CoreTriggerStore` + `CoreIfTriggerRuntime` | `automation/core_triggers.json` | edge-triggered global Variable conditions using the shared AND/OR condition contract |
 | OBS | `ObsTriggerStore` | `obs/triggers.json` | connection, scene, source, audio, media, output changes |
 | Music | `MusicTriggerStore` | `automation/music_triggers.json` | normalized track, playback, volume, and usable-connection transitions owned by `MusicPlayerService` |
 | Soundboard | button record in `SoundboardStore` | `twitch/soundboard.json` | local preview or Extension button |
@@ -1794,7 +1807,7 @@ identifiers or filename formats are accepted.
 | `config/settings.json` | Hub | schema v4 `AppSettings`, validated/defaulted; includes the portable automatic-backup preference and no obsolete auto-send toggle field |
 | `ai/settings.json` | Streamhouse AI | schema v2 model, endpoint, personality/language |
 | `automation/routines.json` | Hub | schema v5 groups, routines, ordered tasks including recursive If branches, trigger links, and queue IDs |
-| `automation/core_triggers.json` | Hub | schema v2 application lifecycle and fixed/random Timer bindings; runtime deadlines are not persisted |
+| `automation/core_triggers.json` | Hub | schema v3 application lifecycle, fixed/random Timer, and edge-triggered If bindings; v2 migrates atomically with stable IDs, while Timer deadlines and If Boolean baselines remain runtime-only |
 | `automation/queues.json` | Hub | schema v1 Default Queue/custom definitions; pending items are volatile |
 | `automation/variables.json` | Hub | schema v3 global values; session/routine values are volatile |
 | `twitch/commands.json` | Hub | schema v6 configured commands and template provenance; templates stay in code |

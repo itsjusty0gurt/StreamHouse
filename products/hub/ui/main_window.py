@@ -92,11 +92,13 @@ from products.hub.automation.variable_providers import (
     ChannelInformationVariableProvider,
     CounterVariableProvider,
     CustomVariableProvider,
+    core_context_provider,
     obs_context_provider,
     runtime_provider,
 )
 from products.hub.automation.variable_registry import VariableRegistry
 from products.hub.automation.core_triggers import CoreTriggerStore
+from products.hub.automation.condition_trigger_runtime import CoreIfTriggerRuntime
 from products.hub.automation.timer_scheduler import AutomationTimerScheduler
 from products.hub.ui.timers_page import TimersPage
 from products.hub.automation.core_tasks import (
@@ -605,6 +607,7 @@ class MainWindow(QMainWindow):
         self.counter_service.subscribe_changes(self._counter_change_callback)
         self.counter_refresh_requested.connect(self._refresh_counters_page)
         self.variable_registry = VariableRegistry()
+        self.variable_registry.register(core_context_provider())
         self.variable_registry.register(obs_context_provider())
         self.variable_registry.register(
             runtime_provider(
@@ -620,6 +623,12 @@ class MainWindow(QMainWindow):
         )
         self.variable_registry.register(
             CustomVariableProvider(self.custom_variable_store)
+        )
+        self._custom_variable_change_callback = (
+            lambda name: self.variable_registry.notify_changed((f"custom.{name}",))
+        )
+        self.custom_variable_store.subscribe_changes(
+            self._custom_variable_change_callback
         )
         self.variable_registry.register(
             CounterVariableProvider(
@@ -750,6 +759,12 @@ class MainWindow(QMainWindow):
         self.automation_timer_scheduler = AutomationTimerScheduler(
             self.core_trigger_store,
             self._handle_timer_automation_event,
+            parent=self,
+        )
+        self.core_if_trigger_runtime = CoreIfTriggerRuntime(
+            self.core_trigger_store,
+            self.variable_registry,
+            self._handle_if_automation_event,
             parent=self,
         )
         try:
@@ -2535,6 +2550,11 @@ class MainWindow(QMainWindow):
         )
 
     def _channel_information_saved(self) -> None:
+        self.variable_registry.notify_changed(
+            definition.name
+            for definition in self.variable_registry.definitions()
+            if definition.source == "Channel Information"
+        )
         self._refresh_twitch_commands()
         self.automation_page.refresh()
 
@@ -2893,6 +2913,7 @@ class MainWindow(QMainWindow):
         )
         self.ui.mainStack.addWidget(self.automation_page)
         self.automation_timer_scheduler.start()
+        self.core_if_trigger_runtime.start()
 
     def _initialize_modules(self, data_root: Path, routine_store) -> None:
         def context_factory(_descriptor) -> ModuleContext:
@@ -3127,10 +3148,16 @@ class MainWindow(QMainWindow):
         self.automation_page.tabs.insertTab(3, self.counters_page, "Counters")
         self._build_chat_user_page()
 
-    def _handle_counter_service_change(self, _counter_id: str) -> None:
+    def _handle_counter_service_change(self, counter_id: str) -> None:
         # Counter tasks can finish on an Automation worker thread. Emitting a
         # Qt signal here queues the widget refresh onto MainWindow's thread.
         self.counter_refresh_requested.emit()
+        prefix = f"counter.{counter_id}."
+        self.variable_registry.notify_changed(
+            definition.name
+            for definition in self.variable_registry.definitions()
+            if definition.name.startswith(prefix)
+        )
 
     @Slot()
     def _refresh_counters_page(self) -> None:
@@ -3283,6 +3310,11 @@ class MainWindow(QMainWindow):
 
     @Slot(object)
     def _refresh_music_variable_values(self, _state: object) -> None:
+        self.variable_registry.notify_changed(
+            definition.name
+            for definition in self.variable_registry.definitions()
+            if definition.name.startswith("music.")
+        )
         variables_page = getattr(self.automation_page, "variables_page", None)
         if variables_page is not None:
             variables_page.refresh_values()
@@ -3411,6 +3443,22 @@ class MainWindow(QMainWindow):
         elif execution.handled:
             Logger.warning(
                 f'Automation timer failed for "{description}".',
+                source="AUTOMATION",
+            )
+
+    def _handle_if_automation_event(
+        self, trigger: TriggerEvent, description: str
+    ) -> None:
+        execution = self.automation_service.publish_trigger(trigger)
+        self.automation_page.record_execution(execution, f"If — {description}")
+        if execution.succeeded:
+            Logger.info(
+                f'Executed Core If automation for "{description}".',
+                source="AUTOMATION",
+            )
+        elif execution.handled:
+            Logger.warning(
+                f'Core If automation failed for "{description}".',
                 source="AUTOMATION",
             )
 
@@ -4237,6 +4285,7 @@ class MainWindow(QMainWindow):
         channel: str,
     ) -> None:
         connected = state is TwitchConnectionState.CONNECTED
+        self.variable_registry.notify_changed(("hub.connected_to_twitch",))
         connecting = state in {
             TwitchConnectionState.CONNECTING,
             TwitchConnectionState.RECONNECTING,
@@ -7311,6 +7360,15 @@ class MainWindow(QMainWindow):
         self.channel_snapshot_in_flight = False
         snapshot = result.snapshot
         self.twitch_module.update_channel_snapshot(snapshot)
+        self.variable_registry.notify_changed(
+            (
+                "stream.title",
+                "stream.channel",
+                "stream.category",
+                "stream.viewer_count",
+                "stream.game_id",
+            )
+        )
         stream = snapshot.get("stream")
         next_stream_id = ""
         if isinstance(stream, dict):
@@ -7396,9 +7454,13 @@ class MainWindow(QMainWindow):
         else:
             self.stream_started_at = None
             self.stream_viewers_label.setText("0")
-
     def _apply_ad_schedule(self, value: object, *, error: str = "") -> None:
         self.ads_service.apply_schedule(value, error=error)
+        self.variable_registry.notify_changed(
+            definition.name
+            for definition in self.variable_registry.definitions()
+            if definition.name.startswith("ads.")
+        )
 
     @Slot()
     def _update_stream_overview_clock(self) -> None:
@@ -8731,6 +8793,7 @@ class MainWindow(QMainWindow):
         self._settings_to_controls(self.settings)
         self._apply_settings(self.settings)
         self.automation_timer_scheduler.synchronize()
+        self.core_if_trigger_runtime.reset_baselines()
         self.automation_page.refresh()
         self.counters_page.refresh()
         self.channel_information_page.load_values()
@@ -8900,6 +8963,9 @@ class MainWindow(QMainWindow):
         self._shutting_down = True
         self._memory_viewer_refresh_timer.stop()
         self.counter_service.unsubscribe_changes(self._counter_change_callback)
+        self.custom_variable_store.unsubscribe_changes(
+            self._custom_variable_change_callback
+        )
         self.activity_age_timer.stop()
         self._activity_rows.clear()
         self.local_integration.shutdown()
@@ -8908,6 +8974,7 @@ class MainWindow(QMainWindow):
         self.raid_page.shutdown()
         self.timers_page.shutdown()
         self.automation_timer_scheduler.shutdown()
+        self.core_if_trigger_runtime.stop()
         self.automation_queue_manager.cancel_all_current(
             "Hub is shutting down."
         )

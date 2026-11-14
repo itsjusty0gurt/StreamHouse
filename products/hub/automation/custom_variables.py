@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from datetime import datetime
 from pathlib import Path
-from typing import Mapping
+from typing import Callable, Mapping
 
 from products.hub.automation.variable_registry import validate_variable_name
 from shared.streamhouse_runtime.json_store import (
@@ -33,6 +33,19 @@ class CustomVariableStore:
         self.session_values: dict[str, str] = {}
         self.global_metadata: dict[str, dict[str, str]] = {}
         self.session_metadata: dict[str, dict[str, str]] = {}
+        self._change_subscribers: list[Callable[[str], None]] = []
+
+    def subscribe_changes(self, callback: Callable[[str], None]) -> None:
+        if callback not in self._change_subscribers:
+            self._change_subscribers.append(callback)
+
+    def unsubscribe_changes(self, callback: Callable[[str], None]) -> None:
+        if callback in self._change_subscribers:
+            self._change_subscribers.remove(callback)
+
+    def _notify_changed(self, name: str) -> None:
+        for callback in tuple(self._change_subscribers):
+            callback(name)
 
     def load(self) -> Mapping[str, str]:
         self.session_values = {}
@@ -192,6 +205,7 @@ class CustomVariableStore:
                 else:
                     metadata_target.pop(clean_name, None)
                 raise
+        self._notify_changed(clean_name)
         return clean_name
 
     def delete(self, name: str) -> bool:
@@ -207,9 +221,13 @@ class CustomVariableStore:
                 if previous_metadata is not None:
                     self.global_metadata[clean_name] = previous_metadata
                 raise
+            self._notify_changed(clean_name)
             return True
         self.session_metadata.pop(clean_name, None)
-        return self.session_values.pop(clean_name, None) is not None
+        deleted = self.session_values.pop(clean_name, None) is not None
+        if deleted:
+            self._notify_changed(clean_name)
+        return deleted
 
     def save(self) -> None:
         atomic_write_json(

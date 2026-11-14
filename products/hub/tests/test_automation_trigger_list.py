@@ -136,6 +136,30 @@ class AutomationTriggerListTests(unittest.TestCase):
         self.page.edit_trigger_button.click()
         self.page._edit_core_trigger.assert_called_once()
 
+    def test_if_trigger_card_uses_plain_summary(self) -> None:
+        routine = self.routine_store.add("Conditional start")
+        trigger = self.core_store.add_if(
+            routine.routine_id,
+            condition_join="and",
+            conditions=[
+                {
+                    "left": "{obs.current_scene}",
+                    "operator": "equals",
+                    "right": "Game",
+                    "ignore_case": False,
+                    "group_id": "",
+                }
+            ],
+            firing_mode="becomes_true",
+        )
+
+        content = self.page._core_trigger_card_content(trigger)
+
+        self.assertEqual(content.title, "Core — If")
+        self.assertIn("{obs.current_scene}", content.summary)
+        self.assertIn("Becomes True", content.summary)
+        self.assertNotIn("conditions", content.summary)
+
     def test_if_tree_renders_real_branch_lists_and_nested_cards(self) -> None:
         routine = self.routine_store.add("Tree")
         condition = self.routine_store.add_task(

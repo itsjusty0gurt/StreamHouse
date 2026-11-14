@@ -87,11 +87,58 @@ class CoreTriggerStoreTests(unittest.TestCase):
         saved = loaded.load()[0]
         payload = json.loads(self.store.path.read_text(encoding="utf-8"))
 
-        self.assertEqual(payload["version"], 2)
+        self.assertEqual(payload["version"], 3)
         self.assertEqual(saved.trigger_id, trigger.trigger_id)
         self.assertEqual(saved.timer_mode, "random")
         self.assertEqual(saved.timer_minimum, "1.5")
         self.assertEqual(saved.timer_maximum_unit, "hours")
+
+    def test_if_trigger_round_trips_and_preserves_stable_ids(self) -> None:
+        routine = self.routines.add("Watch scene")
+        trigger = self.store.add_if(
+            routine.routine_id,
+            condition_join="and",
+            conditions=[
+                {
+                    "left": "{obs.current_scene}",
+                    "operator": "equals",
+                    "right": "Game",
+                    "ignore_case": True,
+                    "group_id": "",
+                }
+            ],
+            firing_mode="becomes_true",
+        )
+
+        loaded_routines = RoutineStore(self.routines.path)
+        loaded_routines.load()
+        loaded_store = CoreTriggerStore(self.store.path, loaded_routines)
+        saved = loaded_store.load()[0]
+
+        self.assertEqual(saved.trigger_id, trigger.trigger_id)
+        self.assertEqual(saved.routine_id, routine.routine_id)
+        self.assertEqual(saved.conditions, trigger.conditions)
+        self.assertEqual(saved.firing_mode, "becomes_true")
+
+    def test_schema_two_migrates_to_three_without_changing_links(self) -> None:
+        routine = self.routines.add("Lifecycle")
+        trigger = self.store.add(routine.routine_id, "application.started")
+        payload = json.loads(self.store.path.read_text(encoding="utf-8"))
+        payload["version"] = 2
+        for values in payload["triggers"]:
+            for key in ("condition_join", "conditions", "firing_mode"):
+                values.pop(key, None)
+        self.store.path.write_text(json.dumps(payload), encoding="utf-8")
+
+        loaded_routines = RoutineStore(self.routines.path)
+        loaded_routines.load()
+        loaded_store = CoreTriggerStore(self.store.path, loaded_routines)
+        saved = loaded_store.load()[0]
+        migrated = json.loads(self.store.path.read_text(encoding="utf-8"))
+
+        self.assertEqual(migrated["version"], 3)
+        self.assertEqual(saved.trigger_id, trigger.trigger_id)
+        self.assertEqual(saved.routine_id, routine.routine_id)
 
     def test_timer_units_normalize_exactly_to_milliseconds(self) -> None:
         routine = self.routines.add("Exact durations")

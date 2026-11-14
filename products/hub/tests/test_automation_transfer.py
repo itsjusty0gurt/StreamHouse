@@ -216,6 +216,45 @@ class AutomationTransferTests(unittest.TestCase):
         self.assertEqual(saved.timer_minimum, "30")
         self.assertEqual(saved.timer_maximum, "60")
 
+    def test_if_trigger_round_trip_preserves_conditions_and_mode(self) -> None:
+        routine = self.stores["routine_store"].add("Scene guard")
+        self.stores["core_store"].add_if(
+            routine.routine_id,
+            condition_join="or",
+            conditions=[
+                {
+                    "left": "{obs.current_scene}",
+                    "operator": "equals",
+                    "right": "Game",
+                    "ignore_case": False,
+                    "group_id": "",
+                },
+                {
+                    "left": "{custom.mode}",
+                    "operator": "equals",
+                    "right": "live",
+                    "ignore_case": True,
+                    "group_id": "",
+                },
+            ],
+            firing_mode="changes",
+        )
+        payload = export_routine(routine, **self.stores)
+        destination = self.make_stores(self.root / "if-destination")
+
+        imported = import_routine(
+            payload,
+            group_id="",
+            task_registry=self.registry,
+            **destination,
+        )
+        saved = destination["core_store"].for_routine(imported.routine_id)[0]
+
+        self.assertEqual(saved.event_type, "if")
+        self.assertEqual(saved.condition_join, "or")
+        self.assertEqual(len(saved.conditions), 2)
+        self.assertEqual(saved.firing_mode, "changes")
+
     def test_music_trigger_round_trip_preserves_event_and_enabled_state(self) -> None:
         routine = self.stores["routine_store"].add("Now Playing")
         self.stores["music_store"].add(

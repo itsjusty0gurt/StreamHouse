@@ -568,13 +568,17 @@ class BackupManagerTests(unittest.TestCase):
         )
         self.assertIn("raid-trigger", routine_store.get("parent").trigger_ids)
 
-    def test_exact_and_random_timers_backup_restore_with_stable_identity(self) -> None:
+    def test_core_timers_and_if_backup_restore_with_stable_identity(self) -> None:
         routine_path = self.root / "automation/routines.json"
         routines = json.loads(routine_path.read_text(encoding="utf-8"))
         parent = next(
             item for item in routines["routines"] if item["routine_id"] == "parent"
         )
-        parent["additional_trigger_ids"] = ["timer-exact", "timer-random"]
+        parent["additional_trigger_ids"] = [
+            "timer-exact",
+            "timer-random",
+            "if-scene",
+        ]
         write_json(routine_path, routines)
         write_json(
             self.root / "automation/core_triggers.json",
@@ -603,6 +607,23 @@ class BackupManagerTests(unittest.TestCase):
                         "timer_maximum": "2",
                         "timer_maximum_unit": "minutes",
                     },
+                    {
+                        "trigger_id": "if-scene",
+                        "routine_id": "parent",
+                        "event_type": "if",
+                        "enabled": True,
+                        "condition_join": "and",
+                        "conditions": [
+                            {
+                                "left": "{obs.current_scene}",
+                                "operator": "equals",
+                                "right": "Game",
+                                "ignore_case": False,
+                                "group_id": "",
+                            }
+                        ],
+                        "firing_mode": "becomes_true",
+                    },
                 ],
             },
         )
@@ -622,7 +643,9 @@ class BackupManagerTests(unittest.TestCase):
             routine_store,
         )
         restored = {item.trigger_id: item for item in core_store.load()}
-        self.assertEqual(set(restored), {"timer-exact", "timer-random"})
+        self.assertEqual(
+            set(restored), {"timer-exact", "timer-random", "if-scene"}
+        )
         self.assertEqual(
             restored["timer-exact"].timer_minimum_unit,
             "milliseconds",
@@ -632,9 +655,14 @@ class BackupManagerTests(unittest.TestCase):
             restored["timer-random"].timer_maximum_unit,
             "minutes",
         )
+        self.assertEqual(restored["if-scene"].firing_mode, "becomes_true")
+        self.assertEqual(
+            restored["if-scene"].conditions[0]["left"],
+            "{obs.current_scene}",
+        )
         self.assertEqual(
             set(routine_store.get("parent").trigger_ids),
-            {"raid-trigger", "timer-exact", "timer-random"},
+            {"raid-trigger", "timer-exact", "timer-random", "if-scene"},
         )
 
     def test_music_trigger_backup_restore_preserves_stable_identity(self) -> None:

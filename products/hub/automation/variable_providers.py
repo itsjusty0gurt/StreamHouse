@@ -374,6 +374,8 @@ class AdsVariableProvider:
 
 
 CONTEXT_DEFINITIONS = (
+    ("core.if.result", "If Result", "Boolean result that caused a Core If trigger to fire.", VariableDataType.BOOLEAN, ()),
+    ("core.if.mode", "If Firing Mode", "Configured transition mode for a Core If trigger.", VariableDataType.TEXT, ()),
     ("user.name", "User Name", "Triggering user's readable name.", VariableDataType.TEXT, ("user",)),
     ("user.display_name", "User Display Name", "Triggering user's Twitch display name.", VariableDataType.TEXT, ("user",)),
     ("user.id", "User ID", "Triggering user's Twitch ID.", VariableDataType.TEXT, ("user_id",)),
@@ -516,7 +518,11 @@ def _context_presentation(name: str) -> tuple[str, str]:
 
 
 def _context_source(name: str) -> str:
-    return "OBS Context" if name.startswith("obs.") else "Twitch Context"
+    if name.startswith("obs."):
+        return "OBS Context"
+    if name.startswith("core."):
+        return "Core Context"
+    return "Twitch Context"
 
 
 def _context_provider(
@@ -563,7 +569,7 @@ def _context_provider(
                     "user.is_mod", "user.is_subscriber", "obs.enabled", "obs.muted",
                     "subscription.is_gift", "subscription.is_prime",
                     "subscription.is_anonymous", "event.is_anonymous",
-                    "event.is_permanent",
+                    "event.is_permanent", "core.if.result",
                 }:
                     value = str(value).strip().casefold() in {"1", "true", "yes", "on"}
                 return True, value, ""
@@ -577,7 +583,11 @@ def twitch_context_provider(
     available: Callable[[], bool] | None = None,
 ) -> CallbackVariableProvider:
     return _context_provider(
-        tuple(item for item in CONTEXT_DEFINITIONS if not item[0].startswith("obs.")),
+        tuple(
+            item
+            for item in CONTEXT_DEFINITIONS
+            if not item[0].startswith(("obs.", "core."))
+        ),
         provider_name="Twitch Context",
         available=available,
     )
@@ -587,6 +597,13 @@ def obs_context_provider() -> CallbackVariableProvider:
     return _context_provider(
         tuple(item for item in CONTEXT_DEFINITIONS if item[0].startswith("obs.")),
         provider_name="OBS Context",
+    )
+
+
+def core_context_provider() -> CallbackVariableProvider:
+    return _context_provider(
+        tuple(item for item in CONTEXT_DEFINITIONS if item[0].startswith("core.")),
+        provider_name="Core Context",
     )
 
 

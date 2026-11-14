@@ -57,6 +57,7 @@ from products.hub.automation.models import (
 from products.hub.core.diagnostics import redact_sensitive_text
 from products.hub.automation.core_triggers import (
     CORE_TRIGGER_TYPES,
+    IF_TRIGGER_FIRING_MODES,
     TIMER_MODES,
     TIMER_UNIT_LABELS,
     CoreAutomationTrigger,
@@ -75,7 +76,10 @@ from products.hub.automation.task_config import (
     COUNTER_TASK_TYPES,
     normalize_task_config,
 )
-from products.hub.automation.variable_registry import VariableRegistry
+from products.hub.automation.variable_registry import (
+    VariableAvailability,
+    VariableRegistry,
+)
 from products.hub.automation.core_tasks import CORE_TASK_LABELS, PlayAudioTask
 from products.hub.automation.variable_tasks import (
     VARIABLE_MANAGEMENT_TASK_TYPES,
@@ -512,7 +516,7 @@ class CoreTriggerDialog(QDialog):
         form = QFormLayout()
         self.event_type_combo = QComboBox()
         for event_type, label in CORE_TRIGGER_TYPES.items():
-            if event_type == "timer":
+            if event_type in {"timer", "if"}:
                 continue
             self.event_type_combo.addItem(label, event_type)
         if trigger is not None:
@@ -543,6 +547,83 @@ class CoreTriggerDialog(QDialog):
             "event_type": str(self.event_type_combo.currentData()),
             "enabled": self.enabled_check.isChecked(),
         }
+
+
+class IfTriggerDialog(QDialog):
+    def __init__(
+        self,
+        variable_registry: VariableRegistry,
+        parent: QWidget | None = None,
+        trigger: CoreAutomationTrigger | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Edit If Trigger" if trigger else "Add If Trigger")
+        self.resize(720, 560)
+        self.setMinimumSize(620, 460)
+        layout = QVBoxLayout(self)
+        config = trigger.condition_config() if trigger else None
+        self.condition_builder = ConditionBuilderWidget(
+            config,
+            registry=variable_registry,
+            allow_user_groups=False,
+            variable_filter=lambda definition: (
+                definition.availability is VariableAvailability.GLOBAL
+            ),
+            parent=self,
+        )
+        layout.addWidget(self.condition_builder, 1)
+        form = QFormLayout()
+        self.firing_mode_combo = QComboBox(self)
+        for value, label in IF_TRIGGER_FIRING_MODES.items():
+            self.firing_mode_combo.addItem(label, value)
+        self.firing_mode_combo.setCurrentIndex(
+            max(
+                self.firing_mode_combo.findData(
+                    trigger.firing_mode if trigger else "becomes_true"
+                ),
+                0,
+            )
+        )
+        self.enabled_check = QCheckBox("Enabled", self)
+        self.enabled_check.setChecked(trigger.enabled if trigger else True)
+        form.addRow("Fire when", self.firing_mode_combo)
+        form.addRow("", self.enabled_check)
+        layout.addLayout(form)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Save
+            | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def values(self) -> dict[str, object]:
+        values = self.condition_builder.value()
+        return {
+            "condition_join": values["condition_join"],
+            "conditions": values["conditions"],
+            "firing_mode": str(self.firing_mode_combo.currentData()),
+            "enabled": self.enabled_check.isChecked(),
+        }
+
+    def accept(self) -> None:
+        try:
+            values = self.values()
+            CoreTriggerStore._validate(
+                CoreAutomationTrigger(
+                    "preview",
+                    "preview",
+                    "if",
+                    enabled=bool(values["enabled"]),
+                    condition_join=str(values["condition_join"]),
+                    conditions=list(values["conditions"]),
+                    firing_mode=str(values["firing_mode"]),
+                )
+            )
+        except (TypeError, ValueError) as error:
+            QMessageBox.warning(self, "Invalid If Trigger", str(error))
+            return
+        super().accept()
 
 
 class TimerTriggerDialog(QDialog):
@@ -5052,6 +5133,13 @@ class AutomationPage(QWidget):
                 family="Timer",
                 enabled=trigger.enabled,
             )
+        if trigger.event_type == "if":
+            return TriggerCardContent(
+                title="Core — If",
+                summary=self.core_trigger_store.if_description(trigger),
+                family="Core",
+                enabled=trigger.enabled,
+            )
         label = CORE_TRIGGER_TYPES.get(trigger.event_type, "Program Event")
         return TriggerCardContent(
             title=f"Core — {label}",
@@ -5611,7 +5699,7 @@ class AutomationPage(QWidget):
         core_menu = QMenu("Core", add_menu)
         program_event_menu = QMenu("Program Event", core_menu)
         for event_type, label in CORE_TRIGGER_TYPES.items():
-            if event_type == "timer":
+            if event_type in {"timer", "if"}:
                 continue
             program_event_menu.addAction(
                 label,
@@ -5620,6 +5708,8 @@ class AutomationPage(QWidget):
         core_menu.addMenu(program_event_menu)
         timer_action = core_menu.addAction("Timer…", self._add_timer_trigger)
         timer_action.setEnabled(routine is not None)
+        if_action = core_menu.addAction("If…", self._add_if_trigger)
+        if_action.setEnabled(routine is not None)
         core_menu._streamhouse_trigger_submenus = [program_event_menu]
         add_menu.addMenu(core_menu)
         add_menu._streamhouse_trigger_submenus.append(core_menu)
@@ -5810,6 +5900,23 @@ class AutomationPage(QWidget):
         self.select_routine(routine.routine_id)
         self._select_trigger("core", trigger.trigger_id)
 
+    def _add_if_trigger(self) -> None:
+        routine = self.routine_store.get(self._selected_routine_id)
+        if routine is None:
+            return
+        dialog = IfTriggerDialog(self.variable_registry, self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        try:
+            trigger = self.core_trigger_store.add_if(
+                routine.routine_id, **dialog.values()
+            )
+        except (OSError, TypeError, ValueError) as error:
+            self._error("Could Not Add If Trigger", error)
+            return
+        self.select_routine(routine.routine_id)
+        self._select_trigger("core", trigger.trigger_id)
+
     def _add_obs_trigger(self, event_type: str | None = None) -> None:
         routine = self.routine_store.get(self._selected_routine_id)
         if routine is None:
@@ -5912,6 +6019,8 @@ class AutomationPage(QWidget):
             if trigger is not None:
                 if trigger.event_type == "timer":
                     self._edit_timer_trigger(routine.routine_id, trigger)
+                elif trigger.event_type == "if":
+                    self._edit_if_trigger(routine.routine_id, trigger)
                 else:
                     self._edit_core_trigger(routine.routine_id, trigger)
             return
@@ -6042,6 +6151,22 @@ class AutomationPage(QWidget):
             )
         except (OSError, TypeError, ValueError) as error:
             self._error("Could Not Update Timer", error)
+            return
+        self.select_routine(routine_id)
+        self._select_trigger("core", updated.trigger_id)
+
+    def _edit_if_trigger(
+        self, routine_id: str, trigger: CoreAutomationTrigger
+    ) -> None:
+        dialog = IfTriggerDialog(self.variable_registry, self, trigger)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        try:
+            updated = self.core_trigger_store.update_if(
+                trigger.trigger_id, **dialog.values()
+            )
+        except (OSError, TypeError, ValueError) as error:
+            self._error("Could Not Update If Trigger", error)
             return
         self.select_routine(routine_id)
         self._select_trigger("core", updated.trigger_id)

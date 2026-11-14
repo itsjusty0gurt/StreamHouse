@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
@@ -36,11 +36,13 @@ class VariablePickerDialog(QDialog):
         parent: QWidget | None = None,
         *,
         extra_definitions: tuple[VariableDefinition, ...] = (),
+        definition_filter: Callable[[VariableDefinition], bool] | None = None,
     ) -> None:
         super().__init__(parent)
         self.registry = registry
         self.context = dict(context or {})
         self.extra_definitions = extra_definitions
+        self.definition_filter = definition_filter
         self.setWindowTitle("Choose Variable")
         self.resize(940, 500)
         layout = QVBoxLayout(self)
@@ -49,7 +51,11 @@ class VariablePickerDialog(QDialog):
         self.search_edit.setPlaceholderText("Search variables...")
         self.source_combo = QComboBox()
         self.source_combo.addItem("All sources", "")
-        definitions = (*registry.definitions(), *extra_definitions)
+        definitions = tuple(
+            definition
+            for definition in (*registry.definitions(), *extra_definitions)
+            if definition_filter is None or definition_filter(definition)
+        )
         for source in sorted({item.source for item in definitions}):
             self.source_combo.addItem(source, source)
         self.category_combo = QComboBox()
@@ -181,10 +187,19 @@ class VariablePickerDialog(QDialog):
             self.table.selectRow(0)
 
     def _snapshots(self) -> tuple[VariableSnapshot, ...]:
-        snapshots = list(self.registry.snapshots(self.context))
+        snapshots = [
+            snapshot
+            for snapshot in self.registry.snapshots(self.context)
+            if self.definition_filter is None
+            or self.definition_filter(snapshot.definition)
+        ]
         known = {item.definition.name for item in snapshots}
         for definition in self.extra_definitions:
             if definition.name in known:
+                continue
+            if self.definition_filter is not None and not self.definition_filter(
+                definition
+            ):
                 continue
             available = definition.name in self.context
             snapshots.append(
@@ -266,12 +281,14 @@ class VariablePickerButton(QPushButton):
         parent: QWidget | None = None,
         *,
         extra_definitions: tuple[VariableDefinition, ...] = (),
+        definition_filter: Callable[[VariableDefinition], bool] | None = None,
     ) -> None:
         super().__init__("{x} Variables", parent)
         self.registry = registry
         self.target = target
         self.context = dict(context or {})
         self.extra_definitions = extra_definitions
+        self.definition_filter = definition_filter
         self.setToolTip("Choose a canonical Variable and insert it at the cursor.")
         self.setEnabled(registry is not None)
         if registry is None:
@@ -286,6 +303,7 @@ class VariablePickerButton(QPushButton):
             self.context,
             self,
             extra_definitions=self.extra_definitions,
+            definition_filter=self.definition_filter,
         )
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return

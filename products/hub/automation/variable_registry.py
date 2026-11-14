@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Protocol
@@ -180,6 +180,55 @@ class VariableRegistry:
     def __init__(self) -> None:
         self._providers: list[VariableProvider] = []
         self._aliases: dict[str, VariableDefinition] = {}
+        self._change_subscribers: list[Callable[[frozenset[str]], None]] = []
+
+    def subscribe_changes(
+        self,
+        callback: Callable[[frozenset[str]], None],
+    ) -> None:
+        if callback not in self._change_subscribers:
+            self._change_subscribers.append(callback)
+
+    def unsubscribe_changes(
+        self,
+        callback: Callable[[frozenset[str]], None],
+    ) -> None:
+        if callback in self._change_subscribers:
+            self._change_subscribers.remove(callback)
+
+    def notify_changed(self, names: Iterable[str] | None = None) -> None:
+        """Publish changed global values without coupling Core to providers.
+
+        An empty set means the source cannot identify individual Variables.
+        Providers should supply names when practical so condition triggers only
+        reevaluate affected definitions.
+        """
+
+        changed = frozenset(
+            validate_variable_name(name)
+            for name in (names or ())
+            if str(name).strip()
+        )
+        if changed:
+            catalog = self._catalog(include_aliases=True)
+            canonical_changes = {
+                self._canonical_definition(name, catalog).name
+                for name in changed
+                if name in catalog
+            }
+            changed = frozenset(
+                {
+                    *changed,
+                    *canonical_changes,
+                    *(
+                        name
+                        for name, definition in catalog.items()
+                        if definition.alias_of in canonical_changes
+                    ),
+                }
+            )
+        for callback in tuple(self._change_subscribers):
+            callback(changed)
 
     def register(self, provider: VariableProvider) -> None:
         existing = {item.name for item in self.all_definitions()}
@@ -328,7 +377,9 @@ class VariableRegistry:
         for provider in self._providers:
             if canonical.name in {item.name for item in provider.definitions()}:
                 result = provider.set_value(canonical.name, value)
-                return self.resolve(snapshot.definition.name) or result
+                resolved = self.resolve(snapshot.definition.name) or result
+                self.notify_changed((snapshot.definition.name, canonical.name))
+                return resolved
         raise KeyError(f'Variable "{name}" is not registered.')
 
     def context_values(

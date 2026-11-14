@@ -162,11 +162,21 @@ class ObsModule:
         self.service.state_changed.connect(self._state_changed)
         self._events_subscribed = True
         self._runtime_available = True
+        context = self._context
+        if context is not None:
+            context.variables.notify_changed(
+                ("hub.connected_to_obs", "obs.current_scene")
+            )
         if self._config.auto_connect:
             QTimer.singleShot(250, self.service, self.service.connect)
 
     def stop(self) -> None:
         self._runtime_available = False
+        context = self._context
+        if context is not None:
+            context.variables.notify_changed(
+                ("hub.connected_to_obs", "obs.current_scene")
+            )
         self._pending_automation_events.clear()
         if self._events_subscribed:
             Events.unsubscribe("obs_event", self._handle_event)
@@ -212,12 +222,20 @@ class ObsModule:
 
     def _state_changed(self, state: object, _detail: str) -> None:
         context = self._context
+        if context is not None:
+            context.variables.notify_changed(
+                ("hub.connected_to_obs", "obs.current_scene")
+            )
         if context is not None and context.integration_status_changed is not None:
             context.integration_status_changed("obs", state)
 
     def _handle_event(self, obs_event: ObsEvent) -> None:
         if not self._runtime_available or self.trigger_store is None:
             return
+        if obs_event.event_type == "CurrentProgramSceneChanged":
+            context = self._context
+            if context is not None:
+                context.variables.notify_changed(("obs.current_scene",))
         deferred_event = ObsEvent(
             obs_event.event_type,
             dict(obs_event.event_data),

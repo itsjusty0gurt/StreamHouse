@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
@@ -46,10 +46,13 @@ class ConditionRowWidget(QFrame):
         extra_definitions: tuple[VariableDefinition, ...] = (),
         user_groups=None,
         fixed_subject: str = "",
+        allow_user_groups: bool = True,
+        variable_filter: Callable[[VariableDefinition], bool] | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self.user_groups = user_groups
+        self.allow_user_groups = allow_user_groups
         self.setObjectName("conditionRow")
         self.setFrameShape(QFrame.Shape.StyledPanel)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
@@ -98,6 +101,7 @@ class ConditionRowWidget(QFrame):
             context,
             self,
             extra_definitions=extra_definitions,
+            definition_filter=variable_filter,
         )
         self.left_picker.setText("{x}")
         self.left_picker.setVisible(not bool(fixed_subject))
@@ -108,6 +112,8 @@ class ConditionRowWidget(QFrame):
         layout.addWidget(self.operator_label)
         self.operator_combo = QComboBox(self)
         for label, value in IF_COMPARISON_CHOICES:
+            if value == "user_in_group" and not allow_user_groups:
+                continue
             self.operator_combo.addItem(label, value)
         self.operator_combo.setCurrentIndex(
             max(self.operator_combo.findData(condition.operator), 0)
@@ -140,6 +146,7 @@ class ConditionRowWidget(QFrame):
             context,
             self,
             extra_definitions=extra_definitions,
+            definition_filter=variable_filter,
         )
         self.right_picker.setText("{x}")
         right_controls.addWidget(self.right_picker)
@@ -213,6 +220,8 @@ class ConditionBuilderWidget(QWidget):
         extra_definitions: tuple[VariableDefinition, ...] = (),
         user_groups=None,
         fixed_subject: str = "",
+        allow_user_groups: bool = True,
+        variable_filter: Callable[[VariableDefinition], bool] | None = None,
         maximum_conditions: int = 12,
         parent: QWidget | None = None,
     ) -> None:
@@ -222,6 +231,8 @@ class ConditionBuilderWidget(QWidget):
         self.extra_definitions = extra_definitions
         self.user_groups = user_groups
         self.fixed_subject = fixed_subject
+        self.allow_user_groups = allow_user_groups
+        self.variable_filter = variable_filter
         self.maximum_conditions = maximum_conditions
         self.rows: list[ConditionRowWidget] = []
 
@@ -277,6 +288,8 @@ class ConditionBuilderWidget(QWidget):
             extra_definitions=self.extra_definitions,
             user_groups=self.user_groups,
             fixed_subject=self.fixed_subject,
+            allow_user_groups=self.allow_user_groups,
+            variable_filter=self.variable_filter,
             parent=self,
         )
         row.remove_requested.connect(self.remove_condition)
