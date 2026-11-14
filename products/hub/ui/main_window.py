@@ -103,6 +103,7 @@ from products.hub.automation.timer_scheduler import AutomationTimerScheduler
 from products.hub.ui.timers_page import TimersPage
 from products.hub.automation.core_tasks import (
     CloseApplicationTask,
+    CommentTask,
     DesktopNotificationTask,
     LaunchApplicationTask,
     OpenTargetTask,
@@ -643,6 +644,7 @@ class MainWindow(QMainWindow):
         self.variable_registry.register(MusicVariableProvider(self.music_player_service))
         self.twitch_command_trigger_store.variable_registry = self.variable_registry
         self.task_registry = TaskRegistry(CORE_TASK_METADATA)
+        self.task_registry.register(CommentTask())
         self.task_registry.register(LaunchApplicationTask())
         self.task_registry.register(CloseApplicationTask())
         self.wait_task = WaitTask()

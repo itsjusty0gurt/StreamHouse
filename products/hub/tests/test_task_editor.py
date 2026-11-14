@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QScrollArea,
     QSizePolicy,
+    QTextEdit,
     QVBoxLayout,
 )
 from PySide6.QtGui import QTextCursor
@@ -586,6 +587,20 @@ class TaskEditorTests(unittest.TestCase):
         self.assertIsInstance(target, QLineEdit)
         target.setText("https://twitch.tv")
         self.assertEqual(dialog.values()["config"]["target"], "https://twitch.tv")
+
+    def test_comment_uses_optional_multiline_editor_and_preserves_line_breaks(self) -> None:
+        dialog = TaskEditorDialog("core.comment")
+        comment = dialog.field_widgets["core.comment"]["comment"]
+
+        self.assertIsInstance(comment, QTextEdit)
+        self.assertEqual(dialog.values()["config"], {"comment": ""})
+
+        comment.setPlainText("Stretch break starts here\nOnly during BRB")
+
+        self.assertEqual(
+            dialog.values()["config"],
+            {"comment": "Stretch break starts here\nOnly during BRB"},
+        )
 
     def test_wait_form_accepts_variables_and_units(self) -> None:
         dialog = TaskEditorDialog(

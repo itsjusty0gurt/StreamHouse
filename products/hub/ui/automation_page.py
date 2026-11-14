@@ -1544,6 +1544,15 @@ class TaskEditorDialog(QDialog):
         **MUSIC_TASK_LABELS,
     }
     SCHEMAS: dict[str, tuple[dict[str, object], ...]] = {
+        "core.comment": (
+            {
+                "key": "comment",
+                "label": "Comment",
+                "kind": "multiline",
+                "default": "",
+                "placeholder": "Explain this part of the routine",
+            },
+        ),
         "music.play": (),
         "music.pause": (),
         "music.play_pause": (),

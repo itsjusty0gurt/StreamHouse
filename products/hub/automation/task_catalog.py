@@ -112,6 +112,9 @@ _SHORT_DESCRIPTIONS = {
     "counter.reset": (
         "Restores the selected Counter scopes to its configured reset value."
     ),
+    "core.comment": (
+        "Adds an explanatory note to a routine without performing an action."
+    ),
     "core.launch_application": (
         "Starts an application with optional arguments and working-directory "
         "settings."
@@ -377,6 +380,10 @@ _HELP_TEXT = {
         "Runs one explicit moderation action. Timeout, ban, unban, and message "
         "deletion use only the fields needed by the selected action."
     ),
+    "core.comment": (
+        "Documents the routine for its author. It succeeds immediately without "
+        "performing an action, changing Variables, or delaying later tasks."
+    ),
     "core.wait": (
         "Pauses this routine for the selected duration without freezing Streamhouse "
         "Hub. Other eligible queues and the interface keep working."
@@ -504,6 +511,9 @@ _INPUT_HELP: dict[str, dict[str, str]] = {
     },
     "counter.reset": {
         "scopes": "Which configured values return to the Counter's reset value.",
+    },
+    "core.comment": {
+        "comment": "Explanatory text stored with this task for routine authors.",
     },
     "core.wait": {
         "duration": "How long the routine waits before continuing.",
@@ -961,6 +971,8 @@ def _card_summary(
     config: Mapping[str, Any],
     resolver: TaskReferenceResolver | None,
 ) -> str:
+    if task_type == "core.comment":
+        return _summary_text(config.get("comment", ""), 80)
     if task_type == "core.wait":
         return f"{_summary_text(config.get('duration', ''))} {_unit_abbreviation(config.get('unit', 'seconds'))}".strip()
     if task_type == "core.random_delay":

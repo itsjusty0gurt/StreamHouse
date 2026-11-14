@@ -47,6 +47,7 @@ from shared.streamhouse_runtime.logger import Logger
 
 
 CORE_TASK_LABELS = {
+    "core.comment": "Core — Comment",
     "core.launch_application": "Core — Launch application",
     "core.close_application": "Core — Close application",
     "core.wait": "Core — Wait",
@@ -66,6 +67,15 @@ CORE_TASK_LABELS.update(VALUE_TASK_LABELS)
 
 def _result(task: TaskDefinition, succeeded: bool, detail: str) -> TaskExecutionResult:
     return TaskExecutionResult(task.task_id, task.task_type, succeeded, detail)
+
+
+class CommentTask:
+    task_type = "core.comment"
+
+    def execute(self, task: TaskDefinition, trigger: TriggerEvent) -> TaskExecutionResult:
+        comment = " ".join(str(task.config.get("comment", "")).split())
+        detail = f"{comment[:119].rstrip()}…" if len(comment) > 120 else comment
+        return _result(task, True, detail or "Comment.")
 
 
 class LaunchApplicationTask:
