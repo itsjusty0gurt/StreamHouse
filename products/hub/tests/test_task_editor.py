@@ -765,6 +765,19 @@ class TaskEditorTests(unittest.TestCase):
         builder.remove_condition(builder.rows[1])
         self.assertEqual(len(builder.rows), 1)
 
+    def test_if_task_uses_compact_shared_condition_header(self) -> None:
+        dialog = TaskEditorDialog("core.if")
+        builder = dialog.condition_builder
+        controls = builder.layout().itemAt(0).layout()
+
+        self.assertEqual(builder.conditions_label.text(), "Conditions")
+        self.assertEqual(builder.join_combo.currentText(), "All conditions (AND)")
+        self.assertEqual(builder.add_button.text(), "+ Add Condition")
+        self.assertEqual(controls.count(), 3)
+        self.assertIs(controls.itemAt(0).widget(), builder.conditions_label)
+        self.assertIs(controls.itemAt(1).widget(), builder.join_combo)
+        self.assertIs(controls.itemAt(2).widget(), builder.add_button)
+
     def test_if_condition_builder_uses_roomy_vertical_fields(self) -> None:
         dialog = TaskEditorDialog("core.if")
         row = dialog.condition_builder.rows[0]

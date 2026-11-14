@@ -63,6 +63,22 @@ def test_if_trigger_dialog_reuses_condition_builder_without_branches() -> None:
     dialog.close()
 
 
+def test_if_trigger_dialog_uses_compact_shared_condition_header() -> None:
+    _app()
+    dialog = IfTriggerDialog(_registry())
+    builder = dialog.condition_builder
+    controls = builder.layout().itemAt(0).layout()
+
+    assert builder.conditions_label.text() == "Conditions"
+    assert builder.join_combo.currentText() == "All conditions (AND)"
+    assert builder.add_button.text() == "+ Add Condition"
+    assert controls.count() == 3
+    assert controls.itemAt(0).widget() is builder.conditions_label
+    assert controls.itemAt(1).widget() is builder.join_combo
+    assert controls.itemAt(2).widget() is builder.add_button
+    dialog.close()
+
+
 def test_if_trigger_dialog_edits_conditions_mode_and_enabled_state() -> None:
     _app()
     trigger = CoreAutomationTrigger(

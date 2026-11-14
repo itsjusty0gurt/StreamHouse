@@ -240,13 +240,20 @@ class ConditionBuilderWidget(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(8)
         controls = QHBoxLayout()
-        controls.addWidget(QLabel("Match", self))
+        controls.setContentsMargins(0, 0, 0, 0)
+        controls.setSpacing(8)
+        controls.setAlignment(Qt.AlignmentFlag.AlignLeft)
+        self.conditions_label = QLabel("Conditions", self)
+        controls.addWidget(self.conditions_label)
         self.join_combo = QComboBox(self)
         self.join_combo.addItem("All conditions (AND)", "and")
         self.join_combo.addItem("Any condition (OR)", "or")
         self.join_combo.setMinimumContentsLength(20)
+        self.join_combo.setSizePolicy(
+            QSizePolicy.Policy.Fixed,
+            QSizePolicy.Policy.Fixed,
+        )
         controls.addWidget(self.join_combo)
-        controls.addStretch(1)
         self.add_button = QPushButton("+ Add Condition", self)
         controls.addWidget(self.add_button)
         layout.addLayout(controls)
