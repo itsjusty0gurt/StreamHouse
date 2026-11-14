@@ -49,8 +49,20 @@ class TwitchAccountPageTests(unittest.TestCase):
         self.assertEqual(
             self.page.main_card.connect_button.text(), "Connect / Sign In"
         )
+        self.assertEqual(
+            self.page.main_card.sign_in_guidance_label.text(),
+            "Make sure you're already signed in to the Twitch account you want "
+            "to use in your browser before continuing.",
+        )
+        self.assertTrue(self.page.main_card.sign_in_guidance_label.wordWrap())
         self.assertEqual(self.page.bot_card.status_label.text(), "Needs Setup")
         self.assertEqual(self.page.bot_card.connect_button.text(), "Connect Bot")
+        self.assertEqual(
+            self.page.bot_card.sign_in_guidance_label.text(),
+            "Make sure you're already signed in to the bot's Twitch account in "
+            "your browser before connecting.",
+        )
+        self.assertTrue(self.page.bot_card.sign_in_guidance_label.wordWrap())
         self.assertFalse(self.page.main_card.disconnect_button.isEnabled())
         self.assertFalse(self.page.bot_card.disconnect_button.isEnabled())
 

@@ -68,7 +68,14 @@ class _ProfileWorker(QRunnable):
 
 
 class _AccountCard(QFrame):
-    def __init__(self, title: str, *, prominent: bool, parent: QWidget) -> None:
+    def __init__(
+        self,
+        title: str,
+        *,
+        prominent: bool,
+        sign_in_guidance: str,
+        parent: QWidget,
+    ) -> None:
         super().__init__(parent)
         self.setObjectName("twitchAccountCard")
         self.setFrameShape(QFrame.Shape.StyledPanel)
@@ -113,6 +120,11 @@ class _AccountCard(QFrame):
         identity.addStretch()
         identity_row.addLayout(identity, 1)
         layout.addLayout(identity_row)
+
+        self.sign_in_guidance_label = QLabel(sign_in_guidance, self)
+        self.sign_in_guidance_label.setWordWrap(True)
+        self.sign_in_guidance_label.setStyleSheet("color: #a7a7b3;")
+        layout.addWidget(self.sign_in_guidance_label)
 
         actions = QHBoxLayout()
         self.connect_button = QPushButton(self)
@@ -187,9 +199,23 @@ class TwitchAccountPage(QWidget):
         intro.setWordWrap(True)
         content_layout.addWidget(intro)
         self.main_card = _AccountCard(
-            "Main Twitch Account", prominent=True, parent=content
+            "Main Twitch Account",
+            prominent=True,
+            sign_in_guidance=(
+                "Make sure you're already signed in to the Twitch account you want "
+                "to use in your browser before continuing."
+            ),
+            parent=content,
         )
-        self.bot_card = _AccountCard("Bot Account", prominent=False, parent=content)
+        self.bot_card = _AccountCard(
+            "Bot Account",
+            prominent=False,
+            sign_in_guidance=(
+                "Make sure you're already signed in to the bot's Twitch account in "
+                "your browser before connecting."
+            ),
+            parent=content,
+        )
         self.bot_help_label = QLabel(
             "Optional. Chat can use a separate bot identity while channel controls "
             "continue using the main Twitch account.",
