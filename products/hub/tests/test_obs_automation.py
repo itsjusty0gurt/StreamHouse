@@ -558,6 +558,34 @@ class ObsTaskTests(unittest.TestCase):
             {"file": "C:/art/portal.png"},
         )
 
+    def test_text_source_preserves_rendered_surrounding_and_multiline_whitespace(self) -> None:
+        self.trigger = TriggerEvent(
+            "manual",
+            "test",
+            "manual",
+            {"music.artist": "Artist", "music.title": "Song"},
+        )
+        template = "  {music.artist} - {music.title}  \n\nNext line  "
+
+        self.assertTrue(
+            self.run_task(
+                "obs.set_text_source",
+                {"input": "Ticker", "text": template},
+            )
+        )
+
+        self.assertEqual(
+            self.service.requests[-1],
+            (
+                "SetInputSettings",
+                {
+                    "inputName": "Ticker",
+                    "inputSettings": {"text": "  Artist - Song  \n\nNext line  "},
+                    "overlay": True,
+                },
+            ),
+        )
+
     def test_browser_source_url_supports_literal_and_canonical_variable(self) -> None:
         self.assertTrue(
             self.run_task(

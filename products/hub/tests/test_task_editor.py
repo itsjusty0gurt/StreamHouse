@@ -171,6 +171,57 @@ class TaskEditorTests(unittest.TestCase):
         config = dialog.values()["config"]
         self.assertEqual(config, {"scene": "Gameplay", "source": "Camera", "action": "hide"})
 
+    def test_obs_text_source_preserves_freeform_whitespace_and_trims_identifier(self) -> None:
+        expected = "  {music.artist} - {music.title}  \n\nNext line  "
+        task = TaskDefinition(
+            "text-source",
+            "obs.set_text_source",
+            "Set ticker text",
+            {"input": "Ticker", "text": expected},
+        )
+        dialog = TaskEditorDialog(
+            task.task_type,
+            task=task,
+            obs_service=FakeObsService(),
+        )
+        fields = dialog.field_widgets[task.task_type]
+
+        self.assertEqual(fields["text"].toPlainText(), expected)
+        fields["input"].setCurrentText("  Ticker  ")
+        self.assertEqual(
+            dialog.values()["config"],
+            {"input": "Ticker", "text": expected},
+        )
+
+    def test_obs_text_source_persistence_and_edit_round_trip_preserves_whitespace(self) -> None:
+        expected = "  {music.artist} - {music.title}  "
+        with tempfile.TemporaryDirectory() as directory:
+            store = RoutineStore(Path(directory) / "routines.json")
+            routine = store.add("Ticker")
+            task = store.add_task(
+                routine.routine_id,
+                task_type="obs.set_text_source",
+                name="Set ticker text",
+                config={"input": "Ticker", "text": expected},
+            )
+
+            reloaded = RoutineStore(store.path)
+            reloaded.load()
+            saved = reloaded.get(routine.routine_id).tasks[0]
+            dialog = TaskEditorDialog(
+                saved.task_type,
+                task=saved,
+                obs_service=FakeObsService(),
+            )
+
+            self.assertEqual(saved.task_id, task.task_id)
+            self.assertEqual(saved.config["text"], expected)
+            self.assertEqual(
+                dialog.field_widgets[saved.task_type]["text"].toPlainText(),
+                expected,
+            )
+            self.assertEqual(dialog.values()["config"]["text"], expected)
+
     def test_obs_discovery_is_contextual_to_the_task(self) -> None:
         cases = {
             "obs.set_input_mute": "GetInputList",

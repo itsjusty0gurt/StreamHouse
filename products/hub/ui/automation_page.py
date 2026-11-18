@@ -1845,7 +1845,7 @@ class TaskEditorDialog(QDialog):
         ),
         "obs.set_text_source": (
             {"key": "input", "label": "Text source", "kind": "obs_input", "default": "", "required": True},
-            {"key": "text", "label": "Text", "kind": "multiline", "default": "", "placeholder": "Now playing: {stream.category}"},
+            {"key": "text", "label": "Text", "kind": "multiline", "default": "", "placeholder": "Now playing: {stream.category}", "preserve_whitespace": True},
         ),
         "obs.set_image_source": (
             {"key": "input", "label": "Image source", "kind": "obs_input", "default": "", "required": True},
@@ -2846,7 +2846,12 @@ class TaskEditorDialog(QDialog):
             if isinstance(widget, QLineEdit):
                 value: object = widget.text().strip()
             elif isinstance(widget, QTextEdit):
-                text = widget.toPlainText().strip()
+                raw_text = widget.toPlainText()
+                text = (
+                    raw_text
+                    if spec.get("preserve_whitespace")
+                    else raw_text.strip()
+                )
                 if kind == "json":
                     value = json.loads(text or "{}")
                     if not isinstance(value, dict):
