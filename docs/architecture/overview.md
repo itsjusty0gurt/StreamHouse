@@ -1161,9 +1161,11 @@ With a separate bot identity:
 - broadcaster-authorized socket handles channel activity/moderation scopes.
 
 `TwitchService.transport_health` is the read-only authority for the current
-chat and broadcaster EventSub transport states plus chat-account ownership. It
-publishes changes through the Twitch Qt bridge for the Account page; the page
-does not poll or maintain a second transport lifecycle.
+chat and broadcaster EventSub transport states plus the accounts participating
+in chat. A separate bot authorizes the chat socket, while the broadcaster
+remains a chat participant for broadcaster sends and channel moderation. The
+service publishes changes through the Twitch Qt bridge for the Account page;
+the page does not poll or maintain a second transport lifecycle.
 
 `products/hub/twitch/catalog.py` is the subscription catalog. `products/hub/twitch/parser.py` converts
 payloads into typed models from `products/hub/twitch/models.py`.

@@ -564,7 +564,10 @@ class TwitchServiceTests(unittest.TestCase):
 
         try:
             self.assertTrue(service.connect("streamer"))
-            self.assertEqual(service.transport_health.chat_account, "bot")
+            self.assertEqual(
+                service.transport_health.chat_accounts,
+                frozenset({"main", "bot"}),
+            )
             self.assertIs(
                 service.transport_health.chat,
                 TwitchConnectionState.CONNECTING,
@@ -645,7 +648,7 @@ class TwitchServiceTests(unittest.TestCase):
         service._transport_health = service.transport_health.__class__(
             chat=TwitchConnectionState.CONNECTED,
             eventsub=TwitchConnectionState.CONNECTED,
-            chat_account="bot",
+            chat_accounts=frozenset({"main", "bot"}),
         )
         updates = []
         Events.subscribe(
@@ -671,6 +674,41 @@ class TwitchServiceTests(unittest.TestCase):
         self.assertIs(service.transport_health.eventsub, TwitchConnectionState.CONNECTED)
         self.assertTrue(updates)
 
+    def test_chat_participants_follow_current_broadcaster_and_bot_identities(self) -> None:
+        broadcaster = TwitchToken(
+            "broadcaster-access",
+            "broadcaster-refresh",
+            999,
+            [],
+            user_id="main-1",
+            login="streamer",
+        )
+        bot = TwitchToken(
+            "bot-access",
+            "bot-refresh",
+            999,
+            [],
+            user_id="bot-1",
+            login="helperbot",
+        )
+        auth = Mock(token=broadcaster)
+        bot_auth = Mock(token=None)
+        service = TwitchService(auth=auth, bot_auth=bot_auth)
+
+        self.assertEqual(service._selected_chat_accounts(), frozenset({"main"}))
+
+        bot_auth.token = bot
+        self.assertEqual(
+            service._selected_chat_accounts(),
+            frozenset({"main", "bot"}),
+        )
+
+        auth.token = None
+        self.assertEqual(service._selected_chat_accounts(), frozenset({"bot"}))
+
+        bot_auth.token = None
+        self.assertEqual(service._selected_chat_accounts(), frozenset())
+
     def test_native_eventsub_transfer_keeps_global_connection_state(self) -> None:
         service = TwitchService()
         service.channel = "streamer"
@@ -678,7 +716,7 @@ class TwitchServiceTests(unittest.TestCase):
         service._transport_health = service.transport_health.__class__(
             chat=TwitchConnectionState.CONNECTED,
             eventsub=TwitchConnectionState.CONNECTED,
-            chat_account="main",
+            chat_accounts=frozenset({"main"}),
         )
 
         health_updates = []

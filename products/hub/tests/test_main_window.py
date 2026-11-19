@@ -5022,7 +5022,7 @@ class MainWindowTests(unittest.TestCase):
             TwitchTransportHealth(
                 chat=TwitchConnectionState.CONNECTED,
                 eventsub=TwitchConnectionState.CONNECTED,
-                chat_account="bot",
+                chat_accounts=frozenset({"main", "bot"}),
             )
         )
 
@@ -5042,6 +5042,10 @@ class MainWindowTests(unittest.TestCase):
         )
         self.assertEqual(
             self.window.twitch_account_page.bot_card.connection_health.status("Chat"),
+            "Connected",
+        )
+        self.assertEqual(
+            self.window.twitch_account_page.main_card.connection_health.status("Chat"),
             "Connected",
         )
         visible_text = " ".join(

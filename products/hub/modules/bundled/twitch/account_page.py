@@ -452,10 +452,13 @@ class TwitchAccountPage(QWidget):
                 "EventSub",
                 self._transport_status(self._transport_health.eventsub, signed_in),
             )
-        owns_chat = self._transport_health.chat_account == account
+        participates_in_chat = account in self._transport_health.chat_accounts
         card.connection_health.set_status(
             "Chat",
-            self._transport_status(self._transport_health.chat, signed_in and owns_chat),
+            self._transport_status(
+                self._transport_health.chat,
+                signed_in and participates_in_chat,
+            ),
         )
 
     @staticmethod

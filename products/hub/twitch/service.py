@@ -46,7 +46,7 @@ class TwitchTransportHealth:
 
     chat: TwitchConnectionState = TwitchConnectionState.DISCONNECTED
     eventsub: TwitchConnectionState = TwitchConnectionState.DISCONNECTED
-    chat_account: str = "main"
+    chat_accounts: frozenset[str] = frozenset()
 
 
 class TwitchService:
@@ -214,7 +214,7 @@ class TwitchService:
         )
         self._live_chat_token = self._chat_token()
         self._activity_token = token
-        self._set_transport_health(chat_account=self._selected_chat_account())
+        self._set_transport_health(chat_accounts=self._selected_chat_accounts())
         self.live_socket.open()
         chat_token = self._live_chat_token
         if (
@@ -1144,7 +1144,7 @@ class TwitchService:
         self._set_transport_health(
             chat=TwitchConnectionState.DISCONNECTED,
             eventsub=TwitchConnectionState.DISCONNECTED,
-            chat_account=self._selected_chat_account(),
+            chat_accounts=self._selected_chat_accounts(),
         )
         self._set_state(TwitchConnectionState.DISCONNECTED)
         Logger.info(
@@ -1317,30 +1317,34 @@ class TwitchService:
             channel=self.channel,
         )
 
-    def _selected_chat_account(self) -> str:
+    def _selected_chat_accounts(self) -> frozenset[str]:
         broadcaster = self.auth.token if self.auth is not None else None
         bot = self.bot_auth.token if self.bot_auth is not None else None
+        accounts = set()
+        if broadcaster is not None and broadcaster.user_id:
+            accounts.add("main")
         if (
-            broadcaster is not None
-            and bot is not None
+            bot is not None
             and bot.user_id
-            and bot.user_id != broadcaster.user_id
+            and (broadcaster is None or bot.user_id != broadcaster.user_id)
         ):
-            return "bot"
-        return "main"
+            accounts.add("bot")
+        return frozenset(accounts)
 
     def _set_transport_health(
         self,
         *,
         chat: TwitchConnectionState | None = None,
         eventsub: TwitchConnectionState | None = None,
-        chat_account: str | None = None,
+        chat_accounts: frozenset[str] | None = None,
     ) -> None:
         current = self._transport_health
         updated = TwitchTransportHealth(
             chat=chat or current.chat,
             eventsub=eventsub or current.eventsub,
-            chat_account=chat_account or current.chat_account,
+            chat_accounts=(
+                chat_accounts if chat_accounts is not None else current.chat_accounts
+            ),
         )
         if updated == current:
             return

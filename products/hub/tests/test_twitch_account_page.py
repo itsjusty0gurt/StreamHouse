@@ -102,7 +102,28 @@ class TwitchAccountPageTests(unittest.TestCase):
             self.page.main_card.connection_health.status("API"), "Connected"
         )
 
-    def test_transport_health_follows_account_ownership_and_reconnects(self) -> None:
+    def test_broadcaster_only_chat_uses_live_transport_state(self) -> None:
+        main_token = self._token("main-1", "streamer", TWITCH_SCOPES)
+        self.page.set_active(True)
+        self.page.set_main_auth_state(
+            TwitchAuthState.SIGNED_IN, "streamer", set(), main_token
+        )
+        self.page.set_transport_health(
+            TwitchTransportHealth(
+                chat=TwitchConnectionState.CONNECTED,
+                eventsub=TwitchConnectionState.CONNECTED,
+                chat_accounts=frozenset({"main"}),
+            )
+        )
+
+        self.assertEqual(
+            self.page.main_card.connection_health.status("Chat"), "Connected"
+        )
+        self.assertEqual(
+            self.page.bot_card.connection_health.status("Chat"), "Unavailable"
+        )
+
+    def test_separate_bot_keeps_broadcaster_and_bot_chat_participation(self) -> None:
         main_token = self._token("main-1", "streamer", TWITCH_SCOPES)
         bot_token = self._token("bot-1", "helperbot", TWITCH_BOT_SCOPES)
         self.page.set_active(True)
@@ -117,7 +138,7 @@ class TwitchAccountPageTests(unittest.TestCase):
             TwitchTransportHealth(
                 chat=TwitchConnectionState.DISCONNECTED,
                 eventsub=TwitchConnectionState.DISCONNECTED,
-                chat_account="bot",
+                chat_accounts=frozenset({"main", "bot"}),
             )
         )
         self.assertEqual(
@@ -132,14 +153,14 @@ class TwitchAccountPageTests(unittest.TestCase):
             TwitchTransportHealth(
                 chat=TwitchConnectionState.CONNECTED,
                 eventsub=TwitchConnectionState.CONNECTED,
-                chat_account="bot",
+                chat_accounts=frozenset({"main", "bot"}),
             )
         )
         self.assertEqual(
             self.page.main_card.connection_health.status("EventSub"), "Connected"
         )
         self.assertEqual(
-            self.page.main_card.connection_health.status("Chat"), "Unavailable"
+            self.page.main_card.connection_health.status("Chat"), "Connected"
         )
         self.assertEqual(
             self.page.bot_card.connection_health.status("Chat"), "Connected"
@@ -149,7 +170,7 @@ class TwitchAccountPageTests(unittest.TestCase):
             TwitchTransportHealth(
                 chat=TwitchConnectionState.RECONNECTING,
                 eventsub=TwitchConnectionState.RECONNECTING,
-                chat_account="bot",
+                chat_accounts=frozenset({"main", "bot"}),
             )
         )
         self.assertEqual(
@@ -157,6 +178,52 @@ class TwitchAccountPageTests(unittest.TestCase):
         )
         self.assertEqual(
             self.page.bot_card.connection_health.status("Chat"), "Connecting"
+        )
+        self.assertEqual(
+            self.page.main_card.connection_health.status("Chat"), "Connecting"
+        )
+
+    def test_broadcaster_and_bot_disconnect_states_follow_participation(self) -> None:
+        main_token = self._token("main-1", "streamer", TWITCH_SCOPES)
+        bot_token = self._token("bot-1", "helperbot", TWITCH_BOT_SCOPES)
+        self.page.set_main_auth_state(
+            TwitchAuthState.SIGNED_IN, "streamer", set(), main_token
+        )
+        self.page.set_bot_auth_state(
+            TwitchAuthState.SIGNED_OUT, "Signed out", set(), None
+        )
+        self.page.set_transport_health(
+            TwitchTransportHealth(
+                chat=TwitchConnectionState.CONNECTED,
+                eventsub=TwitchConnectionState.CONNECTED,
+                chat_accounts=frozenset({"main"}),
+            )
+        )
+        self.assertEqual(
+            self.page.main_card.connection_health.status("Chat"), "Connected"
+        )
+        self.assertEqual(
+            self.page.bot_card.connection_health.status("Chat"), "Unavailable"
+        )
+
+        self.page.set_main_auth_state(
+            TwitchAuthState.SIGNED_OUT, "Signed out", set(), None
+        )
+        self.page.set_bot_auth_state(
+            TwitchAuthState.SIGNED_IN, "helperbot", set(), bot_token
+        )
+        self.page.set_transport_health(
+            TwitchTransportHealth(
+                chat=TwitchConnectionState.DISCONNECTED,
+                eventsub=TwitchConnectionState.DISCONNECTED,
+                chat_accounts=frozenset({"bot"}),
+            )
+        )
+        self.assertEqual(
+            self.page.main_card.connection_health.status("Chat"), "Unavailable"
+        )
+        self.assertEqual(
+            self.page.bot_card.connection_health.status("Chat"), "Disconnected"
         )
 
     def test_sign_out_clears_healthy_states_without_exposing_token(self) -> None:
@@ -169,7 +236,7 @@ class TwitchAccountPageTests(unittest.TestCase):
             TwitchTransportHealth(
                 chat=TwitchConnectionState.CONNECTED,
                 eventsub=TwitchConnectionState.CONNECTED,
-                chat_account="main",
+                chat_accounts=frozenset({"main"}),
             )
         )
         self.page.set_main_auth_state(
