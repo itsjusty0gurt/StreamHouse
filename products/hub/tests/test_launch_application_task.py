@@ -70,17 +70,43 @@ class ExternalProcessEnvironmentTests(unittest.TestCase):
     def test_start_uses_sanitized_environment(self, environment, popen) -> None:
         environment.return_value = {"CUSTOM_VALUE": "preserved"}
 
-        start_external_process(
-            ["C:/Apps/example.exe", "--flag"],
-            cwd="C:/Apps",
-            startupinfo=None,
-        )
+        with patch.object(external_process.sys, "platform", "linux"):
+            start_external_process(
+                ["C:/Apps/example.exe", "--flag"],
+                cwd="C:/Apps",
+                startupinfo=None,
+            )
 
         popen.assert_called_once_with(
             ["C:/Apps/example.exe", "--flag"],
             cwd="C:/Apps",
             startupinfo=None,
             env={"CUSTOM_VALUE": "preserved"},
+        )
+
+    @patch("products.hub.core.external_process._start_independent_windows_process")
+    @patch("products.hub.core.external_process.external_process_environment")
+    def test_windows_start_uses_independent_parent_and_preserves_parameters(
+        self,
+        environment,
+        start_independent,
+    ) -> None:
+        sanitized = {"CUSTOM_VALUE": "preserved"}
+        environment.return_value = sanitized
+        startupinfo = object()
+
+        with patch.object(external_process.sys, "platform", "win32"):
+            start_external_process(
+                ["C:/Apps/example.exe", "--flag"],
+                cwd="C:/Apps",
+                startupinfo=startupinfo,
+            )
+
+        start_independent.assert_called_once_with(
+            ["C:/Apps/example.exe", "--flag"],
+            cwd="C:/Apps",
+            startupinfo=startupinfo,
+            environment=sanitized,
         )
 
     @patch("ctypes.WinDLL")

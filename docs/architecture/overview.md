@@ -2087,7 +2087,11 @@ Core Automation launches system-installed applications through the external
 process boundary in `products/hub/core/external_process.py`. Frozen launches
 remove only bundle-anchored PyInstaller/PySide search paths from the child
 environment and temporarily restore the standard Windows DLL search directory
-during process creation; Hub's own packaged environment is left unchanged.
+during process creation; Hub's own packaged environment is left unchanged. On
+Windows, external applications use the interactive desktop shell as their
+process parent through `PROC_THREAD_ATTRIBUTE_PARENT_PROCESS`. This keeps them
+outside Hub's descendant tree so process-tree consumers such as OBS Application
+Audio Capture do not treat unrelated launched applications as part of Hub.
 
 Release archives and checksums:
 
