@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from enum import StrEnum
 from secrets import token_hex
 from threading import Thread
@@ -39,6 +40,15 @@ class TwitchConnectionState(StrEnum):
     ERROR = "Error"
 
 
+@dataclass(frozen=True, slots=True)
+class TwitchTransportHealth:
+    """Current module-owned state of the Twitch live transports."""
+
+    chat: TwitchConnectionState = TwitchConnectionState.DISCONNECTED
+    eventsub: TwitchConnectionState = TwitchConnectionState.DISCONNECTED
+    chat_account: str = "main"
+
+
 class TwitchService:
     """UI-independent Twitch service with a local EventSub test transport."""
 
@@ -52,6 +62,7 @@ class TwitchService:
         self.bot_auth = bot_auth
         self.helix = helix or TwitchHelixClient()
         self.state = TwitchConnectionState.DISCONNECTED
+        self._transport_health = TwitchTransportHealth()
         self.channel = ""
         self.eventsub_secret = token_hex(32)
         self.webhook_processor = EventSubWebhookProcessor(
@@ -81,6 +92,10 @@ class TwitchService:
     def listener_url(self) -> str:
         return self.local_listener.url
 
+    @property
+    def transport_health(self) -> TwitchTransportHealth:
+        return self._transport_health
+
     def connect(self, channel: str) -> bool:
         clean_channel = channel.strip().lstrip("#").lower()
 
@@ -102,6 +117,10 @@ class TwitchService:
             self.disconnect()
 
         self.channel = clean_channel
+        self._set_transport_health(
+            chat=TwitchConnectionState.CONNECTING,
+            eventsub=TwitchConnectionState.CONNECTING,
+        )
         self._set_state(TwitchConnectionState.CONNECTING)
         if self.auth is not None and self.auth.token is None:
             self.channel = ""
@@ -126,6 +145,10 @@ class TwitchService:
             return False
 
         self._set_state(TwitchConnectionState.CONNECTED)
+        self._set_transport_health(
+            chat=TwitchConnectionState.CONNECTED,
+            eventsub=TwitchConnectionState.CONNECTED,
+        )
         Logger.info(
             f'Connected to Twitch channel "{clean_channel}" (simulated).',
             source="TWITCH",
@@ -191,6 +214,7 @@ class TwitchService:
         )
         self._live_chat_token = self._chat_token()
         self._activity_token = token
+        self._set_transport_health(chat_account=self._selected_chat_account())
         self.live_socket.open()
         chat_token = self._live_chat_token
         if (
@@ -250,6 +274,14 @@ class TwitchService:
                 self.live_socket.close()
             return
         self._set_state(TwitchConnectionState.CONNECTED)
+        self._set_transport_health(
+            chat=TwitchConnectionState.CONNECTED,
+            eventsub=(
+                self._transport_health.eventsub
+                if self.activity_socket is not None
+                else TwitchConnectionState.CONNECTED
+            ),
+        )
         if reconnecting:
             Logger.debug(
                 f'Reconnected to live Twitch chat for "{self.channel}".',
@@ -284,6 +316,7 @@ class TwitchService:
             )
             return
         self._log_activity_warnings(warnings)
+        self._set_transport_health(eventsub=TwitchConnectionState.CONNECTED)
 
     def _log_activity_warnings(self, warnings: object) -> None:
         if not isinstance(warnings, (tuple, list)):
@@ -324,14 +357,22 @@ class TwitchService:
                 return current
         return selected_token
 
-    @staticmethod
-    def _receive_activity_error(message: str) -> None:
+    def _receive_activity_error(self, message: str) -> None:
+        self._set_transport_health(eventsub=TwitchConnectionState.ERROR)
         Logger.warning(
             f"Twitch activity EventSub connection issue: {message}",
             source="TWITCH",
         )
 
     def _receive_live_reconnecting(self, native_transfer: bool) -> None:
+        self._set_transport_health(
+            chat=TwitchConnectionState.RECONNECTING,
+            eventsub=(
+                self._transport_health.eventsub
+                if self.activity_socket is not None
+                else TwitchConnectionState.RECONNECTING
+            ),
+        )
         if native_transfer:
             Logger.debug(
                 "Twitch EventSub is transferring to a replacement session.",
@@ -355,6 +396,14 @@ class TwitchService:
             self._set_state(TwitchConnectionState.RECONNECTING)
 
     def _receive_live_reconnected(self, native_transfer: bool) -> None:
+        self._set_transport_health(
+            chat=TwitchConnectionState.CONNECTED,
+            eventsub=(
+                self._transport_health.eventsub
+                if self.activity_socket is not None
+                else TwitchConnectionState.CONNECTED
+            ),
+        )
         if native_transfer:
             Logger.debug(
                 "Twitch EventSub session transfer completed.",
@@ -364,16 +413,16 @@ class TwitchService:
         if self.state is TwitchConnectionState.RECONNECTING:
             self._set_state(TwitchConnectionState.CONNECTED)
 
-    @staticmethod
-    def _receive_activity_reconnecting(native_transfer: bool) -> None:
+    def _receive_activity_reconnecting(self, native_transfer: bool) -> None:
+        self._set_transport_health(eventsub=TwitchConnectionState.RECONNECTING)
         reason = "session transfer" if native_transfer else "connection interruption"
         Logger.debug(
             f"Twitch activity EventSub recovery started ({reason}).",
             source="TWITCH",
         )
 
-    @staticmethod
-    def _receive_activity_reconnected(native_transfer: bool) -> None:
+    def _receive_activity_reconnected(self, native_transfer: bool) -> None:
+        self._set_transport_health(eventsub=TwitchConnectionState.CONNECTED)
         reason = "session transfer" if native_transfer else "reconnect"
         Logger.debug(
             f"Twitch activity EventSub recovery completed ({reason}).",
@@ -381,7 +430,15 @@ class TwitchService:
         )
 
     def _receive_live_error(self, message: str) -> None:
-        self._report_error(message)
+        self._set_transport_health(
+            chat=TwitchConnectionState.ERROR,
+            eventsub=(
+                self._transport_health.eventsub
+                if self.activity_socket is not None
+                else TwitchConnectionState.ERROR
+            ),
+        )
+        self._report_error(message, transport_error=False)
 
     def send_message(self, text: str, *, as_bot: bool = True) -> bool:
         clean_text = text.strip()
@@ -1084,6 +1141,11 @@ class TwitchService:
         self.badge_urls.clear()
         self._cheermote_load_generation += 1
         self.cheermote_assets.clear()
+        self._set_transport_health(
+            chat=TwitchConnectionState.DISCONNECTED,
+            eventsub=TwitchConnectionState.DISCONNECTED,
+            chat_account=self._selected_chat_account(),
+        )
         self._set_state(TwitchConnectionState.DISCONNECTED)
         Logger.info(
             f'Disconnected from Twitch channel "{previous_channel}".',
@@ -1255,10 +1317,51 @@ class TwitchService:
             channel=self.channel,
         )
 
-    def _report_error(self, message: str, change_state: bool = True) -> None:
+    def _selected_chat_account(self) -> str:
+        broadcaster = self.auth.token if self.auth is not None else None
+        bot = self.bot_auth.token if self.bot_auth is not None else None
+        if (
+            broadcaster is not None
+            and bot is not None
+            and bot.user_id
+            and bot.user_id != broadcaster.user_id
+        ):
+            return "bot"
+        return "main"
+
+    def _set_transport_health(
+        self,
+        *,
+        chat: TwitchConnectionState | None = None,
+        eventsub: TwitchConnectionState | None = None,
+        chat_account: str | None = None,
+    ) -> None:
+        current = self._transport_health
+        updated = TwitchTransportHealth(
+            chat=chat or current.chat,
+            eventsub=eventsub or current.eventsub,
+            chat_account=chat_account or current.chat_account,
+        )
+        if updated == current:
+            return
+        self._transport_health = updated
+        Events.emit("twitch_transport_health_changed", health=updated)
+
+    def _report_error(
+        self,
+        message: str,
+        change_state: bool = True,
+        *,
+        transport_error: bool = True,
+    ) -> None:
         message = redact_secret_text(message)
         if change_state:
             self.state = TwitchConnectionState.ERROR
+            if transport_error:
+                self._set_transport_health(
+                    chat=TwitchConnectionState.ERROR,
+                    eventsub=TwitchConnectionState.ERROR,
+                )
         Logger.error(message, source="TWITCH")
         Events.emit("twitch_error", message=message)
         if change_state:

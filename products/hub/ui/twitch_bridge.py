@@ -9,7 +9,7 @@ from products.hub.twitch.models import (
     TwitchMessage,
 )
 from products.hub.twitch.auth import TwitchAuthState
-from products.hub.twitch.service import TwitchConnectionState
+from products.hub.twitch.service import TwitchConnectionState, TwitchTransportHealth
 
 
 class TwitchEventBridge(QObject):
@@ -23,6 +23,10 @@ class TwitchEventBridge(QObject):
     bot_auth_changed = Signal(object, str)
     notice_received = Signal(object)
     activity_received = Signal(object)
+    transport_health_changed = Signal(object)
+
+    def handle_transport_health_changed(self, health: TwitchTransportHealth) -> None:
+        self.transport_health_changed.emit(health)
 
     def handle_activity_received(self, twitch_event: TwitchEvent) -> None:
         self.activity_received.emit(twitch_event)

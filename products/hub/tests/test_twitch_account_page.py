@@ -6,7 +6,10 @@ from PySide6.QtWidgets import QApplication
 from products.hub.config.twitch import TWITCH_BOT_SCOPES, TWITCH_SCOPES
 from products.hub.modules.bundled.twitch.account_page import TwitchAccountPage
 from products.hub.twitch.auth import TwitchAuthState, TwitchToken
-from products.hub.twitch.service import TwitchConnectionState
+from products.hub.twitch.service import (
+    TwitchConnectionState,
+    TwitchTransportHealth,
+)
 
 
 class _InlineThreadPool:
@@ -65,6 +68,21 @@ class TwitchAccountPageTests(unittest.TestCase):
         self.assertTrue(self.page.bot_card.sign_in_guidance_label.wordWrap())
         self.assertFalse(self.page.main_card.disconnect_button.isEnabled())
         self.assertFalse(self.page.bot_card.disconnect_button.isEnabled())
+        self.assertEqual(
+            self.page.main_card.connection_health.rows,
+            ("Auth", "API", "EventSub", "Chat"),
+        )
+        self.assertEqual(
+            self.page.bot_card.connection_health.rows,
+            ("Auth", "API", "Chat"),
+        )
+        self.assertNotIn("EventSub", self.page.bot_card.connection_health.rows)
+        self.assertEqual(
+            self.page.main_card.connection_health.status("Auth"), "Disconnected"
+        )
+        self.assertEqual(
+            self.page.main_card.connection_health.status("API"), "Unavailable"
+        )
 
     def test_connected_account_loads_identity_and_handles_missing_avatar(self) -> None:
         token = self._token("main-1", "streamer", TWITCH_SCOPES)
@@ -77,6 +95,127 @@ class TwitchAccountPageTests(unittest.TestCase):
         self.assertEqual(self.page.main_card.login_label.text(), "@streamer")
         self.assertEqual(self.page.main_card.avatar_label.text(), "S")
         self.service.get_account_profile.assert_called_once_with(token)
+        self.assertEqual(
+            self.page.main_card.connection_health.status("Auth"), "Connected"
+        )
+        self.assertEqual(
+            self.page.main_card.connection_health.status("API"), "Connected"
+        )
+
+    def test_transport_health_follows_account_ownership_and_reconnects(self) -> None:
+        main_token = self._token("main-1", "streamer", TWITCH_SCOPES)
+        bot_token = self._token("bot-1", "helperbot", TWITCH_BOT_SCOPES)
+        self.page.set_active(True)
+        self.page.set_main_auth_state(
+            TwitchAuthState.SIGNED_IN, "streamer", set(), main_token
+        )
+        self.page.set_bot_auth_state(
+            TwitchAuthState.SIGNED_IN, "helperbot", set(), bot_token
+        )
+
+        self.page.set_transport_health(
+            TwitchTransportHealth(
+                chat=TwitchConnectionState.DISCONNECTED,
+                eventsub=TwitchConnectionState.DISCONNECTED,
+                chat_account="bot",
+            )
+        )
+        self.assertEqual(
+            self.page.main_card.connection_health.status("EventSub"),
+            "Disconnected",
+        )
+        self.assertEqual(
+            self.page.bot_card.connection_health.status("Chat"), "Disconnected"
+        )
+
+        self.page.set_transport_health(
+            TwitchTransportHealth(
+                chat=TwitchConnectionState.CONNECTED,
+                eventsub=TwitchConnectionState.CONNECTED,
+                chat_account="bot",
+            )
+        )
+        self.assertEqual(
+            self.page.main_card.connection_health.status("EventSub"), "Connected"
+        )
+        self.assertEqual(
+            self.page.main_card.connection_health.status("Chat"), "Unavailable"
+        )
+        self.assertEqual(
+            self.page.bot_card.connection_health.status("Chat"), "Connected"
+        )
+
+        self.page.set_transport_health(
+            TwitchTransportHealth(
+                chat=TwitchConnectionState.RECONNECTING,
+                eventsub=TwitchConnectionState.RECONNECTING,
+                chat_account="bot",
+            )
+        )
+        self.assertEqual(
+            self.page.main_card.connection_health.status("EventSub"), "Connecting"
+        )
+        self.assertEqual(
+            self.page.bot_card.connection_health.status("Chat"), "Connecting"
+        )
+
+    def test_sign_out_clears_healthy_states_without_exposing_token(self) -> None:
+        token = self._token("main-1", "streamer", TWITCH_SCOPES)
+        self.page.set_active(True)
+        self.page.set_main_auth_state(
+            TwitchAuthState.SIGNED_IN, "streamer", set(), token
+        )
+        self.page.set_transport_health(
+            TwitchTransportHealth(
+                chat=TwitchConnectionState.CONNECTED,
+                eventsub=TwitchConnectionState.CONNECTED,
+                chat_account="main",
+            )
+        )
+        self.page.set_main_auth_state(
+            TwitchAuthState.SIGNED_OUT, "Signed out", set(), None
+        )
+
+        health = self.page.main_card.connection_health
+        self.assertEqual(health.status("Auth"), "Disconnected")
+        self.assertEqual(health.status("API"), "Unavailable")
+        self.assertEqual(health.status("EventSub"), "Unavailable")
+        self.assertEqual(health.status("Chat"), "Unavailable")
+        visible_text = " ".join(
+            label.text() for label in self.page.findChildren(type(health._status_labels["Auth"]))
+        )
+        self.assertNotIn("access", visible_text)
+        self.assertNotIn("refresh", visible_text)
+
+    def test_bot_profile_failure_marks_only_bot_api_as_error(self) -> None:
+        main_token = self._token("main-1", "streamer", TWITCH_SCOPES)
+        bot_token = self._token("bot-1", "helperbot", TWITCH_BOT_SCOPES)
+
+        def profile(token: TwitchToken) -> dict:
+            if token.user_id == "bot-1":
+                raise OSError("offline")
+            return {
+                "id": token.user_id,
+                "login": token.login,
+                "display_name": "Streamer",
+                "profile_image_url": "",
+            }
+
+        self.service.get_account_profile.side_effect = profile
+        self.page.set_active(True)
+        self.page.set_main_auth_state(
+            TwitchAuthState.SIGNED_IN, "streamer", set(), main_token
+        )
+        self.page.set_bot_auth_state(
+            TwitchAuthState.SIGNED_IN, "helperbot", set(), bot_token
+        )
+
+        self.assertEqual(
+            self.page.main_card.connection_health.status("API"), "Connected"
+        )
+        self.assertEqual(
+            self.page.bot_card.connection_health.status("API"), "Error"
+        )
 
     def test_profile_avatar_is_requested_without_exposing_its_url(self) -> None:
         reply = Mock()

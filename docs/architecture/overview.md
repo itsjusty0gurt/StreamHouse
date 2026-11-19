@@ -448,6 +448,7 @@ Important event families:
 | --- | --- | --- |
 | `twitch_auth_changed`, `twitch_bot_auth_changed` | `TwitchAuthService` | Twitch bridge / connection UI |
 | `twitch_status_changed` | `TwitchService` | status bar, health, connection UI |
+| `twitch_transport_health_changed` | `TwitchService` | queued Twitch Account health presentation |
 | `twitch_message_received` | `TwitchService` | chat, command and Keyword/Phrase dispatchers, AI queue, memories, first-message triggers |
 | `twitch_event_received` | `TwitchService` | raw EventSub diagnostics |
 | `twitch_event`, `twitch_event.<type>` | `TwitchService` | activity feed, sessions, Twitch automation |
@@ -1158,6 +1159,11 @@ With a separate bot identity:
 
 - bot-authorized socket handles chat;
 - broadcaster-authorized socket handles channel activity/moderation scopes.
+
+`TwitchService.transport_health` is the read-only authority for the current
+chat and broadcaster EventSub transport states plus chat-account ownership. It
+publishes changes through the Twitch Qt bridge for the Account page; the page
+does not poll or maintain a second transport lifecycle.
 
 `products/hub/twitch/catalog.py` is the subscription catalog. `products/hub/twitch/parser.py` converts
 payloads into typed models from `products/hub/twitch/models.py`.

@@ -10,7 +10,10 @@ from shared.streamhouse_runtime.logger import Logger
 from products.hub.twitch.auth import TwitchAuthService, TwitchAuthState, TwitchToken
 from products.hub.twitch.models import TwitchEventTransport, TwitchMessage
 from datetime import datetime, timezone
-from products.hub.twitch.service import TwitchConnectionState, TwitchService
+from products.hub.twitch.service import (
+    TwitchConnectionState,
+    TwitchService,
+)
 from products.hub.twitch.simulator import create_eventsub_notification
 from products.hub.twitch.slash_commands import (
     TwitchSlashRequest,
@@ -561,6 +564,11 @@ class TwitchServiceTests(unittest.TestCase):
 
         try:
             self.assertTrue(service.connect("streamer"))
+            self.assertEqual(service.transport_health.chat_account, "bot")
+            self.assertIs(
+                service.transport_health.chat,
+                TwitchConnectionState.CONNECTING,
+            )
             refreshed_broadcaster = TwitchToken(
                 "fresh-broadcaster-access",
                 "refresh-2",
@@ -582,6 +590,15 @@ class TwitchServiceTests(unittest.TestCase):
 
             service._receive_live_welcome("chat-session-2")
             service._receive_activity_welcome("activity-session-2")
+
+            self.assertIs(
+                service.transport_health.chat,
+                TwitchConnectionState.CONNECTED,
+            )
+            self.assertIs(
+                service.transport_health.eventsub,
+                TwitchConnectionState.CONNECTED,
+            )
 
             helix.create_chat_subscriptions.assert_called_once_with(
                 "chat-session-2", "channel-1", "bot-1", refreshed_bot
@@ -622,17 +639,61 @@ class TwitchServiceTests(unittest.TestCase):
         self.assertEqual(errors, [])
         warning.assert_called_once()
 
+    def test_transport_health_tracks_separate_chat_and_activity_recovery(self) -> None:
+        service = TwitchService()
+        service.activity_socket = Mock()
+        service._transport_health = service.transport_health.__class__(
+            chat=TwitchConnectionState.CONNECTED,
+            eventsub=TwitchConnectionState.CONNECTED,
+            chat_account="bot",
+        )
+        updates = []
+        Events.subscribe(
+            "twitch_transport_health_changed",
+            lambda health: updates.append(health),
+        )
+        try:
+            service._receive_live_reconnecting(False)
+            self.assertIs(service.transport_health.chat, TwitchConnectionState.RECONNECTING)
+            self.assertIs(service.transport_health.eventsub, TwitchConnectionState.CONNECTED)
+
+            service._receive_activity_reconnecting(False)
+            self.assertIs(
+                service.transport_health.eventsub,
+                TwitchConnectionState.RECONNECTING,
+            )
+            service._receive_live_reconnected(False)
+            service._receive_activity_reconnected(False)
+        finally:
+            Events.clear("twitch_transport_health_changed")
+
+        self.assertIs(service.transport_health.chat, TwitchConnectionState.CONNECTED)
+        self.assertIs(service.transport_health.eventsub, TwitchConnectionState.CONNECTED)
+        self.assertTrue(updates)
+
     def test_native_eventsub_transfer_keeps_global_connection_state(self) -> None:
         service = TwitchService()
         service.channel = "streamer"
         service.state = TwitchConnectionState.CONNECTED
+        service._transport_health = service.transport_health.__class__(
+            chat=TwitchConnectionState.CONNECTED,
+            eventsub=TwitchConnectionState.CONNECTED,
+            chat_account="main",
+        )
 
-        with patch.object(Events, "emit") as emit:
-            service._receive_live_reconnecting(True)
-            service._receive_live_reconnected(True)
+        health_updates = []
+        Events.subscribe(
+            "twitch_transport_health_changed",
+            lambda health: health_updates.append(health),
+        )
+        service._receive_live_reconnecting(True)
+        service._receive_live_reconnected(True)
 
         self.assertIs(service.state, TwitchConnectionState.CONNECTED)
-        emit.assert_not_called()
+        self.assertEqual(
+            [snapshot.chat for snapshot in health_updates],
+            [TwitchConnectionState.RECONNECTING, TwitchConnectionState.CONNECTED],
+        )
 
     def test_connect_during_recovery_does_not_construct_duplicate_runtime(self) -> None:
         service = TwitchService(auth=Mock(), helix=Mock())

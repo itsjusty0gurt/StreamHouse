@@ -31,7 +31,11 @@ dependencies are defined in the
 - Broadcaster and optional bot setup is presented under **Twitch > Account**.
   The page uses these module-owned auth services, shows each identity and
   connection state independently, and loads profile images through the existing
-  Helix client without exposing tokens or diagnostic transport details.
+  Helix client without exposing tokens or diagnostic transport details. Compact
+  Connection Health rows show broadcaster Auth, API, EventSub, and Chat plus bot
+  Auth, API, and Chat. They consume auth state, the existing profile request,
+  and a read-only `TwitchService` transport snapshot; they do not poll or own a
+  second connection lifecycle.
 - When Hub adds scopes, it starts an upgrade flow once and Twitch asks the
   user to approve the additional access.
 - After broadcaster reauthorization, Hub reopens the broadcaster EventSub

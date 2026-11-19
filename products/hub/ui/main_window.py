@@ -986,6 +986,9 @@ class MainWindow(QMainWindow):
         )
         self.twitch_bridge.notice_received.connect(self.handle_twitch_notice)
         self.twitch_bridge.activity_received.connect(self.handle_twitch_activity)
+        self.twitch_bridge.transport_health_changed.connect(
+            self.handle_twitch_transport_health_changed
+        )
         Events.subscribe(
             "twitch_status_changed",
             self.twitch_bridge.handle_status_changed,
@@ -1017,6 +1020,10 @@ class MainWindow(QMainWindow):
         Events.subscribe(
             "twitch_event",
             self.twitch_bridge.handle_activity_received,
+        )
+        Events.subscribe(
+            "twitch_transport_health_changed",
+            self.twitch_bridge.handle_transport_health_changed,
         )
         self.ui.dashboardButton.clicked.connect(self.show_dashboard)
         self.ui.twitchButton.clicked.connect(self.show_twitch)
@@ -4337,6 +4344,10 @@ class MainWindow(QMainWindow):
         self._refresh_twitch_health(connection_state=state)
         self.twitch_account_page.set_connection_state(state)
         self._refresh_twitch_chat_empty_state(connection_state=state)
+
+    @Slot(object)
+    def handle_twitch_transport_health_changed(self, health: object) -> None:
+        self.twitch_account_page.set_transport_health(health)
 
     @Slot(object)
     def handle_twitch_message(self, chat_message: TwitchMessage) -> None:
@@ -9051,6 +9062,10 @@ class MainWindow(QMainWindow):
         Events.unsubscribe(
             "twitch_event",
             self.twitch_bridge.handle_activity_received,
+        )
+        Events.unsubscribe(
+            "twitch_transport_health_changed",
+            self.twitch_bridge.handle_transport_health_changed,
         )
         Logger.remove_handler(self.log_handler)
         super().closeEvent(event)

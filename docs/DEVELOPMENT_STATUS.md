@@ -77,7 +77,8 @@ details remain in Logs and are not appended to Chat.
 
 The Twitch workspace now opens with a module-owned **Account** tab. It provides
 the primary broadcaster and optional bot connect, reauthorize, identity/avatar,
-status, and independent disconnect controls over the existing auth services.
+status, independent disconnect controls, and compact event-driven Connection
+Health rows over the existing auth, Helix profile, EventSub, and chat state.
 The management tab order is Account, Raid, Channel Points, Channel Information,
 Users, and Analytics; Twitch authentication is no longer presented on the
 hidden Core Connections shell.

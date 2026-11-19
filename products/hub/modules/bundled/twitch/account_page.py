@@ -8,6 +8,7 @@ from PySide6.QtGui import QPixmap
 from PySide6.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkRequest
 from PySide6.QtWidgets import (
     QFrame,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QPushButton,
@@ -18,7 +19,11 @@ from PySide6.QtWidgets import (
 )
 
 from products.hub.twitch.auth import TwitchAuthService, TwitchAuthState, TwitchToken
-from products.hub.twitch.service import TwitchConnectionState, TwitchService
+from products.hub.twitch.service import (
+    TwitchConnectionState,
+    TwitchService,
+    TwitchTransportHealth,
+)
 
 
 @dataclass(slots=True)
@@ -67,6 +72,63 @@ class _ProfileWorker(QRunnable):
             pass
 
 
+class _ConnectionHealth(QWidget):
+    _COLORS = {
+        "Connected": "#39d98a",
+        "Connecting": "#f2c94c",
+        "Disconnected": "#a7a7b3",
+        "Unavailable": "#777783",
+        "Error": "#ff6b6b",
+    }
+
+    def __init__(self, rows: tuple[str, ...], parent: QWidget) -> None:
+        super().__init__(parent)
+        self.setObjectName("twitchConnectionHealth")
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(12, 0, 0, 0)
+        layout.setSpacing(6)
+        title = QLabel("Connection Health", self)
+        title.setStyleSheet("font-weight: 600;")
+        layout.addWidget(title)
+        grid = QGridLayout()
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setHorizontalSpacing(8)
+        grid.setVerticalSpacing(3)
+        self._status_labels: dict[str, QLabel] = {}
+        self._dots: dict[str, QLabel] = {}
+        for index, name in enumerate(rows):
+            dot = QLabel("●", self)
+            dot.setAccessibleName(f"{name} status indicator")
+            name_label = QLabel(name, self)
+            status = QLabel("Unavailable", self)
+            status.setObjectName(f"twitchHealth{name}Status")
+            grid.addWidget(dot, index, 0)
+            grid.addWidget(name_label, index, 1)
+            grid.addWidget(status, index, 2)
+            self._dots[name] = dot
+            self._status_labels[name] = status
+        grid.setColumnStretch(2, 1)
+        layout.addLayout(grid)
+        layout.addStretch()
+        for name in rows:
+            self.set_status(name, "Unavailable")
+
+    @property
+    def rows(self) -> tuple[str, ...]:
+        return tuple(self._status_labels)
+
+    def status(self, name: str) -> str:
+        return self._status_labels[name].text()
+
+    def set_status(self, name: str, status: str) -> None:
+        label = self._status_labels[name]
+        label.setText(status)
+        label.setAccessibleName(f"{name}: {status}")
+        self._dots[name].setStyleSheet(
+            f"color: {self._COLORS.get(status, self._COLORS['Unavailable'])};"
+        )
+
+
 class _AccountCard(QFrame):
     def __init__(
         self,
@@ -74,6 +136,7 @@ class _AccountCard(QFrame):
         *,
         prominent: bool,
         sign_in_guidance: str,
+        health_rows: tuple[str, ...],
         parent: QWidget,
     ) -> None:
         super().__init__(parent)
@@ -119,6 +182,8 @@ class _AccountCard(QFrame):
         identity.addWidget(self.status_label)
         identity.addStretch()
         identity_row.addLayout(identity, 1)
+        self.connection_health = _ConnectionHealth(health_rows, self)
+        identity_row.addWidget(self.connection_health, 0, Qt.AlignmentFlag.AlignTop)
         layout.addLayout(identity_row)
 
         self.sign_in_guidance_label = QLabel(sign_in_guidance, self)
@@ -172,12 +237,17 @@ class TwitchAccountPage(QWidget):
         self._network.finished.connect(self._avatar_finished)
         self._active = False
         self._connection_state = TwitchConnectionState.DISCONNECTED
+        self._transport_health = TwitchTransportHealth()
+        service_health = getattr(service, "transport_health", None)
+        if isinstance(service_health, TwitchTransportHealth):
+            self._transport_health = service_health
         self._presentations = {
             "main": _AccountPresentation(),
             "bot": _AccountPresentation(),
         }
         self._profile_generation = {"main": 0, "bot": 0}
         self._profile_user_id = {"main": "", "bot": ""}
+        self._api_state = {"main": "Unavailable", "bot": "Unavailable"}
         self._workers: set[_ProfileWorker] = set()
         self._avatar_cache: dict[str, QPixmap] = {}
         self._avatar_requests: dict[QNetworkReply, tuple[str, int, str]] = {}
@@ -205,6 +275,7 @@ class TwitchAccountPage(QWidget):
                 "Make sure you're already signed in to the Twitch account you want "
                 "to use in your browser before continuing."
             ),
+            health_rows=("Auth", "API", "EventSub", "Chat"),
             parent=content,
         )
         self.bot_card = _AccountCard(
@@ -214,6 +285,7 @@ class TwitchAccountPage(QWidget):
                 "Make sure you're already signed in to the bot's Twitch account in "
                 "your browser before connecting."
             ),
+            health_rows=("Auth", "API", "Chat"),
             parent=content,
         )
         self.bot_help_label = QLabel(
@@ -247,6 +319,13 @@ class TwitchAccountPage(QWidget):
     def set_connection_state(self, state: TwitchConnectionState) -> None:
         self._connection_state = state
         self._render("main")
+
+    def set_transport_health(self, health: object) -> None:
+        if not isinstance(health, TwitchTransportHealth):
+            return
+        self._transport_health = health
+        self._render_health("main")
+        self._render_health("bot")
 
     def set_main_auth_state(
         self,
@@ -284,6 +363,13 @@ class TwitchAccountPage(QWidget):
         if token is None or previous.token is not token:
             self._profile_generation[account] += 1
             self._profile_user_id[account] = ""
+            self._api_state[account] = (
+                "Connecting"
+                if state is TwitchAuthState.SIGNED_IN and token is not None
+                else "Unavailable"
+            )
+        elif state is not TwitchAuthState.SIGNED_IN:
+            self._api_state[account] = "Unavailable"
         self._render(account)
         self._maybe_load_profile(account)
 
@@ -337,6 +423,58 @@ class TwitchAccountPage(QWidget):
             "Disconnect Bot" if account == "bot" else "Disconnect / Sign Out"
         )
         card.disconnect_button.setEnabled(signed_in or waiting)
+        self._render_health(account)
+
+    def _render_health(self, account: str) -> None:
+        card = self.main_card if account == "main" else self.bot_card
+        presentation = self._presentations[account]
+        signed_in = (
+            presentation.state is TwitchAuthState.SIGNED_IN
+            and presentation.token is not None
+        )
+        if presentation.state is TwitchAuthState.WAITING:
+            auth_status = "Connecting"
+        elif presentation.state is TwitchAuthState.ERROR:
+            auth_status = "Error"
+        elif signed_in and not presentation.missing_scopes:
+            auth_status = "Connected"
+        elif signed_in:
+            auth_status = "Unavailable"
+        else:
+            auth_status = "Disconnected"
+        card.connection_health.set_status("Auth", auth_status)
+        card.connection_health.set_status(
+            "API", self._api_state[account] if signed_in else "Unavailable"
+        )
+
+        if account == "main":
+            card.connection_health.set_status(
+                "EventSub",
+                self._transport_status(self._transport_health.eventsub, signed_in),
+            )
+        owns_chat = self._transport_health.chat_account == account
+        card.connection_health.set_status(
+            "Chat",
+            self._transport_status(self._transport_health.chat, signed_in and owns_chat),
+        )
+
+    @staticmethod
+    def _transport_status(
+        state: TwitchConnectionState,
+        available: bool,
+    ) -> str:
+        if not available:
+            return "Unavailable"
+        if state in {
+            TwitchConnectionState.CONNECTING,
+            TwitchConnectionState.RECONNECTING,
+        }:
+            return "Connecting"
+        if state is TwitchConnectionState.CONNECTED:
+            return "Connected"
+        if state is TwitchConnectionState.ERROR:
+            return "Error"
+        return "Disconnected"
 
     def _maybe_load_profile(self, account: str) -> None:
         if not self._active:
@@ -383,6 +521,8 @@ class TwitchAccountPage(QWidget):
             card.display_name_label.setText(display_name)
         if login:
             card.login_label.setText(f"@{login}")
+        self._api_state[account] = "Connected"
+        self._render_health(account)
         avatar_url = str(value.get("profile_image_url") or "").strip()
         if not avatar_url:
             card.show_placeholder(display_name or login or "T")
@@ -399,6 +539,8 @@ class TwitchAccountPage(QWidget):
         if generation != self._profile_generation.get(account):
             return
         self._profile_user_id[account] = ""
+        self._api_state[account] = "Error"
+        self._render_health(account)
 
     @Slot(QNetworkReply)
     def _avatar_finished(self, reply: QNetworkReply) -> None:

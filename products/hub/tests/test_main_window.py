@@ -95,7 +95,7 @@ from products.hub.twitch.raid_contract import (
     RAID_COUNTDOWN_SECONDS,
     OutgoingRaidStartedEvent,
 )
-from products.hub.twitch.service import TwitchConnectionState
+from products.hub.twitch.service import TwitchConnectionState, TwitchTransportHealth
 from products.hub.twitch.session_history import StreamSession
 from products.hub.twitch.models import (
     TwitchChatNotice,
@@ -5018,6 +5018,13 @@ class MainWindowTests(unittest.TestCase):
             TwitchConnectionState.CONNECTED,
             "streamer",
         )
+        self.window.handle_twitch_transport_health_changed(
+            TwitchTransportHealth(
+                chat=TwitchConnectionState.CONNECTED,
+                eventsub=TwitchConnectionState.CONNECTED,
+                chat_account="bot",
+            )
+        )
 
         self.assertEqual(
             self.window.twitch_account_page.main_card.status_label.text(),
@@ -5025,6 +5032,16 @@ class MainWindowTests(unittest.TestCase):
         )
         self.assertEqual(
             self.window.twitch_account_page.bot_card.status_label.text(),
+            "Connected",
+        )
+        self.assertEqual(
+            self.window.twitch_account_page.main_card.connection_health.status(
+                "EventSub"
+            ),
+            "Connected",
+        )
+        self.assertEqual(
+            self.window.twitch_account_page.bot_card.connection_health.status("Chat"),
             "Connected",
         )
         visible_text = " ".join(
