@@ -620,6 +620,7 @@ def runtime_provider(
     twitch_values: Callable[[], Mapping[str, object]],
     *,
     hub_uptime: Callable[[], object],
+    stream_uptime: Callable[[], str] | None = None,
     obs_connected: Callable[[], bool] | None = None,
     obs_scene: Callable[[], str] | None = None,
 ) -> CallbackVariableProvider:
@@ -629,6 +630,12 @@ def runtime_provider(
         VariableDefinition("stream.category", "Stream Category", "Current cached Twitch category.", VariableDataType.TEXT, "Twitch", "Stream"),
         VariableDefinition("stream.viewer_count", "Viewer Count", "Current cached live viewer count.", VariableDataType.INTEGER, "Twitch", "Stream"),
         VariableDefinition("stream.game_id", "Twitch Game ID", "Current cached Twitch category ID.", VariableDataType.TEXT, "Twitch", "Stream"),
+        VariableDefinition(
+            "stream.uptime", "Stream Uptime",
+            "Elapsed time since the current Twitch stream started (HH:MM:SS), "
+            "or 00:00:00 if offline or the start time is unavailable.",
+            VariableDataType.TEXT, "Twitch", "Stream",
+        ),
         VariableDefinition("hub.uptime", "Hub Uptime", "Time since this Hub process started.", VariableDataType.TEXT, "Hub", "Hub"),
         VariableDefinition("hub.connected_to_twitch", "Twitch Connected", "Whether Hub is connected to Twitch.", VariableDataType.BOOLEAN, "Hub", "Hub"),
     ]
@@ -641,6 +648,8 @@ def runtime_provider(
         )
 
     def resolve(name: str, _context: Mapping[str, object]) -> tuple[bool, object, str]:
+        if name == "stream.uptime":
+            return True, stream_uptime() if stream_uptime is not None else "00:00:00", ""
         twitch = twitch_values()
         if name.startswith("stream."):
             key = name.split(".", 1)[1]

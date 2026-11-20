@@ -617,6 +617,7 @@ class MainWindow(QMainWindow):
             runtime_provider(
                 self._variable_twitch_values,
                 hub_uptime=self._hub_uptime_text,
+                stream_uptime=self._stream_uptime_text,
             )
         )
         self.variable_registry.register(
@@ -7491,14 +7492,17 @@ class MainWindow(QMainWindow):
             if definition.name.startswith("ads.")
         )
 
+    def _stream_uptime_text(self, now: datetime | None = None) -> str:
+        started_at = self.stream_started_at
+        if not self.stream_is_live or started_at is None:
+            return "00:00:00"
+        now = now if now is not None else datetime.now(timezone.utc)
+        return self._clock_text(int((now - started_at).total_seconds()), hours=True)
+
     @Slot()
     def _update_stream_overview_clock(self) -> None:
         now = datetime.now(timezone.utc)
-        if self.stream_is_live and self.stream_started_at is not None:
-            elapsed = max(int((now - self.stream_started_at).total_seconds()), 0)
-            self.stream_time_label.setText(self._clock_text(elapsed, hours=True))
-        else:
-            self.stream_time_label.setText("00:00:00")
+        self.stream_time_label.setText(self._stream_uptime_text(now))
 
         self.ads_service.set_channel_live(self.stream_is_live)
         for event in self.ads_service.tick(now):

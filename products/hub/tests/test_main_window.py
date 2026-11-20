@@ -5728,6 +5728,46 @@ class MainWindowTests(unittest.TestCase):
         finally:
             edit_dialog.close()
 
+    def test_stream_uptime_variable_uses_current_stream_and_not_hub_clock(self) -> None:
+        now = datetime(2026, 11, 20, 12, tzinfo=timezone.utc)
+        registry = self.window.variable_registry
+        with (
+            patch("products.hub.ui.main_window.datetime", wraps=datetime) as clock,
+            patch(
+                "products.hub.ui.main_window.monotonic",
+                return_value=self.window._hub_started_monotonic + 42,
+            ),
+        ):
+            clock.now.return_value = now
+            for elapsed, expected in (
+                (12, "00:00:12"),
+                (330, "00:05:30"),
+                (8100, "02:15:00"),
+                (97200, "27:00:00"),
+                (-12, "00:00:00"),
+            ):
+                with self.subTest(elapsed=elapsed):
+                    stream = {"started_at": (now - timedelta(seconds=elapsed)).isoformat()}
+                    self.window._apply_stream_live_state(stream)
+                    self.assertEqual(
+                        registry.render("{stream.uptime} / {hub.uptime}"),
+                        f"{expected} / 00:00:42",
+                    )
+
+            stream = {"started_at": now.isoformat()}
+            self.window._apply_stream_live_state(stream)
+            clock.now.return_value = now + timedelta(seconds=12)
+            self.assertEqual(registry.render("{stream.uptime}"), "00:00:12")
+            # A refreshed snapshot for the same stream reports its original start.
+            self.window._apply_stream_live_state(stream)
+            clock.now.return_value = now + timedelta(seconds=13)
+            self.assertEqual(registry.render("{stream.uptime}"), "00:00:13")
+
+            for stream in (None, {}, {"started_at": "invalid"}):
+                with self.subTest(stream=stream):
+                    self.window._apply_stream_live_state(stream)
+                    self.assertEqual(registry.render("{stream.uptime}"), "00:00:00")
+
     def test_live_overview_cards_and_ad_manager_show_schedule(self) -> None:
         now = datetime.now(timezone.utc)
         self.window.twitch_auth.token = Mock(

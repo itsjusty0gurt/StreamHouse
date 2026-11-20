@@ -135,6 +135,8 @@ hidden Core Connections shell.
 - Hub chat now supports canonical global/provider Variables through the shared
   Variable Picker. Values resolve only at send time, while unavailable tokens
   remain visible and contextual Automation values stay excluded.
+- `{stream.uptime}` reports elapsed Twitch livestream time from the existing
+  Live overview state, independently of `{hub.uptime}`, without new polling.
 - OBS-triggered routines are queued after the originating WebSocket event
   callback returns, so their OBS tasks can complete requests without reentering
   the socket callback or requiring an artificial Wait task. Real OBS acceptance

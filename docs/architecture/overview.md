@@ -726,6 +726,9 @@ Current providers expose:
 
 - cached Twitch stream values: `stream.title`, `stream.category`,
   `stream.viewer_count`, and `stream.game_id`;
+- `stream.uptime`: elapsed time from the current Twitch stream's reported
+  start, calculated when resolved as `HH:MM:SS` (hours can exceed 24).
+  It returns `00:00:00` when offline or when no valid start time is known.
 - contextual `user.*` and `chat.*` values from the current trigger;
 - contextual Chat Command values `command.name`, `command.data`,
   `command.target`, and `command.uses`, where data is the trimmed raw text
