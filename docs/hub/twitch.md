@@ -84,6 +84,8 @@ streamer reads older messages, and shows a counted Jump to latest control until
 the streamer jumps or manually returns to the bottom.
 
 The chat input reuses the shared Variable Picker for global/provider Variables.
+Type `{` to see suggestions, then use the arrow keys and Enter or Tab (or click)
+to insert a placeholder. Escape closes the suggestions without changing the draft.
 Authored placeholders remain in the editor and resolve through
 `VariableRegistry` only when Send is pressed. Contextual or temporary Automation
 Variables are excluded because chat has no trigger execution context; missing or

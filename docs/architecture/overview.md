@@ -819,6 +819,9 @@ the selector and cursor-position insertion behavior used by Variables and every
 registry-declared templated task field. Contextual definitions remain
 discoverable when unavailable and state their required context. Module-owned UI
 uses this Core picker rather than defining provider-specific picker catalogs.
+Picker-backed editors also attach the shared Variable autocomplete. It filters
+the same canonical definitions and editor-specific outputs, shows context
+metadata without fetching values, and inserts only the selected placeholder.
 
 `VariableRegistry` remains authoritative for both definitions and resolved
 values, while Variables UI consumers use separate update paths. Runtime value,

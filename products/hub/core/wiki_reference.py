@@ -841,6 +841,7 @@ def _getting_started_entries() -> tuple[WikiEntry, ...]:
                     (
                         "Automation — build Routines from Triggers and Tasks.",
                         "Variables and Variable Picker — find live values and insert canonical placeholders.",
+                        "In fields with a Variable Picker, type { to see suggestions. Use Enter, Tab, or a click to insert; Escape dismisses them.",
                         "Automation → Commands — manage chat commands and their linked routines.",
                         "Twitch → Channel Points — manage Twitch rewards.",
                         "Automation → Counters — create totals for viewers, streams, and the channel.",

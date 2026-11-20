@@ -137,6 +137,8 @@ hidden Core Connections shell.
   remain visible and contextual Automation values stay excluded.
 - `{stream.uptime}` reports elapsed Twitch livestream time from the existing
   Live overview state, independently of `{hub.uptime}`, without new polling.
+- Picker-backed Automation editors and Live chat now suggest Variables when
+  typing `{`, using the same field-specific catalog without resolving values.
 - OBS-triggered routines are queued after the originating WebSocket event
   callback returns, so their OBS tasks can complete requests without reentering
   the socket callback or requiring an artificial Wait task. Real OBS acceptance
