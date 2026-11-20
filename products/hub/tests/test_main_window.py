@@ -111,6 +111,7 @@ from products.hub.twitch.models import (
 from products.hub.twitch.parser import TwitchMessageParser
 from products.hub.twitch.simulator import create_chat_notification
 from products.hub.ui.main_window import MainWindow
+from products.hub.ui.variable_picker import VariablePickerButton
 from products.hub.integrations.music_player import (
     MUSIC_EVENT_TRACK_CHANGED,
     MusicConnectionState,
@@ -4855,6 +4856,82 @@ class MainWindowTests(unittest.TestCase):
             tuple(self.window.twitch_chat_input.history),
             ("Hello Twitch",),
         )
+
+    def test_twitch_chat_uses_shared_variable_picker_beside_input(self) -> None:
+        picker = self.window.twitch_chat_variable_picker
+
+        self.assertIsInstance(picker, VariablePickerButton)
+        self.assertIs(picker.target, self.window.ui.twitchSendEdit)
+        self.assertIs(
+            self.window.ui.twitchSendLayout.itemAt(1).widget(),
+            picker,
+        )
+
+    def test_twitch_chat_renders_variables_only_for_outbound_message(self) -> None:
+        self.window.twitch_service.send_message = Mock(return_value=True)
+        self.window.variable_registry.render = Mock(
+            return_value="Live for 01:23:45"
+        )
+        authored = "Live for {hub.uptime}"
+        self.window.ui.twitchSendEdit.setText(authored)
+
+        self.window.send_twitch_message()
+
+        self.window.variable_registry.render.assert_called_once_with(authored, {})
+        self.window.twitch_service.send_message.assert_called_once_with(
+            "Live for 01:23:45",
+            as_bot=False,
+        )
+        self.assertEqual(tuple(self.window.twitch_chat_input.history), (authored,))
+        self.assertEqual(self.window.ui.twitchSendEdit.text(), "")
+
+    def test_twitch_chat_send_failure_preserves_authored_variable_text(self) -> None:
+        self.window.twitch_service.send_message = Mock(return_value=False)
+        self.window.variable_registry.render = Mock(return_value="Live for now")
+        authored = "Live for {hub.uptime}"
+        self.window.ui.twitchSendEdit.setText(authored)
+
+        self.window.send_twitch_message()
+
+        self.assertEqual(self.window.ui.twitchSendEdit.text(), authored)
+        self.assertEqual(tuple(self.window.twitch_chat_input.history), ())
+
+    def test_twitch_chat_me_and_bang_messages_keep_normal_send_path(self) -> None:
+        self.window.twitch_service.send_message = Mock(return_value=True)
+        self.window.variable_registry.render = Mock(
+            side_effect=("/me live for 01:23:45", "!uptime 01:23:45")
+        )
+        self.window._start_twitch_slash_action = Mock(return_value=True)
+
+        self.window.ui.twitchSendEdit.setText("/me live for {hub.uptime}")
+        self.window.send_twitch_message()
+        self.window.ui.twitchSendEdit.setText("!uptime {hub.uptime}")
+        self.window.send_twitch_message()
+
+        self.assertEqual(
+            self.window.twitch_service.send_message.call_args_list,
+            [
+                unittest.mock.call("/me live for 01:23:45", as_bot=False),
+                unittest.mock.call("!uptime 01:23:45", as_bot=False),
+            ],
+        )
+        self.window._start_twitch_slash_action.assert_not_called()
+
+    def test_twitch_slash_action_receives_rendered_variables(self) -> None:
+        self.window.variable_registry.render = Mock(
+            return_value="/ban viewer spam"
+        )
+        self.window._start_twitch_slash_action = Mock(return_value=True)
+        authored = "/ban {custom.target} spam"
+        self.window.ui.twitchSendEdit.setText(authored)
+
+        self.window.send_twitch_message()
+
+        self.window._start_twitch_slash_action.assert_called_once_with(
+            "/ban viewer spam"
+        )
+        self.assertEqual(tuple(self.window.twitch_chat_input.history), (authored,))
+        self.assertEqual(self.window.ui.twitchSendEdit.text(), "")
 
     def test_unknown_slash_command_is_not_sent_as_raw_chat(self) -> None:
         self.window.twitch_service.send_message = Mock(return_value=True)

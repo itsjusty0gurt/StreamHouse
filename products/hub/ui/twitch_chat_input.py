@@ -7,18 +7,66 @@ from typing import Callable, Iterable
 from PySide6.QtCore import QEvent, QObject, QPoint, QRunnable, Qt, Signal
 from PySide6.QtGui import QKeyEvent
 from PySide6.QtWidgets import (
+    QBoxLayout,
     QFrame,
     QLineEdit,
     QListWidget,
     QListWidgetItem,
     QVBoxLayout,
+    QWidget,
 )
 
+from products.hub.automation.variable_registry import (
+    VariableAvailability,
+    VariableDefinition,
+    VariableRegistry,
+)
 from products.hub.twitch.slash_commands import (
     TWITCH_SLASH_COMMANDS,
     TwitchSlashRequest,
     parse_twitch_slash_request,
 )
+from products.hub.ui.variable_picker import VariablePickerButton
+
+
+def is_chat_variable(definition: VariableDefinition) -> bool:
+    """Return whether a Variable is meaningful outside Automation context."""
+
+    return definition.availability is VariableAvailability.GLOBAL
+
+
+def render_chat_message(registry: VariableRegistry, template: str) -> str:
+    """Resolve current global/provider values without trigger context."""
+
+    return registry.render(template, {})
+
+
+def is_twitch_action_message(text: str) -> bool:
+    """Return whether text is Twitch's ordinary /me chat action syntax."""
+
+    clean = text.lstrip().casefold()
+    return clean == "/me" or clean.startswith("/me ")
+
+
+def install_chat_variable_picker(
+    registry: VariableRegistry,
+    edit: QLineEdit,
+    layout: QBoxLayout,
+    parent: QWidget,
+) -> VariablePickerButton:
+    """Install the shared global Variable Picker beside a chat editor."""
+
+    picker = VariablePickerButton(
+        registry,
+        edit,
+        parent=parent,
+        definition_filter=is_chat_variable,
+    )
+    picker.setObjectName("twitchChatVariablePickerButton")
+    picker.setText("{x}")
+    picker.setAccessibleName("Choose a chat Variable")
+    layout.insertWidget(1, picker)
+    return picker
 
 
 @dataclass(frozen=True)

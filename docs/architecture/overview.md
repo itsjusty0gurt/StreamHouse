@@ -1040,6 +1040,12 @@ iframe URL. Clip selection does not create a hidden WebEngine player or attempt
 to resolve Twitch's temporary CDN media URLs.
 Unknown slash text is not sent blindly to Twitch.
 
+Ordinary Hub chat composition reuses the shared Variable Picker and resolves
+the authored template through `VariableRegistry` immediately before dispatch.
+Only global/provider definitions are authorable there because chat has no
+Automation trigger context. Missing or unavailable placeholders remain intact;
+the editor and session-only sent history retain the authored template.
+
 Python-script tasks expose trigger context only through `STREAMHOUSE_*`
 environment variables.
 

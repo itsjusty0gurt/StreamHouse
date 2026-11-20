@@ -221,6 +221,9 @@ from products.hub.ui.twitch_chat_input import (
     TwitchChatInputController,
     TwitchSlashActionWorker,
     TwitchUserSuggestion,
+    install_chat_variable_picker,
+    is_twitch_action_message,
+    render_chat_message,
 )
 from products.hub.twitch.slash_commands import (
     TwitchSlashRequest,
@@ -918,6 +921,12 @@ class MainWindow(QMainWindow):
         self.twitch_chat_input = TwitchChatInputController(
             self.ui.twitchSendEdit,
             self._known_twitch_chat_users,
+        )
+        self.twitch_chat_variable_picker = install_chat_variable_picker(
+            self.variable_registry,
+            self.ui.twitchSendEdit,
+            self.ui.twitchSendLayout,
+            self.ui.twitchChatTab,
         )
         self.ui.twitchConnectButton.hide()
         self.ui.twitchDisconnectButton.hide()
@@ -4158,17 +4167,24 @@ class MainWindow(QMainWindow):
     @Slot()
     def send_twitch_message(self) -> None:
         self.ui.twitchErrorLabel.clear()
-        text = self.ui.twitchSendEdit.text()
-        if text.lstrip().startswith("/"):
-            if self._start_twitch_slash_action(text):
-                self.twitch_chat_input.record_sent(text)
+        authored_text = self.ui.twitchSendEdit.text()
+        rendered_text = render_chat_message(
+            self.variable_registry,
+            authored_text,
+        )
+        if (
+            authored_text.lstrip().startswith("/")
+            and not is_twitch_action_message(authored_text)
+        ):
+            if self._start_twitch_slash_action(rendered_text):
+                self.twitch_chat_input.record_sent(authored_text)
                 self.ui.twitchSendEdit.clear()
             return
         if self.twitch_service.send_message(
-            text,
+            rendered_text,
             as_bot=False,
         ):
-            self.twitch_chat_input.record_sent(text)
+            self.twitch_chat_input.record_sent(authored_text)
             self.ui.twitchSendEdit.clear()
 
     def _known_twitch_chat_users(self) -> tuple[TwitchUserSuggestion, ...]:

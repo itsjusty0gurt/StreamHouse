@@ -866,6 +866,7 @@ def _twitch_entries() -> tuple[WikiEntry, ...]:
                     (
                         "Broadcaster and optional bot authentication.",
                         "Live chat, Command and Keyword / Phrase triggers, and current moderation actions.",
+                        "Chat messages can insert global Variables with the shared Variable Picker; values resolve only when Send is pressed and unavailable placeholders remain visible.",
                         "Supported follows, subscriptions, cheers, raids, stream state, First Message, ads, and Channel Points events.",
                         "Twitch chat content is transient and is not stored as durable chat history.",
                     ),

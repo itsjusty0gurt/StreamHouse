@@ -6,15 +6,27 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import Qt
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QLineEdit
+from PySide6.QtWidgets import QApplication, QHBoxLayout, QLineEdit, QWidget
 
+from products.hub.automation.variable_registry import (
+    CallbackVariableProvider,
+    VariableAvailability,
+    VariableDataType,
+    VariableDefinition,
+    VariableRegistry,
+)
 from products.hub.ui.twitch_chat_input import (
     TWITCH_SLASH_COMMANDS,
     TwitchChatInputController,
     TwitchSlashActionWorker,
     TwitchUserSuggestion,
+    install_chat_variable_picker,
+    is_chat_variable,
+    is_twitch_action_message,
     parse_twitch_slash_request,
+    render_chat_message,
 )
+from products.hub.ui.variable_picker import VariablePickerButton
 
 
 class TwitchChatInputTests(unittest.TestCase):
@@ -131,6 +143,123 @@ class TwitchChatInputTests(unittest.TestCase):
         QTest.keyClick(self.edit, Qt.Key.Key_Down)
         self.assertEqual(self.edit.text(), "/")
         self.assertEqual(self.controller.suggestions.currentRow(), 1)
+
+
+class TwitchChatVariableTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.application = QApplication.instance() or QApplication([])
+
+    def setUp(self) -> None:
+        self.values = {
+            "hub.uptime": "01:23:45",
+            "custom.greeting": "hello",
+            "obs.current_scene": "Gameplay",
+        }
+        definitions = tuple(
+            VariableDefinition(
+                name,
+                name,
+                f"Test {name} value.",
+                VariableDataType.TEXT,
+                "Test",
+                name.split(".", 1)[0].title(),
+            )
+            for name in self.values
+        ) + (
+            VariableDefinition(
+                "user.display_name",
+                "User Display Name",
+                "Triggering user's display name.",
+                VariableDataType.TEXT,
+                "Twitch Context",
+                "User",
+                availability=VariableAvailability.CONTEXTUAL,
+                required_context=("user.display_name",),
+            ),
+            VariableDefinition(
+                "automation.result",
+                "Automation Result",
+                "Routine-scoped task output.",
+                VariableDataType.TEXT,
+                "Automation",
+                "Automation",
+                availability=VariableAvailability.TEMPORARY,
+            ),
+        )
+
+        def resolve(name, context):
+            if name in self.values:
+                return True, self.values[name], ""
+            if name == "user.display_name" and name in context:
+                return True, context[name], ""
+            return False, None, "Unavailable without routine context."
+
+        self.registry = VariableRegistry()
+        self.registry.register(
+            CallbackVariableProvider("Test", definitions, resolve)
+        )
+
+    def test_render_resolves_current_global_values_and_keeps_missing_tokens(self) -> None:
+        template = (
+            "{custom.greeting} {hub.uptime} / {hub.uptime} "
+            "in {obs.current_scene}; {missing.variable}"
+        )
+        self.assertEqual(
+            render_chat_message(self.registry, template),
+            "hello 01:23:45 / 01:23:45 in Gameplay; {missing.variable}",
+        )
+
+        self.values["hub.uptime"] = "01:24:00"
+        self.assertEqual(
+            render_chat_message(self.registry, "Live for {hub.uptime}"),
+            "Live for 01:24:00",
+        )
+
+    def test_render_does_not_use_contextual_or_temporary_values(self) -> None:
+        self.assertEqual(
+            render_chat_message(
+                self.registry,
+                "Hi {user.display_name}; result {automation.result}",
+            ),
+            "Hi {user.display_name}; result {automation.result}",
+        )
+
+    def test_chat_picker_reuses_shared_button_and_filters_non_global_values(self) -> None:
+        parent = QWidget()
+        layout = QHBoxLayout(parent)
+        edit = QLineEdit("Say now", parent)
+        layout.addWidget(edit)
+        layout.addWidget(QWidget(parent))
+        edit.setSelection(4, 3)
+        picker = install_chat_variable_picker(
+            self.registry,
+            edit,
+            layout,
+            parent,
+        )
+        try:
+            self.assertIsInstance(picker, VariablePickerButton)
+            self.assertIs(layout.itemAt(1).widget(), picker)
+            self.assertTrue(
+                is_chat_variable(self.registry.definition("hub.uptime"))
+            )
+            self.assertFalse(
+                is_chat_variable(self.registry.definition("user.display_name"))
+            )
+            self.assertFalse(
+                is_chat_variable(self.registry.definition("automation.result"))
+            )
+            picker.insert_placeholder("{hub.uptime}")
+            self.assertEqual(edit.text(), "Say {hub.uptime}")
+        finally:
+            parent.close()
+
+    def test_twitch_action_detection_preserves_me_without_weakening_slash_commands(self) -> None:
+        self.assertTrue(is_twitch_action_message("/me hello"))
+        self.assertTrue(is_twitch_action_message("  /ME hello"))
+        self.assertFalse(is_twitch_action_message("/ban viewer"))
+        self.assertFalse(is_twitch_action_message("!command"))
 
 
 class TwitchSlashRequestTests(unittest.TestCase):
