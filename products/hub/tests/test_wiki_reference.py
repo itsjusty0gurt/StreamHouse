@@ -14,7 +14,7 @@ from products.hub.automation.core_triggers import (
     TIMER_UNIT_LABELS,
 )
 from products.hub.automation.task_catalog import BUILTIN_TASK_METADATA
-from products.hub.automation.tasks import TaskRegistry
+from products.hub.automation.tasks import TaskMetadata, TaskRegistry
 from products.hub.automation.variable_outputs import generated_output_definitions
 from products.hub.automation.variable_providers import CounterVariableProvider, context_provider
 from products.hub.automation.variable_registry import VariableRegistry, validate_variable_name
@@ -61,7 +61,7 @@ def test_catalog_derives_tasks_triggers_variables_and_commands() -> None:
     assert "integration:touch-portal" in ids
 
 
-def test_generated_reference_has_unique_entries_and_exact_task_labels() -> None:
+def test_generated_reference_has_unique_entries_and_provider_prefixed_task_labels() -> None:
     tasks, variables = _reference_sources()
     entries = build_wiki_entries(tasks, variables)
     ids = [entry.entry_id for entry in entries]
@@ -74,10 +74,35 @@ def test_generated_reference_has_unique_entries_and_exact_task_labels() -> None:
 
     assert len(ids) == len(set(ids))
     assert len(category_titles) == len(set(category_titles))
+    providers = {
+        "core": "Core", "counter": "Counter", "music": "Music",
+        "obs": "OBS", "twitch": "Twitch",
+    }
     assert task_entries == {
-        metadata.task_type: metadata.label
+        metadata.task_type: f"{providers[metadata.task_type.partition('.')[0]]} — {metadata.label}"
         for metadata in tasks.visible_metadata()
     }
+    assert list(task_entries.values()) == sorted(task_entries.values(), key=str.casefold)
+    assert task_entries["obs.set_program_scene"] == "OBS — Change scene"
+    assert task_entries["twitch.send_chat_message"] == "Twitch — Send chat message"
+    assert task_entries["core.if"] == "Core — If"
+    assert task_entries["counter.increase"] == "Counter — Increase"
+    assert task_entries["music.play"] == "Music — Play"
+
+
+def test_wiki_does_not_duplicate_a_provider_prefix_in_task_metadata() -> None:
+    tasks = TaskRegistry([
+        TaskMetadata(
+            "obs.example", "OBS — Example task", "Short example.", "OBS",
+            help_text="Detailed example.",
+            card_summary_required=False,
+        ),
+    ])
+    entry = next(
+        entry for entry in build_wiki_entries(tasks, VariableRegistry())
+        if entry.entry_id == "task:obs.example"
+    )
+    assert entry.title == "OBS — Example task"
 
 
 def test_getting_started_teaches_twitch_automation_and_variable_picker() -> None:
@@ -418,7 +443,7 @@ def test_obs_batch_one_references_are_derived_from_task_metadata() -> None:
 
     assert "local-file setting" in entries["task:obs.set_media_source_file"].search_text()
     audio_routing = entries["task:obs.set_source_audio_track"]
-    assert audio_routing.title == "Set Source Audio Track Routing"
+    assert audio_routing.title == "OBS — Set Source Audio Track Routing"
     assert "track 1 through track 6" in audio_routing.search_text()
     assert "advanced audio properties" in audio_routing.search_text()
     assert "multiple tracks" in audio_routing.search_text()
@@ -698,6 +723,8 @@ def test_wiki_search_is_local_case_insensitive_and_does_not_mutate_sources() -> 
         ("viewer_stream_total", "counter:scopes"),
         ("raid", "trigger:channel.raid"),
         ("OBS scene", "obs:capabilities"),
+        ("OBS change scene", "task:obs.set_program_scene"),
+        ("Twitch send chat message", "task:twitch.send_chat_message"),
     ):
         assert expected_id in {entry.entry_id for entry in page.matching_entries(query)}
 
@@ -728,6 +755,8 @@ def test_wiki_tasks_render_existing_task_library_reference_metadata() -> None:
     application.processEvents()
     assert page.select_entry("task:core.wait")
     application.processEvents()
+    assert page.entry_list.currentItem().text() == "Core — Wait"
+    assert page.title_label.text() == "Core — Wait"
     rendered = page.browser.toPlainText()
     assert "What it does" in rendered
     assert "Inputs" in rendered

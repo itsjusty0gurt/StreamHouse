@@ -176,10 +176,17 @@ def _task_entry(
     ):
         if values:
             sections.append(WikiSection(title, tuple(values)))
+    # Use the top-level category so Core subcategories share a single prefix.
+    category = metadata.category.partition(" / ")[0]
+    provider = "Counter" if category == "Counters" else category
+    label = metadata.label
+    prefix, separator, suffix = label.partition(" — ")
+    if separator and prefix.casefold() in {provider.casefold(), category.casefold()}:
+        label = suffix
     return WikiEntry(
         entry_id=f"task:{metadata.task_type}",
         category="Tasks",
-        title=metadata.label,
+        title=f"{provider} — {label}",
         summary=metadata.short_description,
         sections=tuple(sections),
         keywords=(metadata.task_type, metadata.category, metadata.search_text()),
