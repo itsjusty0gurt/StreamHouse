@@ -139,6 +139,9 @@ hidden Core Connections shell.
   Live overview state, independently of `{hub.uptime}`, without new polling.
 - Picker-backed Automation editors and Live chat now suggest Variables when
   typing `{`, using the same field-specific catalog without resolving values.
+- The built-in Wiki now has 28 Automation recipes in Beginner, Intermediate,
+  and Advanced order. Existing examples were audited against current tasks,
+  triggers, and Variables; all existing recipe IDs were preserved.
 - OBS-triggered routines are queued after the originating WebSocket event
   callback returns, so their OBS tasks can complete requests without reentering
   the socket callback or requiring an artificial Wait task. Real OBS acceptance

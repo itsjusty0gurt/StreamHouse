@@ -1,4 +1,5 @@
 import os
+import re
 from unittest.mock import Mock
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -14,9 +15,11 @@ from products.hub.automation.core_triggers import (
 )
 from products.hub.automation.task_catalog import BUILTIN_TASK_METADATA
 from products.hub.automation.tasks import TaskRegistry
-from products.hub.automation.variable_providers import context_provider
-from products.hub.automation.variable_registry import VariableRegistry
+from products.hub.automation.variable_outputs import generated_output_definitions
+from products.hub.automation.variable_providers import CounterVariableProvider, context_provider
+from products.hub.automation.variable_registry import VariableRegistry, validate_variable_name
 from products.hub.core.wiki_reference import WIKI_CATEGORIES, build_wiki_entries
+from products.hub.counters.models import CounterDefinition
 from products.hub.integrations.music_player import MusicVariableProvider
 from products.hub.obs_service.triggers import OBS_TRIGGER_TYPES
 from products.hub.twitch.slash_commands import TWITCH_SLASH_COMMANDS
@@ -154,6 +157,102 @@ def test_counter_and_first_redemption_recipes_document_twitch_stream_limits() ->
     assert "set it to 1" in first
     assert "twitch then enforces one redemption for that stream" in first
     assert "no extra hub condition is needed" in first
+
+
+def test_recipe_inventory_retains_original_ids_and_validates_references() -> None:
+    tasks, variables = _reference_sources()
+    variables.register(CounterVariableProvider(Mock(list_counters=Mock(
+        return_value=(CounterDefinition("coffee", "Coffee", "coffee", "coffees"),),
+    ))))
+    entries = build_wiki_entries(tasks, variables)
+    recipes = [entry for entry in entries if entry.category == "Recipes"]
+    ids = {recipe.entry_id for recipe in recipes}
+    original_ids = {
+        f"example:{key}" for key in (
+            "first-message-welcome", "channel-point-response", "command-data",
+            "coffee-counter", "first-redemption", "viewer-counter", "raid",
+            "obs-scene", "redemption-milestone", "if-else", "nested-routine",
+            "python-now-playing",
+        )
+    }
+    assert original_ids <= ids
+    assert len(recipes) == len(ids) == 28
+
+    supported_tasks = {
+        f"{metadata.task_type.split('.')[0].title()} — {metadata.label}"
+        if not metadata.task_type.startswith("obs.")
+        else f"OBS — {metadata.label}"
+        for metadata in tasks.visible_metadata()
+    }
+    supported_triggers = {entry.title for entry in entries if entry.category == "Triggers"}
+    manual_triggers = {"Manual — Test Run", "Manual — Test Run or Quick Actions"}
+    base_variables = {definition.name for definition in variables.definitions()}
+    difficulties = []
+    for recipe in recipes:
+        sections = {section.title: section.lines for section in recipe.sections}
+        assert {"Difficulty", "Trigger", "Tasks", "Setup"} <= sections.keys()
+        assert all(lines and all(line.strip() for line in lines) for lines in sections.values())
+        difficulty, = sections["Difficulty"]
+        difficulties.append(difficulty)
+        assert recipe.title.startswith(f"{difficulty} — ")
+        assert len(recipe.title.split()) >= 4
+        assert len(recipe.summary.split()) >= 5
+
+        trigger, = sections["Trigger"]
+        assert trigger.split(", ", 1)[0] in supported_triggers | manual_triggers
+        labels = {
+            re.sub(r"^(?:Optional|Then|Else|Nested routine): ", "", task)
+            for task in sections["Tasks"]
+        }
+        assert labels <= supported_tasks
+
+        # Check placeholders in setup and reference sections. {x} is a button
+        # label, and the bare opening brace introduces autocomplete.
+        known = set(base_variables)
+        if "Core — Read random line" in labels:
+            known.update(definition.name for definition in generated_output_definitions(
+                "core.file_random_line", {"variable": "random_line"},
+            ))
+        setup = " ".join(sections["Setup"])
+        if "Core — Run Python script" in labels:
+            known.update(f"automation.{name}" for name in re.findall(
+                r'hub\.set_output\("([a-z_]+)"', setup,
+            ))
+        text = " ".join(
+            (recipe.title, recipe.summary, *(line for lines in sections.values() for line in lines))
+        )
+        for token in re.findall(r"\{([^{}\s]+)\}", text):
+            if token != "x":
+                assert validate_variable_name(token) == token
+                assert token in known, (recipe.entry_id, token)
+
+    order = {"Beginner": 0, "Intermediate": 1, "Advanced": 2}
+    assert [order[difficulty] for difficulty in difficulties] == sorted(
+        order[difficulty] for difficulty in difficulties
+    )
+
+
+def test_wiki_can_search_and_open_new_recipes() -> None:
+    application = QApplication.instance() or QApplication([])
+    tasks, variables = _reference_sources()
+    page = WikiPage(tasks, variables)
+    try:
+        for query, entry_id in (
+            ("play sound chat command", "example:command-sound"),
+            ("music.title caption", "example:music-now-playing"),
+            ("replay buffer moderator", "example:replay-chat-command"),
+        ):
+            page.search_edit.setText(query)
+            assert entry_id in {entry.entry_id for entry in page.matching_entries(query)}
+            assert page.select_entry(entry_id)
+            application.processEvents()
+            rendered = page.browser.toPlainText()
+            assert all(section in rendered for section in ("Difficulty", "Trigger", "Tasks", "Setup"))
+        assert page.select_entry("example:coffee-counter")
+        assert page.result_label.text() == "Recipes (28)"
+    finally:
+        page.close()
+        page.deleteLater()
 
 
 def test_advanced_recipe_composes_counter_condition_chat_and_obs() -> None:
