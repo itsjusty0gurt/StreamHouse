@@ -20,10 +20,13 @@ from products.hub.automation.variable_providers import CounterVariableProvider, 
 from products.hub.automation.variable_registry import VariableRegistry, validate_variable_name
 from products.hub.core.wiki_reference import WIKI_CATEGORIES, build_wiki_entries
 from products.hub.counters.models import CounterDefinition
+from products.hub.counters.service import CounterService
+from products.hub.counters.store import CounterStore
 from products.hub.integrations.music_player import MusicVariableProvider
 from products.hub.obs_service.triggers import OBS_TRIGGER_TYPES
 from products.hub.twitch.slash_commands import TWITCH_SLASH_COMMANDS
 from products.hub.ui.wiki_page import WikiPage
+from products.hub.ui.variable_picker import VariablePickerDialog
 
 
 def _reference_sources() -> tuple[TaskRegistry, VariableRegistry]:
@@ -632,6 +635,55 @@ def test_all_current_obs_triggers_have_exact_ui_names_and_event_descriptions() -
         assert "friendly scene, input, source, and state controls" in entry.search_text()
         assert "remain editable while obs is disconnected" in entry.search_text()
         assert "advanced filters preserve canonical obs event-data field names" in entry.search_text()
+
+
+def test_counter_scopes_document_patterns_without_listing_configured_counters(tmp_path) -> None:
+    application = QApplication.instance() or QApplication([])
+    tasks, variables = _reference_sources()
+    service = CounterService(CounterStore(tmp_path))
+    service.create_counter(CounterDefinition(
+        "custom_milestone", "Custom Milestone", "point", "points",
+        track_viewer_stream_total=True,
+    ))
+    variables.register(CounterVariableProvider(service, lambda: "test-stream"))
+    page = WikiPage(tasks, variables)
+    picker = VariablePickerDialog(variables, {"user.id": "123"})
+    try:
+        page.search_edit.setText("counter.<id>.user.stream")
+        assert "counter:scopes" in {
+            entry.entry_id for entry in page.matching_entries(page.search_edit.text())
+        }
+        assert page.select_entry("counter:scopes")
+        application.processEvents()
+        rendered = page.browser.toPlainText()
+        assert "Canonical Variables" in rendered
+        assert "custom_milestone" not in rendered
+        assert "Custom Milestone" not in rendered
+        for suffix in ("total", "stream", "user.total", "user.stream"):
+            assert f"counter.<id>.{suffix} —" in rendered
+            for name in (
+                f"counter.custom_milestone.{suffix}",
+                f"counter.custom_milestone.{suffix}.unit",
+            ):
+                snapshot = variables.resolve(name, {"user.id": "123"})
+                assert snapshot is not None and snapshot.available
+                assert any(
+                    picker.table.item(row, 0).text() == f"{{{name}}}"
+                    for row in range(picker.table.rowCount())
+                )
+        assert "Append .unit to any of the four patterns" in rendered
+        assert "singular or plural" in rendered
+        assert "Counter and scope are enabled" in rendered
+        assert "active Twitch stream" in rendered
+        assert "viewer context" in rendered
+
+        # The installation-specific Variables reference remains untouched.
+        assert page.select_entry("variable:counter.custom_milestone.total")
+    finally:
+        picker.close()
+        page.close()
+        picker.deleteLater()
+        page.deleteLater()
 
 
 def test_wiki_search_is_local_case_insensitive_and_does_not_mutate_sources() -> None:

@@ -93,7 +93,7 @@ def build_wiki_entries(
     entries.extend(_trigger_entries(variable_registry))
     entries.extend(_variable_entries(variable_registry))
     entries.extend(_control_flow_entries(task_registry))
-    entries.extend(_counter_entries(variable_registry))
+    entries.extend(_counter_entries())
     entries.extend(_command_entries())
     entries.extend(_twitch_entries())
     entries.extend(_obs_entries(task_registry))
@@ -704,7 +704,7 @@ def _control_flow_entries(task_registry: TaskRegistry) -> tuple[WikiEntry, ...]:
     )
 
 
-def _counter_entries(variable_registry: VariableRegistry) -> tuple[WikiEntry, ...]:
+def _counter_entries() -> tuple[WikiEntry, ...]:
     descriptions = {
         "channel_total": "Lifetime total for the channel.",
         "stream_total": "Total for the current confirmed Twitch stream.",
@@ -712,11 +712,6 @@ def _counter_entries(variable_registry: VariableRegistry) -> tuple[WikiEntry, ..
         "viewer_stream_total": "That viewer's total during the current confirmed Twitch stream.",
     }
     scope_lines = tuple(f"{scope} — {descriptions[scope]}" for scope in SCOPES)
-    counter_variables = tuple(
-        definition.placeholder
-        for definition in variable_registry.definitions()
-        if definition.name.startswith("counter.")
-    )
     return (
         WikiEntry(
             "counter:scopes",
@@ -733,7 +728,19 @@ def _counter_entries(variable_registry: VariableRegistry) -> tuple[WikiEntry, ..
                         "Current-stream scopes require a confirmed Twitch stream ID.",
                     ),
                 ),
-                WikiSection("Canonical Variables", counter_variables),
+                WikiSection(
+                    "Canonical Variables",
+                    (
+                        "Replace <id> with the Counter's Stable ID (not its display name) before using a pattern in braces.",
+                        "counter.<id>.total — Channel lifetime total.",
+                        "counter.<id>.stream — Channel total for the current Twitch stream.",
+                        "counter.<id>.user.total — Triggering viewer's lifetime total.",
+                        "counter.<id>.user.stream — Triggering viewer's total for the current Twitch stream.",
+                        "Append .unit to any of the four patterns for the configured singular or plural unit, such as “point” or “points.” For example: counter.<id>.user.stream.unit.",
+                        "Totals and their units resolve only when the Counter and scope are enabled. Stream scopes require an active Twitch stream. User scopes require viewer context.",
+                        "Use Variable Picker or type { in a supported field to find Variables for your actual Counters. A listed Variable may be unavailable in the current context.",
+                    ),
+                ),
             ),
             ("integer", "decimal", "minimum", "units", *SCOPES),
         ),
