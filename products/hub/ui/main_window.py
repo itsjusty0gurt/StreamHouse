@@ -12,6 +12,7 @@ from html import escape
 from pathlib import Path
 
 from PySide6.QtCore import (
+    QPoint,
     QSignalBlocker,
     QThread,
     QThreadPool,
@@ -2536,6 +2537,12 @@ class MainWindow(QMainWindow):
         self.twitch_commands_table.itemSelectionChanged.connect(
             self._update_twitch_command_actions
         )
+        self.twitch_commands_table.setContextMenuPolicy(
+            Qt.ContextMenuPolicy.CustomContextMenu
+        )
+        self.twitch_commands_table.customContextMenuRequested.connect(
+            self._show_twitch_command_context_menu
+        )
         self.twitch_commands_table.itemDoubleClicked.connect(
             lambda _item: self._edit_twitch_command()
             if self.edit_twitch_command_button.isEnabled()
@@ -2838,6 +2845,53 @@ class MainWindow(QMainWindow):
         )
         self.twitch_command_status_label.setText(status)
         self._update_twitch_command_actions()
+
+    def _show_twitch_command_context_menu(self, position: QPoint) -> None:
+        menu = self._build_twitch_command_context_menu(position)
+        if menu is not None:
+            try:
+                menu.exec(self.twitch_commands_table.viewport().mapToGlobal(position))
+            finally:
+                menu.deleteLater()
+
+    def _build_twitch_command_context_menu(self, position: QPoint) -> QMenu | None:
+        table = self.twitch_commands_table
+        index = table.indexAt(position)
+        if not index.isValid():
+            return None
+        table.setCurrentCell(index.row(), index.column())
+        key = self._selected_twitch_command_key()
+        if not key:
+            return None
+
+        menu = QMenu(table)
+
+        def add_action(label: str, button: QPushButton) -> None:
+            if button.isEnabled():
+                action = menu.addAction(label)
+                action.triggered.connect(
+                    lambda: button.click()
+                    if self._selected_twitch_command_key() == key else None
+                )
+
+        add_action(
+            "Configure Command" if self._selected_default_template_id() else "Edit Command",
+            self.edit_twitch_command_button,
+        )
+        add_action(
+            self.toggle_twitch_command_button.text().replace(" Selected", " Command"),
+            self.toggle_twitch_command_button,
+        )
+        add_action("Open Routine", self.open_twitch_command_routine_button)
+        add_action("Reset to Default", self.reset_twitch_command_button)
+        add_action("Configure Channel Information", self.configure_channel_information_button)
+        if self.delete_twitch_command_button.isEnabled() and not menu.isEmpty():
+            menu.addSeparator()
+        add_action("Delete Command", self.delete_twitch_command_button)
+        if menu.isEmpty():
+            menu.deleteLater()
+            return None
+        return menu
 
     def _selected_twitch_command_key(self) -> str:
         row = self.twitch_commands_table.currentRow()

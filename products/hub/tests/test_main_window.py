@@ -141,7 +141,11 @@ from products.hub.ui.response_worker import ResponseBatchResult
 from products.hub.ui.streamhouse_ai_worker import StreamhouseAIHealthResult
 from products.hub.streamhouse_hub.ai_client import StreamhouseAIStatus
 from products.hub.streamhouse_hub.ai_lifecycle import AIConnectionState
-from products.hub.ui.twitch_command_dialog import TwitchCommandDialog, TwitchCommandManagerDialog
+from products.hub.ui.twitch_command_dialog import (
+    ExternalCommandDialog,
+    TwitchCommandDialog,
+    TwitchCommandManagerDialog,
+)
 
 _REAL_SETTINGS_LOAD_FOR_STARTUP = SettingsStore.load_for_startup
 
@@ -3701,6 +3705,76 @@ class MainWindowTests(unittest.TestCase):
                          "Commands")
         self.assertEqual(self.window.variable_registry.resolve("socials.discord").value,
                          "https://discord.gg/example")
+
+    def test_external_command_dialog_uses_an_example_without_prefilling(self) -> None:
+        added = ExternalCommandDialog(self.window)
+        self.assertEqual(added.name_edit.placeholderText(), "!example")
+        self.assertEqual(added.values()["name"], "")
+        command = self.twitch_command_trigger_store.save_external_command("fish")
+        edited = ExternalCommandDialog(self.window, command)
+        self.assertEqual(edited.values()["name"], "!fish")
+
+    def test_command_context_menu_mirrors_toolbar_for_each_source(self) -> None:
+        window = self.window
+        store = self.twitch_command_trigger_store
+        store.add("managed")
+        external = store.save_external_command("listed")
+        table = window.twitch_commands_table
+        table.resize(800, 360)
+
+        def menu_for(search, key):
+            window.twitch_command_search_edit.setText(search)
+            row = next(
+                row for row in range(table.rowCount())
+                if table.item(row, 0).data(Qt.ItemDataRole.UserRole) == key
+            )
+            item = table.item(row, 1)
+            table.scrollToItem(item)
+            menu = window._build_twitch_command_context_menu(
+                table.visualItemRect(item).center()
+            )
+            self.assertIsNotNone(menu)
+            self.addCleanup(menu.deleteLater)
+            self.assertEqual(window._selected_twitch_command_key(), key)
+            return {action.text(): action for action in menu.actions() if not action.isSeparator()}
+
+        self.assertEqual(
+            set(menu_for("socials", "template:socials")),
+            {"Configure Command", "Configure Channel Information"},
+        )
+        configured = store.configure_default("socials")
+        self.assertEqual(
+            set(menu_for("default", configured.trigger_id)),
+            {"Edit Command", "Enable Command", "Open Routine", "Delete Command",
+             "Reset to Default", "Configure Channel Information"},
+        )
+        managed = next(command for command in store.triggers if command.name == "managed")
+        self.assertEqual(
+            set(menu_for("managed", managed.trigger_id)),
+            {"Edit Command", "Disable Command", "Open Routine", "Delete Command"},
+        )
+        # Leave a different row selected before opening the external menu.
+        window.twitch_command_search_edit.clear()
+
+        def external_menu():
+            return menu_for("", f"external:{external.command_id}")
+
+        actions = external_menu()
+        self.assertEqual(set(actions), {"Edit Command", "Disable Command", "Delete Command"})
+        actions["Disable Command"].trigger()
+        self.assertFalse(store.external_command(external.command_id).enabled)
+        self.assertTrue(store.get(managed.trigger_id).enabled)
+        self.assertIn("Enable Command", external_menu())
+        window.toggle_twitch_command_button.click()
+        self.assertTrue(store.external_command(external.command_id).enabled)
+
+        window.twitch_command_search_edit.setText("listed")
+        self.assertEqual(table.rowCount(), 1)
+        empty = QPoint(5, table.rowHeight(0) + 10)
+        self.assertTrue(table.viewport().rect().contains(empty))
+        with patch.object(QMenu, "exec") as execute:
+            table.customContextMenuRequested.emit(empty)
+        execute.assert_not_called()
 
     def test_external_commands_share_management_without_opening_routines(self) -> None:
         store = self.twitch_command_trigger_store

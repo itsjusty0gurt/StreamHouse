@@ -44,7 +44,7 @@ class ExternalCommandDialog(QDialog):
         help_label.setWordWrap(True)
         form.addRow(help_label)
         self.name_edit = QLineEdit(f"!{command.name}" if command else "")
-        self.name_edit.setPlaceholderText("!fish")
+        self.name_edit.setPlaceholderText("!example")
         self.description_edit = QLineEdit(command.description if command else "")
         self.enabled_check = QCheckBox("Include in !commands")
         self.enabled_check.setChecked(command.enabled if command else True)
