@@ -4,6 +4,7 @@ from collections.abc import Callable
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
@@ -22,10 +23,47 @@ from PySide6.QtWidgets import (
 )
 
 from products.hub.twitch.commands import (
+    ExternalCommand,
     TwitchCommandPermission,
     TwitchCommandTrigger,
     TwitchCommandTriggerStore,
 )
+
+
+class ExternalCommandDialog(QDialog):
+    def __init__(
+        self, parent: QWidget | None = None, command: ExternalCommand | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Edit External Command" if command else "Add External Command")
+        form = QFormLayout(self)
+        help_label = QLabel(
+            "Hub lists this command in !commands but does not run it. "
+            "The other app still controls how it works."
+        )
+        help_label.setWordWrap(True)
+        form.addRow(help_label)
+        self.name_edit = QLineEdit(f"!{command.name}" if command else "")
+        self.name_edit.setPlaceholderText("!fish")
+        self.description_edit = QLineEdit(command.description if command else "")
+        self.enabled_check = QCheckBox("Include in !commands")
+        self.enabled_check.setChecked(command.enabled if command else True)
+        form.addRow("Command", self.name_edit)
+        form.addRow("Description (optional)", self.description_edit)
+        form.addRow("Enabled", self.enabled_check)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        form.addRow(buttons)
+
+    def values(self) -> dict[str, object]:
+        return {
+            "name": self.name_edit.text(),
+            "description": self.description_edit.text(),
+            "enabled": self.enabled_check.isChecked(),
+        }
 
 
 class TwitchCommandDialog(QDialog):

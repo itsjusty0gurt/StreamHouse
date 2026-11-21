@@ -164,6 +164,7 @@ from products.hub.twitch.user_groups import (
     UserGroupStore,
 )
 from products.hub.twitch.commands import (
+    ExternalCommand,
     TwitchCommandPermission,
     TwitchCommandSetupState,
     TwitchCommandTrigger,
@@ -230,7 +231,7 @@ from products.hub.twitch.slash_commands import (
     parse_twitch_slash_request,
     slash_command,
 )
-from products.hub.ui.twitch_command_dialog import TwitchCommandDialog
+from products.hub.ui.twitch_command_dialog import ExternalCommandDialog, TwitchCommandDialog
 from products.hub.ui.channel_snapshot_worker import (
     ChannelSnapshotResult,
     ChannelSnapshotWorker,
@@ -2405,9 +2406,8 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(page)
         command_header = PageHeader(
             "Commands",
-            "Chat commands trigger editable automation routines locally. A command "
-            "can optionally send a response through the configured bot account; "
-            "it does not invoke Streamhouse AI reasoning.",
+            "Default and custom commands run Hub routines and can optionally send a chat response. "
+            "External Commands are listings only: Hub can include them in !commands, but another app runs them.",
             page,
         )
         self.twitch_commands_header = command_header
@@ -2428,7 +2428,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.twitch_commands_availability_label)
         section_help = QLabel(
             "DEFAULT COMMANDS appear first in their stable built-in order. "
-            "CUSTOM COMMANDS follow alphabetically."
+            "CUSTOM and EXTERNAL commands follow in separate alphabetical groups."
         )
         section_help.setObjectName("twitchCommandSectionHelp")
         section_help.setStyleSheet("font-weight: 600;")
@@ -2472,6 +2472,7 @@ class MainWindow(QMainWindow):
         actions = QHBoxLayout(management_actions)
         actions.setContentsMargins(0, 0, 0, 0)
         self.add_twitch_command_button = QPushButton("+ Command")
+        self.add_external_command_button = QPushButton("+ External Command")
         self.edit_twitch_command_button = QPushButton("Edit Selected")
         self.toggle_twitch_command_button = QPushButton("Disable Selected")
         self.delete_twitch_command_button = QPushButton("Delete Selected")
@@ -2481,6 +2482,7 @@ class MainWindow(QMainWindow):
             "Configure Channel Information"
         )
         actions.addWidget(self.add_twitch_command_button)
+        actions.addWidget(self.add_external_command_button)
         actions.addWidget(self.edit_twitch_command_button)
         actions.addWidget(self.toggle_twitch_command_button)
         actions.addWidget(self.delete_twitch_command_button)
@@ -2503,6 +2505,9 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.twitch_command_status_label)
         self.add_twitch_command_button.clicked.connect(
             self._add_twitch_command
+        )
+        self.add_external_command_button.clicked.connect(
+            lambda: self._edit_external_command()
         )
         self.edit_twitch_command_button.clicked.connect(
             self._edit_twitch_command
@@ -2734,7 +2739,16 @@ class MainWindow(QMainWindow):
             for command in self.twitch_command_trigger_store.ordered_triggers(query)
             if not command.is_default
         )
-        table.setRowCount(len(rows))
+        external_commands = self.twitch_command_trigger_store.external_commands
+        external_rows = sorted(
+            (
+                command for command in external_commands
+                if not query or query in command.name or query in command.description.casefold()
+                or query == "external"
+            ),
+            key=lambda command: (command.name, command.command_id),
+        )
+        table.setRowCount(len(rows) + len(external_rows))
         selected_row = -1
         for row, (command, definition) in enumerate(rows):
             assert command is not None or definition is not None
@@ -2790,6 +2804,21 @@ class MainWindow(QMainWindow):
                 table.setItem(row, column, item)
             if row_key == selected_key:
                 selected_row = row
+        for row, command in enumerate(external_rows, start=len(rows)):
+            row_key = f"external:{command.command_id}"
+            values = (
+                "Enabled" if command.enabled else "Disabled",
+                f"!{command.name}", "—", "—", "—", "—", "—", "External",
+            )
+            for column, value in enumerate(values):
+                item = QTableWidgetItem(value)
+                if column == 0:
+                    item.setData(Qt.ItemDataRole.UserRole, row_key)
+                elif column == 1 and command.description:
+                    item.setToolTip(command.description)
+                table.setItem(row, column, item)
+            if row_key == selected_key:
+                selected_row = row
         if selected_row >= 0:
             table.selectRow(selected_row)
         configured_default_count = sum(
@@ -2800,7 +2829,12 @@ class MainWindow(QMainWindow):
         template_count = len(default_command_definitions()) - configured_default_count
         status = (
             f"{configured_default_count} configured default, {custom_count} custom, "
-            f"and {template_count} available template command(s)."
+            f"{len(external_commands)} external, and {template_count} available templates."
+        )
+        if self.twitch_command_trigger_store.external_load_error:
+            status += " " + self.twitch_command_trigger_store.external_load_error
+        self.add_external_command_button.setEnabled(
+            not self.twitch_command_trigger_store.external_load_error
         )
         self.twitch_command_status_label.setText(status)
         self._update_twitch_command_actions()
@@ -2814,9 +2848,15 @@ class MainWindow(QMainWindow):
         trigger_id = self._selected_twitch_command_key()
         return (
             self.twitch_command_trigger_store.get(trigger_id)
-            if trigger_id and not trigger_id.startswith("template:")
+            if trigger_id and not trigger_id.startswith(("template:", "external:"))
             else None
         )
+
+    def _selected_external_command(self) -> ExternalCommand | None:
+        key = self._selected_twitch_command_key()
+        if not key.startswith("external:"):
+            return None
+        return self.twitch_command_trigger_store.external_command(key.removeprefix("external:"))
 
     def _selected_default_template_id(self) -> str:
         key = self._selected_twitch_command_key()
@@ -2824,15 +2864,16 @@ class MainWindow(QMainWindow):
 
     def _update_twitch_command_actions(self) -> None:
         command = self._selected_twitch_command()
+        external = self._selected_external_command()
         template_id = self._selected_default_template_id()
-        selected = command is not None
+        selected = command is not None or external is not None
         self.edit_twitch_command_button.setEnabled(selected or bool(template_id))
         self.edit_twitch_command_button.setText(
             "Configure Selected" if template_id else "Edit Selected"
         )
         self.toggle_twitch_command_button.setEnabled(selected)
         self.delete_twitch_command_button.setEnabled(selected)
-        self.open_twitch_command_routine_button.setEnabled(selected)
+        self.open_twitch_command_routine_button.setEnabled(command is not None)
         self.reset_twitch_command_button.setEnabled(
             command is not None and command.is_default
         )
@@ -2842,9 +2883,10 @@ class MainWindow(QMainWindow):
             else self.twitch_command_trigger_store.setup_requirement(template_id)
         )
         self.configure_channel_information_button.setEnabled(bool(requirement))
+        picked = command or external
         self.toggle_twitch_command_button.setText(
             "Disable Selected"
-            if command is None or command.enabled
+            if picked is None or picked.enabled
             else "Enable Selected"
         )
         if command is not None and requirement:
@@ -3498,6 +3540,10 @@ class MainWindow(QMainWindow):
         )
 
     def _edit_twitch_command(self) -> None:
+        external = self._selected_external_command()
+        if external is not None:
+            self._edit_external_command(external)
+            return
         command = self._selected_twitch_command()
         template_id = self._selected_default_template_id()
         if command is None and template_id:
@@ -3538,7 +3584,33 @@ class MainWindow(QMainWindow):
         self._refresh_twitch_commands(updated.trigger_id)
         self.twitch_command_status_label.setText(f"!{updated.name} updated.")
 
+    def _edit_external_command(self, command: ExternalCommand | None = None) -> None:
+        dialog = ExternalCommandDialog(self, command)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        try:
+            updated = self.twitch_command_trigger_store.save_external_command(
+                **dialog.values(), command_id=command.command_id if command else "",
+            )
+        except (OSError, ValueError) as error:
+            self.twitch_command_status_label.setText(f"Could not save External Command: {error}")
+            return
+        self._refresh_twitch_commands(f"external:{updated.command_id}")
+        self.twitch_command_status_label.setText(f"External listing !{updated.name} saved.")
+
     def _toggle_twitch_command(self) -> None:
+        external = self._selected_external_command()
+        if external is not None:
+            try:
+                self.twitch_command_trigger_store.save_external_command(
+                    external.name, external.description, not external.enabled,
+                    command_id=external.command_id,
+                )
+            except (OSError, ValueError) as error:
+                self.twitch_command_status_label.setText(f"Could not update External Command: {error}")
+                return
+            self._refresh_twitch_commands(f"external:{external.command_id}")
+            return
         command = self._selected_twitch_command()
         if command is None:
             return
@@ -3554,6 +3626,19 @@ class MainWindow(QMainWindow):
         self._refresh_twitch_commands(command.trigger_id)
 
     def _delete_twitch_command(self) -> None:
+        external = self._selected_external_command()
+        if external is not None:
+            answer = QMessageBox.question(
+                self, "Delete External Command", f"Remove !{external.name} from Hub's listings?",
+            )
+            if answer == QMessageBox.StandardButton.Yes:
+                try:
+                    self.twitch_command_trigger_store.delete_external_command(external.command_id)
+                except (OSError, ValueError) as error:
+                    self.twitch_command_status_label.setText(f"Could not delete External Command: {error}")
+                    return
+                self._refresh_twitch_commands()
+            return
         command = self._selected_twitch_command()
         if command is None:
             return

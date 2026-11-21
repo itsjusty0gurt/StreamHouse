@@ -300,6 +300,11 @@ load when absent; unconfigured setup-dependent templates are not persisted in
 either file. The never-public v5 seeded-default format is rejected, not
 migrated. Publicly shipped command schemas require forward migration. Both
 stores are included in current Streamhouse Hub backups.
+External Commands use a separate versioned `twitch/external-commands.json`
+file. They carry a stable listing ID, command name, description, and enabled
+state; they are not triggers or routines. The Commands page and `!commands`
+can list them without changing chat dispatch. The separate file is not part
+of the existing executable-command Backup/transfer contracts.
 Chatter records require the current management-only schema v9. It persists
 stable identity, observed bot metadata, known Twitch status,
 first/last seen, and aggregate participation counts. It rejects message text,

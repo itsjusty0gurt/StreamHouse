@@ -427,13 +427,14 @@ class BuildCommandListTask:
         try:
             store = self.command_provider()
             commands = getattr(store, "triggers", ())
+            external_names = getattr(store, "external_listing_names", lambda: set())()
             names = sorted(
                 {
                     f"!{command.name}"
                     for command in commands
                     if command.enabled
                     and self.PERMISSION_RANK.get(command.permission, 99) <= rank
-                }
+                } | {f"!{name}" for name in external_names}
             )
         except Exception as error:
             Logger.warning(f"Could not build Twitch command list: {error}", source="TWITCH")

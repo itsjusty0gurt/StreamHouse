@@ -3702,6 +3702,56 @@ class MainWindowTests(unittest.TestCase):
         self.assertEqual(self.window.variable_registry.resolve("socials.discord").value,
                          "https://discord.gg/example")
 
+    def test_external_commands_share_management_without_opening_routines(self) -> None:
+        store = self.twitch_command_trigger_store
+        store.add("managed", aliases=["alternative"])
+        store.save_external_command("zebra")
+        before = {routine.routine_id for routine in store.routine_store.routines}
+        dialog_path = "products.hub.ui.main_window.ExternalCommandDialog"
+        with patch(dialog_path) as dialog:
+            dialog.return_value.exec.return_value = QDialog.DialogCode.Accepted
+            dialog.return_value.values.return_value = {
+                "name": "!Fish", "description": "Try fishing", "enabled": True,
+            }
+            self.window.add_external_command_button.click()
+            external = self.window._selected_external_command()
+            self.assertEqual(external.name, "fish")
+            self.assertFalse(self.window.open_twitch_command_routine_button.isEnabled())
+            table = self.window.twitch_commands_table
+            row = table.currentRow()
+            self.assertEqual(table.item(row, 7).text(), "External")
+            self.assertEqual(table.item(row, 1).toolTip(), "Try fishing")
+            self.assertEqual([table.item(row, column).text() for column in range(2, 7)], ["—"] * 5)
+            self.assertEqual(
+                [(table.item(index, 1).text(), table.item(index, 7).text())
+                 for index in range(table.rowCount() - 3, table.rowCount())],
+                [("!managed", "Custom"), ("!fish", "External"), ("!zebra", "External")],
+            )
+
+            dialog.return_value.values.return_value = {
+                "name": "!alternative", "description": "", "enabled": True,
+            }
+            self.window.edit_twitch_command_button.click()
+            self.assertIn("already used", self.window.twitch_command_status_label.text())
+            self.assertEqual(store.external_command(external.command_id), external)
+            dialog.return_value.values.return_value = {
+                "name": "angling", "description": "Updated description", "enabled": False,
+            }
+            self.window.edit_twitch_command_button.click()
+            updated = self.window._selected_external_command()
+            self.assertEqual((updated.command_id, updated.name, updated.description, updated.enabled),
+                             (external.command_id, "angling", "Updated description", False))
+
+        self.assertEqual(self.window.toggle_twitch_command_button.text(), "Enable Selected")
+        self.window.toggle_twitch_command_button.click()
+        self.assertTrue(self.window._selected_external_command().enabled)
+        self.window.toggle_twitch_command_button.click()
+        self.assertFalse(self.window._selected_external_command().enabled)
+        with patch.object(QMessageBox, "question", return_value=QMessageBox.StandardButton.Yes):
+            self.window.delete_twitch_command_button.click()
+        self.assertIsNone(store.external_command(external.command_id))
+        self.assertEqual({routine.routine_id for routine in store.routine_store.routines}, before)
+
     def test_command_filter_keeps_matching_defaults_before_customs(self) -> None:
         self.twitch_command_trigger_store.add("socialparty", "Party")
         self.window.twitch_command_search_edit.setText("social")
@@ -3711,6 +3761,34 @@ class MainWindowTests(unittest.TestCase):
             for row in range(self.window.twitch_commands_table.rowCount())
         ]
         self.assertEqual(names, ["!socials", "!socialparty"])
+
+    def test_external_invocation_does_not_create_or_suppress_automation(self) -> None:
+        store = self.twitch_command_trigger_store
+        store.save_external_command("fish")
+        self.window.settings.ai_response_decisions_enabled = False
+        self.window.automation_service.publish_trigger = Mock(
+            return_value=Mock(succeeded=True, handled=True)
+        )
+        self.window.automation_page.record_execution = Mock()
+
+        def receive(message_id):
+            self.window.handle_twitch_message(TwitchMessage(
+                username="Viewer",
+                text="!fish",
+                received_at=datetime.now(timezone.utc),
+                message_id=message_id,
+                user_id="viewer-1",
+                user_login="viewer",
+            ))
+
+        receive("no-keyword")
+        self.window.automation_service.publish_trigger.assert_not_called()
+        routine = store.routine_store.add("Independent keyword")
+        self.twitch_event_trigger_store.add_keyword_phrase(routine.routine_id, "fish")
+        receive("with-keyword")
+        self.window.automation_service.publish_trigger.assert_called_once()
+        event = self.window.automation_service.publish_trigger.call_args.args[0]
+        self.assertEqual(event.trigger_type, "keyword_phrase")
 
     def test_network_backed_command_runs_off_the_qt_thread(self) -> None:
         self.twitch_command_trigger_store.configure_default("uptime")

@@ -1130,6 +1130,12 @@ on demand and removed under the existing empty-group cleanup rules.
 `automation/routines.json` remains authoritative for their routines and group
 placement.
 
+Twitch owns the separate informational `twitch/external-commands.json` store
+(schema v1). These entries never enter trigger resolution, managed routines,
+or command statistics. The Commands page manages them and Build command list
+combines their enabled names with eligible Hub commands. Saved overlaps do
+not change which command executes; Hub-owned names take priority in listings.
+
 ## Twitch subsystem
 
 ### Authentication

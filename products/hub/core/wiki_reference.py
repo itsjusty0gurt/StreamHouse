@@ -770,8 +770,16 @@ def _command_entries() -> tuple[WikiEntry, ...]:
             "commands:overview",
             "Commands",
             "Chat Commands",
-            "Command triggers start routines from Twitch chat without changing routine organization or queue ownership.",
+            "Default and custom chat commands run Hub routines. External Commands are listings for commands run by another app.",
             (
+                WikiSection(
+                    "Command sources",
+                    (
+                        "Default Commands are provided by Hub. Custom Commands are created by you and handled by Hub.",
+                        "Use + External Command to list a command handled by another bot or extension. Enabled External Commands can appear in !commands; Hub never runs them or creates a routine for them.",
+                        "Disabling or deleting an External Command changes only Hub's listing. It does not disable the command in the other app.",
+                    ),
+                ),
                 WikiSection(
                     "Command context",
                     (

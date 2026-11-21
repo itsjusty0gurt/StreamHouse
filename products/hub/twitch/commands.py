@@ -23,6 +23,7 @@ from shared.streamhouse_runtime.json_store import (
     load_validated_json,
 )
 from shared.streamhouse_runtime.paths import user_data_root
+from shared.streamhouse_runtime.logger import Logger
 from products.hub.twitch.models import TwitchMessage
 from products.hub.twitch.tasks import SendTwitchChatMessageTask
 from products.hub.twitch.channel_information import (
@@ -138,8 +139,17 @@ class TwitchCommandTriggerResult:
         )
 
 
+@dataclass(frozen=True)
+class ExternalCommand:
+    command_id: str
+    name: str
+    description: str = ""
+    enabled: bool = True
+
+
 class TwitchCommandTriggerStore:
     VERSION = 6
+    EXTERNAL_VERSION = 1
     MANAGED_BY = "twitch.command"
     COMMANDS_GROUP_NAME = "Commands"
     NAME_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]{0,24}$")
@@ -155,17 +165,19 @@ class TwitchCommandTriggerStore:
         self.routine_store = routine_store or RoutineStore()
         self.variable_registry = variable_registry
         self.triggers: list[TwitchCommandTrigger] = []
+        self.external_path = self.path.with_name("external-commands.json")
+        self.external_commands: tuple[ExternalCommand, ...] = ()
+        self.external_load_error = ""
 
     def load(self) -> list[TwitchCommandTrigger]:
         self.routine_store.load()
         if not json_store_exists(self.path):
             self.triggers = []
-            self.reconcile_managed_routines()
-            self._ensure_self_contained_defaults()
-            return list(self.triggers)
-        self.triggers = load_validated_json(self.path, self._parse_payload)
+        else:
+            self.triggers = load_validated_json(self.path, self._parse_payload)
         self.reconcile_managed_routines()
         self._ensure_self_contained_defaults()
+        self._load_external_commands()
         return list(self.triggers)
 
     def load_for_startup(self) -> list[TwitchCommandTrigger]:
@@ -182,7 +194,9 @@ class TwitchCommandTriggerStore:
                 else:
                     atomic_write_bytes(self.path, backup_path.read_bytes())
                     return self.load()
-            return self.reset_obsolete_schema()
+            triggers = self.reset_obsolete_schema()
+            self._load_external_commands()
+            return triggers
         self._repair_recovery_copy()
         return triggers
 
@@ -302,6 +316,112 @@ class TwitchCommandTriggerStore:
             },
         )
 
+    def _load_external_commands(self) -> None:
+        self.external_commands = ()
+        self.external_load_error = ""
+        if not json_store_exists(self.external_path):
+            return
+        try:
+            self.external_commands = load_validated_json(
+                self.external_path, self._parse_external_commands
+            )
+        except (OSError, ValueError):
+            self.external_load_error = (
+                "External Commands could not be loaded. Listings are unavailable until the file is recovered."
+            )
+            Logger.warning(self.external_load_error, source="TWITCH")
+
+    @classmethod
+    def _parse_external_commands(cls, payload: object) -> tuple[ExternalCommand, ...]:
+        if not isinstance(payload, dict) or payload.get("version") != cls.EXTERNAL_VERSION:
+            raise UnsupportedJsonSchemaError("Unsupported External Commands format.")
+        rows = payload.get("commands")
+        if not isinstance(rows, list):
+            raise ValueError("External Commands must contain a command list.")
+        result = []
+        ids = set()
+        for row in rows:
+            if not isinstance(row, dict):
+                raise ValueError("Invalid External Command.")
+            command_id = row.get("command_id")
+            name = row.get("name")
+            description = row.get("description", "")
+            enabled = row.get("enabled")
+            if (
+                not isinstance(command_id, str) or not command_id.strip()
+                or command_id in ids
+                or not isinstance(name, str) or not cls.NAME_PATTERN.fullmatch(cls.normalize_name(name))
+                or not isinstance(description, str) or not isinstance(enabled, bool)
+            ):
+                raise ValueError("Invalid External Command fields.")
+            ids.add(command_id)
+            result.append(ExternalCommand(command_id, cls.normalize_name(name), description, enabled))
+        # Preserve saved rows even if names overlap. Hub-owned names win in listings.
+        return tuple(result)
+
+    def _save_external_commands(self, commands: tuple[ExternalCommand, ...]) -> None:
+        if self.external_load_error:
+            raise ValueError(self.external_load_error)
+        atomic_write_json(self.external_path, {
+            "version": self.EXTERNAL_VERSION,
+            "commands": [asdict(command) for command in commands],
+        })
+        self.external_commands = commands
+
+    def external_command(self, command_id: str) -> ExternalCommand | None:
+        return next((item for item in self.external_commands if item.command_id == command_id), None)
+
+    def save_external_command(
+        self, name: str, description: str = "", enabled: bool = True, *, command_id: str = "",
+    ) -> ExternalCommand:
+        name = self.normalize_name(name)
+        if not self.NAME_PATTERN.fullmatch(name):
+            raise ValueError("Command names must use 1–25 letters, numbers, hyphens, or underscores.")
+        existing = self.external_command(command_id)
+        if command_id and existing is None:
+            raise ValueError("The selected External Command no longer exists.")
+        # Don't prevent disabling or editing the description of a saved conflict.
+        if existing is None or name != existing.name:
+            if name in self._hub_command_names() or any(
+                name == item.name for item in self.external_commands if item.command_id != command_id
+            ):
+                raise ValueError(f"Command name already used or reserved: !{name}")
+        updated = ExternalCommand(command_id or uuid4().hex, name, description.strip(), bool(enabled))
+        commands = self.external_commands
+        self._save_external_commands(
+            tuple(updated if item.command_id == command_id else item for item in commands)
+            if existing else (*commands, updated)
+        )
+        return updated
+
+    def delete_external_command(self, command_id: str) -> bool:
+        commands = tuple(item for item in self.external_commands if item.command_id != command_id)
+        if len(commands) == len(self.external_commands):
+            return False
+        self._save_external_commands(commands)
+        return True
+
+    def _hub_command_names(self) -> set[str]:
+        return {
+            *self.RESERVED_NAMES,
+            *(definition.name for definition in default_command_definitions()),
+            *(name for trigger in self.triggers for name in (trigger.name, *trigger.aliases)),
+        }
+
+    def external_listing_names(self) -> set[str]:
+        occupied = self._hub_command_names()
+        return {item.name for item in self.external_commands if item.enabled and item.name not in occupied}
+
+    def _reject_external_conflicts(
+        self, trigger: TwitchCommandTrigger, previous: TwitchCommandTrigger | None = None,
+    ) -> None:
+        claimed = {trigger.name, *trigger.aliases}
+        if previous is not None:
+            claimed.difference_update((previous.name, *previous.aliases))
+        overlap = claimed.intersection(item.name for item in self.external_commands)
+        if overlap:
+            raise ValueError(f"Command name already used by an External Command: !{min(overlap)}")
+
     def add(
         self,
         name: str,
@@ -325,6 +445,7 @@ class TwitchCommandTriggerStore:
             default_id="",
         )
         self._validate_trigger(trigger)
+        self._reject_external_conflicts(trigger)
         routine = self._create_routine(trigger, response)
         trigger.routine_id = routine.routine_id
         self.triggers.append(trigger)
@@ -363,6 +484,7 @@ class TwitchCommandTriggerStore:
             default_id="",
         )
         self._validate_trigger(trigger)
+        self._reject_external_conflicts(trigger)
         routine = self.routine_store.get(routine_id)
         if (
             routine is not None
@@ -422,6 +544,7 @@ class TwitchCommandTriggerStore:
             default_id=trigger.default_id,
         )
         self._validate_trigger(candidate, excluding_id=trigger_id)
+        self._reject_external_conflicts(candidate, trigger)
         routine = self.routine_store.get(trigger.routine_id)
         managed_name = f"Command !{candidate.name}"
         if routine is not None and routine.name != f"Command !{trigger.name}":

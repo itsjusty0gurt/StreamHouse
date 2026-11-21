@@ -243,6 +243,8 @@ class DefaultTwitchCommandTests(unittest.TestCase):
         self.assertEqual(self.run_command("game"), "We're currently streaming Just Chatting.")
 
     def test_commands_excludes_disabled_and_respects_permissions(self) -> None:
+        self.store.save_external_command("!Fish", "Third-party")
+        self.store.save_external_command("!Hidden", enabled=False)
         game = self.store.resolve("game")
         self.store.set_enabled(game.trigger_id, False)
         followage = self.store.resolve("followage")
@@ -262,7 +264,8 @@ class DefaultTwitchCommandTests(unittest.TestCase):
             "!discord", "!socials", "!youtube", "!schedule", "!rules", "!server"
         ):
             self.assertNotIn(unavailable, response)
-        for available in ("!uptime", "!accountage", "!title"):
+        self.assertNotIn("!hidden", response)
+        for available in ("!uptime", "!accountage", "!title", "!fish"):
             self.assertIn(available, response)
         self.assertEqual(response.count("!commands"), 1)
 

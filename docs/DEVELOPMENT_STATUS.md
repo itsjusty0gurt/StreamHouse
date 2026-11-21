@@ -142,6 +142,8 @@ hidden Core Connections shell.
 - The built-in Wiki now has 28 Automation recipes in Beginner, Intermediate,
   and Advanced order. Existing examples were audited against current tasks,
   triggers, and Variables; all existing recipe IDs were preserved.
+- Twitch Commands can list external commands in `!commands` without creating
+  Hub triggers, routines, or chat responses for those commands.
 - OBS-triggered routines are queued after the originating WebSocket event
   callback returns, so their OBS tasks can complete requests without reentering
   the socket callback or requiring an artificial Wait task. Real OBS acceptance
