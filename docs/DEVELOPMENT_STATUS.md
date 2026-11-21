@@ -271,6 +271,12 @@ Reproduction/validation requirements:
 
 ## Known issues and validation gaps
 
+- **Connections scrollbar test (non-blocking for External Commands):**
+  `MainWindowTests.test_connections_body_scrolls_instead_of_compressing_health_rows`
+  expects a positive vertical scrollbar maximum but observes `0` in headless
+  Qt validation. The same failure was reproduced on untouched `develop`
+  (`2f93074`), so it is unrelated to External Commands. Follow-up investigation
+  is deferred until after the merge.
 - **Resolved Backup dependency issue:** automatic and manual Routine Backup now
   preserve a routine with an explicitly inventoried unresolved trigger instead
   of abandoning all eligible user data. Restore validates the unresolved
