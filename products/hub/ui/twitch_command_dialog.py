@@ -81,11 +81,11 @@ class TwitchCommandDialog(QDialog):
         layout = QVBoxLayout(self)
         form = QFormLayout()
         self.name_edit = QLineEdit(command.name if command else "")
-        self.name_edit.setPlaceholderText("discord")
+        self.name_edit.setPlaceholderText("example")
         self.aliases_edit = QLineEdit(
             ", ".join(command.aliases) if command else ""
         )
-        self.aliases_edit.setPlaceholderText("dc, socials")
+        self.aliases_edit.setPlaceholderText("ex, example2")
         self.response_edit = QTextEdit(response)
         self.response_edit.setAcceptRichText(False)
         self.response_edit.setPlaceholderText(

@@ -1547,6 +1547,10 @@ class MainWindowTests(unittest.TestCase):
 
     def test_twitch_command_dialog_allows_trigger_only_command(self) -> None:
         dialog = TwitchCommandDialog(self.window)
+        self.assertEqual(dialog.name_edit.placeholderText(), "example")
+        self.assertEqual(dialog.aliases_edit.placeholderText(), "ex, example2")
+        self.assertEqual(dialog.name_edit.text(), "")
+        self.assertEqual(dialog.aliases_edit.text(), "")
         dialog.name_edit.setText("lights")
 
         values = dialog.values()
