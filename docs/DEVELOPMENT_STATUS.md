@@ -50,10 +50,11 @@
 
 ## Active development focus
 
-Hub 0.4 feature scope is locked. Remaining planned implementation is Core
-Automation Pass 2: Scheduled Time / Cron, Hotkey, Process Started, Process
-Stopped, and File Watcher triggers; HTTP Request, Keyboard Press, and Stop
-Audio tasks. The remaining release work is the Twitch and OBS capability
+Hub 0.4 feature scope is locked. Core Automation Pass 2A implements Scheduled
+Time / Cron, Hotkey, Process Started, Process Stopped, and File Watcher on
+`feature/core-system-triggers`, pending packaged manual acceptance. Planned
+Pass 2B consists of HTTP Request, Keyboard Press, and Stop Audio tasks.
+The remaining release work is the Twitch and OBS capability
 audits, bug fixes, regression testing, and release preparation.
 
 The shared Automation Dependency Resolver, portable Routine sharing,

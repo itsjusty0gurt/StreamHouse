@@ -65,6 +65,8 @@ from products.hub.automation.core_triggers import (
     normalize_custom_event_name,
 )
 from products.hub.automation.routines import RoutineDefinition, RoutineStore
+from products.hub.automation.system_trigger_config import SYSTEM_TRIGGER_TYPES, system_trigger_summary
+from products.hub.ui.system_trigger_dialog import SystemTriggerDialog
 from products.hub.automation.conditions import (
     condition_definitions,
     primary_condition_subject,
@@ -517,7 +519,7 @@ class CoreTriggerDialog(QDialog):
         form = QFormLayout()
         self.event_type_combo = QComboBox()
         for event_type, label in CORE_TRIGGER_TYPES.items():
-            if event_type in {"timer", "if", "custom_event"}:
+            if event_type in {"timer", "if", "custom_event", *SYSTEM_TRIGGER_TYPES}:
                 continue
             self.event_type_combo.addItem(label, event_type)
         if trigger is not None:
@@ -3646,6 +3648,7 @@ class RunHistoryDetailsDialog(QDialog):
 
 class AutomationPage(QWidget):
     KIND_ROLE = int(Qt.ItemDataRole.UserRole) + 1
+    hotkey_recording_changed = Signal(bool)
 
     def __init__(
         self,
@@ -5230,9 +5233,12 @@ class AutomationPage(QWidget):
                 enabled=trigger.enabled,
             )
         label = CORE_TRIGGER_TYPES.get(trigger.event_type, "Program Event")
+        summary = trigger.event_name if trigger.event_type == "custom_event" else "When this Hub event occurs"
+        if trigger.event_type in SYSTEM_TRIGGER_TYPES:
+            summary = system_trigger_summary(trigger.event_type, trigger.system_config)
         return TriggerCardContent(
             title=f"Core — {label}",
-            summary=trigger.event_name if trigger.event_type == "custom_event" else "When this Hub event occurs",
+            summary=summary,
             family="Core",
             enabled=trigger.enabled,
         )
@@ -5788,7 +5794,7 @@ class AutomationPage(QWidget):
         core_menu = QMenu("Core", add_menu)
         program_event_menu = QMenu("Program Event", core_menu)
         for event_type, label in CORE_TRIGGER_TYPES.items():
-            if event_type in {"timer", "if", "custom_event"}:
+            if event_type in {"timer", "if", "custom_event", *SYSTEM_TRIGGER_TYPES}:
                 continue
             program_event_menu.addAction(
                 label,
@@ -5803,6 +5809,11 @@ class AutomationPage(QWidget):
             "Custom Event…", lambda: self._edit_custom_event_trigger()
         )
         custom_event_action.setEnabled(routine is not None)
+        for event_type, label in SYSTEM_TRIGGER_TYPES.items():
+            action = core_menu.addAction(
+                f"{label}…", lambda checked=False, value=event_type: self._edit_system_trigger(value)
+            )
+            action.setEnabled(routine is not None)
         core_menu._streamhouse_trigger_submenus = [program_event_menu]
         add_menu.addMenu(core_menu)
         add_menu._streamhouse_trigger_submenus.append(core_menu)
@@ -6116,6 +6127,8 @@ class AutomationPage(QWidget):
                     self._edit_if_trigger(routine.routine_id, trigger)
                 elif trigger.event_type == "custom_event":
                     self._edit_custom_event_trigger(trigger)
+                elif trigger.event_type in SYSTEM_TRIGGER_TYPES:
+                    self._edit_system_trigger(trigger.event_type, trigger)
                 else:
                     self._edit_core_trigger(routine.routine_id, trigger)
             return
@@ -6237,6 +6250,31 @@ class AutomationPage(QWidget):
         except (OSError, ValueError) as error:
             self._error("Could Not Save Custom Event", error)
             return
+        self.select_routine(routine.routine_id)
+        self._select_trigger("core", updated.trigger_id)
+
+    def _edit_system_trigger(self, event_type: str, trigger: CoreAutomationTrigger | None = None) -> None:
+        routine = self.routine_store.get(self._selected_routine_id)
+        if routine is None or (trigger is not None and trigger.routine_id != routine.routine_id):
+            return
+        dialog = SystemTriggerDialog(event_type, trigger, self)
+        recording = event_type == "hotkey"
+        if recording:
+            self.hotkey_recording_changed.emit(True)
+        try:
+            if dialog.exec() != QDialog.DialogCode.Accepted:
+                return
+            values = dialog.values()
+            if trigger is None:
+                updated = self.core_trigger_store.add(routine.routine_id, event_type, **values)
+            else:
+                updated = self.core_trigger_store.update(trigger.trigger_id, event_type=event_type, **values)
+        except (OSError, ValueError) as error:
+            self._error("Could Not Save Trigger", error)
+            return
+        finally:
+            if recording:
+                self.hotkey_recording_changed.emit(False)
         self.select_routine(routine.routine_id)
         self._select_trigger("core", updated.trigger_id)
 

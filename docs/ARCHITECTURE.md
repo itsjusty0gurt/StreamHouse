@@ -168,6 +168,12 @@ it does not call a listener inline or share the sender's execution context.
 Set Trigger State changes a stable trigger reference through its provider's
 store. Individual routine import requires explicit relinking.
 
+Scheduled Time / Cron, Hotkey, Process Started, Process Stopped, and File
+Watcher are Core trigger sources. One Qt-owned runtime queues their events
+into Automation, owns registration/scheduling, and hands filesystem metadata
+and process snapshots to a worker. They use the existing Core trigger IDs and
+enabled-state pathway; Routine Transfer imports them disabled for review.
+
 `AutomationService.publish_trigger()` matches linked routines by stable trigger
 ID, resolves the routine's queue, and executes ordered task definitions through
 `TaskRegistry`. Nested routines retain the same root execution scope.

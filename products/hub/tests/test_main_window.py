@@ -1284,7 +1284,11 @@ class MainWindowTests(unittest.TestCase):
         )
         self.assertEqual(
             [action.text() for action in add_menu.actions()[0].menu().actions()],
-            ["Program Event", "Timer…", "If…", "Custom Event…"],
+            [
+                "Program Event", "Timer…", "If…", "Custom Event…",
+                "Scheduled Time / Cron…", "Hotkey…", "Process Started…",
+                "Process Stopped…", "File Watcher…",
+            ],
         )
         program_event_menu = add_menu.actions()[0].menu().actions()[0].menu()
         self.assertEqual(

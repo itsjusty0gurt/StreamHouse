@@ -7,6 +7,7 @@ from products.hub.automation.models import RoutineDefinition, TaskDefinition
 from products.hub.automation.routines import RoutineStore
 from products.hub.automation.tasks import TaskRegistry
 from products.hub.automation.core_triggers import CORE_TRIGGER_TYPES, CoreTriggerStore
+from products.hub.automation.system_trigger_config import SYSTEM_TRIGGER_TYPES, system_config
 from products.hub.obs_service.triggers import OBS_TRIGGER_TYPES, ObsTriggerStore
 from products.hub.integrations.music_triggers import MUSIC_TRIGGER_TYPES, MusicTriggerStore
 from products.hub.twitch.automation_triggers import (
@@ -112,6 +113,7 @@ def export_routine(
                     "conditions": trigger.conditions,
                     "firing_mode": trigger.firing_mode,
                     "event_name": trigger.event_name,
+                    **({"system_config": trigger.system_config} if trigger.system_config else {}),
                 }
                 for trigger in core_store.for_routine(routine.routine_id)
             ],
@@ -180,6 +182,8 @@ def validate_import(
                 or str(trigger.get("event_type", "")) not in event_types
             ):
                 raise ValueError(f"The imported routine contains an unsupported {key.replace('_', ' ')} trigger.")
+            if key == "core" and trigger["event_type"] in SYSTEM_TRIGGER_TYPES:
+                system_config(trigger["event_type"], trigger.get("system_config", {}))
 
 
 def import_routine(
@@ -224,10 +228,11 @@ def import_routine(
             )
             event_ids.append(trigger.trigger_id)
         for values in trigger_values.get("core", []):
+            event_type = str(values.get("event_type", ""))
             trigger = core_store.add(
                 routine.routine_id,
-                str(values.get("event_type", "")),
-                enabled=bool(values.get("enabled", True)),
+                event_type,
+                enabled=event_type not in SYSTEM_TRIGGER_TYPES and bool(values.get("enabled", True)),
                 timer_mode=str(values.get("timer_mode", "")),
                 timer_minimum=str(values.get("timer_minimum", "")),
                 timer_minimum_unit=str(values.get("timer_minimum_unit", "seconds")),
@@ -237,6 +242,7 @@ def import_routine(
                 conditions=list(values.get("conditions", [])),
                 firing_mode=str(values.get("firing_mode", "")),
                 event_name=str(values.get("event_name") or ""),
+                system_config=values.get("system_config", {}),
             )
             core_ids.append(trigger.trigger_id)
         for values in trigger_values.get("obs", []):

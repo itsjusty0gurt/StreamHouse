@@ -1074,6 +1074,17 @@ runtime-only routine ancestry: it skips ancestors and stops extending a
 chain at the existing routine nesting limit. Independent sends are not
 throttled. Pending broadcasts are discarded at shutdown.
 
+Core system triggers persist their type-specific optional `system_config` in
+the existing Core trigger store. A single Qt runtime owns their timer, native
+Windows hotkey registrations, and filesystem watcher. Process snapshots
+(one per second while needed) and path metadata reads run off the GUI thread;
+observed events return through queued slots and the regular Automation queue.
+Schedules use system-local time, do not catch up missed runs, skip DST gaps,
+and use the first fold of a repeated wall time. File watches sample metadata,
+reattach after replacements, and do not inspect contents. Backup keeps IDs
+and enabled state. Routine Transfer creates new IDs and imports these triggers
+disabled so shortcuts, schedules, and machine-local paths can be reviewed.
+
 Set Trigger State resolves a stable routine/trigger pair against the Core
 and Music stores or the available Twitch/OBS provider stores. Provider
 stores own the persisted write and Core Timer/If lifecycle notification.

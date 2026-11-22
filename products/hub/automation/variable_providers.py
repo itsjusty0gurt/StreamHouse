@@ -374,6 +374,16 @@ class AdsVariableProvider:
 
 
 CONTEXT_DEFINITIONS = (
+    ("core.schedule.time", "Scheduled Time", "Local time of the scheduled occurrence (HH:mm).", VariableDataType.TEXT, ()),
+    ("core.schedule.date", "Scheduled Date", "Local date of the scheduled occurrence (YYYY-MM-DD).", VariableDataType.TEXT, ()),
+    ("core.schedule.expression", "Schedule Expression", "The five-field expression used by the schedule.", VariableDataType.TEXT, ()),
+    ("core.hotkey.shortcut", "Hotkey Shortcut", "The shortcut that activated the Hotkey trigger.", VariableDataType.TEXT, ()),
+    ("core.process.name", "Process Name", "Executable name of the started or stopped process.", VariableDataType.TEXT, ()),
+    ("core.process.pid", "Process ID", "Windows process identifier for this event.", VariableDataType.INTEGER, ()),
+    ("core.process.event", "Process Event", "Whether the process started or stopped.", VariableDataType.TEXT, ()),
+    ("core.file.path", "Watched Path", "Path of the file or folder that changed.", VariableDataType.TEXT, ()),
+    ("core.file.name", "Watched Name", "Name of the watched file or folder.", VariableDataType.TEXT, ()),
+    ("core.file.event", "File Event", "Whether the watched target was created, modified, or deleted.", VariableDataType.TEXT, ()),
     ("core.custom_event.name", "Custom Event Name", "Name of the received Custom Event.", VariableDataType.TEXT, ()),
     ("core.custom_event.data", "Custom Event Data", "Optional text sent with the Custom Event.", VariableDataType.TEXT, ()),
     ("core.custom_event.source_routine", "Custom Event Source Routine", "Name of the routine that sent the Custom Event.", VariableDataType.TEXT, ()),

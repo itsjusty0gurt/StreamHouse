@@ -101,6 +101,8 @@ from products.hub.automation.variable_providers import (
 from products.hub.automation.variable_registry import VariableRegistry
 from products.hub.automation.core_triggers import CORE_TRIGGER_TYPES, CoreTriggerStore
 from products.hub.automation.condition_trigger_runtime import CoreIfTriggerRuntime
+from products.hub.automation.system_trigger_runtime import SystemTriggerRuntime
+from products.hub.automation.windows_system_triggers import WindowsHotkeys
 from products.hub.automation.timer_scheduler import AutomationTimerScheduler
 from products.hub.ui.timers_page import TimersPage
 from products.hub.automation.core_tasks import (
@@ -2378,6 +2380,11 @@ class MainWindow(QMainWindow):
                 int(message),
                 ctypes.POINTER(wintypes.MSG),
             ).contents
+            system_triggers = getattr(self, "system_trigger_runtime", None)
+            if system_triggers is not None and system_triggers.native_message(
+                native_message.message, int(native_message.wParam)
+            ):
+                return True, 0
             geometry = getattr(self, "window_geometry", None)
             if geometry is not None:
                 # Observe the native move loop only; Qt/Windows still processes
@@ -3065,6 +3072,17 @@ class MainWindow(QMainWindow):
         )
         self.automation_timer_scheduler.start()
         self.core_if_trigger_runtime.start()
+        self.system_trigger_runtime = SystemTriggerRuntime(
+            self.core_trigger_store, self._handle_system_trigger,
+            WindowsHotkeys(lambda: int(self.winId())), self,
+        )
+        self.automation_page.hotkey_recording_changed.connect(self.system_trigger_runtime.set_recording)
+        self.system_trigger_runtime.start()
+
+    def _handle_system_trigger(self, trigger: TriggerEvent, label: str) -> None:
+        execution = self.automation_service.publish_trigger(trigger)
+        if execution.handled:
+            self.automation_page.record_execution(execution, label)
 
     @Slot()
     def _on_automation_trigger_state_changed(self) -> None:
@@ -9020,6 +9038,8 @@ class MainWindow(QMainWindow):
         self._apply_settings(self.settings)
         self.automation_timer_scheduler.synchronize()
         self.core_if_trigger_runtime.reset_baselines()
+        self.system_trigger_runtime.stop()
+        self.system_trigger_runtime.start()
         self.automation_page.refresh()
         self.counters_page.refresh()
         self.channel_information_page.load_values()
@@ -9188,6 +9208,7 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event: QCloseEvent) -> None:
         self._shutting_down = True
         self.custom_event_dispatcher.stop()
+        self.system_trigger_runtime.stop()
         self.daily_memory_timer.stop()
         self._memory_viewer_refresh_timer.stop()
         self.counter_service.unsubscribe_changes(self._counter_change_callback)

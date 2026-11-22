@@ -9,6 +9,7 @@ from uuid import uuid4
 
 from products.hub.automation.models import TriggerEvent
 from products.hub.automation.routines import RoutineStore
+from products.hub.automation.system_trigger_config import SYSTEM_TRIGGER_TYPES, system_config
 from products.hub.automation.conditions import (
     condition_definitions,
     condition_join_mode,
@@ -29,6 +30,7 @@ CORE_TRIGGER_TYPES = {
     "timer": "Timer",
     "if": "If",
     "custom_event": "Custom Event",
+    **SYSTEM_TRIGGER_TYPES,
 }
 
 
@@ -71,6 +73,7 @@ class CoreAutomationTrigger:
     conditions: list[dict[str, object]] = field(default_factory=list)
     firing_mode: str = ""
     event_name: str = ""
+    system_config: dict[str, str] = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, values: Mapping[str, Any]) -> CoreAutomationTrigger:
@@ -107,6 +110,7 @@ class CoreAutomationTrigger:
                 else ""
             ),
             event_name=normalize_custom_event_name(str(values.get("event_name") or "")),
+            system_config=system_config(event_type, values.get("system_config", {})),
         )
 
     def condition_config(self) -> dict[str, object]:
@@ -193,7 +197,10 @@ class CoreTriggerStore:
             self.path,
             {
                 "version": self.VERSION,
-                "triggers": [asdict(trigger) for trigger in self.triggers],
+                "triggers": [
+                    {k: v for k, v in asdict(trigger).items() if k != "system_config" or v}
+                    for trigger in self.triggers
+                ],
             },
         )
 
@@ -212,6 +219,7 @@ class CoreTriggerStore:
         conditions: list[dict[str, object]] | None = None,
         firing_mode: str = "",
         event_name: str = "",
+        system_config: Mapping[str, object] | None = None,
     ) -> CoreAutomationTrigger:
         trigger = CoreAutomationTrigger(
             trigger_id=uuid4().hex,
@@ -227,6 +235,7 @@ class CoreTriggerStore:
             conditions=list(conditions or []),
             firing_mode=firing_mode.strip().casefold(),
             event_name=normalize_custom_event_name(event_name),
+            system_config=dict(system_config) if system_config is not None else {},
         )
         self._validate(trigger)
         if self.routine_store.get(routine_id) is None:
@@ -257,6 +266,7 @@ class CoreTriggerStore:
         conditions: list[dict[str, object]] | None = None,
         firing_mode: str = "",
         event_name: str = "",
+        system_config: Mapping[str, object] | None = None,
     ) -> CoreAutomationTrigger:
         trigger = self.get(trigger_id)
         if trigger is None:
@@ -275,6 +285,7 @@ class CoreTriggerStore:
             conditions=list(conditions or []),
             firing_mode=firing_mode.strip().casefold(),
             event_name=normalize_custom_event_name(event_name),
+            system_config=dict(system_config) if system_config is not None else {},
         )
         self._validate(candidate)
         return self._replace(trigger, candidate)
@@ -414,7 +425,7 @@ class CoreTriggerStore:
         context: Mapping[str, str] | None = None,
     ) -> tuple[TriggerEvent, ...]:
         clean_type = event_type.strip()
-        if clean_type == "custom_event":
+        if clean_type == "custom_event" or clean_type in SYSTEM_TRIGGER_TYPES:
             return ()
         values = {
             "event": CORE_TRIGGER_TYPES.get(clean_type, clean_type),
@@ -570,6 +581,7 @@ class CoreTriggerStore:
             raise ValueError("That Core program trigger is not supported.")
         if trigger.event_type == "custom_event" and not trigger.event_name:
             raise ValueError("Custom Event name is required.")
+        trigger.system_config = system_config(trigger.event_type, trigger.system_config)
         if trigger.event_type == "timer":
             CoreTriggerStore.validate_timer(trigger)
         elif trigger.event_type == "if":

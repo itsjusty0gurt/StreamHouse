@@ -5,6 +5,7 @@ from collections.abc import Callable, Iterator, Mapping
 from products.hub.automation.control_tasks import _enabled_for, _result
 from products.hub.automation.models import TaskDefinition, TaskExecutionResult, TriggerEvent
 from products.hub.automation.routines import RoutineStore
+from products.hub.automation.system_trigger_config import SYSTEM_TRIGGER_TYPES, system_trigger_summary
 from products.hub.modules.contributions import TriggerProviderRegistry
 
 
@@ -45,6 +46,8 @@ class TriggerState:
                 label = event_types.get(event_type, event_type)
                 if event_type == "custom_event":
                     label += f" — {target.event_name}"
+                elif event_type in SYSTEM_TRIGGER_TYPES and provider == "Core":
+                    label += f" — {system_trigger_summary(event_type, target.system_config)}"
                 elif not event_type:
                     label = f"!{target.name}"
                 yield f"{provider} — {label}", target, setter

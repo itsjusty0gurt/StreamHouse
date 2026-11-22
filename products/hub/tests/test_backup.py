@@ -694,6 +694,32 @@ class BackupManagerTests(unittest.TestCase):
             row["trigger_id"] for row in snapshot["triggers"]["core"]["triggers"]
         })
 
+    def test_system_trigger_backup_preserves_settings_and_enabled_state(self) -> None:
+        routines = RoutineStore(self.root / "automation/routines.json")
+        routines.load()
+        core = CoreTriggerStore(self.root / "automation/core_triggers.json", routines)
+        core.load()
+        configurations = {
+            "scheduled_time": {"mode": "cron", "expression": "0 7 * * mon"},
+            "hotkey": {"shortcut": "Ctrl+Alt+H"},
+            "process_started": {"name": "notepad.exe"},
+            "process_stopped": {"name": "notepad.exe"},
+            "file_watcher": {"kind": "file", "event": "deleted", "path": str(self.root / "planned.txt")},
+        }
+        originals = [
+            core.add("parent", kind, system_config=config, enabled=(kind != "hotkey"))
+            for kind, config in configurations.items()
+        ]
+        archive = self.manager.create("manual", preset=BackupPreset.RECOMMENDED)
+        for trigger in originals:
+            core.delete(trigger.trigger_id)
+        self.manager.restore(archive, create_safety=False)
+        routines.load()
+        core.load()
+        for trigger in originals:
+            with self.subTest(trigger=trigger.event_type):
+                self.assertEqual(core.get(trigger.trigger_id), trigger)
+
     def test_music_trigger_backup_restore_preserves_stable_identity(self) -> None:
         routine_path = self.root / "automation/routines.json"
         routines = json.loads(routine_path.read_text(encoding="utf-8"))

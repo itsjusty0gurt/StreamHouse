@@ -11,6 +11,7 @@ from products.hub.automation.core_triggers import (
     TIMER_UNIT_LABELS,
 )
 from products.hub.automation.tasks import TaskMetadata, TaskRegistry
+from products.hub.automation.system_trigger_config import SYSTEM_VARIABLE_PREFIXES
 from products.hub.automation.variable_outputs import (
     generated_output_definitions,
     output_config_key,
@@ -255,6 +256,13 @@ def _trigger_entries(variable_registry: VariableRegistry) -> tuple[WikiEntry, ..
             ("contains", "exact message", "before", "after"),
         ),
     ]
+    system_summaries = {
+        "scheduled_time": "Runs at a configured local wall-clock time, for example weekdays at 8:00 AM.",
+        "hotkey": "Runs when you press a registered Windows shortcut, even with Hub unfocused.",
+        "process_started": "Runs for each matching Windows process observed starting after the initial baseline.",
+        "process_stopped": "Runs for each matching Windows process observed stopping after the initial baseline.",
+        "file_watcher": "Runs when the selected local file or folder is created, modified, or deleted.",
+    }
     for event_type, label in CORE_TRIGGER_TYPES.items():
         if event_type == "timer":
             summary = "Fires on an exact interval or a random interval range."
@@ -266,14 +274,15 @@ def _trigger_entries(variable_registry: VariableRegistry) -> tuple[WikiEntry, ..
                 "name. Matching ignores case and normalizes whitespace."
             )
         else:
-            summary = f"Fires when Hub reports {label.lower()}."
+            summary = system_summaries.get(event_type, f"Fires when Hub reports {label.lower()}.")
         entries.append(
             _trigger_entry(
                 event_type,
                 label,
                 summary,
                 variables("core.if.") if event_type == "if" else
-                variables("core.custom_event.") if event_type == "custom_event" else (),
+                variables("core.custom_event.") if event_type == "custom_event" else
+                variables(SYSTEM_VARIABLE_PREFIXES[event_type]) if event_type in SYSTEM_VARIABLE_PREFIXES else (),
                 ("core", "conditions") if event_type == "if" else ("core",),
             )
         )
@@ -448,6 +457,32 @@ def _trigger_entry(
                     "Only global Variables can be watched because no routine trigger context exists before the routine starts.",
                 ),
             ),
+        )
+    elif trigger_id == "scheduled_time":
+        configuration = (
+            "Simple Schedule — choose a local time and optional weekdays. Leave all days unchecked for daily.",
+            "Advanced Cron — enter minute, hour, day of month, month, and day of week. Example: 0 8 * * MON-FRI.",
+            "Hub skips nonexistent spring-forward times and uses the first occurrence of repeated fall-back times.",
+            "Hub does not replay times it missed while closed or asleep. Imported schedules start disabled.",
+        )
+    elif trigger_id == "hotkey":
+        configuration = (
+            "Record one shortcut using Ctrl, Alt, and/or Shift. Example: Ctrl+Alt+B.",
+            "Windows only. Already-claimed or reserved shortcuts stay inactive and are reported in Logs.",
+            "Hub pauses its registered hotkeys while recording. Imported shortcuts start disabled.",
+        )
+    elif trigger_id in {"process_started", "process_stopped"}:
+        configuration = (
+            "Enter an executable name, for example notepad.exe. Matching ignores letter case.",
+            "Windows only. Hub takes a shared snapshot about once a second; very short-lived processes can be missed.",
+            "Imported process triggers start disabled.",
+        )
+    elif trigger_id == "file_watcher":
+        configuration = (
+            "Choose File or Folder, enter a local path, and choose Created, Modified, or Deleted.",
+            "Use a file watch for changes to a file’s contents. Folder watches observe the folder itself and direct entry-list changes, not child-file edits or subtrees.",
+            "Hub coalesces changes and checks for replacements; very brief changes can be missed. Files are not opened or read.",
+            "Imported file watches start disabled; verify the path before enabling.",
         )
     if trigger_id == "timer":
         additional_sections = (

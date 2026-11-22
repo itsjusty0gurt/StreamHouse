@@ -99,6 +99,31 @@ class AutomationTransferTests(unittest.TestCase):
         self.assertEqual(len(destination["core_store"].for_routine(imported.routine_id)), 1)
         self.assertEqual(len(destination["obs_store"].for_routine(imported.routine_id)), 1)
 
+    def test_system_triggers_transfer_with_new_ids_and_require_explicit_enable(self) -> None:
+        routine = self.stores["routine_store"].add("System Triggers")
+        configurations = {
+            "scheduled_time": {"mode": "simple", "expression": "30 8 * * 1,5"},
+            "hotkey": {"shortcut": "Ctrl+Alt+H"},
+            "process_started": {"name": "notepad.exe"},
+            "process_stopped": {"name": "notepad.exe"},
+            "file_watcher": {"kind": "file", "event": "modified", "path": str(self.root / "test.txt")},
+        }
+        core = self.stores["core_store"]
+        originals = {
+            key: core.add(routine.routine_id, key, system_config=config)
+            for key, config in configurations.items()
+        }
+        payload = export_routine(self.stores["routine_store"].get(routine.routine_id), **self.stores)
+        destination = self.make_stores(self.root / "destination")
+        imported = import_routine(payload, group_id="", task_registry=self.registry, **destination)
+        restored = destination["core_store"].for_routine(imported.routine_id)
+        self.assertEqual(len(restored), len(configurations))
+        for trigger in restored:
+            with self.subTest(trigger=trigger.event_type):
+                self.assertNotEqual(trigger.trigger_id, originals[trigger.event_type].trigger_id)
+                self.assertFalse(trigger.enabled)
+                self.assertEqual(trigger.system_config, configurations[trigger.event_type])
+
     def test_custom_event_transfer_keeps_configuration_but_requires_trigger_relink(self) -> None:
         for task_type in ("core.send_custom_event", "core.set_trigger_state", "core.log_message"):
             marker = AvailableTask()
