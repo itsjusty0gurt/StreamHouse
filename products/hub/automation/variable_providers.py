@@ -374,6 +374,9 @@ class AdsVariableProvider:
 
 
 CONTEXT_DEFINITIONS = (
+    ("core.custom_event.name", "Custom Event Name", "Name of the received Custom Event.", VariableDataType.TEXT, ()),
+    ("core.custom_event.data", "Custom Event Data", "Optional text sent with the Custom Event.", VariableDataType.TEXT, ()),
+    ("core.custom_event.source_routine", "Custom Event Source Routine", "Name of the routine that sent the Custom Event.", VariableDataType.TEXT, ()),
     ("core.if.result", "If Result", "Boolean result that caused a Core If trigger to fire.", VariableDataType.BOOLEAN, ()),
     ("core.if.mode", "If Firing Mode", "Configured transition mode for a Core If trigger.", VariableDataType.TEXT, ()),
     ("user.name", "User Name", "Triggering user's readable name.", VariableDataType.TEXT, ("user",)),

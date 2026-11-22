@@ -578,6 +578,7 @@ class BackupManagerTests(unittest.TestCase):
             "timer-exact",
             "timer-random",
             "if-scene",
+            "custom-break",
         ]
         write_json(routine_path, routines)
         write_json(
@@ -585,6 +586,13 @@ class BackupManagerTests(unittest.TestCase):
             {
                 "version": CoreTriggerStore.VERSION,
                 "triggers": [
+                    {
+                        "trigger_id": "custom-break",
+                        "routine_id": "parent",
+                        "event_type": "custom_event",
+                        "enabled": False,
+                        "event_name": "Break Started",
+                    },
                     {
                         "trigger_id": "timer-exact",
                         "routine_id": "parent",
@@ -644,8 +652,10 @@ class BackupManagerTests(unittest.TestCase):
         )
         restored = {item.trigger_id: item for item in core_store.load()}
         self.assertEqual(
-            set(restored), {"timer-exact", "timer-random", "if-scene"}
+            set(restored), {"timer-exact", "timer-random", "if-scene", "custom-break"}
         )
+        self.assertEqual(restored["custom-break"].event_name, "Break Started")
+        self.assertFalse(restored["custom-break"].enabled)
         self.assertEqual(
             restored["timer-exact"].timer_minimum_unit,
             "milliseconds",
@@ -662,8 +672,27 @@ class BackupManagerTests(unittest.TestCase):
         )
         self.assertEqual(
             set(routine_store.get("parent").trigger_ids),
-            {"raid-trigger", "timer-exact", "timer-random", "if-scene"},
+            {"raid-trigger", "timer-exact", "timer-random", "if-scene", "custom-break"},
         )
+
+    def test_trigger_state_backup_includes_bound_target_routine_and_trigger(self) -> None:
+        routines = RoutineStore(self.root / "automation/routines.json")
+        routines.load()
+        target = routines.add("Target")
+        core = CoreTriggerStore(self.root / "automation/core_triggers.json", routines)
+        core.load()
+        trigger = core.add(target.routine_id, "custom_event", event_name="break.started")
+        routines.add_task(
+            "parent", task_type="core.set_trigger_state", name="Enable listener",
+            config={"routine_id": target.routine_id, "trigger_id": trigger.trigger_id, "action": "enable"},
+        )
+        snapshot = self.manager._routine_snapshot(routine_ids=("parent",))
+        self.assertIn(target.routine_id, {
+            row["routine_id"] for row in snapshot["routines"]["routines"]
+        })
+        self.assertIn(trigger.trigger_id, {
+            row["trigger_id"] for row in snapshot["triggers"]["core"]["triggers"]
+        })
 
     def test_music_trigger_backup_restore_preserves_stable_identity(self) -> None:
         routine_path = self.root / "automation/routines.json"

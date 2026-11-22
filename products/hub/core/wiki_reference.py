@@ -260,6 +260,11 @@ def _trigger_entries(variable_registry: VariableRegistry) -> tuple[WikiEntry, ..
             summary = "Fires on an exact interval or a random interval range."
         elif event_type == "if":
             summary = "Fires when a configured Variable condition changes state."
+        elif event_type == "custom_event":
+            summary = (
+                "Runs through the routine's queue when Send Custom Event posts a matching "
+                "name. Matching ignores case and normalizes whitespace."
+            )
         else:
             summary = f"Fires when Hub reports {label.lower()}."
         entries.append(
@@ -267,7 +272,8 @@ def _trigger_entries(variable_registry: VariableRegistry) -> tuple[WikiEntry, ..
                 event_type,
                 label,
                 summary,
-                variables("core.") if event_type == "if" else (),
+                variables("core.if.") if event_type == "if" else
+                variables("core.custom_event.") if event_type == "custom_event" else (),
                 ("core", "conditions") if event_type == "if" else ("core",),
             )
         )

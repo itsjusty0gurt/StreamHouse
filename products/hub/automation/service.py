@@ -38,6 +38,10 @@ _active_routine: ContextVar[RoutineDefinition | None] = ContextVar(
 )
 
 
+def active_routine() -> RoutineDefinition | None:
+    return _active_routine.get()
+
+
 class AutomationService:
     """Publish service triggers and execute their registered routines."""
 
@@ -68,6 +72,8 @@ class AutomationService:
         )
         results: list[RoutineExecutionResult] = []
         for routine in self.routine_store.matching(trigger.trigger_id):
+            if routine.routine_id in trigger.routine_ancestry:
+                continue
             prepared = self._prepare_trigger(source_trigger)
             routine_result = self._publish_routine(routine, prepared)
             results.append(routine_result)
@@ -297,6 +303,11 @@ class AutomationService:
         started_at = datetime.now(timezone.utc)
         started_clock = perf_counter()
         routine_stack = execution.routine_stack
+        if routine.routine_id in trigger.routine_ancestry:
+            return RoutineExecutionResult(
+                routine_id=routine.routine_id, succeeded=False,
+                detail="Custom Event routine loop blocked.",
+            )
         if routine.routine_id in routine_stack:
             chain = " -> ".join((*routine_stack, routine.routine_id))
             return RoutineExecutionResult(

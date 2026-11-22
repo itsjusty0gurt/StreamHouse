@@ -99,6 +99,33 @@ class AutomationTransferTests(unittest.TestCase):
         self.assertEqual(len(destination["core_store"].for_routine(imported.routine_id)), 1)
         self.assertEqual(len(destination["obs_store"].for_routine(imported.routine_id)), 1)
 
+    def test_custom_event_transfer_keeps_configuration_but_requires_trigger_relink(self) -> None:
+        for task_type in ("core.send_custom_event", "core.set_trigger_state", "core.log_message"):
+            marker = AvailableTask()
+            marker.task_type = task_type
+            self.registry.register(marker)
+        store = self.stores["routine_store"]
+        routine = store.add("Event test")
+        trigger = self.stores["core_store"].add(
+            routine.routine_id, "custom_event", event_name="Break Started", enabled=False,
+        )
+        tasks = (
+            ("core.send_custom_event", {"event_name": "Break Started", "event_data": "{user.name}"}),
+            ("core.set_trigger_state", {"routine_id": routine.routine_id, "trigger_id": trigger.trigger_id}),
+            ("core.log_message", {"message": "Event received\n{core.custom_event.data}", "level": "info"}),
+        )
+        for task_type, config in tasks:
+            store.add_task(routine.routine_id, task_type=task_type, name=task_type, config=config)
+        payload = export_routine(store.get(routine.routine_id), **self.stores)
+        # Same-install import has an existing exact ID. It must still not bind implicitly.
+        imported = import_routine(payload, group_id="", task_registry=self.registry, **self.stores)
+        [copied] = self.stores["core_store"].for_routine(imported.routine_id)
+        self.assertNotEqual(copied.trigger_id, trigger.trigger_id)
+        self.assertEqual((copied.event_name, copied.enabled), ("Break Started", False))
+        self.assertEqual(imported.tasks[0].config, tasks[0][1])
+        self.assertEqual(imported.tasks[1].config, {**tasks[1][1], "requires_relink": True})
+        self.assertEqual(imported.tasks[2].config, tasks[2][1])
+
     def test_import_rejects_unavailable_task_before_creating_routine(self) -> None:
         payload = {
             "format": "streamhouse.automation.routine",

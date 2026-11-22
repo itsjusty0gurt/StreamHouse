@@ -646,6 +646,17 @@ class TwitchEventTriggerStore:
             self._persist_first_message_state()
         return candidate
 
+    def set_enabled(self, trigger_id: str, enabled: bool) -> bool:
+        trigger = self.get(trigger_id)
+        if trigger is None:
+            return False
+        if trigger.enabled != enabled:
+            self.update(
+                trigger_id, event_type=trigger.event_type, filters=trigger.filters,
+                enabled=enabled, reward_id=trigger.reward_id, reward_title=trigger.reward_title,
+            )
+        return True
+
     def delete(self, trigger_id: str) -> bool:
         trigger = self.get(trigger_id)
         if trigger is None:

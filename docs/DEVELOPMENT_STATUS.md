@@ -144,6 +144,10 @@ hidden Core Connections shell.
   triggers, and Variables; all existing recipe IDs were preserved.
 - Twitch Commands can list external commands in `!commands` without creating
   Hub triggers, routines, or chat responses for those commands.
+- Core Automation pass 1 adds the Custom Event trigger, Send Custom Event,
+  Set Trigger State, and Log Message. Custom Events use normal routine
+  queues and isolated contextual Variables; imported trigger-state tasks
+  require explicit relinking. Packaged manual acceptance is pending.
 - OBS-triggered routines are queued after the originating WebSocket event
   callback returns, so their OBS tasks can complete requests without reentering
   the socket callback or requiring an artificial Wait task. Real OBS acceptance

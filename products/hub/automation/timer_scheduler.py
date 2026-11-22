@@ -6,7 +6,7 @@ from random import randint
 from time import monotonic
 from typing import Callable
 
-from PySide6.QtCore import QObject, QTimer, Slot
+from PySide6.QtCore import QObject, QTimer, Signal, Slot
 
 from products.hub.automation.core_triggers import (
     CoreAutomationTrigger,
@@ -37,6 +37,7 @@ class AutomationTimerScheduler(QObject):
     """One Qt scheduler for every persisted Automation Timer trigger."""
 
     MAX_QT_INTERVAL_MS = 2_147_000_000
+    _store_changed = Signal()
 
     def __init__(
         self,
@@ -59,7 +60,9 @@ class AutomationTimerScheduler(QObject):
         self.timer = QTimer(self)
         self.timer.setSingleShot(True)
         self.timer.timeout.connect(self.process_due)
-        self.store.subscribe_changes(self.synchronize)
+        self._store_changed.connect(self.synchronize)
+        self._store_change_callback = self._store_changed.emit
+        self.store.subscribe_changes(self._store_change_callback)
 
     def start(self) -> None:
         if self.running:
@@ -71,8 +74,9 @@ class AutomationTimerScheduler(QObject):
         self.running = False
         self.timer.stop()
         self.schedules.clear()
-        self.store.unsubscribe_changes(self.synchronize)
+        self.store.unsubscribe_changes(self._store_change_callback)
 
+    @Slot()
     def synchronize(self) -> None:
         if not self.running:
             return

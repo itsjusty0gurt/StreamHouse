@@ -82,7 +82,7 @@ from products.hub.integrations.music_player import (
     MusicPlayerEvent,
     MusicVariableProvider,
 )
-from products.hub.integrations.music_triggers import MusicTriggerStore
+from products.hub.integrations.music_triggers import MUSIC_TRIGGER_TYPES, MusicTriggerStore
 from products.hub.automation.service import AutomationService
 from products.hub.automation.routines import RoutineStore
 from products.hub.automation.quick_actions import QuickActionStore
@@ -98,7 +98,7 @@ from products.hub.automation.variable_providers import (
     runtime_provider,
 )
 from products.hub.automation.variable_registry import VariableRegistry
-from products.hub.automation.core_triggers import CoreTriggerStore
+from products.hub.automation.core_triggers import CORE_TRIGGER_TYPES, CoreTriggerStore
 from products.hub.automation.condition_trigger_runtime import CoreIfTriggerRuntime
 from products.hub.automation.timer_scheduler import AutomationTimerScheduler
 from products.hub.ui.timers_page import TimersPage
@@ -118,6 +118,10 @@ from products.hub.automation.tasks import TaskRegistry
 from products.hub.automation.task_catalog import CORE_TASK_METADATA
 from products.hub.automation.variable_tasks import RunRoutineTask, register_variable_tasks
 from products.hub.automation.control_tasks import register_control_tasks
+from products.hub.automation.custom_event_tasks import (
+    CustomEventDispatcher, LogMessageTask, SendCustomEventTask,
+)
+from products.hub.automation.trigger_state import SetTriggerStateTask, TriggerState
 from products.hub.automation.logic_tasks import register_logic_tasks
 from products.hub.automation.music_tasks import register_music_tasks
 from products.hub.automation.file_tasks import register_file_tasks
@@ -404,6 +408,7 @@ class ActivityFeedCard(QFrame):
 
 class MainWindow(QMainWindow):
     counter_refresh_requested = Signal()
+    trigger_state_refresh_requested = Signal()
     memory_viewer_refresh_requested = Signal(str)
 
     def __init__(
@@ -703,6 +708,24 @@ class MainWindow(QMainWindow):
             variable_registry=self.variable_registry,
         )
         self._initialize_modules(data_root, routine_store)
+        self.custom_event_dispatcher = CustomEventDispatcher(
+            self.core_trigger_store, self.automation_service,
+            lambda execution, label: self.automation_page.record_execution(execution, label),
+            parent=self,
+        )
+        self.trigger_state = TriggerState(
+            routine_store, self.trigger_provider_registry,
+            (
+                ("Core", self.core_trigger_store, CORE_TRIGGER_TYPES),
+                ("Music", self.music_trigger_store, MUSIC_TRIGGER_TYPES),
+                ("Twitch", self.twitch_command_trigger_store, {}),
+            ),
+            self.trigger_state_refresh_requested.emit,
+            local_available=lambda provider: provider != "Twitch" or self.twitch_runtime_enabled,
+        )
+        self.task_registry.register(SendCustomEventTask(self.variable_registry, self.custom_event_dispatcher))
+        self.task_registry.register(SetTriggerStateTask(self.trigger_state))
+        self.task_registry.register(LogMessageTask(self.variable_registry))
         self.release_controller.backups.contributors = self.backup_contributor_registry
         self.local_integration = HubIntegrationController(
             self.automation_service,
@@ -3015,6 +3038,7 @@ class MainWindow(QMainWindow):
             self.task_registry,
             self.automation_service,
             trigger_provider_registry=self.trigger_provider_registry,
+            trigger_options=self.trigger_state.options,
             automation_subpages=self.automation_subpage_registry,
             twitch_service=self.twitch_service,
             twitch_auth=self.twitch_auth,
@@ -3027,8 +3051,17 @@ class MainWindow(QMainWindow):
             user_groups=self.user_groups,
         )
         self.ui.mainStack.addWidget(self.automation_page)
+        self.trigger_state_refresh_requested.connect(
+            self._on_automation_trigger_state_changed, Qt.ConnectionType.QueuedConnection
+        )
         self.automation_timer_scheduler.start()
         self.core_if_trigger_runtime.start()
+
+    @Slot()
+    def _on_automation_trigger_state_changed(self) -> None:
+        if not self._shutting_down:
+            self.automation_page.refresh()
+            self._refresh_twitch_commands()
 
     def _initialize_modules(self, data_root: Path, routine_store) -> None:
         def context_factory(_descriptor) -> ModuleContext:
@@ -9133,6 +9166,7 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event: QCloseEvent) -> None:
         self._shutting_down = True
+        self.custom_event_dispatcher.stop()
         self._memory_viewer_refresh_timer.stop()
         self.counter_service.unsubscribe_changes(self._counter_change_callback)
         self.custom_variable_store.unsubscribe_changes(

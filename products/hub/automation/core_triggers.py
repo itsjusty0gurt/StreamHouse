@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from decimal import Decimal, InvalidOperation
 from math import isfinite
 from pathlib import Path
@@ -28,7 +28,13 @@ CORE_TRIGGER_TYPES = {
     "application.closing": "Application Closing",
     "timer": "Timer",
     "if": "If",
+    "custom_event": "Custom Event",
 }
+
+
+def normalize_custom_event_name(value: str) -> str:
+    return " ".join(value.split())
+
 IF_TRIGGER_FIRING_MODES = {
     "becomes_true": "Becomes True",
     "becomes_false": "Becomes False",
@@ -64,6 +70,7 @@ class CoreAutomationTrigger:
     condition_join: str = "and"
     conditions: list[dict[str, object]] = field(default_factory=list)
     firing_mode: str = ""
+    event_name: str = ""
 
     @classmethod
     def from_dict(cls, values: Mapping[str, Any]) -> CoreAutomationTrigger:
@@ -99,6 +106,7 @@ class CoreAutomationTrigger:
                 if event_type == "if"
                 else ""
             ),
+            event_name=normalize_custom_event_name(str(values.get("event_name") or "")),
         )
 
     def condition_config(self) -> dict[str, object]:
@@ -203,6 +211,7 @@ class CoreTriggerStore:
         condition_join: str = "and",
         conditions: list[dict[str, object]] | None = None,
         firing_mode: str = "",
+        event_name: str = "",
     ) -> CoreAutomationTrigger:
         trigger = CoreAutomationTrigger(
             trigger_id=uuid4().hex,
@@ -217,6 +226,7 @@ class CoreTriggerStore:
             condition_join=condition_join.strip().casefold(),
             conditions=list(conditions or []),
             firing_mode=firing_mode.strip().casefold(),
+            event_name=normalize_custom_event_name(event_name),
         )
         self._validate(trigger)
         if self.routine_store.get(routine_id) is None:
@@ -246,6 +256,7 @@ class CoreTriggerStore:
         condition_join: str = "and",
         conditions: list[dict[str, object]] | None = None,
         firing_mode: str = "",
+        event_name: str = "",
     ) -> CoreAutomationTrigger:
         trigger = self.get(trigger_id)
         if trigger is None:
@@ -263,8 +274,20 @@ class CoreTriggerStore:
             condition_join=condition_join.strip().casefold(),
             conditions=list(conditions or []),
             firing_mode=firing_mode.strip().casefold(),
+            event_name=normalize_custom_event_name(event_name),
         )
         self._validate(candidate)
+        return self._replace(trigger, candidate)
+
+    def set_enabled(self, trigger_id: str, enabled: bool) -> bool:
+        trigger = self.get(trigger_id)
+        if trigger is None:
+            return False
+        if trigger.enabled != enabled:
+            self._replace(trigger, replace(trigger, enabled=enabled))
+        return True
+
+    def _replace(self, trigger, candidate) -> CoreAutomationTrigger:
         index = self.triggers.index(trigger)
         self.triggers[index] = candidate
         try:
@@ -391,6 +414,8 @@ class CoreTriggerStore:
         context: Mapping[str, str] | None = None,
     ) -> tuple[TriggerEvent, ...]:
         clean_type = event_type.strip()
+        if clean_type == "custom_event":
+            return ()
         values = {
             "event": CORE_TRIGGER_TYPES.get(clean_type, clean_type),
             "event_type": clean_type,
@@ -405,6 +430,17 @@ class CoreTriggerStore:
             )
             for trigger in self.triggers
             if trigger.enabled and trigger.event_type == clean_type
+        )
+
+    def evaluate_custom_event(self, event: TriggerEvent) -> tuple[TriggerEvent, ...]:
+        name = normalize_custom_event_name(event.context.get("core.custom_event.name", ""))
+        if not name:
+            return ()
+        return tuple(
+            replace(event, trigger_id=trigger.trigger_id)
+            for trigger in self.triggers
+            if trigger.enabled and trigger.event_type == "custom_event"
+            and trigger.event_name.casefold() == name.casefold()
         )
 
     def event_for(self, trigger_id: str) -> TriggerEvent | None:
@@ -532,6 +568,8 @@ class CoreTriggerStore:
             raise ValueError("Core triggers require IDs.")
         if trigger.event_type not in CORE_TRIGGER_TYPES:
             raise ValueError("That Core program trigger is not supported.")
+        if trigger.event_type == "custom_event" and not trigger.event_name:
+            raise ValueError("Custom Event name is required.")
         if trigger.event_type == "timer":
             CoreTriggerStore.validate_timer(trigger)
         elif trigger.event_type == "if":
