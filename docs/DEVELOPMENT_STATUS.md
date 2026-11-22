@@ -271,16 +271,18 @@ Reproduction/validation requirements:
 
 ## Known issues and validation gaps
 
-- **Connections scrollbar regression (automated fix; manual acceptance pending):**
+- **Resolved: Connections scrollbar regression test.**
   `MainWindowTests.test_connections_body_scrolls_instead_of_compressing_health_rows`
   previously tested the legacy Connections shell, where the visible Music
   Player group fit the viewport and the old Twitch health widgets were hidden.
   The regression now tests the live broadcaster and bot cards in Twitch →
   Account across repeated resizes, and tests the Connections shell separately
-  with a deliberately constrained viewport. No production layout change was
-  needed. Headless validation passed: the isolated regression (1 test,
+  with a deliberately constrained viewport. Production scrolling already
+  behaved correctly; no production code or connection behavior changed.
+  Headless validation passed: the isolated regression (1 test,
   5 subtests), the focused gate (58 tests, 16 subtests), and the full suite
-  (1,568 tests, 387 subtests).
+  (1,568 tests, 387 subtests, zero failures). Manual acceptance was explicitly
+  waived, not performed, because the correction is limited to tests and docs.
 - **Resolved Backup dependency issue:** automatic and manual Routine Backup now
   preserve a routine with an explicitly inventoried unresolved trigger instead
   of abandoning all eligible user data. Restore validates the unresolved
