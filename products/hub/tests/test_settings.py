@@ -29,6 +29,7 @@ class SettingsStoreTests(unittest.TestCase):
             ui_log_limit=750,
             show_developer_tools=False,
             twitch_chat_show_timestamps=False,
+            twitch_chat_highlight_broadcaster_mentions=False,
             twitch_chat_font_family="Consolas",
             twitch_chat_font_size=13,
             twitch_last_ad_duration=90,
@@ -64,6 +65,13 @@ class SettingsStoreTests(unittest.TestCase):
 
         self.assertEqual(self.store.load(), expected)
         self.assertFalse(self.settings_path.with_suffix(".tmp").exists())
+
+    def test_old_and_invalid_chat_highlight_settings_default_on(self) -> None:
+        for values in ({}, {"twitch_chat_highlight_broadcaster_mentions": "false"}):
+            with self.subTest(values=values):
+                self.assertTrue(
+                    AppSettings.from_dict(values).twitch_chat_highlight_broadcaster_mentions
+                )
 
     def test_invalid_values_fall_back_or_are_clamped(self) -> None:
         self.settings_path.write_text(

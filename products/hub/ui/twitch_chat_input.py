@@ -1,20 +1,11 @@
 from __future__ import annotations
 
+import re
 from collections import deque
-from dataclasses import dataclass
 from typing import Callable, Iterable
 
-from PySide6.QtCore import QEvent, QObject, QPoint, QRunnable, Qt, Signal
-from PySide6.QtGui import QKeyEvent
-from PySide6.QtWidgets import (
-    QBoxLayout,
-    QFrame,
-    QLineEdit,
-    QListWidget,
-    QListWidgetItem,
-    QVBoxLayout,
-    QWidget,
-)
+from PySide6.QtCore import QEvent, QObject, QRunnable, Qt, Signal
+from PySide6.QtWidgets import QBoxLayout, QLineEdit, QWidget
 
 from products.hub.automation.variable_registry import (
     VariableAvailability,
@@ -23,8 +14,16 @@ from products.hub.automation.variable_registry import (
 )
 from products.hub.twitch.slash_commands import (
     TWITCH_SLASH_COMMANDS,
+    TWITCH_SLASH_COMMANDS_BY_NAME,
     TwitchSlashRequest,
     parse_twitch_slash_request,
+)
+from products.hub.twitch.chat_helper import (
+    TwitchUserSuggestion, matching_chat_commands, matching_chat_users,
+)
+from products.hub.twitch.commands import TwitchCommandTriggerStore
+from products.hub.ui.variable_autocomplete import (
+    TextCompletions, TextSuggestion, VariableAutocomplete,
 )
 from products.hub.ui.variable_picker import VariablePickerButton
 
@@ -69,210 +68,131 @@ def install_chat_variable_picker(
     return picker
 
 
-@dataclass(frozen=True)
-class TwitchUserSuggestion:
-    login: str
-    display_name: str = ""
+_SLASH = re.compile(r"^\s*/([a-z]*)\Z", re.IGNORECASE | re.ASCII)
+_SLASH_USER = re.compile(r"^\s*/([a-z]+) +(@?)([a-z0-9_]*)\Z", re.IGNORECASE | re.ASCII)
+_CHAT_TOKEN = re.compile(
+    r"(?<![\w@!/])(?:@(?P<login>[a-zA-Z0-9_]*)|!(?P<command>[a-zA-Z0-9_-]*))\Z"
+)
+_SLASH_SUFFIX = re.compile(r"[a-zA-Z]*")
+_LOGIN_SUFFIX = re.compile(r"[a-zA-Z0-9_]*")
+_COMMAND_SUFFIX = re.compile(r"[a-zA-Z0-9_-]*")
 
 
 class TwitchChatInputController(QObject):
-    """Own slash completion and bounded, session-only sent-message history."""
+    """Contribute Twitch suggestions to the shared popup and own sent history."""
 
     def __init__(
         self,
         edit: QLineEdit,
         known_users: Callable[[], Iterable[TwitchUserSuggestion]],
         *,
+        command_store: TwitchCommandTriggerStore | None = None,
+        autocomplete: VariableAutocomplete | None = None,
         history_limit: int = 100,
     ) -> None:
         super().__init__(edit)
         self.edit = edit
         self.known_users = known_users
+        self.command_store = command_store
+        self.autocomplete = autocomplete or VariableAutocomplete(edit, None)
+        self.autocomplete.completion_provider = self._completions
         self.history: deque[str] = deque(maxlen=max(1, history_limit))
         self._history_index: int | None = None
         self._history_draft = ""
         self._setting_text = False
-        self._suppressed_text = ""
-
-        self.popup = QFrame(edit.window(), Qt.WindowType.ToolTip)
-        self.popup.setObjectName("twitchSlashHelper")
-        popup_layout = QVBoxLayout(self.popup)
-        popup_layout.setContentsMargins(1, 1, 1, 1)
-        self.suggestions = QListWidget(self.popup)
-        self.suggestions.setObjectName("twitchSlashSuggestions")
-        self.suggestions.setHorizontalScrollBarPolicy(
-            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
-        )
-        popup_layout.addWidget(self.suggestions)
-        self.popup.setStyleSheet(
-            "QFrame#twitchSlashHelper {"
-            "background: palette(base); border: 1px solid palette(mid);"
-            "border-radius: 5px;"
-            "}"
-            "QListWidget#twitchSlashSuggestions {"
-            "background: transparent; border: none; outline: none; padding: 3px;"
-            "}"
-            "QListWidget#twitchSlashSuggestions::item { padding: 5px 7px; }"
-            "QListWidget#twitchSlashSuggestions::item:selected {"
-            "background: palette(highlight); color: palette(highlighted-text);"
-            "}"
-        )
-        self.popup.hide()
-        self.suggestions.itemClicked.connect(self._complete_item)
         edit.installEventFilter(self)
         edit.textEdited.connect(self._text_edited)
 
     @property
     def helper_visible(self) -> bool:
-        return not self.popup.isHidden() and self.suggestions.count() > 0
+        popup = self.autocomplete.popup
+        return popup is not None and popup.isVisible()
 
     def record_sent(self, message: str) -> None:
         clean = message.strip()
         if clean and (not self.history or self.history[-1] != clean):
             self.history.append(clean)
+        self.autocomplete.dismiss()
         self._leave_history()
 
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
-        if watched is not self.edit or event.type() != QEvent.Type.KeyPress:
-            return super().eventFilter(watched, event)
-        key_event = event if isinstance(event, QKeyEvent) else None
-        if key_event is None:
-            return False
-        key = key_event.key()
-        if self.helper_visible:
-            if key in {Qt.Key.Key_Up, Qt.Key.Key_Down}:
-                self._move_selection(-1 if key == Qt.Key.Key_Up else 1)
-                return True
-            if key in {Qt.Key.Key_Tab, Qt.Key.Key_Return, Qt.Key.Key_Enter}:
-                item = self.suggestions.currentItem()
-                if item is not None:
-                    self._complete_item(item)
-                return True
-            if key == Qt.Key.Key_Escape:
-                self.popup.hide()
-                self._suppressed_text = self.edit.text()
-                return True
-        if key == Qt.Key.Key_Up:
-            return self._history_previous()
-        if key == Qt.Key.Key_Down:
-            return self._history_next()
+        if (
+            watched is self.edit and event.type() == QEvent.Type.KeyPress
+            and not self.helper_visible
+            and event.modifiers() in (Qt.KeyboardModifier.NoModifier, Qt.KeyboardModifier.KeypadModifier)
+        ):
+            if event.key() == Qt.Key.Key_Up:
+                return self._history_previous()
+            if event.key() == Qt.Key.Key_Down:
+                return self._history_next()
         return super().eventFilter(watched, event)
 
-    def _text_edited(self, text: str) -> None:
-        if self._setting_text:
-            return
-        self._leave_history()
-        self._suppressed_text = ""
-        self._refresh_helper(text)
+    def _text_edited(self, _text: str) -> None:
+        if not self._setting_text:
+            self._leave_history()
 
-    def refresh(self) -> None:
-        self._refresh_helper(self.edit.text())
+    def _completions(self, before: str, after: str) -> TextCompletions | None:
+        def with_space(text: str, suffix: int) -> str:
+            remaining = after[suffix:]
+            if not remaining or remaining[0].isalnum():
+                return text + " "
+            return text
 
-    def _refresh_helper(self, text: str) -> None:
-        self.suggestions.clear()
-        if not text.startswith("/") or text == self._suppressed_text:
-            self.popup.hide()
-            return
-        command_text = text[1:]
-        if " " not in command_text:
-            query = command_text.casefold()
-            for command in TWITCH_SLASH_COMMANDS:
-                if command.name.startswith(query):
-                    item = QListWidgetItem(
-                        f"{command.syntax}\n{command.description}"
-                    )
-                    item.setData(
-                        Qt.ItemDataRole.UserRole,
-                        ("command", command.name),
-                    )
-                    item.setToolTip(
-                        f"{command.description}. Requires {command.required_scope}."
-                    )
-                    self.suggestions.addItem(item)
-        else:
-            command_name, argument_text = command_text.split(" ", 1)
-            command = next(
-                (
-                    item
-                    for item in TWITCH_SLASH_COMMANDS
-                    if item.name == command_name.casefold()
-                ),
-                None,
-            )
+        match = _SLASH.fullmatch(before)
+        if match is not None:
+            query = match[1].casefold()
+            suffix = len(_SLASH_SUFFIX.match(after)[0])
+            suggestions = [
+                TextSuggestion(
+                    with_space(f"/{command.name}", suffix),
+                    f"{command.syntax} — {command.description}",
+                    f"Requires {command.required_scope}.",
+                    follow_up=command.requires_user,
+                )
+                for command in TWITCH_SLASH_COMMANDS if command.name.startswith(query)
+            ]
+            if "me".startswith(query):
+                suggestions.append(TextSuggestion(
+                    with_space("/me", suffix), "/me <message> — Send a chat action"
+                ))
+            return TextCompletions(1 + len(match[1]), suffix, tuple(suggestions))
+
+        target = _SLASH_USER.fullmatch(before)
+        if target is not None:
+            command = TWITCH_SLASH_COMMANDS_BY_NAME.get(target[1].casefold())
             if command is not None and command.requires_user:
-                if (
-                    " " not in argument_text.rstrip()
-                    and not argument_text.endswith(" ")
-                ):
-                    query = argument_text.lstrip("@").casefold()
-                    for user in self._matching_users(query):
-                        label = f"@{user.login}"
-                        if (
-                            user.display_name
-                            and user.display_name.casefold()
-                            != user.login.casefold()
-                        ):
-                            label += f"  {user.display_name}"
-                        item = QListWidgetItem(label)
-                        item.setData(Qt.ItemDataRole.UserRole, ("user", user.login))
-                        self.suggestions.addItem(item)
-        if not self.suggestions.count():
-            self.popup.hide()
-            return
-        self.suggestions.setCurrentRow(0)
-        visible_rows = min(self.suggestions.count(), 7)
-        row_height = max(self.suggestions.sizeHintForRow(0), 34)
-        width = max(self.edit.width(), 360)
-        self.popup.resize(width, visible_rows * row_height + 8)
-        position = self.edit.mapToGlobal(QPoint(0, self.edit.height() + 3))
-        self.popup.move(position)
-        self.popup.show()
+                return self._user_completions(target[2], target[3], after)
 
-    def _matching_users(self, query: str) -> list[TwitchUserSuggestion]:
-        matches: dict[str, TwitchUserSuggestion] = {}
-        for user in self.known_users():
-            login = user.login.strip().lstrip("@")
-            display = user.display_name.strip()
-            if not login:
-                continue
-            if (
-                query
-                and query not in login.casefold()
-                and query not in display.casefold()
-            ):
-                continue
-            matches.setdefault(login.casefold(), TwitchUserSuggestion(login, display))
-        return sorted(
-            matches.values(),
-            key=lambda item: (item.login.casefold(), item.display_name.casefold()),
-        )[:20]
-
-    def _complete_item(self, item: QListWidgetItem) -> None:
-        data = item.data(Qt.ItemDataRole.UserRole)
-        if not isinstance(data, tuple) or len(data) != 2:
-            return
-        kind, value = data
-        if kind == "command":
-            completed = f"/{value} "
-            suppress = False
-        else:
-            command = self.edit.text()[1:].split(" ", 1)[0]
-            completed = f"/{command} {value} "
-            suppress = True
-        self._set_text(completed)
-        self.edit.setCursorPosition(len(completed))
-        self.popup.hide()
-        self._suppressed_text = completed if suppress else ""
-        if not suppress:
-            self._refresh_helper(completed)
-        self.edit.setFocus()
-
-    def _move_selection(self, delta: int) -> None:
-        count = self.suggestions.count()
-        if count:
-            self.suggestions.setCurrentRow(
-                (self.suggestions.currentRow() + delta) % count
+        match = _CHAT_TOKEN.search(before)
+        if match is None:
+            return None
+        if match["login"] is not None:
+            return self._user_completions("@", match["login"], after)
+        if self.command_store is None:
+            return None
+        suffix = len(_COMMAND_SUFFIX.match(after)[0])
+        return TextCompletions(len(match[0]), suffix, tuple(
+            TextSuggestion(
+                with_space(f"!{command.name}", suffix),
+                f"!{command.name} — {command.source}",
+                command.description,
             )
+            for command in matching_chat_commands(self.command_store, match["command"].casefold())
+        ))
+
+    def _user_completions(self, prefix: str, fragment: str, after: str) -> TextCompletions:
+        suffix = len(_LOGIN_SUFFIX.match(after)[0])
+        space = " " if not after[suffix:] else ""
+        return TextCompletions(len(prefix) + len(fragment), suffix, tuple(
+            TextSuggestion(
+                f"{prefix}{user.login}{space}",
+                f"@{user.login}" + (
+                    f" — {user.display_name}"
+                    if user.display_name.casefold() not in ("", user.login) else ""
+                ),
+            )
+            for user in matching_chat_users(self.known_users(), fragment.casefold())
+        ))
 
     def _history_previous(self) -> bool:
         if not self.history:

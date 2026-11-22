@@ -6,7 +6,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import Qt
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QHBoxLayout, QLineEdit, QWidget
+from PySide6.QtWidgets import QApplication, QDialog, QHBoxLayout, QLineEdit, QWidget
 
 from products.hub.automation.variable_registry import (
     CallbackVariableProvider,
@@ -35,9 +35,11 @@ class TwitchChatInputTests(unittest.TestCase):
         cls.application = QApplication.instance() or QApplication([])
 
     def setUp(self) -> None:
-        self.edit = QLineEdit()
-        self.edit.resize(420, 32)
-        self.edit.show()
+        self.dialog = QDialog()
+        layout = QHBoxLayout(self.dialog)
+        self.edit = QLineEdit(self.dialog)
+        layout.addWidget(self.edit)
+        self.dialog.resize(420, 64)
         self.controller = TwitchChatInputController(
             self.edit,
             lambda: (
@@ -47,10 +49,14 @@ class TwitchChatInputTests(unittest.TestCase):
             ),
             history_limit=3,
         )
+        self.dialog.show()
+        self.dialog.activateWindow()
+        self.edit.setFocus()
+        self.application.processEvents()
 
     def tearDown(self) -> None:
-        self.controller.popup.close()
-        self.edit.close()
+        self.dialog.close()
+        self.application.processEvents()
 
     def _type(self, text: str) -> None:
         self.edit.clear()
@@ -60,11 +66,13 @@ class TwitchChatInputTests(unittest.TestCase):
     def test_slash_opens_and_filters_supported_api_actions(self) -> None:
         self._type("/")
         self.assertTrue(self.controller.helper_visible)
-        self.assertEqual(self.controller.suggestions.count(), 22)
+        popup = self.controller.autocomplete.popup
+        self.assertEqual(popup.count(), 23)
+        self.assertTrue(any("/me <message>" in popup.item(i).text() for i in range(popup.count())))
 
         self._type("/BA")
-        self.assertEqual(self.controller.suggestions.count(), 1)
-        self.assertIn("/ban <user>", self.controller.suggestions.item(0).text())
+        self.assertEqual(popup.count(), 1)
+        self.assertIn("/ban <user>", popup.item(0).text())
         advertised = {command.name for command in TWITCH_SLASH_COMMANDS}
         self.assertEqual(
             advertised,
@@ -88,11 +96,11 @@ class TwitchChatInputTests(unittest.TestCase):
 
         self.assertEqual(self.edit.text(), "/timeout ")
         self.assertTrue(self.controller.helper_visible)
-        self.assertEqual(self.controller.suggestions.count(), 3)
+        self.assertEqual(self.controller.autocomplete.popup.count(), 3)
 
         QTest.keyClick(self.edit, Qt.Key.Key_Down)
         QTest.keyClick(self.edit, Qt.Key.Key_Return)
-        self.assertEqual(self.edit.text(), "/timeout y0gurtviewer ")
+        self.assertEqual(self.edit.text(), "/timeout yoshi123 ")
         self.assertFalse(self.controller.helper_visible)
 
     def test_escape_dismisses_without_clearing_draft(self) -> None:
@@ -103,9 +111,9 @@ class TwitchChatInputTests(unittest.TestCase):
 
     def test_username_suggestions_are_local_partial_and_case_insensitive(self) -> None:
         self._type("/ban Y")
+        popup = self.controller.autocomplete.popup
         labels = [
-            self.controller.suggestions.item(index).text()
-            for index in range(self.controller.suggestions.count())
+            popup.item(index).text() for index in range(popup.count())
         ]
         self.assertEqual(len(labels), 2)
         self.assertTrue(any("y0gurtviewer" in label for label in labels))
@@ -142,7 +150,36 @@ class TwitchChatInputTests(unittest.TestCase):
         self._type("/")
         QTest.keyClick(self.edit, Qt.Key.Key_Down)
         self.assertEqual(self.edit.text(), "/")
-        self.assertEqual(self.controller.suggestions.currentRow(), 1)
+        self.assertEqual(self.controller.autocomplete.popup.currentRow(), 1)
+
+    def test_mention_replaces_token_at_cursor_without_sending(self) -> None:
+        self.edit.setText("🐱 hi @123, welcome!")
+        self.edit.setCursorPosition(7)  # Before the existing login suffix.
+        sent = Mock()
+        self.edit.returnPressed.connect(sent)
+        QTest.keyClicks(self.edit, "Yosh")
+        popup = self.controller.autocomplete.popup
+        self.assertEqual(popup.count(), 1)
+        QTest.mouseClick(
+            popup.viewport(), Qt.MouseButton.LeftButton,
+            pos=popup.visualItemRect(popup.item(0)).center(),
+        )
+        self.assertEqual(self.edit.text(), "🐱 hi @yoshi123, welcome!")
+        sent.assert_not_called()
+        QTest.keyClick(self.edit, Qt.Key.Key_Return)
+        sent.assert_called_once_with()
+
+    def test_command_prefixes_do_not_match_ordinary_text(self) -> None:
+        for draft in ("spelling /ban", "email@Yoshi", "hello!there", "/color", "hello @@y"):
+            with self.subTest(draft=draft):
+                self._type(draft)
+                self.assertFalse(self.controller.helper_visible)
+
+    def test_me_suggestion_inserts_only_the_command(self) -> None:
+        self._type("/ME")
+        QTest.keyClick(self.edit, Qt.Key.Key_Return)
+        self.assertEqual(self.edit.text(), "/me ")
+        self.assertFalse(self.controller.helper_visible)
 
 
 class TwitchChatVariableTests(unittest.TestCase):

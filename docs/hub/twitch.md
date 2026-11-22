@@ -76,12 +76,20 @@ the queued Twitch Qt bridge before the widget is touched.
 The Chat input derives local autocomplete from the API-backed slash-command
 registry, including moderation, chat modes, Mod/VIP management, raids,
 announcements, and shoutouts. Known-user suggestions come from Hub's local user
-records.
+records, with recent chatters prioritized. Type `@` anywhere in a message to
+complete a known Twitch login, or `!` to browse enabled Default, Custom, and
+External Commands and aliases. External suggestions insert text only and
+never register or execute a Hub routine. `/me` is an ordinary chat action.
 Completion only prepares the command; explicit submission and the normal
 confirmation remain required. Sent-message Up/Down history is bounded and
 session-only. The live timeline follows while near the bottom, pauses when the
 streamer reads older messages, and shows a counted Jump to latest control until
 the streamer jumps or manually returns to the bottom.
+
+New messages explicitly mentioning the authenticated broadcaster have a
+subtle row highlight. To turn it off, clear **Highlight broadcaster mentions**
+in **Settings → Chat** and save. Matching uses the broadcaster's login and
+display name without changing the message text or existing formatting.
 
 The chat input reuses the shared Variable Picker for global/provider Variables.
 Type `{` to see suggestions, then use the arrow keys and Enter or Tab (or click)

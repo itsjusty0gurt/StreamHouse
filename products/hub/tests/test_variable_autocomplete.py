@@ -149,14 +149,15 @@ def test_multiline_mouse_selection_and_normal_newline(dialog, registry):
 def test_chat_uses_picker_scope_no_value_resolution_and_resumes_send(dialog, registry):
     edit = QLineEdit(dialog)
     dialog.layout().addWidget(edit)
-    controller = TwitchChatInputController(edit, lambda: ())
     picker = install_chat_variable_picker(registry, edit, dialog.layout(), dialog)
+    controller = TwitchChatInputController(edit, lambda: (), autocomplete=picker.autocomplete)
     show_field(dialog, edit)
     submit = Mock()
     edit.returnPressed.connect(submit)
     QTest.keyClicks(edit, "/me live for {")
     assert names(picker.autocomplete) == ["{stream.title}", "{stream.uptime}"]
-    assert not controller.helper_visible
+    assert controller.helper_visible
+    assert controller.autocomplete is picker.autocomplete
     QTest.keyClicks(edit, "upt")
     QTest.keyClick(edit, Qt.Key.Key_Return)
     assert edit.text() == "/me live for {stream.uptime}"

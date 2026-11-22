@@ -5024,6 +5024,92 @@ class MainWindowTests(unittest.TestCase):
             picker,
         )
 
+    def test_twitch_chat_command_suggestions_follow_registry_without_sending(self) -> None:
+        store = self.twitch_command_trigger_store
+        store.add("hydrate", aliases=["water"])
+        external = store.save_external_command("fish", "Third-party fishing")
+        store.save_external_command("hidden", enabled=False)
+        self.window.twitch_service.send_message = Mock(return_value=True)
+        self.window.automation_service.publish_trigger = Mock()
+        self.window.show_live()
+        self.window.show()
+        self.window.activateWindow()
+        edit = self.window.ui.twitchSendEdit
+        edit.setEnabled(True)  # This fixture does not connect to Twitch.
+        edit.setFocus()
+        self.application.processEvents()
+        completer = self.window.twitch_chat_variable_picker.autocomplete
+        self.assertIs(self.window.twitch_chat_input.autocomplete, completer)
+
+        def suggestions():
+            edit.clear()
+            QTest.keyClicks(edit, "!")
+            popup = completer.popup
+            return {
+                popup.item(index).text()
+                for index in range(popup.count())
+            }
+
+        self.assertTrue({
+            "!commands — Default", "!hydrate — Custom",
+            "!water — Custom", "!fish — External",
+        } <= suggestions())
+        self.assertNotIn("!hidden — External", suggestions())
+        store.save_external_command("fish", external.description, False, command_id=external.command_id)
+        self.assertNotIn("!fish — External", suggestions())
+        store.save_external_command("fish", external.description, True, command_id=external.command_id)
+
+        edit.clear()
+        QTest.keyClicks(edit, "!FI")
+        self.assertEqual(completer.popup.currentItem().toolTip(), "Third-party fishing")
+        QTest.keyClick(edit, Qt.Key.Key_Return)
+        self.assertEqual(edit.text(), "!fish ")
+        self.window.twitch_service.send_message.assert_not_called()
+        self.window.automation_service.publish_trigger.assert_not_called()
+        QTest.keyClick(edit, Qt.Key.Key_Return)
+        self.window.twitch_service.send_message.assert_called_once_with("!fish ", as_bot=False)
+        self.window.automation_service.publish_trigger.assert_not_called()
+
+        self.window.chatter_history.records["viewer-1"] = ChatterRecord(
+            "viewer-1", "DisplayName", "", "", user_login="actual_login",
+        )
+        edit.setText("Hi , welcome")
+        edit.setCursorPosition(3)
+        QTest.keyClicks(edit, "@DISP")
+        self.assertTrue(self.window.twitch_chat_input.helper_visible)
+        self.assertEqual(completer.popup.currentItem().text(), "@actual_login — DisplayName")
+        QTest.keyClick(edit, Qt.Key.Key_Tab)
+        self.assertEqual(edit.text(), "Hi @actual_login, welcome")
+        self.window.twitch_service.send_message.assert_called_once()
+
+    def test_twitch_chat_highlights_broadcaster_mentions_only_when_enabled(self) -> None:
+        window = self.window
+        window.twitch_auth.token = TwitchToken("access", "refresh", 999, [], "channel", "streamer")
+        window.settings.ai_response_decisions_enabled = False
+        self.assertTrue(window.highlight_broadcaster_mentions_check.isChecked())
+
+        def receive(text, message_id, broadcaster="channel"):
+            window.handle_twitch_message(TwitchMessage(
+                "Viewer", text, datetime.now(timezone.utc),
+                message_id=message_id,
+                broadcaster_user_id=broadcaster,
+                broadcaster_user_name="DisplayName",
+                color="#123456",
+            ))
+
+        receive("Hi @DISPLAYNAME! https://example.test/link", "highlighted")
+        receive("Hi @streamer2", "similar")
+        receive("Hi @streamer", "wrong-channel", "another")
+        window.highlight_broadcaster_mentions_check.setChecked(False)
+        window.settings = window._settings_from_controls()
+        self.assertFalse(window.settings.twitch_chat_highlight_broadcaster_mentions)
+        receive("Hi @streamer", "disabled")
+        html = window.ui.twitchChatOutput.toHtml()
+        self.assertEqual(html.count("chat-message broadcaster-mention"), 1)
+        self.assertIn("broadcaster-mention' data-entry-id='message-highlighted'", html)
+        self.assertIn("color:#123456", html)
+        self.assertIn("href='https://example.test/link'", html)
+
     def test_twitch_chat_renders_variables_only_for_outbound_message(self) -> None:
         self.window.twitch_service.send_message = Mock(return_value=True)
         self.window.variable_registry.render = Mock(

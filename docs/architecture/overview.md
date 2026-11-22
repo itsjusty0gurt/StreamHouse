@@ -822,6 +822,13 @@ uses this Core picker rather than defining provider-specific picker catalogs.
 Picker-backed editors also attach the shared Variable autocomplete. It filters
 the same canonical definitions and editor-specific outputs, shows context
 metadata without fetching values, and inserts only the selected placeholder.
+The Live chat input shares the same popup. Its Twitch contribution supplies
+slash syntax from the existing action catalog, enabled command and alias names
+from the command store, and mention logins from local chatter history. These
+are insertion-only suggestions; dispatch, authorization, and confirmation
+remain on the existing send path. Mention highlighting is computed once for
+incoming rows against the authenticated broadcaster identity, then rendered
+without rescanning the timeline.
 
 `VariableRegistry` remains authoritative for both definitions and resolved
 values, while Variables UI consumers use separate update paths. Runtime value,

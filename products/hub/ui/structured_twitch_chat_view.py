@@ -97,6 +97,7 @@ class TwitchChatView(QWebEngineView):
         username_color: str = "#bf94ff",
         show_timestamp: bool = True,
         emote_size: int = 20,
+        highlight_mention: bool = False,
     ) -> TwitchChatEntry:
         entry = TwitchChatEntry.from_message(message)
         self._options[entry.entry_id] = {
@@ -105,6 +106,7 @@ class TwitchChatView(QWebEngineView):
             "username_color": username_color,
             "show_timestamp": show_timestamp,
             "emote_size": max(16, int(emote_size)),
+            "highlight_mention": highlight_mention,
         }
         self._add_entry(entry)
         return entry
@@ -374,8 +376,11 @@ class TwitchChatView(QWebEngineView):
             {"entry_id": entry.entry_id}
         )
         color = escape(str(options.get("username_color", "#bf94ff")))
+        row_class = "chat-message"
+        if options.get("highlight_mention"):
+            row_class += " broadcaster-mention"
         return (
-            "<div class='chat-message' "
+            f"<div class='{row_class}' "
             f"data-entry-id='{escape(entry.entry_id)}' "
             f"data-user-id='{escape(message.user_id)}' "
             f"data-user-name='{escape(message.username)}' "
@@ -406,6 +411,8 @@ margin:0; overflow-wrap:anywhere; }}
 #chat-root {{ padding:6px 8px; }} a {{ color:#5cafff; }} img {{ vertical-align:middle; }}
 .chat-message {{ position:relative; padding:2px 4px; line-height:1.42; cursor:context-menu; }}
 .chat-message:hover {{ background:#242429; }}
+.chat-message.broadcaster-mention {{ background:#30293b; }}
+.chat-message.broadcaster-mention:hover {{ background:#3a3048; }}
 .chat-message:hover::after {{ content:'\\2026'; position:absolute; right:5px; top:0;
 color:#adadb8; font-weight:700; }}
 .chat-context-target {{ position:absolute; inset:0; z-index:1; }}

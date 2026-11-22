@@ -144,6 +144,9 @@ hidden Core Connections shell.
   triggers, and Variables; all existing recipe IDs were preserved.
 - Twitch Commands can list external commands in `!commands` without creating
   Hub triggers, routines, or chat responses for those commands.
+- Live Chat Helper shares the Variable popup for Twitch slash actions, enabled
+  registered commands, and known-user mentions. Broadcaster mentions are
+  highlighted on new rows by default, with a saved Chat setting to disable it.
 - OBS-triggered routines are queued after the originating WebSocket event
   callback returns, so their OBS tasks can complete requests without reentering
   the socket callback or requiring an artificial Wait task. Real OBS acceptance

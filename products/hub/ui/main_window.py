@@ -4,6 +4,7 @@ import logging
 import re
 import sys
 from collections import deque
+from collections.abc import Iterator
 from time import monotonic
 from uuid import uuid4
 from dataclasses import asdict, replace
@@ -218,11 +219,13 @@ from products.hub.ui.raid_page import RaidPage
 from products.hub.ui.log_handler import QtLogHandler
 from products.hub.ui.twitch_bridge import TwitchEventBridge
 from products.hub.twitch.chat_entries import TwitchChatEntry
+from products.hub.twitch.chat_helper import (
+    TwitchUserSuggestion, mentions_authenticated_broadcaster,
+)
 from products.hub.ui.structured_twitch_chat_view import TwitchChatView
 from products.hub.ui.twitch_chat_input import (
     TwitchChatInputController,
     TwitchSlashActionWorker,
-    TwitchUserSuggestion,
     install_chat_variable_picker,
     is_twitch_action_message,
     render_chat_message,
@@ -921,16 +924,22 @@ class MainWindow(QMainWindow):
             self.ui.twitchChatOutput,
         )
         old_chat_output.deleteLater()
-        self.twitch_chat_input = TwitchChatInputController(
-            self.ui.twitchSendEdit,
-            self._known_twitch_chat_users,
-        )
         self.twitch_chat_variable_picker = install_chat_variable_picker(
             self.variable_registry,
             self.ui.twitchSendEdit,
             self.ui.twitchSendLayout,
             self.ui.twitchChatTab,
         )
+        self.twitch_chat_input = TwitchChatInputController(
+            self.ui.twitchSendEdit,
+            self._known_twitch_chat_users,
+            command_store=self.twitch_command_trigger_store,
+            autocomplete=self.twitch_chat_variable_picker.autocomplete,
+        )
+        self.highlight_broadcaster_mentions_check = QCheckBox(
+            "Highlight broadcaster mentions"
+        )
+        self.ui.twitchChatSettingsLayout.addRow(self.highlight_broadcaster_mentions_check)
         self.ui.twitchConnectButton.hide()
         self.ui.twitchDisconnectButton.hide()
         self.ui.twitchChannelEdit.setReadOnly(True)
@@ -4327,18 +4336,15 @@ class MainWindow(QMainWindow):
             self.twitch_chat_input.record_sent(authored_text)
             self.ui.twitchSendEdit.clear()
 
-    def _known_twitch_chat_users(self) -> tuple[TwitchUserSuggestion, ...]:
-        users: list[TwitchUserSuggestion] = []
+    def _known_twitch_chat_users(self) -> Iterator[TwitchUserSuggestion]:
         for record in self.chatter_history.records.values():
-            login = record.user_login or record.user_name
-            if login:
-                users.append(
-                    TwitchUserSuggestion(
-                        login=login,
-                        display_name=record.user_name,
-                    )
+            if record.user_login:
+                yield TwitchUserSuggestion(
+                    login=record.user_login,
+                    display_name=record.user_name,
+                    user_id=record.user_id,
+                    last_seen=record.last_seen,
                 )
-        return tuple(users)
 
     def _start_twitch_slash_action(self, text: str) -> bool:
         try:
@@ -4609,6 +4615,14 @@ class MainWindow(QMainWindow):
 
         if not self.twitch_chat_has_content:
             self.ui.twitchChatOutput.clear()
+        highlight_mention = (
+            self.settings.twitch_chat_highlight_broadcaster_mentions
+            and mentions_authenticated_broadcaster(
+                chat_message, self.twitch_auth.token,
+                self.twitch_service.broadcaster_user_id,
+                self.twitch_service.broadcaster_display_name,
+            )
+        )
         self.ui.twitchChatOutput.append_message(
             chat_message,
             badge_urls=tuple(badge_urls),
@@ -4619,6 +4633,7 @@ class MainWindow(QMainWindow):
             ),
             show_timestamp=self.settings.twitch_chat_show_timestamps,
             emote_size=emote_size,
+            highlight_mention=highlight_mention,
         )
         self.twitch_message_count += 1
         if self.session_tracker.observe_message():
@@ -6507,6 +6522,9 @@ class MainWindow(QMainWindow):
         self.ui.twitchChatTimestampCheck.setChecked(
             settings.twitch_chat_show_timestamps
         )
+        self.highlight_broadcaster_mentions_check.setChecked(
+            settings.twitch_chat_highlight_broadcaster_mentions
+        )
         self.ui.twitchChatFontCombo.setCurrentFont(
             QFont(settings.twitch_chat_font_family)
         )
@@ -6582,6 +6600,9 @@ class MainWindow(QMainWindow):
             ),
             twitch_chat_show_timestamps=(
                 self.ui.twitchChatTimestampCheck.isChecked()
+            ),
+            twitch_chat_highlight_broadcaster_mentions=(
+                self.highlight_broadcaster_mentions_check.isChecked()
             ),
             twitch_chat_font_family=(
                 self.ui.twitchChatFontCombo.currentFont().family()

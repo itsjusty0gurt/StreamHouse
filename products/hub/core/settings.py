@@ -40,6 +40,7 @@ class AppSettings:
     ui_log_limit: int = 2000
     show_developer_tools: bool = True
     twitch_chat_show_timestamps: bool = True
+    twitch_chat_highlight_broadcaster_mentions: bool = True
     twitch_chat_font_family: str = "Segoe UI"
     twitch_chat_font_size: int = 10
     twitch_last_ad_duration: int = 180
@@ -111,6 +112,12 @@ class AppSettings:
         )
         if not isinstance(show_timestamps, bool):
             show_timestamps = defaults.twitch_chat_show_timestamps
+        highlight_mentions = values.get(
+            "twitch_chat_highlight_broadcaster_mentions",
+            defaults.twitch_chat_highlight_broadcaster_mentions,
+        )
+        if not isinstance(highlight_mentions, bool):
+            highlight_mentions = defaults.twitch_chat_highlight_broadcaster_mentions
 
         font_family = values.get(
             "twitch_chat_font_family",
@@ -324,6 +331,7 @@ class AppSettings:
             ui_log_limit=ui_log_limit,
             show_developer_tools=show_developer_tools,
             twitch_chat_show_timestamps=show_timestamps,
+            twitch_chat_highlight_broadcaster_mentions=highlight_mentions,
             twitch_chat_font_family=font_family,
             twitch_chat_font_size=font_size,
             twitch_last_ad_duration=ad_duration,
