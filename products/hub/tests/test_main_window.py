@@ -33,6 +33,7 @@ from PySide6.QtWidgets import (
     QMenu,
     QMessageBox,
     QPushButton,
+    QScrollArea,
     QSizePolicy,
     QWidget,
 )
@@ -5679,10 +5680,9 @@ class MainWindowTests(unittest.TestCase):
         self.assertNotIn("unsafe-value", message)
         self.assertNotIn("Signal Song", message)
 
-    def test_connections_body_scrolls_instead_of_compressing_health_rows(self) -> None:
+    def test_connections_body_scrolls_when_its_visible_content_does_not_fit(self) -> None:
         scroll = self.window.connections_scroll_area
         content = self.window.connections_content
-        health = self.window.twitch_health_group
         page_layout = self.window.connections_page.layout()
 
         self.assertIs(
@@ -5704,31 +5704,79 @@ class MainWindowTests(unittest.TestCase):
             content.sizePolicy().verticalPolicy(),
             QSizePolicy.Policy.Minimum,
         )
-        self.assertEqual(
-            health.sizePolicy().verticalPolicy(),
-            QSizePolicy.Policy.Minimum,
-        )
-        self.assertEqual(
-            health.layout().rowWrapPolicy(),
-            health.layout().RowWrapPolicy.WrapLongRows,
-        )
 
         self.window.show_connections()
         self.window.show()
-        self.window.resize(600, 400)
+        self.window.resize(1000, 800)
         self.application.processEvents()
 
+        music = self.window.music_player_connection_group
+        self.assertTrue(music.isVisible())
+        self.assertTrue(self.window.twitch_connections_group.isHidden())
+        # Constrain the viewport below the visible Music Player group's minimum.
+        # Resizing the top-level window alone need not cause this small page to overflow.
+        maximum_height = scroll.maximumHeight()
+        scroll.setMaximumHeight(music.minimumSizeHint().height() // 2)
+        self.application.processEvents()
+        self.assertLess(scroll.viewport().height(), content.minimumSizeHint().height())
         self.assertGreater(scroll.verticalScrollBar().maximum(), 0)
         self.assertEqual(scroll.horizontalScrollBar().maximum(), 0)
-        self.assertGreaterEqual(health.height(), health.minimumSizeHint().height())
+        self.assertGreaterEqual(music.height(), music.minimumSizeHint().height())
+
+        scroll.setMaximumHeight(maximum_height)
+        self.application.processEvents()
+        self.assertEqual(scroll.verticalScrollBar().maximum(), 0)
+
+    def test_connections_body_scrolls_instead_of_compressing_health_rows(self) -> None:
+        # Twitch health is owned by Twitch > Account, not by the Connections shell.
+        self.window.show_twitch()
+        self.window.show()
+        self.application.processEvents()
+        page = self.window.twitch_account_page
+        self.assertIs(self.window.channel_tabs.currentWidget(), page)
+        scroll = page.findChild(QScrollArea)
+        self.assertIsNotNone(scroll)
+        health_panels = (page.main_card.connection_health, page.bot_card.connection_health)
+        statuses = [
+            tuple(panel.status(row) for row in panel.rows) for panel in health_panels
+        ]
+
+        for height, should_scroll in ((960, False), (400, True)) * 2 + ((960, False),):
+            with self.subTest(height=height, should_scroll=should_scroll):
+                self.window.resize(1000, height)
+                self.application.processEvents()
+                bar = scroll.verticalScrollBar()
+                self.assertEqual(
+                    bar.maximum() > 0,
+                    should_scroll,
+                    f"window={self.window.size()}, viewport={scroll.viewport().size()}, "
+                    f"content={scroll.widget().size()}, vertical maximum={bar.maximum()}",
+                )
+                self.assertEqual(scroll.horizontalScrollBar().maximum(), 0)
+                for panel, expected in zip(health_panels, statuses):
+                    self.assertTrue(panel.isVisible())
+                    self.assertGreaterEqual(panel.height(), panel.minimumSizeHint().height())
+                    self.assertEqual(tuple(panel.status(row) for row in panel.rows), expected)
+                    for label in panel.findChildren(QLabel):
+                        self.assertGreaterEqual(label.height(), label.minimumSizeHint().height())
+                        self.assertTrue(panel.rect().contains(label.geometry()))
+                    scroll.ensureWidgetVisible(panel, 0, 0)
+                    viewport = scroll.viewport()
+                    panel_rect = QRect(panel.mapTo(viewport, QPoint()), panel.size())
+                    self.assertTrue(viewport.rect().contains(panel_rect))
+                if not should_scroll:
+                    self.assertEqual(bar.value(), 0)
 
     def test_connections_body_does_not_scroll_when_all_content_fits(self) -> None:
         scroll = self.window.connections_scroll_area
-        content_height = self.window.connections_content.minimumSizeHint().height()
-        scroll.resize(900, content_height + 40)
-        scroll.show()
+        self.window.show_connections()
+        self.window.show()
+        self.window.resize(1000, 800)
         self.application.processEvents()
 
+        self.assertGreaterEqual(
+            scroll.viewport().height(), scroll.widget().minimumSizeHint().height()
+        )
         self.assertEqual(scroll.verticalScrollBar().maximum(), 0)
         self.assertEqual(scroll.horizontalScrollBar().maximum(), 0)
 
