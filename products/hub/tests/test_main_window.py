@@ -2760,6 +2760,13 @@ class MainWindowTests(unittest.TestCase):
         )
         self.assertEqual(len(self.window.automation_page.history), 2)
 
+    def test_shutdown_stops_daily_memory_expiry_timer(self) -> None:
+        self.assertTrue(self.window.daily_memory_timer.isActive())
+
+        self.window.close()
+
+        self.assertFalse(self.window.daily_memory_timer.isActive())
+
     def test_shutdown_retains_worker_wrappers_when_pool_does_not_drain(self) -> None:
         worker = object()
         self.window._backup_workers.add(worker)

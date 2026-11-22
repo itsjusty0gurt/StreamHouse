@@ -9167,6 +9167,7 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event: QCloseEvent) -> None:
         self._shutting_down = True
         self.custom_event_dispatcher.stop()
+        self.daily_memory_timer.stop()
         self._memory_viewer_refresh_timer.stop()
         self.counter_service.unsubscribe_changes(self._counter_change_callback)
         self.custom_variable_store.unsubscribe_changes(
