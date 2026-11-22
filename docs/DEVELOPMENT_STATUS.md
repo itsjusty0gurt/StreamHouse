@@ -50,6 +50,16 @@
 
 ## Active development focus
 
+Hub 0.4 feature scope is locked. Remaining planned implementation is Core
+Automation Pass 2: Scheduled Time / Cron, Hotkey, Process Started, Process
+Stopped, and File Watcher triggers; HTTP Request, Keyboard Press, and Stop
+Audio tasks. The remaining release work is the Twitch and OBS capability
+audits, bug fixes, regression testing, and release preparation.
+
+The shared Automation Dependency Resolver, portable Routine sharing,
+improved Routine import/export, prebuilt Automation templates, and their
+associated Backup and Transfer changes are deferred to 0.5.
+
 The accepted OBS module conversion is integrated into `develop`. It provides:
 
 - Core module contribution registries and unavailable-provider behavior;
@@ -147,6 +157,13 @@ hidden Core Connections shell.
 - Live Chat Helper shares the Variable popup for Twitch slash actions, enabled
   registered commands, and known-user mentions. Broadcaster mentions are
   highlighted on new rows by default, with a saved Chat setting to disable it.
+  User hands-on acceptance passed.
+- Core Automation pass 1 adds the Custom Event trigger, Send Custom Event,
+  Set Trigger State, and Log Message. Custom Events use normal routine
+  queues and isolated contextual Variables; imported trigger-state tasks
+  require explicit relinking. Isolated Windows acceptance passed, including
+  explicit Enable, Disable, Toggle, and the restored disabled state shown in
+  Automation after a complete restart.
 - OBS-triggered routines are queued after the originating WebSocket event
   callback returns, so their OBS tasks can complete requests without reentering
   the socket callback or requiring an artificial Wait task. Real OBS acceptance
@@ -303,9 +320,10 @@ Reproduction/validation requirements:
   pump queued GUI completions while yielding Python execution to the serialized
   Counter worker. They no longer use nested Qt waits that fire the page's
   periodic refresh timer and add load-dependent Counter reads during a write.
-- **Known test isolation issue:** the complete gate can deliver late AI
-  memory-expiry log callbacks into the Python-script logger mock. The affected
-  Python-script logging test passes in isolation; no assertion was weakened.
+- **Fixed daily-memory shutdown leak:** closing Hub now stops the daily-memory
+  expiry timer. A closed window could otherwise emit late AI expiry logs into
+  subsequent tests. A focused shutdown regression verifies that the timer
+  stops without changing memory expiry while Hub is open.
 - **Architecture debt:** `MainWindow` remains large, and Core Automation UI
   contains provider-specific editor/presentation adapters.
 

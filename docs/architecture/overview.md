@@ -1066,6 +1066,21 @@ Adding a task requires more than a handler. See **Adding an automation task**.
 
 ### Trigger providers
 
+Core Custom Events use a queued Qt handoff before publishing matching
+`TriggerEvent` instances through the normal Automation service and routine
+queues. Receivers get only the event's name, optional text, and sender name
+as `core.custom_event.*` contextual Variables. The dispatch carries a
+runtime-only routine ancestry: it skips ancestors and stops extending a
+chain at the existing routine nesting limit. Independent sends are not
+throttled. Pending broadcasts are discarded at shutdown.
+
+Set Trigger State resolves a stable routine/trigger pair against the Core
+and Music stores or the available Twitch/OBS provider stores. Provider
+stores own the persisted write and Core Timer/If lifecycle notification.
+Backup follows the bound target routine and preserves IDs. Individual
+Routine Transfer retains the reference for inspection but requires explicit
+relinking before the imported task can change any trigger.
+
 | Provider | Store | Persisted file | Examples |
 | --- | --- | --- | --- |
 | Twitch commands | `TwitchCommandTriggerStore` | `twitch/commands.json` | configured `!command` triggers, aliases, permissions, cooldowns, statistics, and default-template provenance |

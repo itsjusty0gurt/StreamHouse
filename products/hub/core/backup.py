@@ -1730,9 +1730,12 @@ class BackupManager:
                 "core.logic_while",
                 "core.set_routine_state",
                 "core.set_task_state",
+                "core.set_trigger_state",
             }:
                 target = str(config.get("routine_id", "")).strip()
-                if target:
+                if target and not (
+                    task_type == "core.set_trigger_state" and config.get("requires_relink")
+                ):
                     routines.add(target)
             if task_type == "core.logic_random_choice":
                 routines.update(

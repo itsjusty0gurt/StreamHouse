@@ -111,6 +111,7 @@ def export_routine(
                     "condition_join": trigger.condition_join,
                     "conditions": trigger.conditions,
                     "firing_mode": trigger.firing_mode,
+                    "event_name": trigger.event_name,
                 }
                 for trigger in core_store.for_routine(routine.routine_id)
             ],
@@ -235,6 +236,7 @@ def import_routine(
                 condition_join=str(values.get("condition_join", "and")),
                 conditions=list(values.get("conditions", [])),
                 firing_mode=str(values.get("firing_mode", "")),
+                event_name=str(values.get("event_name") or ""),
             )
             core_ids.append(trigger.trigger_id)
         for values in trigger_values.get("obs", []):
@@ -267,6 +269,7 @@ def import_routine(
             command_store.set_enabled(command_id, bool(command.get("enabled", True)))
         for values in routine_values.get("tasks", []):
             definition = TaskDefinition.from_dict(values)
+            _require_trigger_relink(definition)
             routine_store.add_task(
                 routine.routine_id,
                 task_type=definition.task_type,
@@ -290,6 +293,13 @@ def import_routine(
         routine_store.delete(routine.routine_id, allow_managed=True)
         raise
     return routine_store.get(routine.routine_id)  # type: ignore[return-value]
+
+
+def _require_trigger_relink(task: TaskDefinition) -> None:
+    if task.task_type == "core.set_trigger_state":
+        task.config["requires_relink"] = True
+    for child in task.child_tasks:
+        _require_trigger_relink(child)
 
 
 def _unique_routine_name(name: str, routines: Iterable[RoutineDefinition]) -> str:

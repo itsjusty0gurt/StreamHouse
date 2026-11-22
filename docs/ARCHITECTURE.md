@@ -163,6 +163,11 @@ late recovery callbacks from reopening transports or restoring stale tokens.
 
 ## Automation execution
 
+Custom Event dispatch is deferred into the existing Automation queue path;
+it does not call a listener inline or share the sender's execution context.
+Set Trigger State changes a stable trigger reference through its provider's
+store. Individual routine import requires explicit relinking.
+
 `AutomationService.publish_trigger()` matches linked routines by stable trigger
 ID, resolves the routine's queue, and executes ordered task definitions through
 `TaskRegistry`. Nested routines retain the same root execution scope.

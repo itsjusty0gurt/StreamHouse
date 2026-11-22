@@ -27,6 +27,7 @@ class TriggerEvent:
     occurred_at: str = field(
         default_factory=lambda: datetime.now(timezone.utc).isoformat()
     )
+    routine_ancestry: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         service = self.service.strip().casefold()

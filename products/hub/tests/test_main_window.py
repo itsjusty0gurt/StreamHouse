@@ -1284,7 +1284,7 @@ class MainWindowTests(unittest.TestCase):
         )
         self.assertEqual(
             [action.text() for action in add_menu.actions()[0].menu().actions()],
-            ["Program Event", "Timer…", "If…"],
+            ["Program Event", "Timer…", "If…", "Custom Event…"],
         )
         program_event_menu = add_menu.actions()[0].menu().actions()[0].menu()
         self.assertEqual(
@@ -2759,6 +2759,13 @@ class MainWindowTests(unittest.TestCase):
             ],
         )
         self.assertEqual(len(self.window.automation_page.history), 2)
+
+    def test_shutdown_stops_daily_memory_expiry_timer(self) -> None:
+        self.assertTrue(self.window.daily_memory_timer.isActive())
+
+        self.window.close()
+
+        self.assertFalse(self.window.daily_memory_timer.isActive())
 
     def test_shutdown_retains_worker_wrappers_when_pool_does_not_drain(self) -> None:
         worker = object()

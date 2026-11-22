@@ -32,6 +32,9 @@ from products.hub.twitch.tasks import TWITCH_TASK_LABELS
 
 
 _SHORT_DESCRIPTIONS = {
+    "core.send_custom_event": "Queues a named event for every matching enabled Custom Event trigger.",
+    "core.set_trigger_state": "Enables, disables, or toggles one trigger on the selected routine.",
+    "core.log_message": "Writes resolved text to Hub logs at the selected severity.",
     "music.play": "Starts playback in the connected local Music Player.",
     "music.pause": "Pauses playback in the connected local Music Player.",
     "music.play_pause": "Toggles playback in the connected local Music Player.",
@@ -295,6 +298,8 @@ _SHORT_DESCRIPTIONS = {
 
 
 VARIABLE_INPUT_FIELDS: dict[str, tuple[str, ...]] = {
+    "core.send_custom_event": ("event_name", "event_data"),
+    "core.log_message": ("message",),
     "music.set_volume": ("volume",),
     "core.wait": ("duration",),
     "twitch.send_chat_message": ("message",),
@@ -350,6 +355,19 @@ VARIABLE_INPUT_FIELDS: dict[str, tuple[str, ...]] = {
 
 
 _HELP_TEXT = {
+    "core.send_custom_event": (
+        "Unlike Run Routine, this does not select a routine or wait for one. Listeners "
+        "run through their own queues and receive only the event name, data, and sending "
+        "routine name. A routine cannot run again in the same Custom Event chain."
+    ),
+    "core.set_trigger_state": (
+        "Changes only the selected trigger for future activations. It does not cancel "
+        "running routines. Relink the destination after importing an individual routine."
+    ),
+    "core.log_message": (
+        "Logs text under Automation. Warning and Error change the log severity, not "
+        "whether the routine continues. Avoid logging private data."
+    ),
     "music.play": "Sends Play through the negotiated local Music Player protocol and waits for its command result.",
     "music.pause": "Sends Pause through the negotiated local Music Player protocol and waits for its command result.",
     "music.play_pause": "Sends Play/Pause through the negotiated local Music Player protocol and waits for its command result.",
@@ -973,6 +991,16 @@ def _card_summary(
 ) -> str:
     if task_type == "core.comment":
         return _summary_text(config.get("comment", ""), 80)
+    if task_type == "core.send_custom_event":
+        return _summary_text(config.get("event_name", ""))
+    if task_type == "core.log_message":
+        return f"{str(config.get('level', 'info')).title()} · {_summary_text(config.get('message', ''))}"
+    if task_type == "core.set_trigger_state":
+        if config.get("requires_relink"):
+            return "Relink imported trigger"
+        return f"{str(config.get('action', 'toggle')).title()} · " + (
+            _resolved(config, "trigger_id", "trigger", resolver) or "Trigger"
+        )
     if task_type == "core.wait":
         return f"{_summary_text(config.get('duration', ''))} {_unit_abbreviation(config.get('unit', 'seconds'))}".strip()
     if task_type == "core.random_delay":

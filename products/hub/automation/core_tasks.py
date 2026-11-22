@@ -48,6 +48,9 @@ from shared.streamhouse_runtime.logger import Logger
 
 CORE_TASK_LABELS = {
     "core.comment": "Core — Comment",
+    "core.send_custom_event": "Core — Send Custom Event",
+    "core.set_trigger_state": "Core — Set Trigger State",
+    "core.log_message": "Core — Log Message",
     "core.launch_application": "Core — Launch application",
     "core.close_application": "Core — Close application",
     "core.wait": "Core — Wait",

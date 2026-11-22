@@ -22,6 +22,7 @@ class CoreIfTriggerRuntime(QObject):
     """Edge-detect Core If triggers from provider-owned Variable updates."""
 
     _changes_received = Signal(object)
+    _store_changed = Signal()
 
     def __init__(
         self,
@@ -42,6 +43,8 @@ class CoreIfTriggerRuntime(QObject):
         self._all_pending = False
         self._processing_scheduled = False
         self._started = False
+        self._store_changed.connect(self.synchronize)
+        self._store_change_callback = self._store_changed.emit
         self._changes_received.connect(
             self._collect_changes,
             Qt.ConnectionType.QueuedConnection,
@@ -51,7 +54,7 @@ class CoreIfTriggerRuntime(QObject):
         if self._started:
             return
         self._started = True
-        self.store.subscribe_changes(self.synchronize)
+        self.store.subscribe_changes(self._store_change_callback)
         self.variables.subscribe_changes(self._variable_values_changed)
         self.synchronize()
 
@@ -59,7 +62,7 @@ class CoreIfTriggerRuntime(QObject):
         if not self._started:
             return
         self._started = False
-        self.store.unsubscribe_changes(self.synchronize)
+        self.store.unsubscribe_changes(self._store_change_callback)
         self.variables.unsubscribe_changes(self._variable_values_changed)
         self._states.clear()
         self._signatures.clear()
@@ -69,9 +72,12 @@ class CoreIfTriggerRuntime(QObject):
         self._all_pending = False
         self._processing_scheduled = False
 
+    @Slot()
     def synchronize(self) -> None:
         """Rebuild dependency indexes and baseline new or edited triggers."""
 
+        if not self._started:
+            return
         active_ids: set[str] = set()
         for trigger in self.store.triggers:
             if trigger.event_type != "if" or not trigger.enabled:

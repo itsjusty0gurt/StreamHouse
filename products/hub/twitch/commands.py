@@ -868,8 +868,14 @@ class TwitchCommandTriggerStore:
         trigger = self.get(trigger_id)
         if trigger is None:
             return False
-        trigger.enabled = bool(enabled)
-        self.save()
+        previous = trigger.enabled
+        if previous != bool(enabled):
+            trigger.enabled = bool(enabled)
+            try:
+                self.save()
+            except OSError:
+                trigger.enabled = previous
+                raise
         return True
 
     def record_use(self, trigger_id: str) -> None:

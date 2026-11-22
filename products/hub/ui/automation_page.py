@@ -62,6 +62,7 @@ from products.hub.automation.core_triggers import (
     TIMER_UNIT_LABELS,
     CoreAutomationTrigger,
     CoreTriggerStore,
+    normalize_custom_event_name,
 )
 from products.hub.automation.routines import RoutineDefinition, RoutineStore
 from products.hub.automation.conditions import (
@@ -516,7 +517,7 @@ class CoreTriggerDialog(QDialog):
         form = QFormLayout()
         self.event_type_combo = QComboBox()
         for event_type, label in CORE_TRIGGER_TYPES.items():
-            if event_type in {"timer", "if"}:
+            if event_type in {"timer", "if", "custom_event"}:
                 continue
             self.event_type_combo.addItem(label, event_type)
         if trigger is not None:
@@ -547,6 +548,39 @@ class CoreTriggerDialog(QDialog):
             "event_type": str(self.event_type_combo.currentData()),
             "enabled": self.enabled_check.isChecked(),
         }
+
+
+class CustomEventTriggerDialog(QDialog):
+    def __init__(self, parent=None, trigger: CoreAutomationTrigger | None = None):
+        super().__init__(parent)
+        self.setWindowTitle("Edit Custom Event" if trigger else "Add Custom Event")
+        layout = QFormLayout(self)
+        self.event_name_edit = QLineEdit(trigger.event_name if trigger else "")
+        self.event_name_edit.setPlaceholderText("break.started")
+        self.enabled_check = QCheckBox("Enabled")
+        self.enabled_check.setChecked(trigger.enabled if trigger else True)
+        layout.addRow("Event Name", self.event_name_edit)
+        layout.addRow("", self.enabled_check)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addRow(buttons)
+
+    def values(self) -> dict[str, object]:
+        name = normalize_custom_event_name(self.event_name_edit.text())
+        if not name:
+            raise ValueError("Custom Event name is required.")
+        return {"event_name": name, "enabled": self.enabled_check.isChecked()}
+
+    def accept(self) -> None:
+        try:
+            self.values()
+        except ValueError as error:
+            QMessageBox.warning(self, "Invalid Custom Event", str(error))
+            return
+        super().accept()
 
 
 class IfTriggerDialog(QDialog):
@@ -1410,6 +1444,7 @@ class NestedTaskListEditor(QGroupBox):
             self.owner.variable_registry,
             tuple(output_definitions.values()),
             self.owner.user_groups,
+            trigger_options=self.owner.trigger_options,
         )
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return None
@@ -1721,6 +1756,19 @@ class TaskEditorDialog(QDialog):
             {"key": "task_id", "label": "Task", "kind": "routine_task", "default": "", "required": True},
             {"key": "action", "label": "Action", "kind": "choice", "default": "toggle", "choices": (("Toggle", "toggle"), ("Enable", "enable"), ("Disable", "disable"))},
         ),
+        "core.send_custom_event": (
+            {"key": "event_name", "label": "Event Name", "kind": "text", "default": "", "required": True, "placeholder": "break.started"},
+            {"key": "event_data", "label": "Event Data", "kind": "multiline", "default": "", "preserve_whitespace": True},
+        ),
+        "core.set_trigger_state": (
+            {"key": "routine_id", "label": "Routine", "kind": "routine", "default": "", "required": True},
+            {"key": "trigger_id", "label": "Trigger", "kind": "routine_trigger", "default": "", "required": True},
+            {"key": "action", "label": "State", "kind": "choice", "default": "toggle", "choices": (("Enable", "enable"), ("Disable", "disable"), ("Toggle", "toggle"))},
+        ),
+        "core.log_message": (
+            {"key": "message", "label": "Message", "kind": "multiline", "default": "", "required": True, "preserve_whitespace": True},
+            {"key": "level", "label": "Log Level", "kind": "choice", "default": "info", "choices": (("Debug", "debug"), ("Info", "info"), ("Warning", "warning"), ("Error", "error"))},
+        ),
         "core.set_queue_state": (
             {"key": "queue_id", "label": "Queue", "kind": "queue", "default": "", "required": True},
             {"key": "action", "label": "Action", "kind": "choice", "default": "toggle", "choices": (("Toggle pause", "toggle"), ("Pause", "pause"), ("Resume", "resume"))},
@@ -1956,6 +2004,7 @@ class TaskEditorDialog(QDialog):
         output_definitions: tuple[VariableDefinition, ...] = (),
         user_groups=None,
         fixed_condition_subject: str = "",
+        trigger_options: Callable[[str], tuple[tuple[str, str], ...]] | None = None,
     ) -> None:
         super().__init__(parent)
         self.task = task
@@ -1963,6 +2012,7 @@ class TaskEditorDialog(QDialog):
         self.obs_service = obs_service
         self.variables = dict(variables or {})
         self.routine_store = routine_store
+        self.trigger_options = trigger_options or (lambda _routine_id: ())
         self.queue_store = queue_store
         self.counter_service = counter_service
         self.variable_registry = variable_registry
@@ -2105,6 +2155,20 @@ class TaskEditorDialog(QDialog):
             row_widget = self._with_variable_picker(key, widget, row_widget)
             form.addRow(str(spec.get("label", "")), row_widget)
         self.field_widgets[task_type] = fields
+        if task_type == "core.set_trigger_state":
+            routine_combo, trigger_combo = fields["routine_id"], fields["trigger_id"]
+
+            def populate_triggers(selected: str = "") -> None:
+                trigger_combo.clear()
+                trigger_combo.addItem("Choose a trigger…", "")
+                for label, trigger_id in self.trigger_options(routine_combo.currentData()):
+                    trigger_combo.addItem(label, trigger_id)
+                trigger_combo.setCurrentIndex(max(trigger_combo.findData(selected), 0))
+
+            populate_triggers("" if values.get("requires_relink") else str(values.get("trigger_id", "")))
+            routine_combo.currentIndexChanged.connect(lambda _index: populate_triggers())
+            if values.get("requires_relink"):
+                form.addRow(QLabel("Choose the target trigger for this imported task."))
         if task_type in COUNTER_TASK_TYPES:
             self._wire_counter_scope_editor(fields)
         self._add_generated_output_hint(form, task_type, fields, values)
@@ -2315,6 +2379,9 @@ class TaskEditorDialog(QDialog):
                     combo.addItem(routine.name, routine.routine_id)
             index = combo.findData(str(value or ""))
             combo.setCurrentIndex(max(index, 0))
+            return combo, combo
+        if kind == "routine_trigger":
+            combo = QComboBox()
             return combo, combo
         if kind == "routine_task":
             combo = QComboBox()
@@ -3591,6 +3658,7 @@ class AutomationPage(QWidget):
         automation_service: AutomationService,
         *,
         trigger_provider_registry: TriggerProviderRegistry,
+        trigger_options: Callable[[str], tuple[tuple[str, str], ...]] | None = None,
         automation_subpages: AutomationSubpageRegistry | None = None,
         twitch_service: TwitchService | None = None,
         twitch_auth: TwitchAuthService | None = None,
@@ -3609,6 +3677,7 @@ class AutomationPage(QWidget):
         self.event_trigger_store = event_trigger_store
         self.core_trigger_store = core_trigger_store
         self.trigger_provider_registry = trigger_provider_registry
+        self.trigger_options = trigger_options or (lambda _routine_id: ())
         self.automation_subpages = automation_subpages or AutomationSubpageRegistry()
         obs_provider = trigger_provider_registry.get("obs.automation")
         if obs_provider is None or not isinstance(obs_provider.store, ObsTriggerStore):
@@ -4694,8 +4763,14 @@ class AutomationPage(QWidget):
         provider = TaskEditorDialog.LABELS.get(task.task_type, task.task_type)
         category, _separator, fallback_name = provider.partition(" — ")
         task_name = metadata.label if metadata is not None else (fallback_name or provider)
+        def reference_name(kind: str, reference_id: str) -> str:
+            if kind == "trigger":
+                options = self.trigger_options(str(task.config.get("routine_id", "")))
+                return next((label for label, ref in options if ref == reference_id), "Unavailable trigger")
+            return self._task_reference_name(kind, reference_id)
+
         summary = (
-            metadata.format_card_summary(task.config, self._task_reference_name)
+            metadata.format_card_summary(task.config, reference_name)
             if metadata is not None
             else ""
         )
@@ -5157,7 +5232,7 @@ class AutomationPage(QWidget):
         label = CORE_TRIGGER_TYPES.get(trigger.event_type, "Program Event")
         return TriggerCardContent(
             title=f"Core — {label}",
-            summary="When this Hub event occurs",
+            summary=trigger.event_name if trigger.event_type == "custom_event" else "When this Hub event occurs",
             family="Core",
             enabled=trigger.enabled,
         )
@@ -5713,7 +5788,7 @@ class AutomationPage(QWidget):
         core_menu = QMenu("Core", add_menu)
         program_event_menu = QMenu("Program Event", core_menu)
         for event_type, label in CORE_TRIGGER_TYPES.items():
-            if event_type in {"timer", "if"}:
+            if event_type in {"timer", "if", "custom_event"}:
                 continue
             program_event_menu.addAction(
                 label,
@@ -5724,6 +5799,10 @@ class AutomationPage(QWidget):
         timer_action.setEnabled(routine is not None)
         if_action = core_menu.addAction("If…", self._add_if_trigger)
         if_action.setEnabled(routine is not None)
+        custom_event_action = core_menu.addAction(
+            "Custom Event…", lambda: self._edit_custom_event_trigger()
+        )
+        custom_event_action.setEnabled(routine is not None)
         core_menu._streamhouse_trigger_submenus = [program_event_menu]
         add_menu.addMenu(core_menu)
         add_menu._streamhouse_trigger_submenus.append(core_menu)
@@ -6035,6 +6114,8 @@ class AutomationPage(QWidget):
                     self._edit_timer_trigger(routine.routine_id, trigger)
                 elif trigger.event_type == "if":
                     self._edit_if_trigger(routine.routine_id, trigger)
+                elif trigger.event_type == "custom_event":
+                    self._edit_custom_event_trigger(trigger)
                 else:
                     self._edit_core_trigger(routine.routine_id, trigger)
             return
@@ -6136,6 +6217,28 @@ class AutomationPage(QWidget):
             return
         self.select_routine(routine_id)
         self._select_trigger("event", updated.trigger_id)
+
+    def _edit_custom_event_trigger(self, trigger: CoreAutomationTrigger | None = None) -> None:
+        routine = self.routine_store.get(self._selected_routine_id)
+        if routine is None or (trigger is not None and trigger.routine_id != routine.routine_id):
+            return
+        dialog = CustomEventTriggerDialog(self, trigger)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        try:
+            if trigger is None:
+                updated = self.core_trigger_store.add(
+                    routine.routine_id, "custom_event", **dialog.values()
+                )
+            else:
+                updated = self.core_trigger_store.update(
+                    trigger.trigger_id, event_type="custom_event", **dialog.values()
+                )
+        except (OSError, ValueError) as error:
+            self._error("Could Not Save Custom Event", error)
+            return
+        self.select_routine(routine.routine_id)
+        self._select_trigger("core", updated.trigger_id)
 
     def _edit_core_trigger(
         self, routine_id: str, trigger: CoreAutomationTrigger
@@ -6295,6 +6398,7 @@ class AutomationPage(QWidget):
             variable_registry=self.variable_registry,
             output_definitions=self._output_definitions_before(routine),
             user_groups=self.user_groups,
+            trigger_options=self.trigger_options,
         )
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
@@ -6375,6 +6479,7 @@ class AutomationPage(QWidget):
             variable_registry=self.variable_registry,
             output_definitions=self._output_definitions_before(routine),
             user_groups=self.user_groups,
+            trigger_options=self.trigger_options,
         )
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
@@ -6439,6 +6544,7 @@ class AutomationPage(QWidget):
                 if task.config.get("branch_role") == "else_if"
                 else ""
             ),
+            trigger_options=self.trigger_options,
         )
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
