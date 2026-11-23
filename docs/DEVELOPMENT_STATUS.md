@@ -56,9 +56,10 @@ passed packaged manual acceptance. Scheduled Time / Cron now uses the
 operating system's local timezone rules rather than Qt's incorrect fallback
 for an unmapped Windows timezone.
 
-Planned Pass 2B consists of HTTP Request, Keyboard Press, and Stop Audio tasks.
-After Pass 2B, the remaining work is Twitch and OBS Automation completion,
-bug fixes, regression testing, and release preparation.
+Pass 2B implements HTTP Request, Keyboard Press, and Stop Audio on
+`feature/core-final-tasks`, pending manual acceptance. The remaining 0.4 work
+is Twitch and OBS Automation completion, bug fixes, regression testing, and
+release preparation.
 
 The shared Automation Dependency Resolver, portable Routine sharing,
 improved Routine import/export, prebuilt Automation templates, and their

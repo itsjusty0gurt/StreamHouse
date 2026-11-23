@@ -13,6 +13,12 @@ from products.hub.automation.system_trigger_config import (
 )
 
 
+def single_shortcut_editor(value: str) -> QKeySequenceEdit:
+    editor = QKeySequenceEdit(QKeySequence.fromString(value, QKeySequence.PortableText))
+    editor.setMaximumSequenceLength(1)
+    return editor
+
+
 class SystemTriggerDialog(QDialog):
     def __init__(self, event_type, trigger=None, parent=None):
         super().__init__(parent)
@@ -25,10 +31,7 @@ class SystemTriggerDialog(QDialog):
         if event_type == "scheduled_time":
             self._schedule_controls()
         elif event_type == "hotkey":
-            self.shortcut = QKeySequenceEdit(
-                QKeySequence.fromString(self.config.get("shortcut", ""), QKeySequence.PortableText)
-            )
-            self.shortcut.setMaximumSequenceLength(1)
+            self.shortcut = single_shortcut_editor(self.config.get("shortcut", ""))
             self.form.addRow("Shortcut", self.shortcut)
             self._hint("Press a combination such as Ctrl+Alt+B. Only registered shortcuts fire.")
         elif event_type.startswith("process_"):

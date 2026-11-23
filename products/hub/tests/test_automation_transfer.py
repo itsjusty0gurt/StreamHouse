@@ -99,6 +99,34 @@ class AutomationTransferTests(unittest.TestCase):
         self.assertEqual(len(destination["core_store"].for_routine(imported.routine_id)), 1)
         self.assertEqual(len(destination["obs_store"].for_routine(imported.routine_id)), 1)
 
+    def test_final_core_tasks_transfer_and_disable_side_effects_for_review(self) -> None:
+        config_by_type = {
+            "core.http_request": {"url": "https://example.test/status", "method": "GET"},
+            "core.keyboard_press": {"shortcut": "Ctrl+Shift+F9"},
+            "core.stop_audio": {},
+        }
+        routine = self.stores["routine_store"].add("Final Core tasks")
+        for task_type, config in config_by_type.items():
+            marker = AvailableTask()
+            marker.task_type = task_type
+            self.registry.register(marker)
+            self.stores["routine_store"].add_task(routine.routine_id, task_type=task_type, name=task_type, config=config)
+        payload = export_routine(self.stores["routine_store"].get(routine.routine_id), **self.stores)
+        for item in payload["routine"]["tasks"][:2]:
+            item["task_type"] = f" {item['task_type'].upper()} "
+        destination = self.make_stores(self.root / "destination")
+        imported = import_routine(payload, group_id="", task_registry=self.registry, **destination)
+        self.assertEqual(len(imported.tasks), 3)
+        for task in imported.tasks:
+            with self.subTest(task=task.task_type):
+                self.assertEqual(task.config, config_by_type[task.task_type])
+                self.assertEqual(task.enabled, task.task_type == "core.stop_audio")
+        payload["routine"]["tasks"][0]["config"] = {
+            **config_by_type["core.http_request"], "headers": "Authorization: not allowed",
+        }
+        with self.assertRaisesRegex(ValueError, "Credentials are not supported"):
+            validate_import(payload, task_registry=self.registry, command_store=destination["command_store"])
+
     def test_system_triggers_transfer_with_new_ids_and_require_explicit_enable(self) -> None:
         routine = self.stores["routine_store"].add("System Triggers")
         configurations = {

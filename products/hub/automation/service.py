@@ -473,6 +473,10 @@ class AutomationService:
                 continue
             if name in message_content_names:
                 continue
+            if name == "automation.http_body" or (
+                name.startswith("automation.") and name.endswith("_http_body")
+            ):
+                continue
             parts = set(name.replace("-", "_").split("."))
             if parts & sensitive_parts or any(
                 part.endswith("_token") or part.endswith("_secret")

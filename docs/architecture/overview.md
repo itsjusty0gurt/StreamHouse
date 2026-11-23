@@ -919,6 +919,17 @@ Variables metadata, validation, preview, resolution, and domain-write path.
 
 ### Task providers
 
+Core HTTP Request uses Qt's asynchronous networking while the existing task
+bridge waits for its result. It does not reuse application credentials, use
+cookies or proxies, or follow redirects. Saved settings support a fixed
+unauthenticated origin, non-secret path, media-type headers, and an optional
+runtime request-body Variable. Response bodies are bounded, stay in the
+root execution context, and are excluded from automatic Run History.
+Routine Transfer imports HTTP Request and Keyboard Press disabled for review.
+Keyboard Press sends one Windows foreground shortcut without changing focus.
+Stop Audio uses the same playback owner as Core Play Audio; it does not
+control OBS, the standalone Music Player, or device volume.
+
 Handlers are registered in `MainWindow` with one stable lowercase task type.
 
 | Provider | Files | Current capability groups |

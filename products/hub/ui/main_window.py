@@ -112,6 +112,7 @@ from products.hub.automation.core_tasks import (
     LaunchApplicationTask,
     OpenTargetTask,
     PlayAudioTask,
+    StopAudioTask,
     PythonScriptTask,
     RandomDelayTask,
     WaitTask,
@@ -124,6 +125,8 @@ from products.hub.automation.control_tasks import register_control_tasks
 from products.hub.automation.custom_event_tasks import (
     CustomEventDispatcher, LogMessageTask, SendCustomEventTask,
 )
+from products.hub.automation.http_request_task import HttpRequestTask
+from products.hub.automation.keyboard_press_task import KeyboardPressTask
 from products.hub.automation.trigger_state import SetTriggerStateTask, TriggerState
 from products.hub.automation.logic_tasks import register_logic_tasks
 from products.hub.automation.music_tasks import register_music_tasks
@@ -668,7 +671,11 @@ class MainWindow(QMainWindow):
         self.task_registry.register(RandomDelayTask())
         self.task_registry.register(OpenTargetTask())
         self.task_registry.register(DesktopNotificationTask())
-        self.task_registry.register(PlayAudioTask())
+        self.play_audio_task = PlayAudioTask()
+        self.task_registry.register(self.play_audio_task)
+        self.task_registry.register(StopAudioTask(self.play_audio_task))
+        self.task_registry.register(HttpRequestTask(self.variable_registry))
+        self.task_registry.register(KeyboardPressTask())
         self.task_registry.register(PythonScriptTask(self.variable_registry))
         register_variable_tasks(self.task_registry, self.custom_variable_store)
         register_control_tasks(
@@ -9228,6 +9235,10 @@ class MainWindow(QMainWindow):
             "Hub is shutting down."
         )
         self.wait_task.cancel_all()
+        try:
+            self.play_audio_task.stop_all()
+        except RuntimeError:
+            Logger.warning("Hub could not stop all active audio on shutdown.", source="AUTOMATION")
         if not self._core_closing_fired:
             self._core_closing_fired = True
             self._fire_core_automation_event("application.closing")

@@ -49,6 +49,12 @@ def automation_output_name(value: object, suffix: str = "") -> str:
     return validate_variable_name(f"automation.{base}")
 
 
+def http_output_names(config: Mapping[str, object]) -> tuple[str, ...]:
+    prefix = str(config.get("result_prefix", "")).strip()
+    base = f"{output_id(prefix)}_http" if prefix else "http"
+    return tuple(automation_output_name(base, suffix) for suffix in ("status", "body", "success", "error"))
+
+
 def generated_output_definitions(
     task_type: str,
     config: Mapping[str, object],
@@ -205,6 +211,7 @@ OUTPUT_CONFIG_KEYS = {
     "core.file_count_lines": "variable",
     "core.format_duration": "output_variable",
     "core.select_text": "output_variable",
+    "core.http_request": "result_prefix",
 }
 
 
@@ -225,6 +232,8 @@ def has_temporary_outputs(task_type: str) -> bool:
 
 
 def _output_definition_names(task_type: str, config: Mapping[str, object]) -> tuple[str, ...]:
+    if task_type == "core.http_request":
+        return http_output_names(config)
     if task_type in STATIC_OUTPUTS:
         return tuple(
             validate_variable_name(name)
@@ -263,6 +272,10 @@ def _output_type(
     config: Mapping[str, object],
 ) -> VariableDataType:
     normalized = task_type.strip().casefold()
+    if normalized == "core.http_request":
+        return {
+            "status": VariableDataType.INTEGER, "success": VariableDataType.BOOLEAN,
+        }.get(name.rsplit("_", 1)[-1], VariableDataType.TEXT)
     if normalized == "core.logic_random_number":
         return (
             VariableDataType.NUMBER

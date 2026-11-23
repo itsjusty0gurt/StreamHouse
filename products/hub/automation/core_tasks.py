@@ -61,6 +61,11 @@ CORE_TASK_LABELS = {
     "core.run_python_script": "Core — Run Python script",
 }
 CORE_TASK_LABELS["core.play_audio"] = "Play audio file"
+CORE_TASK_LABELS.update({
+    "core.http_request": "Core — HTTP Request",
+    "core.keyboard_press": "Core — Keyboard Press",
+    "core.stop_audio": "Core — Stop Audio",
+})
 CORE_TASK_LABELS.update(VARIABLE_TASK_LABELS)
 CORE_TASK_LABELS.update(LOGIC_TASK_LABELS)
 CORE_TASK_LABELS.update(FILE_TASK_LABELS)
@@ -464,13 +469,20 @@ class PlayAudioTask:
         player.errorOccurred.connect(lambda *_args: forget())
         player.play()
 
-    def stop_all(self) -> None:
-        """Stop any background audio started by this task instance."""
+    def stop_all(self) -> int:
+        """Stop both background and awaited playback owned by this instance."""
         with self._active_players_lock:
             active_players = tuple(self._active_players)
             self._active_players.clear()
+        failed = False
         for player, _audio_output in active_players:
-            player.stop()
+            try:
+                player.stop()
+            except RuntimeError:
+                failed = True
+        if failed:
+            raise RuntimeError("Hub could not stop all active audio.")
+        return len(active_players)
 
     def _play_and_wait(
         self,
@@ -605,6 +617,23 @@ class PlayAudioTask:
             True,
             f"Played audio: {audio_file.name} at {volume_percent}%.",
         )
+
+
+class StopAudioTask:
+    task_type = "core.stop_audio"
+
+    def __init__(self, playback: PlayAudioTask) -> None:
+        self.playback = playback
+
+    def execute(self, task: TaskDefinition, trigger: TriggerEvent) -> TaskExecutionResult:
+        cancellation = current_cancellation()
+        if cancellation is not None and cancellation.cancelled:
+            return _result(task, False, "Stop Audio cancelled.")
+        try:
+            count = self.playback.stop_all()
+        except RuntimeError:
+            return _result(task, False, "Hub could not stop all active audio.")
+        return _result(task, True, f"Stopped {count} Hub playback(s)." if count else "No Hub audio was playing.")
 
 
 class PythonScriptTask:

@@ -7,6 +7,8 @@ from products.hub.automation.models import RoutineDefinition, TaskDefinition
 from products.hub.automation.routines import RoutineStore
 from products.hub.automation.tasks import TaskRegistry
 from products.hub.automation.core_triggers import CORE_TRIGGER_TYPES, CoreTriggerStore
+from products.hub.automation.http_request_task import validate_http_config
+from products.hub.automation.keyboard_press_task import shortcut_keys
 from products.hub.automation.system_trigger_config import SYSTEM_TRIGGER_TYPES, system_config
 from products.hub.obs_service.triggers import OBS_TRIGGER_TYPES, ObsTriggerStore
 from products.hub.integrations.music_triggers import MUSIC_TRIGGER_TYPES, MusicTriggerStore
@@ -45,6 +47,12 @@ def _validate_task_payloads(
         task_type = str(task.get("task_type", "")).strip().casefold()
         if task_type not in available:
             unavailable.append(task_type or "missing task type")
+        if task_type == "core.http_request":
+            validate_http_config(task.get("config", {}))
+        elif task_type == "core.keyboard_press":
+            shortcut_keys(str(task.get("config", {}).get("shortcut", "")))
+        elif task_type == "core.stop_audio" and task.get("config", {}):
+            raise ValueError("Stop Audio has no configurable settings.")
         for key in ("then_tasks", "else_tasks"):
             children = task.get(key, [])
             _validate_task_payloads(children, available, unavailable)
@@ -275,7 +283,7 @@ def import_routine(
             command_store.set_enabled(command_id, bool(command.get("enabled", True)))
         for values in routine_values.get("tasks", []):
             definition = TaskDefinition.from_dict(values)
-            _require_trigger_relink(definition)
+            _prepare_imported_task(definition)
             routine_store.add_task(
                 routine.routine_id,
                 task_type=definition.task_type,
@@ -301,11 +309,13 @@ def import_routine(
     return routine_store.get(routine.routine_id)  # type: ignore[return-value]
 
 
-def _require_trigger_relink(task: TaskDefinition) -> None:
+def _prepare_imported_task(task: TaskDefinition) -> None:
     if task.task_type == "core.set_trigger_state":
         task.config["requires_relink"] = True
+    if task.task_type.strip().casefold() in {"core.http_request", "core.keyboard_press"}:
+        task.enabled = False
     for child in task.child_tasks:
-        _require_trigger_relink(child)
+        _prepare_imported_task(child)
 
 
 def _unique_routine_name(name: str, routines: Iterable[RoutineDefinition]) -> str:

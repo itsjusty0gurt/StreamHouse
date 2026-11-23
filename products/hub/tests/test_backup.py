@@ -694,6 +694,24 @@ class BackupManagerTests(unittest.TestCase):
             row["trigger_id"] for row in snapshot["triggers"]["core"]["triggers"]
         })
 
+    def test_final_core_task_backup_preserves_ids_and_configurations(self) -> None:
+        routines = RoutineStore(self.root / "automation/routines.json")
+        routines.load()
+        routine = routines.add("Final Core task backup")
+        tasks = [
+            routines.add_task(routine.routine_id, task_type=task_type, name=task_type, config=config)
+            for task_type, config in (
+                ("core.http_request", {"url": "https://example.test/status", "method": "GET"}),
+                ("core.keyboard_press", {"shortcut": "Ctrl+Shift+F9"}),
+                ("core.stop_audio", {}),
+            )
+        ]
+        archive = self.manager.create("manual", preset=BackupPreset.RECOMMENDED)
+        self.manager.restore(archive, create_safety=False)
+        reloaded = RoutineStore(self.root / "automation/routines.json")
+        reloaded.load()
+        self.assertEqual(reloaded.get(routine.routine_id).tasks, tasks)
+
     def test_system_trigger_backup_preserves_settings_and_enabled_state(self) -> None:
         routines = RoutineStore(self.root / "automation/routines.json")
         routines.load()

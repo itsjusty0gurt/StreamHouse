@@ -35,6 +35,9 @@ _SHORT_DESCRIPTIONS = {
     "core.send_custom_event": "Queues a named event for every matching enabled Custom Event trigger.",
     "core.set_trigger_state": "Enables, disables, or toggles one trigger on the selected routine.",
     "core.log_message": "Writes resolved text to Hub logs at the selected severity.",
+    "core.http_request": "Calls an unauthenticated endpoint and exposes the response to later tasks.",
+    "core.keyboard_press": "Sends one shortcut to the foreground Windows application.",
+    "core.stop_audio": "Stops audio started by Hub Automation.",
     "music.play": "Starts playback in the connected local Music Player.",
     "music.pause": "Pauses playback in the connected local Music Player.",
     "music.play_pause": "Toggles playback in the connected local Music Player.",
@@ -298,6 +301,7 @@ _SHORT_DESCRIPTIONS = {
 
 
 VARIABLE_INPUT_FIELDS: dict[str, tuple[str, ...]] = {
+    "core.http_request": ("url", "headers", "body"),
     "core.send_custom_event": ("event_name", "event_data"),
     "core.log_message": ("message",),
     "music.set_volume": ("volume",),
@@ -487,6 +491,15 @@ _HELP_TEXT = {
 
 
 _INPUT_HELP: dict[str, dict[str, str]] = {
+    "core.http_request": {
+        "url": "Use a non-secret HTTPS endpoint, or numeric loopback HTTP such as http://127.0.0.1:8765/status. Only the path can use Variables.",
+        "method": "Choose GET, POST, PUT, PATCH, or DELETE.",
+        "headers": "Optional Accept and Content-Type media types, one header per line. Do not enter credentials.",
+        "body": "Optional for non-GET requests. Choose one Variable containing the UTF-8 text or JSON to send.",
+        "timeout_seconds": "Maximum total wait, between 1 and 60 seconds.",
+        "result_prefix": "Optional prefix. For example, status_check yields {automation.status_check_http_body}.",
+    },
+    "core.keyboard_press": {"shortcut": "Record one combination, for example Ctrl+Shift+F9."},
     "music.set_volume": {
         "volume": "A whole number from 0 to 100, or a Variable that resolves to one.",
     },
@@ -668,6 +681,20 @@ _INPUT_HELP: dict[str, dict[str, str]] = {
 
 
 _NOTES = {
+    "core.http_request": (
+        "Outputs default to {automation.http_status}, {automation.http_body}, {automation.http_success}, and {automation.http_error}. They are scoped to the current execution.",
+        "No redirects, authentication, cookies, URL query strings, saved literal bodies, or automatic retries. Do not put secrets in a URL path or a Variable you send.",
+        "UTF-8 response bodies are limited to 256 KiB and omitted from automatic Run History. Explicitly logging or storing a response in another task can disclose it.",
+        "HTTP errors stop the routine like other failed tasks. Imported requests start disabled so you can review them first.",
+    ),
+    "core.keyboard_press": (
+        "Windows only. No focus changes, background targeting, Windows-key shortcuts, or raw text typing.",
+        "Held keys can block delivery. Imported shortcuts start disabled for review.",
+    ),
+    "core.stop_audio": (
+        "Stops all Core Play Audio playback. It does not control the Music Player integration, OBS, other applications, or system volume.",
+        "Stopping when nothing is playing succeeds. A Play Audio task waiting for the stopped sound reports interruption.",
+    ),
     "twitch.shoutout_user": (
         "Requires the Twitch shoutout permission.",
         "Twitch controls shoutout cooldowns and target eligibility.",
@@ -724,6 +751,9 @@ _NOTES = {
 
 
 _EXAMPLES = {
+    "core.http_request": ("GET a public JSON status endpoint and use {automation.http_body} in a later task.",),
+    "core.keyboard_press": ("After a short Wait, switch to a test app and send Ctrl+Shift+F9.",),
+    "core.stop_audio": ("Use Stop Audio to end a looping sound started through a Hub routine.",),
     "twitch.shoutout_user": (
         "Shout out {command.data}, {user.name}, or {user.id}.",
     ),
@@ -989,6 +1019,12 @@ def _card_summary(
     config: Mapping[str, Any],
     resolver: TaskReferenceResolver | None,
 ) -> str:
+    if task_type == "core.http_request":
+        return "Unauthenticated request"
+    if task_type == "core.keyboard_press":
+        return _summary_text(config.get("shortcut", ""))
+    if task_type == "core.stop_audio":
+        return "All Hub routine playback"
     if task_type == "core.comment":
         return _summary_text(config.get("comment", ""), 80)
     if task_type == "core.send_custom_event":

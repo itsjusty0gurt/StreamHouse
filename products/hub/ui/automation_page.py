@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QInputDialog,
     QLabel,
+    QKeySequenceEdit,
     QLineEdit,
     QListWidget,
     QListWidgetItem,
@@ -65,8 +66,10 @@ from products.hub.automation.core_triggers import (
     normalize_custom_event_name,
 )
 from products.hub.automation.routines import RoutineDefinition, RoutineStore
+from products.hub.automation.http_request_task import HTTP_METHODS, validate_http_config
+from products.hub.automation.keyboard_press_task import shortcut_keys
 from products.hub.automation.system_trigger_config import SYSTEM_TRIGGER_TYPES, system_trigger_summary
-from products.hub.ui.system_trigger_dialog import SystemTriggerDialog
+from products.hub.ui.system_trigger_dialog import SystemTriggerDialog, single_shortcut_editor
 from products.hub.automation.conditions import (
     condition_definitions,
     primary_condition_subject,
@@ -1771,6 +1774,18 @@ class TaskEditorDialog(QDialog):
             {"key": "message", "label": "Message", "kind": "multiline", "default": "", "required": True, "preserve_whitespace": True},
             {"key": "level", "label": "Log Level", "kind": "choice", "default": "info", "choices": (("Debug", "debug"), ("Info", "info"), ("Warning", "warning"), ("Error", "error"))},
         ),
+        "core.http_request": (
+            {"key": "url", "label": "URL", "kind": "text", "default": "", "required": True, "placeholder": "https://example.com/status"},
+            {"key": "method", "label": "Method", "kind": "choice", "default": "GET", "choices": tuple((method, method) for method in HTTP_METHODS)},
+            {"key": "headers", "label": "Headers", "kind": "multiline", "default": "", "placeholder": "Accept: application/json"},
+            {"key": "body", "label": "Body Variable", "kind": "text", "default": "", "placeholder": "{automation.request_body}"},
+            {"key": "timeout_seconds", "label": "Timeout", "kind": "number", "default": 10, "minimum": 1, "maximum": 60, "suffix": " seconds"},
+            {"key": "result_prefix", "label": "Result prefix (optional)", "kind": "text", "default": "", "placeholder": "status_check"},
+        ),
+        "core.keyboard_press": (
+            {"key": "shortcut", "label": "Shortcut", "kind": "shortcut", "default": "", "required": True},
+        ),
+        "core.stop_audio": (),
         "core.set_queue_state": (
             {"key": "queue_id", "label": "Queue", "kind": "queue", "default": "", "required": True},
             {"key": "action", "label": "Action", "kind": "choice", "default": "toggle", "choices": (("Toggle pause", "toggle"), ("Pause", "pause"), ("Resume", "resume"))},
@@ -2145,7 +2160,9 @@ class TaskEditorDialog(QDialog):
             else {}
         )
         schema = self.SCHEMAS.get(task_type, ())
-        if not schema:
+        if task_type == "core.stop_audio":
+            form.addRow(QLabel("Stops all audio started by Hub routines. Other apps are unaffected."))
+        elif not schema:
             form.addRow(QLabel("This task provider has no editable settings."))
         for spec in schema:
             key, kind = str(spec["key"]), str(spec["kind"])
@@ -2157,6 +2174,15 @@ class TaskEditorDialog(QDialog):
             row_widget = self._with_variable_picker(key, widget, row_widget)
             form.addRow(str(spec.get("label", "")), row_widget)
         self.field_widgets[task_type] = fields
+        if task_type in {"core.http_request", "core.keyboard_press"}:
+            hint = QLabel(
+                "Use a non-secret URL without a query string. No credentials or redirects. "
+                "Review the destination before enabling an imported task."
+                if task_type == "core.http_request" else
+                "The window in front when the task runs receives the shortcut."
+            )
+            hint.setWordWrap(True)
+            form.addRow(hint)
         if task_type == "core.set_trigger_state":
             routine_combo, trigger_combo = fields["routine_id"], fields["trigger_id"]
 
@@ -2278,6 +2304,9 @@ class TaskEditorDialog(QDialog):
     def _create_field(
         self, kind: str, spec: dict[str, object], value: object
     ) -> tuple[QWidget, QWidget]:
+        if kind == "shortcut":
+            editor = single_shortcut_editor(str(value or ""))
+            return editor, editor
         if kind in {
             "text",
             "file",
@@ -2914,6 +2943,8 @@ class TaskEditorDialog(QDialog):
             widget = fields[key]
             if isinstance(widget, QLineEdit):
                 value: object = widget.text().strip()
+            elif isinstance(widget, QKeySequenceEdit):
+                value = widget.keySequence().toString(QKeySequence.PortableText)
             elif isinstance(widget, QTextEdit):
                 raw_text = widget.toPlainText()
                 text = (
@@ -2990,8 +3021,12 @@ class TaskEditorDialog(QDialog):
                 raise ValueError(
                     f"The counter does not track {str(unavailable[0]).replace('_', ' ')}."
                 )
+        if task_type == "core.http_request":
+            validate_http_config(config)
+        elif task_type == "core.keyboard_press":
+            shortcut_keys(str(config["shortcut"]))
         variable_key = output_config_key(task_type)
-        if variable_key:
+        if variable_key and (task_type != "core.http_request" or config.get(variable_key)):
             config[variable_key] = output_id(str(config.get(variable_key, "")))
         if task_type in {"core.delete_variable", "core.adjust_variable", "core.toggle_variable"}:
             config["name"] = validate_variable_name(str(config.get("name", "")))
@@ -7132,6 +7167,9 @@ class AutomationPage(QWidget):
             "core.show_notification": "Shows a desktop notification",
             "core.run_python_script": "Runs trusted Python code on this computer",
             "core.play_audio": "Plays an audio file",
+            "core.http_request": "Sends an HTTP request to the configured destination",
+            "core.keyboard_press": "Sends a shortcut to the foreground application",
+            "core.stop_audio": "Stops all Hub routine audio",
             "core.run_routine": "Runs another routine and all its enabled tasks",
             "core.create_global_variable": "Changes saved automation data",
             "core.file_write": "Writes data to a local text file",
