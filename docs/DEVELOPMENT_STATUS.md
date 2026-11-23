@@ -56,10 +56,21 @@ passed packaged manual acceptance. Scheduled Time / Cron now uses the
 operating system's local timezone rules rather than Qt's incorrect fallback
 for an unmapped Windows timezone.
 
-Pass 2B implements HTTP Request, Keyboard Press, and Stop Audio on
-`feature/core-final-tasks`, pending manual acceptance. The remaining 0.4 work
-is Twitch and OBS Automation completion, bug fixes, regression testing, and
-release preparation.
+**Core Automation Pass 2B — complete and merged.** HTTP Request, Keyboard
+Press, and Stop Audio passed packaged Windows acceptance. Stop Audio was
+verified with a silent Hub clip; isolation from another actively playing
+application was covered by automated ownership tests, not a live audio test.
+Hub does not schedule HTTP retries, but Qt may resend eligible requests after
+some connection failures. The Wiki warns against assuming exactly-once delivery.
+
+The planned 0.4 Core Automation implementation is complete: Core If Trigger
+and nested If/Else Tasks, Comment, Custom Event and Send Custom Event, Set
+Trigger State, Log Message, the Pass 2A triggers above, and the three Pass 2B
+tasks. Final regression validation passed 1,645 tests and 410 subtests.
+
+Remaining 0.4 work: complete Twitch and OBS Automation; add a separately
+movable Stream Information dock tabbed with Activity Feed by default; and
+finish bug fixes, stabilization, release documentation, versioning, and packaging.
 
 The shared Automation Dependency Resolver, portable Routine sharing,
 improved Routine import/export, prebuilt Automation templates, and their
