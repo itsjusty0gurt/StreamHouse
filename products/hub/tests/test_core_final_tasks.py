@@ -5,11 +5,13 @@ from unittest.mock import Mock
 import pytest
 from PySide6.QtCore import QTimer
 from PySide6.QtGui import QKeySequence
+from PySide6.QtNetwork import QNetworkReply
 from PySide6.QtWidgets import QApplication
 
 from products.hub.automation.cancellation import AutomationCancellation, cancellation_scope
 from products.hub.automation.core_tasks import PlayAudioTask, StopAudioTask
 from products.hub.automation.custom_variables import CustomVariableStore
+from products.hub.automation import http_request_task
 from products.hub.automation.http_request_task import HTTP_METHODS, MAX_HTTP_BYTES, HttpRequestTask, validate_http_config
 from products.hub.automation.keyboard_press_task import KeyboardPressTask, shortcut_keys
 from products.hub.automation.logic_tasks import IfTask
@@ -114,7 +116,7 @@ def test_http_method_variables_and_outputs(app, server, method):
     ("/drop", "failed to complete", "0"),
     ("/hang", "timed out", "0"),
 ])
-def test_http_failure_is_bounded_private_and_does_not_retry(app, server, path, detail, status):
+def test_http_post_failure_is_bounded_and_private(app, server, path, detail, status):
     base, requests = server
     result, context = execute(HttpRequestTask(VariableRegistry()), {
         "url": base + path, "method": "POST", "timeout_seconds": 1,
@@ -125,7 +127,35 @@ def test_http_failure_is_bounded_private_and_does_not_retry(app, server, path, d
     assert context["automation.http_body"] == ""
     assert context["automation.http_success"] == "false"
     assert "private remote error" not in result.detail
+    # One receipt for these POST fixture cases, not a transport guarantee.
     assert len(requests) == 1
+
+
+def test_http_completed_failure_does_not_resubmit_to_qt(app, monkeypatch):
+    reply = Mock(spec=QNetworkReply)
+    reply.isFinished.return_value = True
+    reply.attribute.return_value = None
+    reply.read.return_value = b""
+    reply.error.return_value = QNetworkReply.NetworkError.RemoteHostClosedError
+    manager_factory = Mock()
+    send_request = manager_factory.return_value.sendCustomRequest
+    send_request.return_value = reply
+    monkeypatch.setattr(http_request_task, "QNetworkAccessManager", manager_factory)
+
+    # Count submissions at the Hub-to-Qt boundary, not receipts at a server.
+    result, outputs = execute(HttpRequestTask(VariableRegistry()), {
+        "url": "https://example.test/resource", "method": "PUT", "body": "{automation.payload}",
+    }, {"automation.payload": '{"updated":true}'})
+
+    manager_factory.assert_called_once_with()
+    send_request.assert_called_once()
+    assert send_request.call_args.args[1:] == (b"PUT", b'{"updated":true}')
+    assert not result.succeeded and result.detail == "HTTP request failed to complete."
+    assert outputs["automation.http_status"] == "0"
+    assert outputs["automation.http_success"] == "false"
+    assert outputs["automation.http_error"] == result.detail
+    assert outputs["automation.http_body"] == ""
+    reply.deleteLater.assert_called_once_with()
 
 
 def test_http_cancellation(app, server):

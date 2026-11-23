@@ -683,7 +683,8 @@ _INPUT_HELP: dict[str, dict[str, str]] = {
 _NOTES = {
     "core.http_request": (
         "Outputs default to {automation.http_status}, {automation.http_body}, {automation.http_success}, and {automation.http_error}. They are scoped to the current execution.",
-        "No redirects, authentication, cookies, URL query strings, saved literal bodies, or automatic retries. Do not put secrets in a URL path or a Variable you send.",
+        "No redirects, authentication, cookies, URL query strings, or saved literal bodies. Do not put secrets in a URL path or a Variable you send.",
+        "Hub does not schedule retries, but its network client may resend eligible requests, such as PUT, after some connection failures. Do not assume exactly-once delivery; use care with requests that change something outside Hub.",
         "UTF-8 response bodies are limited to 256 KiB and omitted from automatic Run History. Explicitly logging or storing a response in another task can disclose it.",
         "HTTP errors stop the routine like other failed tasks. Imported requests start disabled so you can review them first.",
     ),

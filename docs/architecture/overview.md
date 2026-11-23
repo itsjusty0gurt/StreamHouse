@@ -921,7 +921,10 @@ Variables metadata, validation, preview, resolution, and domain-write path.
 
 Core HTTP Request uses Qt's asynchronous networking while the existing task
 bridge waits for its result. It does not reuse application credentials, use
-cookies or proxies, or follow redirects. Saved settings support a fixed
+cookies or proxies, or follow redirects. Hub submits one operation to Qt and
+does not schedule application-level retries. Qt can resend eligible requests
+(such as PUT) after some connection failures, so delivery is not guaranteed
+to occur exactly once. Saved settings support a fixed
 unauthenticated origin, non-secret path, media-type headers, and an optional
 runtime request-body Variable. Response bodies are bounded, stay in the
 root execution context, and are excluded from automatic Run History.
