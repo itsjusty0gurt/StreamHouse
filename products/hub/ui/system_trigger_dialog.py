@@ -1,6 +1,6 @@
 """Editors for Core scheduling and system triggers."""
 
-from PySide6.QtCore import QTime, QTimeZone
+from PySide6.QtCore import QTime
 from PySide6.QtGui import QKeySequence
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog,
@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (
 )
 
 from products.hub.automation.system_trigger_config import (
-    FILE_EVENTS, SYSTEM_TRIGGER_TYPES, system_config,
+    FILE_EVENTS, SYSTEM_TRIGGER_TYPES, local_schedule_timezone, system_config,
 )
 
 
@@ -56,7 +56,7 @@ class SystemTriggerDialog(QDialog):
         self.mode.addItem("Advanced Cron", "cron")
         self.mode.setCurrentIndex(self.mode.findData(self.config.get("mode", "simple")))
         self.form.addRow("Schedule type", self.mode)
-        zone = QTimeZone.systemTimeZone()
+        zone = local_schedule_timezone()
         zone_id = bytes(zone.id()).decode("utf-8", errors="replace")
         self.form.addRow("Timezone", QLabel(f"System local time ({zone_id})"))
         self.time = QTimeEdit(QTime(8, 0))

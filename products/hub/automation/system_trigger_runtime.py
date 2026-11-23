@@ -11,13 +11,13 @@ from pathlib import Path
 
 from PySide6.QtCore import (
     QDateTime, QFileSystemWatcher, QObject, QRunnable, QThreadPool,
-    QTimeZone, QTimer, Qt, Signal, Slot,
+    QTimer, Qt, Signal, Slot,
 )
 
 from products.hub.automation.core_triggers import CoreAutomationTrigger, CoreTriggerStore
 from products.hub.automation.models import TriggerEvent
 from products.hub.automation.system_trigger_config import (
-    SYSTEM_TRIGGER_TYPES, CronSchedule, hotkey_codes,
+    SYSTEM_TRIGGER_TYPES, CronSchedule, hotkey_codes, local_schedule_timezone,
 )
 from products.hub.automation.windows_system_triggers import process_snapshot
 from shared.streamhouse_runtime.logger import Logger
@@ -111,7 +111,7 @@ class SystemTriggerRuntime(QObject):
     def __init__(
         self, store: CoreTriggerStore, publish, hotkeys, parent=None, *,
         clock=lambda: time.time_ns() // 1_000_000,
-        zone=QTimeZone.systemTimeZone, snapshot=process_snapshot, watcher_factory=QFileSystemWatcher,
+        zone=local_schedule_timezone, snapshot=process_snapshot, watcher_factory=QFileSystemWatcher,
     ):
         super().__init__(parent)
         self.store, self.publish, self.hotkeys = store, publish, hotkeys

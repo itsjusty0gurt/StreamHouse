@@ -1,10 +1,11 @@
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
-from PySide6.QtCore import QCoreApplication, QDate, QDateTime, QEvent, QObject, QTime, QTimeZone, Signal
+from PySide6.QtCore import QCoreApplication, QDate, QDateTime, QEvent, QObject, QTime, QTimeZone, Qt, Signal
 from PySide6.QtGui import QKeySequence
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QLabel
 
 from products.hub.automation.core_triggers import CORE_TRIGGER_TYPES, CoreTriggerStore
 from products.hub.automation.custom_variables import CustomVariableStore
@@ -51,15 +52,17 @@ def test_invalid_cron(value):
 
 
 def test_cron_dst_skips_spring_gap_and_chooses_first_fall_fold():
-    local, utc = QTimeZone(b"America/Edmonton"), QTimeZone.utc()
+    # Historical transitions keep the scheduler test independent of changes to
+    # the host's timezone or future regional DST rules.
+    local, utc = QTimeZone(b"America/New_York"), QTimeZone.utc()
     assert local.isValid()
     assert CronSchedule.parse("30 2 * * *").next_after(
-        stamp(2026, 3, 8, 6, 0, utc), local,
-    ) == stamp(2026, 3, 9, 8, 30, utc)
+        stamp(2024, 3, 10, 5, 0, utc), local,
+    ) == stamp(2024, 3, 11, 6, 30, utc)
     schedule = CronSchedule.parse("30 1 * * *")
-    first = schedule.next_after(stamp(2026, 11, 1, 6, 0, utc), local)
-    assert first == stamp(2026, 11, 1, 7, 30, utc)
-    assert schedule.next_after(first, local) == stamp(2026, 11, 2, 8, 30, utc)
+    first = schedule.next_after(stamp(2024, 11, 3, 4, 0, utc), local)
+    assert first == stamp(2024, 11, 3, 5, 30, utc)
+    assert schedule.next_after(first, local) == stamp(2024, 11, 4, 6, 30, utc)
 
 
 class Hotkeys:
@@ -117,6 +120,27 @@ def rig(tmp_path):
     yield app, routine, store, hotkeys, events, time, runtime
     runtime.stop()
     flush(runtime)
+
+
+def test_scheduler_and_editor_use_os_local_time(rig):
+    _, _, store, hotkeys, _, _, _ = rig
+    runtime = SystemTriggerRuntime(store, lambda *_: None, hotkeys, watcher_factory=Watcher)
+    zone = runtime.zone()
+    assert zone.timeSpec() == Qt.TimeSpec.LocalTime
+    schedule = CronSchedule.parse("30 20 * * *")
+    for month in (6, 11):
+        instant = stamp(2026, month, 22, 12, 0, QTimeZone.utc())
+        local = datetime.fromtimestamp(instant / 1000).astimezone()
+        converted = QDateTime.fromMSecsSinceEpoch(instant, zone)
+        assert converted.offsetFromUtc() == int(local.utcoffset().total_seconds())
+        assert converted.toString("yyyy-MM-dd HH:mm") == local.strftime("%Y-%m-%d %H:%M")
+        before = int(datetime(2026, month, 22, 20).timestamp() * 1000)
+        expected = int(datetime(2026, month, 22, 20, 30).timestamp() * 1000)
+        assert schedule.next_after(before, zone) == expected
+
+    dialog = SystemTriggerDialog("scheduled_time")
+    zone_name = bytes(QTimeZone.systemTimeZoneId()).decode("utf-8", errors="replace")
+    assert f"System local time ({zone_name})" in {label.text() for label in dialog.findChildren(QLabel)}
 
 
 def test_schedule_dispatch_disable_clock_change_and_restart(rig):

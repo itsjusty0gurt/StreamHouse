@@ -31,6 +31,11 @@ _MONTHS = dict(zip("jan feb mar apr may jun jul aug sep oct nov dec".split(), ra
 _DAYS = dict(zip("sun mon tue wed thu fri sat".split(), range(7)))
 
 
+def local_schedule_timezone() -> QTimeZone:
+    """Use OS local-time rules even when Qt cannot map a Windows zone ID."""
+    return QTimeZone(QTimeZone.Initialization.LocalTime)
+
+
 def _cron_field(field: str, low: int, high: int, names: Mapping[str, int]) -> set[int]:
     result: set[int] = set()
 
