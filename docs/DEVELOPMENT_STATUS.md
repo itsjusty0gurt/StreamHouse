@@ -50,12 +50,15 @@
 
 ## Active development focus
 
-Hub 0.4 feature scope is locked. Core Automation Pass 2A implements Scheduled
-Time / Cron, Hotkey, Process Started, Process Stopped, and File Watcher on
-`feature/core-system-triggers`, pending packaged manual acceptance. Planned
-Pass 2B consists of HTTP Request, Keyboard Press, and Stop Audio tasks.
-The remaining release work is the Twitch and OBS capability
-audits, bug fixes, regression testing, and release preparation.
+Hub 0.4 feature scope is locked. Core Automation Pass 2A is complete: Scheduled
+Time / Cron, Hotkey, Process Started, Process Stopped, and File Watcher all
+passed packaged manual acceptance. Scheduled Time / Cron now uses the
+operating system's local timezone rules rather than Qt's incorrect fallback
+for an unmapped Windows timezone.
+
+Planned Pass 2B consists of HTTP Request, Keyboard Press, and Stop Audio tasks.
+After Pass 2B, the remaining work is Twitch and OBS Automation completion,
+bug fixes, regression testing, and release preparation.
 
 The shared Automation Dependency Resolver, portable Routine sharing,
 improved Routine import/export, prebuilt Automation templates, and their
