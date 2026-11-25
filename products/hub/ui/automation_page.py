@@ -141,6 +141,8 @@ from products.hub.twitch.tasks import SendTwitchChatMessageTask, TWITCH_TASK_LAB
 from products.hub.twitch.automation_triggers import (
     ADS_TRIGGER_TYPES,
     CHANNEL_POINT_REDEMPTION_EVENT_TYPE,
+    REDEMPTION_EVENT_TYPES,
+    REDEMPTION_UPDATED_EVENT_TYPE,
     KEYWORD_MATCH_TYPES,
     KEYWORD_PHRASE_EVENT_TYPE,
     OUTGOING_RAID_STARTED_EVENT_TYPE,
@@ -5207,8 +5209,8 @@ class AutomationPage(QWidget):
             if not phrase:
                 issues = ("Keyword or phrase is not configured.",)
             title = "Keyword / Phrase"
-        elif event_type == CHANNEL_POINT_REDEMPTION_EVENT_TYPE:
-            title = "Twitch — Channel Point Redemption"
+        elif event_type in REDEMPTION_EVENT_TYPES:
+            title = f"Twitch — {twitch_trigger_display_name(event_type)}"
             if trigger.reward_title:
                 summary = trigger.reward_title
             elif trigger.reward_id:
@@ -5216,6 +5218,8 @@ class AutomationPage(QWidget):
                 issues = ("The saved reward name is unavailable.",)
             else:
                 summary = "Any Custom Reward"
+            if event_type == REDEMPTION_UPDATED_EVENT_TYPE and trigger.filters.get("status"):
+                summary += f" · {trigger.filters['status'].title()}"
         elif event_type in ADS_TRIGGER_TYPES:
             title = f"Twitch — {ADS_TRIGGER_TYPES[event_type]}"
             summary = "When this ad event occurs"
@@ -5898,7 +5902,8 @@ class AutomationPage(QWidget):
         twitch_menu.addMenu(ads_menu)
 
         redemption_action = twitch_menu.addAction(
-            "Channel Point Redemption…", self._add_channel_point_redemption_trigger
+            "Channel Point Redemption…",
+            lambda checked=False: self._add_channel_point_redemption_trigger(),
         )
         redemption_action.setEnabled(routine is not None)
 
@@ -5911,7 +5916,10 @@ class AutomationPage(QWidget):
                 continue
             event_menu.addAction(
                 twitch_trigger_display_name(event_type, menu=True),
-                lambda checked=False, value=event_type: self._add_event_trigger(value),
+                lambda checked=False, value=event_type: (
+                    self._add_channel_point_redemption_trigger(value)
+                    if value == REDEMPTION_UPDATED_EVENT_TYPE else self._add_event_trigger(value)
+                ),
             )
         twitch_menu.addMenu(event_menu)
         twitch_menu._streamhouse_trigger_submenus = [chat_menu, ads_menu, event_menu]
@@ -5982,18 +5990,20 @@ class AutomationPage(QWidget):
         self.select_routine(routine.routine_id)
         self._select_trigger("keyword", trigger.trigger_id)
 
-    def _add_channel_point_redemption_trigger(self) -> None:
+    def _add_channel_point_redemption_trigger(
+        self, event_type: str = CHANNEL_POINT_REDEMPTION_EVENT_TYPE
+    ) -> None:
         routine = self.routine_store.get(self._selected_routine_id)
         if routine is None:
             return
         dialog = ChannelPointRedemptionTriggerDialog(
-            self.twitch_service, self.twitch_auth, self
+            self.twitch_service, self.twitch_auth, self, event_type=event_type
         )
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         try:
-            trigger = self.event_trigger_store.add_channel_point_redemption(
-                routine.routine_id, **dialog.values()
+            trigger = self.event_trigger_store.add(
+                routine.routine_id, event_type, **dialog.values()
             )
         except (OSError, TypeError, ValueError) as error:
             self._error("Could Not Add Trigger", error)
@@ -6141,7 +6151,7 @@ class AutomationPage(QWidget):
             if trigger is not None:
                 if trigger.event_type in ADS_TRIGGER_TYPES:
                     self._edit_ads_trigger(routine.routine_id, trigger)
-                elif trigger.event_type == CHANNEL_POINT_REDEMPTION_EVENT_TYPE:
+                elif trigger.event_type in REDEMPTION_EVENT_TYPES:
                     self._edit_channel_point_redemption_trigger(
                         routine.routine_id, trigger
                     )
@@ -6238,8 +6248,8 @@ class AutomationPage(QWidget):
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         try:
-            updated = self.event_trigger_store.update_channel_point_redemption(
-                trigger.trigger_id, **dialog.values()
+            updated = self.event_trigger_store.update(
+                trigger.trigger_id, event_type=trigger.event_type, **dialog.values()
             )
         except (OSError, TypeError, ValueError) as error:
             self._error("Could Not Update Trigger", error)

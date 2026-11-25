@@ -514,6 +514,28 @@ class BackupManagerTests(unittest.TestCase):
             custom.group_id,
         )
 
+    def test_twitch_lifecycle_triggers_restore_without_changing_ids(self) -> None:
+        routines = RoutineStore(self.root / "automation/routines.json")
+        routines.load()
+        routine = routines.add("Lifecycle backup")
+        path = self.root / "twitch/event_triggers.json"
+        store = TwitchEventTriggerStore(path, routines)
+        store.load()
+        update = store.add(
+            routine.routine_id, "channel.channel_points_custom_reward_redemption.update",
+            filters={"status": "fulfilled"}, reward_id="hydration-stable-id",
+            reward_title="Hydrate", enabled=False,
+        )
+        hype = store.add(routine.routine_id, "channel.hype_train.end")
+        archive = self.manager.create("manual", preset=BackupPreset.RECOMMENDED)
+        self.manager.restore(archive, create_safety=False)
+        routines.load()
+        store.load()
+        self.assertEqual(store.for_routine(routine.routine_id), (update, hype))
+        restored = routines.get(routine.routine_id)
+        self.assertEqual(restored.trigger_id, update.trigger_id)
+        self.assertIn(hype.trigger_id, restored.additional_trigger_ids)
+
     def test_current_twitch_trigger_schema_backs_up_and_restores_with_stable_links(
         self,
     ) -> None:

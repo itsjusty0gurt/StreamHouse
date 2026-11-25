@@ -1185,6 +1185,16 @@ not change which command executes; Hub-owned names take priority in listings.
 
 ## Twitch subsystem
 
+Twitch's active EventSub Automation subset is distinct from the reference
+catalog. Stream information, redemption updates, polls, predictions, Hype
+Train, Shield Mode and shoutouts register as optional scoped subscriptions
+on the existing broadcaster WebSocket. Additional Helix requests run in a
+cancellable worker keyed to the fresh session; native transfers keep
+existing subscriptions. The existing ingress deduplicates message IDs, and
+the Twitch Automation store and contextual Variable provider project each
+notification without changing persistence schemas. See [Twitch Automation
+events](../hub/twitch.md#automation-event-triggers).
+
 ### Authentication
 
 `products/hub/twitch/auth.py` implements Twitch public-client Device Code OAuth.

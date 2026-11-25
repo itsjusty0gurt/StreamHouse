@@ -15,6 +15,7 @@ from PySide6.QtWebSockets import QWebSocket
 
 from products.hub.config.twitch import TWITCH_CLIENT_ID, TWITCH_REDEMPTION_SCOPES
 from products.hub.twitch.auth import TwitchToken
+from products.hub.twitch.catalog import AUTOMATION_ACTIVITY_GROUPS
 from products.hub.twitch.models import (
     TwitchEvent,
     TwitchEventDiagnostic,
@@ -405,6 +406,34 @@ class TwitchHelixClient:
                         "Outgoing channel.raid confirmation subscription active.",
                         source="TWITCH",
                     )
+        return tuple(warnings)
+
+    def create_automation_activity_subscriptions(
+        self,
+        session_id: str,
+        broadcaster_user_id: str,
+        token: TwitchToken,
+        cancelled: Callable[[], bool],
+    ) -> tuple[str, ...]:
+        """Register optional Automation events once per fresh broadcaster session."""
+        warnings = []
+        scopes = set(token.scopes)
+        for event_types, version, accepted_scopes, moderator in AUTOMATION_ACTIVITY_GROUPS:
+            if accepted_scopes and not scopes.intersection(accepted_scopes):
+                warnings.append(f"{event_types[0]}: missing Twitch permission {accepted_scopes[0]}")
+                continue
+            if accepted_scopes and not moderator and token.user_id != broadcaster_user_id:
+                continue  # Channel scopes authorize this token's own channel.
+            condition = {"broadcaster_user_id": broadcaster_user_id}
+            if moderator:
+                condition["moderator_user_id"] = token.user_id
+            for event_type in event_types:
+                if cancelled():
+                    return ()
+                try:
+                    self._create_subscription(event_type, version, condition, session_id, token)
+                except (OSError, ValueError, URLError) as error:
+                    warnings.append(f"{event_type}: {error}")
         return tuple(warnings)
 
     def _create_subscription(

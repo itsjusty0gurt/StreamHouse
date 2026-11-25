@@ -4,7 +4,10 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication
 
-from products.hub.twitch.automation_triggers import TwitchEventAutomationTrigger
+from products.hub.twitch.automation_triggers import (
+    REDEMPTION_UPDATED_EVENT_TYPE,
+    TwitchEventAutomationTrigger,
+)
 from products.hub.twitch.models import TwitchCustomReward
 from products.hub.ui.channel_point_trigger_dialog import ChannelPointRedemptionTriggerDialog
 
@@ -69,5 +72,23 @@ def test_stale_discovery_response_is_ignored() -> None:
     )
 
     assert dialog.reward_combo.findData("reward-1") == -1
+    dialog.close()
+    app.processEvents()
+
+
+def test_updated_redemption_dialog_round_trips_status_and_reward() -> None:
+    app = _app()
+    trigger = TwitchEventAutomationTrigger(
+        "trigger-2", "routine-1", REDEMPTION_UPDATED_EVENT_TYPE,
+        filters={"status": "fulfilled", "user_login": "viewer"},
+        reward_id="reward-2", reward_title="Hydrate", enabled=False,
+    )
+    dialog = ChannelPointRedemptionTriggerDialog(None, None, trigger=trigger)
+    assert dialog.values() == {
+        "reward_id": "reward-2", "reward_title": "Hydrate", "enabled": False,
+        "filters": {"status": "fulfilled", "user_login": "viewer"},
+    }
+    dialog.status_combo.setCurrentIndex(dialog.status_combo.findData("canceled"))
+    assert dialog.values()["filters"]["status"] == "canceled"
     dialog.close()
     app.processEvents()

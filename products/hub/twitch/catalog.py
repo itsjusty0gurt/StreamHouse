@@ -103,3 +103,24 @@ EVENTSUB_SUBSCRIPTIONS = tuple(
         ("user.whisper.message", "1"),
     )
 )
+
+# Active Automation additions, a subset of the reference catalog above.
+# Each group shares a version, alternative scopes, and condition shape.
+AUTOMATION_ACTIVITY_GROUPS = (
+    (("channel.update",), "2", (), False),
+    (("channel.channel_points_custom_reward_redemption.update",), "1",
+     ("channel:read:redemptions", "channel:manage:redemptions"), False),
+    (("channel.poll.begin", "channel.poll.progress", "channel.poll.end"), "1",
+     ("channel:read:polls", "channel:manage:polls"), False),
+    (("channel.prediction.begin", "channel.prediction.progress", "channel.prediction.lock", "channel.prediction.end"), "1",
+     ("channel:read:predictions", "channel:manage:predictions"), False),
+    (("channel.hype_train.begin", "channel.hype_train.progress", "channel.hype_train.end"), "2",
+     ("channel:read:hype_train",), False),
+    (("channel.shield_mode.begin", "channel.shield_mode.end"), "1",
+     ("moderator:read:shield_mode", "moderator:manage:shield_mode"), True),
+    (("channel.shoutout.create", "channel.shoutout.receive"), "1",
+     ("moderator:read:shoutouts", "moderator:manage:shoutouts"), True),
+)
+ADDITIONAL_AUTOMATION_EVENT_TYPES = tuple(
+    event_type for types, *_ in AUTOMATION_ACTIVITY_GROUPS for event_type in types
+)

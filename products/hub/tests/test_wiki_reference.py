@@ -61,6 +61,17 @@ def test_catalog_derives_tasks_triggers_variables_and_commands() -> None:
     assert "integration:touch-portal" in ids
 
 
+def test_twitch_lifecycle_wiki_lists_variables_and_redemption_filters() -> None:
+    tasks, variables = _reference_sources()
+    entries = {entry.entry_id: entry for entry in build_wiki_entries(tasks, variables)}
+    assert "{channel_update.title}" in entries["trigger:channel.update"].search_text()
+    assert "{prediction.winning_outcome}" in entries["trigger:channel.prediction.end"].search_text()
+    assert "{hype_train.top_contributions}" in entries["trigger:channel.hype_train.progress"].search_text()
+    redemption = entries["trigger:channel.channel_points_custom_reward_redemption.update"]
+    assert "fulfilled" in redemption.search_text()
+    assert "{channel_points.status}" in redemption.search_text()
+
+
 def test_generated_reference_has_unique_entries_and_provider_prefixed_task_labels() -> None:
     tasks, variables = _reference_sources()
     entries = build_wiki_entries(tasks, variables)

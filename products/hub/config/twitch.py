@@ -27,6 +27,10 @@ TWITCH_SCOPES = (
     "channel:manage:broadcast",
     "bits:read",
     "channel:manage:redemptions",
+    "channel:read:polls",
+    "channel:read:predictions",
+    "channel:read:hype_train",
+    "moderator:read:shield_mode",
 )
 
 TWITCH_BOT_SCOPES = (

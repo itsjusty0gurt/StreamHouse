@@ -377,10 +377,11 @@ rejected authorization distinctly from a genuine not-following result.
 Twitch EventSub automation triggers persist at
 `twitch/event_triggers.json` in the exact current v4 schema; unversioned and
 obsolete private-development formats are rejected rather than migrated. The
-live-ready set is follow, subscribe, subscription gift, subscription message,
-cheer, incoming and outgoing raid, custom channel point redemption, stream
-online/offline, and the supported moderation events. Moderation includes User
-Banned, User Timed Out, User Unbanned, Moderator Added/Removed, and Unban Request
+existing live-ready set includes follow, subscribe, subscription gift,
+subscription message, cheer, incoming and outgoing raid, custom channel point
+redemption, stream online/offline, and the supported moderation events.
+Moderation includes User Banned, User Timed Out, User Unbanned, Moderator
+Added/Removed, and Unban Request
 Created/Resolved. These correspond to the activity subscriptions Hub currently
 establishes with Twitch.
 
@@ -428,6 +429,55 @@ Each matching execution receives normal `user.*` values plus the routine-scoped
 input remains an available empty string when a reward has no input. These
 values flow through nested routines and disappear with the root execution.
 EventSub message-ID deduplication remains owned by the shared Twitch ingress.
+
+### Stream and lifecycle events (0.4)
+
+The existing **Channel Point Redemption** trigger is the added event; its ID
+and saved reward selections are unchanged. **Channel Point Redemption
+Updated** fires for status updates only. Select Any Custom Reward or a
+specific stable reward ID, and optionally select a new status such as
+Fulfilled or Canceled / Refunded. Added events can already be fulfilled if
+the reward skips Twitch's request queue. Do not use the redemption ID alone
+to deduplicate across added and updated triggers: these are separate events.
+Routine Transfer preserves the reward ID, display title, and status filter.
+A reward that is absent in the destination channel stays a specific, missing
+selection; it does not silently become Any Custom Reward.
+
+| Trigger family and EventSub IDs | Version | Broadcaster sign-in permission | Context |
+| --- | --- | --- | --- |
+| Stream Information Updated (`channel.update`) | 2 | No additional scope | `channel_update.title`, `category_id`, `category_name`, `language`, `classification_labels` |
+| Custom redemption added/updated (`channel.channel_points_custom_reward_redemption.add`, `.update`) | 1 | `channel:read:redemptions` or `channel:manage:redemptions` | Existing `channel_points.*` and `user.*`; updated also has `event.broadcaster_*` |
+| Poll Began/Progressed/Ended (`channel.poll.begin`, `.progress`, `.end`) | 1 | `channel:read:polls` or `channel:manage:polls` | `poll.id`, `title`, `status`, `choices`, `choice_ids`, `started_at`, `ends_at`, `ended_at` |
+| Prediction Began/Progressed/Locked/Ended (`channel.prediction.begin`, `.progress`, `.lock`, `.end`) | 1 | `channel:read:predictions` or `channel:manage:predictions` | `prediction.id`, `title`, `status`, `outcomes`, `outcome_ids`, `winning_outcome_id`, `winning_outcome`, `started_at`, `locks_at`, `locked_at`, `ended_at` |
+| Hype Train Began/Progressed/Ended (`channel.hype_train.begin`, `.progress`, `.end`) | 2 | `channel:read:hype_train` | `hype_train.id`, `level`, `progress`, `goal`, `total`, `top_contributions`, `started_at`, `expires_at`, `ended_at`, `cooldown_ends_at` |
+| Shield Mode Activated/Deactivated (`channel.shield_mode.begin`, `.end`) | 1 | `moderator:read:shield_mode` or `moderator:manage:shield_mode` | `shield_mode.started_at`, `shield_mode.ended_at`, `moderator.*` |
+| Shoutout Created/Received (`channel.shoutout.create`, `.receive`) | 1 | `moderator:read:shoutouts` or `moderator:manage:shoutouts` | `shoutout.other_id`, `other_login`, `other_name`, `viewer_count`, `started_at`; sent events also have cooldown timestamps and `moderator.*` |
+
+Unqualified names in the table use the first listed prefix in that row.
+New events also provide `event.broadcaster_id`, `event.broadcaster_login` and
+`event.broadcaster_name`. Values are available in the current routine as
+Twitch supplies them; for example vote counts aren't present at Poll Begin
+and a canceled Prediction may not have a winner. Lists use short text or
+comma-separated IDs rather than the raw event payload.
+
+Use **Twitch → Account** to reauthorize the broadcaster for newly requested
+read permissions. Bot permissions are unchanged. Hub registers one
+broadcaster-level subscription per supported event on a fresh session, using
+the broadcaster token's ID as the moderator condition for Shield Mode and
+Shoutouts. Missing scopes or rejected optional subscriptions do not block
+unrelated chat/activity. No polling or subscription changes are triggered by
+editing a routine.
+
+Hub ignores repeated EventSub message IDs in the socket's recent-delivery
+history. Reconnects do not create synthetic events or replay missed history.
+Twitch may send distinct notifications for one change (such as a title and
+classification change), and delivery order is not guaranteed. Hype Train
+progress can arrive before begin. Channel Update can arrive while offline and
+does not identify which field changed. Reward-definition events and
+automatic-reward/Power-up triggers are outside this pass.
+
+See Twitch's [EventSub Reference](https://dev.twitch.tv/docs/eventsub/reference/)
+and [WebSocket delivery notes](https://dev.twitch.tv/docs/eventsub/handling-websocket-events/).
 
 Subscription events keep the direct `channel.subscribe`,
 `channel.subscription.message`, or `channel.subscription.gift` EventSub event

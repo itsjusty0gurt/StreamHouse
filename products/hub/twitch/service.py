@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
 from secrets import token_hex
-from threading import Thread
+from threading import Event, Thread
 from urllib.error import HTTPError, URLError
 
 from products.hub.config.twitch import TWITCH_REDEMPTION_SCOPES
@@ -82,6 +82,8 @@ class TwitchService:
         # subscriptions on the same WebSocket session.
         self._live_chat_token = None
         self._activity_token = None
+        self._automation_subscription_session = ""
+        self._automation_subscription_cancel = Event()
         self.broadcaster_user_id = ""
         self.broadcaster_display_name = ""
         self.badge_urls: dict[tuple[str, str], str] = {}
@@ -268,6 +270,7 @@ class TwitchService:
                     broadcaster_token,
                 )
                 self._log_activity_warnings(warnings)
+                self._start_automation_activity_subscriptions(session_id, broadcaster_token)
         except (HTTPError, URLError, OSError, ValueError) as error:
             self._report_error(f"Could not subscribe to Twitch chat: {error}")
             if self.live_socket is not None:
@@ -316,7 +319,31 @@ class TwitchService:
             )
             return
         self._log_activity_warnings(warnings)
+        self._start_automation_activity_subscriptions(session_id, token)
         self._set_transport_health(eventsub=TwitchConnectionState.CONNECTED)
+
+    def _start_automation_activity_subscriptions(self, session_id: str, token: TwitchToken) -> None:
+        if session_id == self._automation_subscription_session:
+            return
+        self._automation_subscription_cancel.set()
+        cancel = self._automation_subscription_cancel = Event()
+        self._automation_subscription_session = session_id
+        broadcaster_user_id = self.broadcaster_user_id
+
+        def register() -> None:
+            if cancel.is_set():
+                return
+            warnings = self.helix.create_automation_activity_subscriptions(
+                session_id, broadcaster_user_id, token, cancel.is_set
+            )
+            if not cancel.is_set() and isinstance(warnings, (tuple, list)):
+                for warning in warnings:
+                    Logger.warning(
+                        f"Optional Twitch Automation subscription unavailable: {warning}",
+                        source="TWITCH",
+                    )
+
+        Thread(target=register, name="TwitchAutomationSubscriptions", daemon=True).start()
 
     def _log_activity_warnings(self, warnings: object) -> None:
         if not isinstance(warnings, (tuple, list)):
@@ -365,6 +392,8 @@ class TwitchService:
         )
 
     def _receive_live_reconnecting(self, native_transfer: bool) -> None:
+        if not native_transfer and self.activity_socket is None:
+            self._automation_subscription_cancel.set()
         self._set_transport_health(
             chat=TwitchConnectionState.RECONNECTING,
             eventsub=(
@@ -414,6 +443,8 @@ class TwitchService:
             self._set_state(TwitchConnectionState.CONNECTED)
 
     def _receive_activity_reconnecting(self, native_transfer: bool) -> None:
+        if not native_transfer:
+            self._automation_subscription_cancel.set()
         self._set_transport_health(eventsub=TwitchConnectionState.RECONNECTING)
         reason = "session transfer" if native_transfer else "connection interruption"
         Logger.debug(
@@ -1124,6 +1155,8 @@ class TwitchService:
             return False
 
         previous_channel = self.channel
+        self._automation_subscription_cancel.set()
+        self._automation_subscription_session = ""
         if self.live_socket is not None:
             self.live_socket.close()
             self.live_socket.deleteLater()

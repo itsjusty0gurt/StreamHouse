@@ -99,6 +99,24 @@ class AutomationTransferTests(unittest.TestCase):
         self.assertEqual(len(destination["core_store"].for_routine(imported.routine_id)), 1)
         self.assertEqual(len(destination["obs_store"].for_routine(imported.routine_id)), 1)
 
+    def test_redemption_update_transfer_preserves_reward_and_status_filter(self) -> None:
+        routine = self.stores["routine_store"].add("Redemption status")
+        source = self.stores["event_store"].add(
+            routine.routine_id, "channel.channel_points_custom_reward_redemption.update",
+            filters={"status": "canceled"}, reward_id="reward-id",
+            reward_title="Hydrate", enabled=False,
+        )
+        payload = export_routine(self.stores["routine_store"].get(routine.routine_id), **self.stores)
+        destination = self.make_stores(self.root / "destination")
+        imported = import_routine(payload, group_id="", task_registry=self.registry, **destination)
+        restored, = destination["event_store"].for_routine(imported.routine_id)
+        self.assertNotEqual(restored.trigger_id, source.trigger_id)
+        self.assertEqual(restored.event_type, source.event_type)
+        self.assertEqual(restored.filters, source.filters)
+        self.assertEqual(restored.reward_id, source.reward_id)
+        self.assertEqual(restored.reward_title, source.reward_title)
+        self.assertFalse(restored.enabled)
+
     def test_final_core_tasks_transfer_and_disable_side_effects_for_review(self) -> None:
         config_by_type = {
             "core.http_request": {"url": "https://example.test/status", "method": "GET"},

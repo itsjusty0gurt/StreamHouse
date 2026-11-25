@@ -72,6 +72,12 @@ Remaining 0.4 work: complete Twitch and OBS Automation; add a separately
 movable Stream Information dock tabbed with Activity Feed by default; and
 finish bug fixes, stabilization, release documentation, versioning, and packaging.
 
+**Twitch Automation Pass 1 — ready for manual acceptance (not merged).**
+Adds Stream Information Updated, custom redemption status updates,
+Polls, Predictions, Hype Train v2, Shield Mode, and Shoutout triggers.
+Use the broadcaster's existing reauthorization flow for the new read
+permissions. Live verification is pending; automated tests use mocked Twitch events.
+
 The shared Automation Dependency Resolver, portable Routine sharing,
 improved Routine import/export, prebuilt Automation templates, and their
 associated Backup and Transfer changes are deferred to 0.5.

@@ -13,6 +13,7 @@ from products.hub.automation.system_trigger_config import SYSTEM_TRIGGER_TYPES, 
 from products.hub.obs_service.triggers import OBS_TRIGGER_TYPES, ObsTriggerStore
 from products.hub.integrations.music_triggers import MUSIC_TRIGGER_TYPES, MusicTriggerStore
 from products.hub.twitch.automation_triggers import (
+    REDEMPTION_EVENT_TYPES,
     TWITCH_AUTOMATION_EVENT_TYPES,
     TwitchEventTriggerStore,
 )
@@ -105,6 +106,10 @@ def export_routine(
                     "event_type": trigger.event_type,
                     "filters": trigger.filters,
                     "enabled": trigger.enabled,
+                    **(
+                        {"reward_id": trigger.reward_id, "reward_title": trigger.reward_title}
+                        if trigger.event_type in REDEMPTION_EVENT_TYPES and trigger.reward_id else {}
+                    ),
                 }
                 for trigger in event_store.for_routine(routine.routine_id)
             ],
@@ -192,6 +197,9 @@ def validate_import(
                 raise ValueError(f"The imported routine contains an unsupported {key.replace('_', ' ')} trigger.")
             if key == "core" and trigger["event_type"] in SYSTEM_TRIGGER_TYPES:
                 system_config(trigger["event_type"], trigger.get("system_config", {}))
+            if key == "twitch_events" and trigger["event_type"] in REDEMPTION_EVENT_TYPES:
+                if any(not isinstance(trigger.get(field, ""), str) for field in ("reward_id", "reward_title")):
+                    raise ValueError("The imported custom reward selection is invalid.")
 
 
 def import_routine(
@@ -227,12 +235,16 @@ def import_routine(
     command_id = ""
     try:
         for values in trigger_values.get("twitch_events", []):
+            event_type = str(values.get("event_type", ""))
+            redemption = event_type in REDEMPTION_EVENT_TYPES
             trigger = event_store.add(
                 routine.routine_id,
-                str(values.get("event_type", "")),
+                event_type,
                 filters=dict(values.get("filters", {})),
                 enabled=bool(values.get("enabled", True)),
                 reset_minutes=int(values.get("reset_minutes", 15)),
+                reward_id=values.get("reward_id", "") if redemption else "",
+                reward_title=values.get("reward_title", "") if redemption else "",
             )
             event_ids.append(trigger.trigger_id)
         for values in trigger_values.get("core", []):

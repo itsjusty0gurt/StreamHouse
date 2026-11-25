@@ -20,7 +20,9 @@ from products.hub.automation.variable_registry import VariableRegistry
 from products.hub.counters.models import SCOPES
 from products.hub.obs_service.triggers import OBS_TRIGGER_TYPES
 from products.hub.integrations.music_triggers import MUSIC_TRIGGER_TYPES
+from products.hub.twitch.automation_context import ADDITIONAL_ACTIVITY_EVENTS
 from products.hub.twitch.automation_triggers import (
+    REDEMPTION_UPDATED_EVENT_TYPE,
     ADS_TRIGGER_TYPES,
     KEYWORD_PHRASE_EVENT_TYPE,
     TWITCH_EVENT_AUTOMATION_TYPES,
@@ -344,6 +346,17 @@ def _trigger_entries(variable_registry: VariableRegistry) -> tuple[WikiEntry, ..
             prefixes.append("channel_points.")
         if event_type in moderation_types:
             prefixes.append("moderator.")
+        names = moderation_variables.get(event_type, variables(*prefixes))
+        if event_type in ADDITIONAL_ACTIVITY_EVENTS:
+            family = event_type.split(".")[1]
+            prefix = "channel_update." if family == "update" else f"{family}."
+            names = (*named_variables("event.type"), *variables("event.broadcaster_", prefix))
+            if event_type == REDEMPTION_UPDATED_EVENT_TYPE:
+                names += variables("channel_points.", "user.")
+            if family == "shield_mode" or event_type == "channel.shoutout.create":
+                names += variables("moderator.")
+        else:
+            names = tuple(name for name in names if not name.startswith("{event.broadcaster_"))
         label = twitch_trigger_display_name(event_type)
         entries.append(
             _trigger_entry(
@@ -353,7 +366,7 @@ def _trigger_entries(variable_registry: VariableRegistry) -> tuple[WikiEntry, ..
                     event_type,
                     f"Fires when Hub receives the supported {label.lower()} event.",
                 ),
-                moderation_variables.get(event_type, variables(*prefixes)),
+                names,
                 ("Twitch", "EventSub"),
             )
         )
@@ -566,6 +579,11 @@ def _trigger_entry(
                 ),
             ),
         )
+    elif trigger_id == REDEMPTION_UPDATED_EVENT_TYPE:
+        configuration = (
+            "Choose a saved custom reward or Any Custom Reward.",
+            "Optionally match the new status, such as Fulfilled or Canceled / Refunded.",
+        )
     elif "channel_points" in trigger_id:
         configuration = ("Any custom reward or one selected reward.",)
     elif trigger_id in {
@@ -612,6 +630,11 @@ def _trigger_entry(
             additional_sections = (
                 WikiSection("Example", ("Player Disconnected → run an optional notification or log routine.",)),
             )
+    elif trigger_id == "channel.update":
+        configuration = (
+            "Fires for Twitch channel information notifications, even when offline.",
+            "Twitch supplies a snapshot, not a list of changed fields, and may send several notifications for one edit.",
+        )
     elif trigger_id in TWITCH_EVENT_AUTOMATION_TYPES or trigger_id in ADS_TRIGGER_TYPES:
         configuration = ("Optional event filters supported by this trigger editor.",)
     if configuration:

@@ -897,7 +897,7 @@ class TwitchEventTriggerStoreTests(unittest.TestCase):
     def test_unsupported_live_event_type_is_rejected(self) -> None:
         routine = self.routines.add("Unsupported")
         with self.assertRaisesRegex(ValueError, "not connected"):
-            self.store.add(routine.routine_id, "channel.poll.end")
+            self.store.add(routine.routine_id, "channel.goal.end")
 
     def test_first_message_fires_once_per_viewer_during_stream(self) -> None:
         routine = self.routines.add("Welcome viewers")

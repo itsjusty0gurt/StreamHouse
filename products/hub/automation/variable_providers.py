@@ -11,6 +11,7 @@ from products.hub.automation.variable_registry import (
     VariableSnapshot,
 )
 from products.hub.counters.service import CounterService
+from products.hub.twitch.automation_context import LIFECYCLE_CONTEXT_DEFINITIONS
 from products.hub.twitch.channel_information import (
     SOCIAL_SERVICES,
     ChannelInformationStore,
@@ -525,6 +526,12 @@ def _context_presentation(name: str) -> tuple[str, str]:
         "subscription": ("Subscriptions", "Subscription event"),
         "raid": ("Raids", "Raid event"),
         "moderator": ("Moderation", "Twitch moderation event"),
+        "channel_update": ("Stream Information", "Stream Information Updated"),
+        "poll": ("Polls", "Twitch Poll event"),
+        "prediction": ("Predictions", "Twitch Prediction event"),
+        "hype_train": ("Hype Train", "Twitch Hype Train event"),
+        "shield_mode": ("Shield Mode", "Twitch Shield Mode event"),
+        "shoutout": ("Shoutouts", "Twitch Shoutout event"),
         "event": ("Twitch Event", "Matching Twitch event"),
         "obs": ("OBS", "Matching OBS event"),
     }.get(namespace, (namespace.title(), "Matching trigger context"))
@@ -574,6 +581,11 @@ def _context_provider(
                     "event.ends_at",
                     "event.request_text",
                     "event.resolution_text",
+                    "channel_update.category_id",
+                    "channel_update.category_name",
+                    "channel_update.classification_labels",
+                    "channel_update.title",
+                    "channel_update.language",
                 }
             )
             if key in context and (allow_empty or str(context[key]).strip() not in {"", "--"}):
@@ -598,7 +610,7 @@ def twitch_context_provider(
     return _context_provider(
         tuple(
             item
-            for item in CONTEXT_DEFINITIONS
+            for item in (*CONTEXT_DEFINITIONS, *LIFECYCLE_CONTEXT_DEFINITIONS)
             if not item[0].startswith(("obs.", "core."))
         ),
         provider_name="Twitch Context",
@@ -624,7 +636,7 @@ def context_provider() -> CallbackVariableProvider:
     """Return the complete context catalog for standalone tooling/tests."""
 
     return _context_provider(
-        CONTEXT_DEFINITIONS,
+        (*CONTEXT_DEFINITIONS, *LIFECYCLE_CONTEXT_DEFINITIONS),
         provider_name="Trigger Context",
     )
 

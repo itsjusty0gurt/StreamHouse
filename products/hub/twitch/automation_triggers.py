@@ -21,7 +21,8 @@ from shared.streamhouse_runtime.json_store import (
 )
 from shared.streamhouse_runtime.logger import Logger
 from shared.streamhouse_runtime.paths import user_data_root
-from products.hub.twitch.catalog import EVENTSUB_SUBSCRIPTIONS
+from products.hub.twitch.automation_context import lifecycle_context
+from products.hub.twitch.catalog import ADDITIONAL_AUTOMATION_EVENT_TYPES, EVENTSUB_SUBSCRIPTIONS
 from products.hub.twitch.models import TwitchEvent, TwitchMessage
 from products.hub.twitch.raid_contract import OutgoingRaidStartedEvent
 
@@ -50,10 +51,13 @@ TWITCH_EVENT_AUTOMATION_TYPES = (
     "stream.online",
     "stream.offline",
     "channel.chat.first_message",
+    *ADDITIONAL_AUTOMATION_EVENT_TYPES,
 )
 CHANNEL_POINT_REDEMPTION_EVENT_TYPE = (
     "channel.channel_points_custom_reward_redemption.add"
 )
+REDEMPTION_UPDATED_EVENT_TYPE = "channel.channel_points_custom_reward_redemption.update"
+REDEMPTION_EVENT_TYPES = {CHANNEL_POINT_REDEMPTION_EVENT_TYPE, REDEMPTION_UPDATED_EVENT_TYPE}
 KEYWORD_PHRASE_EVENT_TYPE = "channel.chat.keyword_phrase"
 ADS_TRIGGER_TYPES = {
     "ads.warning.5_minutes": "5 Minute Warning",
@@ -83,6 +87,22 @@ TWITCH_TRIGGER_DISPLAY_NAMES = {
     "stream.online": "Stream Online",
     "stream.offline": "Stream Offline",
     "channel.chat.first_message": "First Message Of Stream",
+    "channel.update": "Stream Information Updated",
+    REDEMPTION_UPDATED_EVENT_TYPE: "Channel Point Redemption Updated",
+    "channel.poll.begin": "Poll Began",
+    "channel.poll.progress": "Poll Progressed",
+    "channel.poll.end": "Poll Ended",
+    "channel.prediction.begin": "Prediction Began",
+    "channel.prediction.progress": "Prediction Progressed",
+    "channel.prediction.lock": "Prediction Locked",
+    "channel.prediction.end": "Prediction Ended",
+    "channel.hype_train.begin": "Hype Train Began",
+    "channel.hype_train.progress": "Hype Train Progressed",
+    "channel.hype_train.end": "Hype Train Ended",
+    "channel.shield_mode.begin": "Shield Mode Activated",
+    "channel.shield_mode.end": "Shield Mode Deactivated",
+    "channel.shoutout.create": "Shoutout Created",
+    "channel.shoutout.receive": "Shoutout Received",
     KEYWORD_PHRASE_EVENT_TYPE: "Keyword / Phrase",
     **ADS_TRIGGER_TYPES,
 }
@@ -1441,7 +1461,7 @@ class TwitchEventTriggerStore:
             "target": "--",
             "uses": "--",
         }
-        if twitch_event.subscription_type == CHANNEL_POINT_REDEMPTION_EVENT_TYPE:
+        if twitch_event.subscription_type in REDEMPTION_EVENT_TYPES:
             context.update(
                 {
                     "channel_points.redemption_id": cls._first(event, "id"),
@@ -1449,7 +1469,9 @@ class TwitchEventTriggerStore:
                     "channel_points.reward_title": str(reward.get("title", "")),
                     "channel_points.reward_cost": str(reward.get("cost", "")),
                     "channel_points.reward_prompt": str(reward.get("prompt", "")),
-                    "channel_points.user_input": str(event.get("user_input", "")),
+                    "channel_points.user_input": (
+                        event["user_input"] if isinstance(event.get("user_input"), str) else ""
+                    ),
                     "channel_points.status": cls._first(event, "status"),
                     "channel_points.redeemed_at": cls._first(event, "redeemed_at"),
                 }
@@ -1483,6 +1505,9 @@ class TwitchEventTriggerStore:
             "channel.moderator.add",
             "channel.moderator.remove",
             "channel.unban_request.resolve",
+            "channel.shield_mode.begin",
+            "channel.shield_mode.end",
+            "channel.shoutout.create",
         }:
             moderator_keys = (
                 ("user_id", "user_login", "user_name")
@@ -1549,6 +1574,7 @@ class TwitchEventTriggerStore:
                     "event.started_at": cls._first(event, "started_at"),
                 }
             )
+        context.update(lifecycle_context(twitch_event.subscription_type, event))
         return context
 
     @classmethod
@@ -1632,7 +1658,7 @@ class TwitchEventTriggerStore:
     def _matches_reward(
         event: Mapping[str, Any], trigger: TwitchEventAutomationTrigger
     ) -> bool:
-        if trigger.event_type != CHANNEL_POINT_REDEMPTION_EVENT_TYPE:
+        if trigger.event_type not in REDEMPTION_EVENT_TYPES:
             return True
         if not trigger.reward_id:
             return True

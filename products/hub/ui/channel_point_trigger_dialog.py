@@ -16,7 +16,12 @@ from PySide6.QtWidgets import (
 )
 
 from products.hub.twitch.auth import TwitchAuthService
-from products.hub.twitch.automation_triggers import TwitchEventAutomationTrigger
+from products.hub.twitch.automation_triggers import (
+    CHANNEL_POINT_REDEMPTION_EVENT_TYPE,
+    REDEMPTION_UPDATED_EVENT_TYPE,
+    TwitchEventAutomationTrigger,
+    twitch_trigger_display_name,
+)
 from products.hub.twitch.models import TwitchCustomReward
 from products.hub.twitch.service import TwitchService
 
@@ -49,6 +54,8 @@ class ChannelPointRedemptionTriggerDialog(QDialog):
         auth: TwitchAuthService | None,
         parent: QWidget | None = None,
         trigger: TwitchEventAutomationTrigger | None = None,
+        *,
+        event_type: str = CHANNEL_POINT_REDEMPTION_EVENT_TYPE,
     ) -> None:
         super().__init__(parent)
         self.service = service
@@ -58,7 +65,10 @@ class ChannelPointRedemptionTriggerDialog(QDialog):
         self._request_id = 0
         self._workers: set[_DiscoveryWorker] = set()
         self.thread_pool = QThreadPool.globalInstance()
-        self.setWindowTitle("Edit Channel Point Redemption" if trigger else "Add Channel Point Redemption")
+        self.event_type = trigger.event_type if trigger else event_type
+        self.saved_filters = dict(trigger.filters) if trigger else {}
+        action = "Edit" if trigger else "Add"
+        self.setWindowTitle(f"{action} {twitch_trigger_display_name(self.event_type)}")
         self.setMinimumWidth(470)
 
         layout = QVBoxLayout(self)
@@ -67,6 +77,16 @@ class ChannelPointRedemptionTriggerDialog(QDialog):
         self.enabled_check = QCheckBox("Enabled")
         self.enabled_check.setChecked(trigger.enabled if trigger else True)
         form.addRow("Reward", self.reward_combo)
+        self.status_combo = QComboBox()
+        if self.event_type == REDEMPTION_UPDATED_EVENT_TYPE:
+            for label, value in (("Any", ""), ("Fulfilled", "fulfilled"), ("Canceled / Refunded", "canceled"),
+                                 ("Unfulfilled", "unfulfilled"), ("Unknown", "unknown")):
+                self.status_combo.addItem(label, value)
+            saved_status = self.saved_filters.pop("status", "").casefold()
+            if saved_status and self.status_combo.findData(saved_status) < 0:
+                self.status_combo.addItem(saved_status, saved_status)
+            self.status_combo.setCurrentIndex(max(0, self.status_combo.findData(saved_status)))
+            form.addRow("New status", self.status_combo)
         form.addRow("", self.enabled_check)
         layout.addLayout(form)
         self.status_label = QLabel()
@@ -88,7 +108,7 @@ class ChannelPointRedemptionTriggerDialog(QDialog):
 
     def values(self) -> dict[str, object]:
         reward_id = str(self.reward_combo.currentData() or "")
-        return {
+        values = {
             "reward_id": reward_id,
             "reward_title": (
                 self.reward_combo.currentText().removesuffix(" (Missing)")
@@ -97,6 +117,12 @@ class ChannelPointRedemptionTriggerDialog(QDialog):
             ),
             "enabled": self.enabled_check.isChecked(),
         }
+        if self.event_type == REDEMPTION_UPDATED_EVENT_TYPE:
+            filters = dict(self.saved_filters)
+            if status := self.status_combo.currentData():
+                filters["status"] = status
+            values["filters"] = filters
+        return values
 
     def refresh_rewards(self) -> None:
         self._request_id += 1
