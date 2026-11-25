@@ -83,25 +83,34 @@ split gate passed 1,669 tests and 410 subtests with no skips. One native Qt
 runner crash during Account page setup was recovered by rerunning the
 affected partition in smaller processes.
 
-**0.4 Queue stability — fixes implemented; awaiting manual acceptance.**
+**Core Queue Stability & Controls — complete and merged into `develop`.**
 During acceptance, a burst of 109 Redemption Updated events invoked a
 routine containing Core Play Audio with an `.ogg` file. Hub became temporarily
 unresponsive, then recovered; all 109 routine executions were observed.
 Headless bursts of 25, 100, and 200 requests reproduced inline execution ahead
 of queued Qt callbacks. Review also found full Run History table rebuilds for
 each result. Neither proves the cause of the original live freeze; the live
-burst was not repeated. Live EventSub now admits work to the existing queue
-timer, which starts one ready routine per tick, and Run History updates
-incrementally. New queues default to 25 pending items and Reject New; existing
-limits remain intact. Pause/Resume, Clear Pending, Stop All, and optional
-overflow policies expose active, pending, rejected, and cancelled work.
+burst was not repeated, and the contribution of `.ogg` playback is unknown.
+Live EventSub now enqueues work instead of running it inline. The existing Qt
+timer starts one ready routine per tick and rotates across queues, giving Qt
+time between executions. Run History batches updates and adds rows incrementally.
+Unassigned or unavailable queue references fall back to the protected Default
+Queue. New or unconfigured queues default to one active routine, 25 pending
+items, and Reject New; explicit saved limits are preserved. Pause/Resume,
+Clear Pending, and cooperative Stop All manage work without crossing queue
+boundaries. Drop Oldest Pending and Keep Latest Pending are optional. Queue
+counters account for discarded work and Run History retains recent outcomes.
+Pending work is not replayed after restart.
 The scheduler does not preempt blocking tasks or limit playback after a
 non-waiting Play Audio task completes.
-The split headless regression gate passed 1,684 tests and 410 subtests with
-no skips, including the 25-, 100-, and 200-event Log Message and mocked Play
-Audio stress cases. Packaged manual acceptance is still pending.
-The **Run History Variable Inspector** is a separate proposed Core Automation
-diagnostics enhancement, not part of this stability investigation or merge.
+Final validation passed 15 focused tests and 1,684 full-suite tests with 410
+subtests, no failures or skips, and no native Qt runner crashes. The suite
+included 25-, 100-, and 200-event Log Message and mocked Play Audio bursts.
+The user confirmed packaged manual acceptance of queue controls, overflow,
+accounting, restart behavior, and responsiveness under controlled bursts.
+
+**Planned separately:** Run History Variable Inspector, a Core Automation
+diagnostics enhancement not part of this merge.
 
 The shared Automation Dependency Resolver, portable Routine sharing,
 improved Routine import/export, prebuilt Automation templates, and their
