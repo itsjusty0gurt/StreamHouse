@@ -72,11 +72,32 @@ Remaining 0.4 work: complete Twitch and OBS Automation; add a separately
 movable Stream Information dock tabbed with Activity Feed by default; and
 finish bug fixes, stabilization, release documentation, versioning, and packaging.
 
-**Twitch Automation Pass 1 — ready for manual acceptance (not merged).**
-Adds Stream Information Updated, custom redemption status updates,
-Polls, Predictions, Hype Train v2, Shield Mode, and Shoutout triggers.
-Use the broadcaster's existing reauthorization flow for the new read
-permissions. Live verification is pending; automated tests use mocked Twitch events.
+**Twitch Automation Pass 1 — accepted and merged into `develop`.**
+All 16 new triggers are implemented. The
+[Twitch trigger reference](hub/twitch.md#stream-and-lifecycle-events-04)
+documents EventSub versions, broadcaster scopes, filters, and Variables.
+Functional manual acceptance is complete: the existing Redemption Added
+trigger still worked, and Redemption Updated received real Twitch events.
+Final validation passed 313 focused tests and 46 subtests, and the complete
+split gate passed 1,669 tests and 410 subtests with no skips. One native Qt
+runner crash during Account page setup was recovered by rerunning the
+affected partition in smaller processes.
+
+**Open 0.4 stability issue — Automation responsiveness during bursts.**
+During acceptance, a burst of 109 Redemption Updated events invoked a
+routine containing Core Play Audio with an `.ogg` file. Hub became temporarily
+unresponsive, then recovered; all 109 routine executions were observed.
+The working hypothesis is a Core queue/audio workload issue, not a
+confirmed root cause. The live burst was not repeated during merge validation.
+
+Investigate queue assignment and Default Queue fallback, sequential versus
+concurrent execution, queue scheduling and Qt event-loop blocking, Core Play
+Audio under load, Run History/UI update frequency, queue limits, and
+cancellation. Verify the existing automatic fallback, pause and clear-pending
+controls, cooperative stop/cancel where supported, and pending bounds under
+load. Close any gaps and evaluate configurable overflow behavior.
+The **Run History Variable Inspector** is a separate proposed Core Automation
+diagnostics enhancement, not part of this stability investigation or merge.
 
 The shared Automation Dependency Resolver, portable Routine sharing,
 improved Routine import/export, prebuilt Automation templates, and their
