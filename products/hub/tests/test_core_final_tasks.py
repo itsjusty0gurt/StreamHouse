@@ -219,6 +219,13 @@ def test_http_outputs_reach_later_tasks_but_not_other_runs(app, server, tmp_path
     run = service.run_routine(first.routine_id)
     assert run.succeeded
     assert "automation.http_body" not in dict(run.routine_results[0].context_values)
+    result = run.routine_results[0]
+    final = {item.name: item for item in result.final_variables.variables}
+    assert not result.initial_variables.variables
+    assert final["automation.http_body"].state == "Redacted"
+    assert final["automation.http_body"].value is None
+    assert final["automation.http_status"].value == "200"
+    assert final["automation.http_success"].value == "true"
     assert service.run_routine(second.routine_id).succeeded
     assert observed == ['{"value":"ž"}', None]
     assert variables.resolve("automation.http_body") is None

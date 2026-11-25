@@ -3,10 +3,13 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import re
-from typing import Any, ClassVar, Mapping
+from typing import TYPE_CHECKING, Any, ClassVar, Mapping
 from uuid import uuid4
 
 from products.hub.automation.task_config import normalize_task_config
+
+if TYPE_CHECKING:
+    from products.hub.automation.history_variables import VariableHistoryView
 
 
 DEFAULT_AUTOMATION_QUEUE_ID = "streamhouse.default.queue"
@@ -187,6 +190,9 @@ class RoutineExecutionResult:
     trigger_occurred_at: str = ""
     context_values: tuple[tuple[str, str], ...] = ()
     queue_outcome: str = ""
+    execution_id: str = ""
+    initial_variables: VariableHistoryView | None = None
+    final_variables: VariableHistoryView | None = None
 
 
 @dataclass(frozen=True, slots=True)

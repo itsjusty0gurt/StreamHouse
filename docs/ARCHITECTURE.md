@@ -182,6 +182,9 @@ their providers. Completed executions produce bounded/sanitized Run History.
 Live Twitch WebSocket events enqueue matching routines without executing them
 inline. The existing Qt queue timer claims at most one ready root per tick.
 Queue bounds and overflow rules apply to pending work, not active routines.
+The Run History Variable Inspector reads bounded initial and final views of
+the existing root execution context. It never refreshes live Variables or
+persists snapshots; protected values are removed before entering history.
 
 Task providers return `TaskExecutionResult`. The module foundation extends this
 with an explicit skipped state for unavailable providers so later tasks can

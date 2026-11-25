@@ -109,8 +109,18 @@ included 25-, 100-, and 200-event Log Message and mocked Play Audio bursts.
 The user confirmed packaged manual acceptance of queue controls, overflow,
 accounting, restart behavior, and responsiveness under controlled bursts.
 
-**Planned separately:** Run History Variable Inspector, a Core Automation
-diagnostics enhancement not part of this merge.
+**Run History Variable Inspector — implemented on its feature branch; awaiting manual acceptance.**
+Run Details displays bounded initial/final Variable views from the actual
+execution context, with known origins, comparison, filtering, and safe copy.
+Snapshots follow session-only Run History retention. Private chat content,
+HTTP response bodies, and detected credentials or copies are excluded from
+retained values; arbitrary unlabeled or transformed secrets are not reliably
+detectable. No Variable provider is evaluated by the inspector.
+The final headless gate passed 1,696 tests and 410 subtests, with zero failures
+or skips. The OBS callback tests passed in isolation after native test-order
+crashes also reproduced on untouched `develop`. Controlled 25-, 100-, and
+200-execution tests verified event-loop progress, incremental updates, and
+unchanged history retention.
 
 The shared Automation Dependency Resolver, portable Routine sharing,
 improved Routine import/export, prebuilt Automation templates, and their

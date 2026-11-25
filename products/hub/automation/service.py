@@ -10,6 +10,7 @@ from products.hub.automation.cancellation import (
     cancellation_scope,
     current_cancellation,
 )
+from products.hub.automation.history_variables import ExecutionContext, VariableHistoryView
 from products.hub.automation.models import (
     END_ROUTINE_ACTION,
     AutomationExecutionResult,
@@ -262,12 +263,14 @@ class AutomationService:
         started_at = datetime.now(timezone.utc)
         started_clock = perf_counter()
         execution = AutomationCancellation(queue_id=routine.queue_id)
+        initial = self._capture_variables(trigger)
         with cancellation_scope(execution):
             routine_token = _active_routine.set(routine)
             try:
                 task_result = self._execute_task(routine, task, trigger)
             finally:
                 _active_routine.reset(routine_token)
+        final = self._capture_variables(trigger)
         routine_result = RoutineExecutionResult(
             routine_id=routine.routine_id,
             succeeded=task_result.succeeded,
@@ -280,7 +283,10 @@ class AutomationService:
             trigger_service=trigger.service,
             trigger_type=trigger.trigger_type,
             trigger_occurred_at=trigger.occurred_at,
-            context_values=self.safe_execution_context(trigger.context),
+            context_values=self.safe_execution_context(trigger.context, view=final),
+            execution_id=trigger.event_id,
+            initial_variables=initial,
+            final_variables=final,
         )
         return AutomationExecutionResult(
             event_id=trigger.event_id,
@@ -313,10 +319,15 @@ class AutomationService:
         return routine.name if routine is not None else ""
 
     def _prepare_trigger(self, trigger: TriggerEvent) -> TriggerEvent:
-        context = {str(key): str(value) for key, value in trigger.context.items()}
+        context = ExecutionContext(trigger.context)
         if self.variable_registry is not None:
-            context.update(self.variable_registry.context_values(context))
+            context.materialize(self.variable_registry.snapshots(context))
         return replace(trigger, context=context)
+
+    @staticmethod
+    def _capture_variables(trigger: TriggerEvent) -> VariableHistoryView:
+        context = trigger.context
+        return (context if isinstance(context, ExecutionContext) else ExecutionContext(context)).snapshot()
 
     def _execute_routine(
         self,
@@ -346,6 +357,10 @@ class AutomationService:
                 succeeded=False,
                 detail=f"Routine nesting is limited to {self.max_routine_depth} levels.",
             )
+        root = not routine_stack and (
+            cancellation is not None or _active_routine.get() is None
+        )
+        initial = self._capture_variables(trigger) if root else None
         with cancellation_scope(execution):
             routine_stack.append(routine.routine_id)
             routine_token = _active_routine.set(routine)
@@ -363,6 +378,7 @@ class AutomationService:
                     and bool(task_results)
                     and all(result.succeeded for result in task_results)
                 )
+                final = self._capture_variables(trigger) if root else None
                 routine_result = RoutineExecutionResult(
                     routine_id=routine.routine_id,
                     succeeded=succeeded,
@@ -385,7 +401,10 @@ class AutomationService:
                     trigger_service=trigger.service,
                     trigger_type=trigger.trigger_type,
                     trigger_occurred_at=trigger.occurred_at,
-                    context_values=self.safe_execution_context(trigger.context),
+                    context_values=self.safe_execution_context(trigger.context, view=final) if root else (),
+                    execution_id=(execution.item_id or trigger.event_id) if root else "",
+                    initial_variables=initial,
+                    final_variables=final,
                 )
                 Events.emit(
                     "routine_cancelled"
@@ -447,7 +466,7 @@ class AutomationService:
 
     @staticmethod
     def safe_execution_context(
-        context,
+        context, *, view: VariableHistoryView | None = None,
     ) -> tuple[tuple[str, str], ...]:
         """Capture useful routine metadata without retaining private content.
 
@@ -468,48 +487,11 @@ class AutomationService:
             "raid.",
             "automation.",
         )
-        sensitive_parts = {
-            "api_key",
-            "apikey",
-            "authorization",
-            "credential",
-            "credentials",
-            "oauth",
-            "password",
-            "relay_key",
-            "secret",
-            "token",
-        }
-        message_content_names = {
-            "chat.message",
-            "command.data",
-            "command.target",
-            "event.input",
-            "keyword.after",
-            "keyword.before",
-            "keyword.match",
-            "keyword.message",
-            "subscription.message",
-        }
-        captured: list[tuple[str, str]] = []
-        for raw_name, raw_value in context.items():
-            name = str(raw_name).strip().casefold()
-            if not name.startswith(allowed_prefixes):
-                continue
-            if name in message_content_names:
-                continue
-            if name == "automation.http_body" or (
-                name.startswith("automation.") and name.endswith("_http_body")
-            ):
-                continue
-            parts = set(name.replace("-", "_").split("."))
-            if parts & sensitive_parts or any(
-                part.endswith("_token") or part.endswith("_secret")
-                for part in parts
-            ):
-                continue
-            captured.append((name, str(raw_value)))
-        return tuple(sorted(captured))
+        view = view if view is not None else ExecutionContext(context).snapshot()
+        return tuple(sorted(
+            (name, value) for name, value in view.visible_values()
+            if name.startswith(allowed_prefixes)
+        ))
 
     def _refresh_registry_values(self, trigger: TriggerEvent) -> None:
         """Refresh global/contextual snapshots before each routine task.
@@ -518,10 +500,12 @@ class AutomationService:
         registry variable. Refreshing here keeps composed routines on the same
         authoritative provider path without task-specific output variables.
         """
-        if self.variable_registry is not None and isinstance(trigger.context, dict):
-            trigger.context.update(
-                self.variable_registry.context_values(trigger.context)
-            )
+        if self.variable_registry is not None:
+            context = trigger.context
+            if isinstance(context, ExecutionContext):
+                context.materialize(self.variable_registry.snapshots(context))
+            elif isinstance(context, dict):
+                context.update(self.variable_registry.context_values(context))
 
     def _execute_task(self, routine, task, trigger: TriggerEvent) -> TaskExecutionResult:
         Events.emit(

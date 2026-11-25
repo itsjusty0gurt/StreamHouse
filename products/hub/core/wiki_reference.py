@@ -777,6 +777,17 @@ def _control_flow_entries(task_registry: TaskRegistry) -> tuple[WikiEntry, ...]:
                         "Queue status counts rejected and cancelled items. Recent outcomes appear in Run History. Pending work is not replayed after restart.",
                     ),
                 ),
+                WikiSection(
+                    "Inspect Variables from a run",
+                    (
+                        "In Automation → Run History, select an execution and open Run Details → Variables. The Routine's History panel can open the same details.",
+                        "Initial shows captured context at the start of execution. Final shows the last materialized values and outputs actually written by Tasks, including nested Tasks and Routines. Switch views to compare changes; this is not a step-by-step debugger or the Variable Picker.",
+                        "Sources identify Trigger, Task, Built-in context, Custom Variable, or the provider where known. Empty is a retained blank value; Unavailable is explicit; Not captured means the value only appears in the other view. Redacted and Omitted values cannot be copied.",
+                        "Filter by name, source, or state. Select a row for its complete retained value, then use Copy Variable Name or Copy Value. Previews are shortened without changing the retained value.",
+                        "History keeps the latest 200 entries in this session only. Each view retains at most 96 Variables, 2,048 characters per value, and 16,384 characters of names, source labels, and values together. An incomplete notice marks omitted values or rows.",
+                        "Known credentials, private chat content, and HTTP response bodies are not captured as values. Detectable copies are redacted too, but arbitrary unlabeled or transformed secrets cannot always be identified. Do not put secrets in ordinary Variables.",
+                    ),
+                ),
                 WikiSection("Control-flow tasks", names),
             ),
             ("default queue", "nested routine", "wait", "if else", "cancel"),

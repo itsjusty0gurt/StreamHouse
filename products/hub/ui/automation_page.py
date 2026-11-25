@@ -48,6 +48,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from products.hub.ui.run_history_variables import RunHistoryVariableInspector
 from products.hub.automation.models import (
     DEFAULT_AUTOMATION_QUEUE_ID,
     END_ROUTINE_ACTION,
@@ -3594,6 +3595,7 @@ class RunHistoryDetailsDialog(QDialog):
             ("Trigger", entry.get("trigger", "")),
             ("Trigger source", entry.get("trigger_source", "")),
             ("Trigger ID", entry.get("trigger_id", "")),
+            ("Execution ID", entry.get("execution_id", "")),
             ("Queue", entry.get("queue", "")),
             ("Queue ID", entry.get("queue_id", "")),
             ("Started", entry.get("started", "Not recorded")),
@@ -3634,24 +3636,14 @@ class RunHistoryDetailsDialog(QDialog):
         self.task_tree.expandAll()
         tabs.addTab(timeline_page, "Task Timeline")
 
-        context_page = QWidget()
-        context_layout = QVBoxLayout(context_page)
-        self.context_table = QTableWidget(0, 2)
-        self.context_table.setObjectName("runHistoryContextTable")
-        self.context_table.setHorizontalHeaderLabels(("Variable", "Historical Value"))
-        self.context_table.horizontalHeader().setStretchLastSection(True)
-        self.context_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        context_values = tuple(entry.get("context_values", ()))
-        self.context_table.setRowCount(len(context_values))
-        for row, (name, value) in enumerate(context_values):
-            self.context_table.setItem(row, 0, QTableWidgetItem(str(name)))
-            self.context_table.setItem(row, 1, QTableWidgetItem(str(value)))
-        context_layout.addWidget(self.context_table)
-        if not context_values:
-            note = QLabel("No safe execution context was recorded for this run.")
-            note.setWordWrap(True)
-            context_layout.addWidget(note)
-        tabs.addTab(context_page, "Context")
+        self.variable_inspector = RunHistoryVariableInspector(
+            entry.get("initial_variables"), entry.get("final_variables"),
+            historical_values=AutomationService.safe_execution_context(
+                dict(entry["context_values"])
+            ) if entry.get("context_values") and entry.get("final_variables") is None else (),
+        )
+        self.context_table = self.variable_inspector.table
+        tabs.addTab(self.variable_inspector, "Variables")
         layout.addWidget(tabs)
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
@@ -7297,6 +7289,8 @@ class AutomationPage(QWidget):
                     "routine": routine.name if routine else result.routine_id,
                     "trigger": trigger_label or execution.trigger_id,
                     "trigger_id": execution.trigger_id,
+                    "event_id": execution.event_id,
+                    "execution_id": result.execution_id,
                     "trigger_service": result.trigger_service,
                     "trigger_type": result.trigger_type,
                     "trigger_source": " / ".join(
@@ -7320,7 +7314,9 @@ class AutomationPage(QWidget):
                     "task_entries": task_entries,
                     "context_values": self.automation_service.safe_execution_context(
                         dict(result.context_values)
-                    ),
+                    ) if result.final_variables is None and result.context_values else (),
+                    "initial_variables": result.initial_variables,
+                    "final_variables": result.final_variables,
                 },
             )
         if not added:

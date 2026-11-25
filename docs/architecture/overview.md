@@ -696,14 +696,23 @@ started; merely accepting an item into a queue does not create a completed-run
 entry. `RoutineExecutionResult` retains root timing, queue/trigger metadata,
 ordered task results, selected structured branches and their child task results,
 intentional early-completion control actions, and nested routine results for the
-details window. It
-also captures a small allowlisted snapshot of meaningful dotted trigger
-metadata and `automation.*` outputs at execution time. Twitch message content
-is excluded, including `chat.message`, `command.data`, Keyword/Phrase message
-slices, Channel Point viewer input, and resubscription message text.
-Credential-like names and unrelated global registry state are excluded. The details window reads
-only that snapshot—it must never substitute current live Variable values for
-historical ones. Run History is not persisted across Hub restarts.
+details window. Initial and final Variable views belong to that same root
+execution (or individual Task test) and are keyed by the existing queue item
+or Task-test event identity. Nested routines and If tasks write to the existing
+root context and do not create a second snapshot. The mutable execution
+mapping tracks origins as trigger values, registry values already
+materialized by normal execution, and Task writes. Capture does not query
+providers, resolve additional Variables, or refresh providers after the last
+Task. Pending-only outcomes have no snapshot.
+
+Snapshot values are filtered before entering Run History. No private chat or
+redemption text, credential-like values, known HTTP response bodies, or
+detectable copies are retained. Arbitrary unlabeled or transformed secrets
+cannot be reliably recognized. Each view is bounded to 96 Variable rows,
+2,048 characters per value and 16,384 characters total across names, sources,
+and values. Retention remains the latest 200 entries, in memory only. The
+details dialog reads those immutable views on demand; it never substitutes
+current live values or rebuilds history tables per Variable.
 
 ### Variables
 
