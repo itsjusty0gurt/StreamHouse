@@ -64,6 +64,36 @@ The following are investigation priorities, not confirmed root causes:
 7. Twitch Ad Manager reliability.
 8. Other confirmed regressions.
 
+**Native Qt crash investigation, Pass 1 — Counters correction awaiting packaged validation.**
+The November 25 local fault log and support-bundle copy show a GUI-thread
+access violation in Counters refresh during channel snapshot application.
+The Python stack identifies the line that reads the selection and clears
+the list, but cannot identify the exact native instruction. Offscreen
+baseline probes did not reproduce the access violation. They confirmed
+that unchanged refreshes reset the list, destroyed the selected item's
+native object, and dispatched detail updates during reconstruction.
+A separate worker-originated notification also reached the page after
+shutdown had begun.
+
+Counters now reconciles list items by stable ID, blocks selection signals
+during the update, and refreshes details once. MainWindow ignores pending
+Counter refreshes after shutdown starts. Regression coverage checks item
+identity, filtering and empty transitions, viewer and stream totals, repeated
+channel snapshots, GUI-thread delivery, and late shutdown notifications.
+The corrected page passed 500 isolated refresh cycles across 25 widget
+lifetimes. The list reset is a supported failure-path candidate, not a
+confirmed explanation of the packaged access violation.
+
+The October 28 and 31 support-bundle traces show historical Viewer Memory
+refresh crashes on the snapshot path. That page already received a stable-ID
+and queued-refresh correction; current focused tests passed without further
+changes. A shared native cause with either Viewer Memory or intermittent
+OBS/MainWindow test-runner failures is unverified. No native dump was needed
+or inspected, and the existing diagnostics were preserved.
+Focused validation passed 62 tests and 10 subtests. The full isolated gate
+passed 1,699 tests and 410 subtests without failures, skips, or native runner
+exits; the known OBS order-sensitive tests ran in their own process.
+
 Core Automation Pass 2A is complete: Scheduled
 Time / Cron, Hotkey, Process Started, Process Stopped, and File Watcher all
 passed packaged manual acceptance. Scheduled Time / Cron now uses the

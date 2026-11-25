@@ -19,6 +19,7 @@ from PySide6.QtCore import (
     QMimeData,
     QPoint,
     QRect,
+    QThread,
     Qt,
 )
 from PySide6.QtGui import QContextMenuEvent
@@ -6143,7 +6144,9 @@ class MainWindowTests(unittest.TestCase):
         # delete_counter here would incorrectly operate on an already-removed
         # store and mask the behavior this test is exercising.
         page._select_counter(counter_id)
-        self.assertIn("Stream offline", page.list.currentItem().text())
+        selected_item = page.list.currentItem()
+        resets = QSignalSpy(page.list.model().modelReset)
+        self.assertIn("Stream offline", selected_item.text())
         self.assertFalse(page.set_stream.isEnabled())
 
         now = datetime.now(timezone.utc)
@@ -6164,15 +6167,34 @@ class MainWindowTests(unittest.TestCase):
         self.assertIn("Current Twitch stream: 0 ml", page.summary.text())
         self.assertTrue(page.set_stream.isEnabled())
 
+        for _ in range(12):
+            self.window._apply_channel_snapshot(
+                ChannelSnapshotResult(
+                    request_id=self.window.channel_snapshot_request_id,
+                    snapshot={"stream": {"id": "coffee-stream", "viewer_count": 6, "started_at": now.isoformat()}},
+                )
+            )
+        self.assertIs(page.list.currentItem(), selected_item)
+
+        refresh_threads = []
+        refresh = page.refresh
+
+        def track_refresh():
+            refresh_threads.append(QThread.currentThread())
+            refresh()
+
         worker = Thread(
             target=self.window.counter_service.update_values,
             args=(counter_id, 25, ("channel_total", "stream_total")),
             kwargs={"stream_id": "coffee-stream"},
         )
-        worker.start()
-        worker.join(timeout=2)
-        self.assertFalse(worker.is_alive())
-        self.application.processEvents()
+        with patch.object(page, "refresh", side_effect=track_refresh):
+            worker.start()
+            worker.join(timeout=2)
+            self.assertFalse(worker.is_alive())
+            self.assertEqual(refresh_threads, [])
+            self.application.processEvents()
+            self.assertEqual(refresh_threads, [page.thread()])
         self.assertIn("25 ml", page.list.currentItem().text())
         self.assertIn("Current Twitch stream: 25 ml", page.summary.text())
 
@@ -6190,6 +6212,21 @@ class MainWindowTests(unittest.TestCase):
         self.assertIn("Stream offline", page.list.currentItem().text())
         self.assertIn("Channel lifetime: 50 ml", page.summary.text())
         self.assertFalse(page.set_stream.isEnabled())
+        self.assertIs(page.list.currentItem(), selected_item)
+        self.assertEqual(resets.count(), 0)
+
+    def test_shutdown_ignores_pending_worker_counter_refresh(self) -> None:
+        page = self.window.counters_page
+        with patch.object(page, "refresh", wraps=page.refresh) as refresh:
+            worker = Thread(target=self.window.counter_refresh_requested.emit)
+            worker.start()
+            worker.join(timeout=2)
+            self.assertFalse(worker.is_alive())
+            refresh.assert_not_called()
+            self.window.close()
+            self.application.processEvents()
+            self.assertTrue(self.window._shutting_down)
+            refresh.assert_not_called()
 
     def test_ads_live_snapshot_from_real_worker_enables_controls(self) -> None:
         now = datetime.now(timezone.utc)

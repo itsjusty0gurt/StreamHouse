@@ -3343,6 +3343,8 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def _refresh_counters_page(self) -> None:
+        if self._shutting_down:
+            return
         page = getattr(self, "counters_page", None)
         if page is not None:
             page.refresh()

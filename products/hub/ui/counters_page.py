@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QSignalBlocker, Qt, Signal
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout, QHBoxLayout,
     QInputDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMessageBox,
@@ -193,26 +193,62 @@ class CountersPage(QWidget):
         item = self.list.currentItem(); return str(item.data(Qt.ItemDataRole.UserRole) or "") if item else ""
 
     def refresh(self) -> None:
-        selected = self.selected_id(); query = self.search.text().strip().casefold(); stream_id = self.stream_id_provider(); self.list.clear()
+        selected = self.selected_id()
+        query = self.search.text().strip().casefold()
+        stream_id = self.stream_id_provider()
         try:
             definitions = self.service.list_counters()
         except (OSError, TypeError, ValueError) as error:
+            self._refresh_counter_items([], selected)
             self.empty_state.setVisible(False); self.split.setVisible(True); self.search.setEnabled(False)
             self.title.setText("Counter configuration error"); self.summary.setText(str(error)); self.viewer_table.setRowCount(0)
             return
         self.empty_state.setVisible(not definitions)
         self.split.setVisible(bool(definitions))
         self.search.setEnabled(bool(definitions))
+        rows = []
         for definition in definitions:
             if query and query not in definition.display_name.casefold() and query not in definition.counter_id: continue
             values = self.service.get_values(definition.counter_id, stream_id=stream_id)
             state = "" if definition.enabled else " · Disabled"
             shared = self.service.format_value(definition.counter_id, values.channel_total)
             stream_text = self.service.format_value(definition.counter_id, values.stream_total) + " this stream" if stream_id else "Stream offline"
-            item = QListWidgetItem(f"{definition.display_name}    {shared} · {stream_text}{state}"); item.setData(Qt.ItemDataRole.UserRole, definition.counter_id); self.list.addItem(item)
-            if definition.counter_id == selected: self.list.setCurrentItem(item)
-        if self.list.currentItem() is None and self.list.count(): self.list.setCurrentRow(0)
+            rows.append((definition.counter_id, f"{definition.display_name}    {shared} · {stream_text}{state}"))
+        self._refresh_counter_items(rows, selected)
         self._refresh_detail()
+
+    def _refresh_counter_items(self, rows: list[tuple[str, str]], selected: str) -> None:
+        # Keep native Items alive across snapshot updates. takeItem transfers
+        # ownership instead of clear() destroying items during selection signals.
+        role = Qt.ItemDataRole.UserRole
+        existing = {
+            item.data(role): item
+            for index in range(self.list.count())
+            if (item := self.list.item(index)) is not None
+        }
+        desired = {counter_id for counter_id, _label in rows}
+        with QSignalBlocker(self.list):
+            for counter_id, item in existing.items():
+                if counter_id not in desired:
+                    self.list.takeItem(self.list.row(item))
+            selected_row = 0 if rows else -1
+            for row, (counter_id, label) in enumerate(rows):
+                item = existing.get(counter_id)
+                if item is None:
+                    item = QListWidgetItem(label)
+                    item.setData(role, counter_id)
+                    self.list.insertItem(row, item)
+                else:
+                    current_row = self.list.row(item)
+                    if current_row != row:
+                        self.list.takeItem(current_row)
+                        self.list.insertItem(row, item)
+                    if item.text() != label:
+                        item.setText(label)
+                if counter_id == selected:
+                    selected_row = row
+            if self.list.currentRow() != selected_row:
+                self.list.setCurrentRow(selected_row)
 
     def _definition(self): return self.service.get_counter(self.selected_id()) if self.selected_id() else None
 

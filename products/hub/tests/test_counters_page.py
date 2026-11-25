@@ -7,7 +7,10 @@ import unittest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from PySide6.QtCore import Qt
+from PySide6.QtTest import QSignalSpy
 from PySide6.QtWidgets import QApplication, QComboBox, QHeaderView, QPushButton
+from shiboken6 import isValid
 from unittest.mock import patch
 
 from products.hub.automation.routines import RoutineStore
@@ -64,6 +67,60 @@ class CountersPageTests(unittest.TestCase):
             self.assertTrue(page.set_stream.isEnabled())
         finally:
             page.deleteLater()
+
+    def test_value_refresh_preserves_selected_native_item_and_updates_detail_once(self) -> None:
+        self.service.create_counter(CounterDefinition("coffee", "Coffee", "cup", "cups"))
+        self.page.refresh()
+        self.page._select_counter("farts")
+        item = self.page.list.currentItem()
+        resets = QSignalSpy(self.page.list.model().modelReset)
+        selection_changes = QSignalSpy(self.page.list.currentItemChanged)
+        self.service.update_counter("farts", track_viewer_stream_total=True)
+        self.service.update_values(
+            "farts", 4, ("channel_total", "stream_total", "viewer_total", "viewer_stream_total"),
+            user_id="42", login="fixture", display_name="Fixture Viewer", stream_id="stream-1",
+        )
+        with patch.object(self.page, "_refresh_detail", wraps=self.page._refresh_detail) as detail:
+            self.page.refresh()
+            detail.assert_called_once_with()
+
+        self.assertEqual(resets.count(), 0)
+        self.assertEqual(selection_changes.count(), 0)
+        self.assertTrue(isValid(item))
+        self.assertIs(self.page.list.currentItem(), item)
+        self.assertIn("Current Twitch stream: 4 farts", self.page.summary.text())
+        self.assertEqual(self.page.viewer_table.item(0, 0).text(), "Fixture Viewer")
+        self.assertEqual(self.page.viewer_table.item(0, 1).data(Qt.ItemDataRole.EditRole), 4)
+        self.assertEqual(self.page.viewer_table.item(0, 2).data(Qt.ItemDataRole.EditRole), 4)
+
+    def test_repeated_filter_add_and_remove_keep_surviving_counter_selection(self) -> None:
+        retained = self.page.list.currentItem()
+        resets = QSignalSpy(self.page.list.model().modelReset)
+        selection_changes = QSignalSpy(self.page.list.currentItemChanged)
+        for _ in range(16):
+            self.service.create_counter(CounterDefinition("coffee", "Coffee", "cup", "cups"))
+            self.page.refresh()
+            self.assertEqual(self.page.list.currentRow(), 1)
+            self.assertIs(self.page.list.currentItem(), retained)
+            self.page.search.setText("farts")
+            self.assertEqual(self.page.list.currentRow(), 0)
+            self.assertIs(self.page.list.currentItem(), retained)
+            self.page.search.clear()
+            self.service.delete_counter("coffee")
+            self.page.refresh()
+            self.assertIs(self.page.list.currentItem(), retained)
+        self.service.delete_counter("farts")
+        self.page.refresh()
+        self.assertTrue(isValid(retained))
+        self.assertIsNone(retained.listWidget())
+        self.assertEqual(self.page.selected_id(), "")
+        self.assertEqual(self.page.viewer_table.rowCount(), 0)
+        self.assertTrue(self.page.empty_state.isVisibleTo(self.page))
+        self.service.create_counter(CounterDefinition("coffee", "Coffee", "cup", "cups"))
+        self.page.refresh()
+        self.assertEqual(self.page.selected_id(), "coffee")
+        self.assertEqual(resets.count(), 0)
+        self.assertEqual(selection_changes.count(), 0)
 
     def test_service_reports_successful_value_and_manual_changes(self) -> None:
         changed: list[str] = []
