@@ -632,12 +632,15 @@ Queue policy supports:
 
 - pause/resume;
 - stopping the current routine while preserving later pending items;
-- stopping a queue by cancelling its current routine and clearing its pending items;
-- maximum pending length;
+- **Clear Pending** or **Stop All**, which also requests cancellation of the active routine;
+- maximum pending length (25 for new queues; saved explicit limits are retained);
+- overflow `reject_new` (default), `drop_oldest`, or `keep_latest`, without replacing active work;
 - duplicate `allow`, `ignore`, or `replace`;
 - delay between completed items.
 
-Pending/current queue items are runtime-only. Queue definitions persist.
+Pending/current queue items and outcome counters are runtime-only. Queue
+definitions, including pause and overflow policy, persist. Older definitions
+without an overflow policy default to `reject_new`.
 Deleting a custom queue reassigns its routines to Default Queue; loading an
 empty or dangling pre-alpha assignment normalizes it to the same stable ID.
 Submission and claiming are one thread-safe operation so Qt-triggered routines
@@ -646,14 +649,18 @@ Nested routines remain part of their parent execution and do not enqueue a
 second item. Each claimed root item owns one runtime-only cooperative
 cancellation token shared by its nested routines and active cancellable task.
 Cancellation never crosses queue boundaries. **Stop Current Routine** cancels
-that execution chain and leaves later items queued; **Stop Queue** also removes
-all waiting items. Completed side effects are not rolled back, and cleared
-items that never started do not create run-history entries. Cancelled routines
-are recorded as **Cancelled**, not completed or internally failed. An
+that execution chain and leaves later items queued; **Stop All** also removes
+all waiting items. Completed side effects are not rolled back. Queue status
+counts discarded work, and Run History keeps recent payload-free outcomes for
+rejected, cancelled, or superseded work. Cancelled routines are recorded as
+**Cancelled**, not completed or internally failed. An
 intentional End Routine result is recorded separately as **Completed Early**;
 the queue proceeds normally and retains its waiting entries.
-`AutomationService.process_queues()` is called periodically on the Qt thread so
-Qt-based tasks remain thread-safe.
+Live Twitch WebSocket EventSub dispatch admits matching routines without
+executing them inline. The existing Qt timer starts at most one ready root
+per tick, rotating across queues to avoid starving a ready custom queue. Tasks
+retain their existing execution-thread contracts. Run History batches burst
+updates and adds rows incrementally instead of rebuilding tables per result.
 
 Core **Timer** is an ordinary Automation trigger. One Qt-owned scheduler tracks
 all enabled timer definitions without sleeps or a thread per timer. Exact mode

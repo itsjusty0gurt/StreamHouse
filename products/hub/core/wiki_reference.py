@@ -768,6 +768,15 @@ def _control_flow_entries(task_registry: TaskRegistry) -> tuple[WikiEntry, ...]:
                         "Nested routines participate in the current execution and retain normal cancellation behavior.",
                     ),
                 ),
+                WikiSection(
+                    "Queue controls and limits",
+                    (
+                        "Pause keeps queued work waiting; Resume allows it to run. Clear Pending removes only waiting work. Stop All also requests cancellation of the active routine in that queue; it cannot undo work already completed.",
+                        "New queues allow 25 waiting items by default, not counting the active routine. Existing saved limits are preserved.",
+                        "When full, Reject New keeps the backlog, Drop Oldest makes room for the new item, and Keep Latest replaces the waiting backlog with the new item. None interrupts the active routine.",
+                        "Queue status counts rejected and cancelled items. Recent outcomes appear in Run History. Pending work is not replayed after restart.",
+                    ),
+                ),
                 WikiSection("Control-flow tasks", names),
             ),
             ("default queue", "nested routine", "wait", "if else", "cancel"),

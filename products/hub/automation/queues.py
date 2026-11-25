@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import defaultdict, deque
 from copy import deepcopy
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -24,6 +25,12 @@ from shared.streamhouse_runtime.paths import user_data_root
 
 
 DUPLICATE_POLICIES = frozenset({"allow", "ignore", "replace"})
+OVERFLOW_POLICIES = {
+    "reject_new": "Reject New",
+    "drop_oldest": "Drop Oldest Pending",
+    "keep_latest": "Keep Latest Pending",
+}
+DEFAULT_PENDING_LIMIT = 25
 
 
 @dataclass(slots=True)
@@ -31,9 +38,10 @@ class AutomationQueueDefinition:
     queue_id: str
     name: str
     paused: bool = False
-    max_length: int = 100
+    max_length: int = DEFAULT_PENDING_LIMIT
     duplicate_policy: str = "allow"
     delay_seconds: float = 0.0
+    overflow_policy: str = "reject_new"
 
     @classmethod
     def from_dict(cls, values: dict) -> AutomationQueueDefinition:
@@ -41,9 +49,10 @@ class AutomationQueueDefinition:
             queue_id=str(values.get("queue_id", "")),
             name=str(values.get("name", "")),
             paused=bool(values.get("paused", False)),
-            max_length=int(values.get("max_length", 100)),
+            max_length=int(values.get("max_length", DEFAULT_PENDING_LIMIT)),
             duplicate_policy=str(values.get("duplicate_policy", "allow")),
             delay_seconds=float(values.get("delay_seconds", 0)),
+            overflow_policy=str(values.get("overflow_policy", "reject_new")),
         )
 
 
@@ -61,6 +70,19 @@ class QueueAddResult:
     accepted: bool
     item: QueuedRoutine | None = None
     detail: str = ""
+    outcome: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class PendingDisposition:
+    queue_id: str
+    routine_id: str
+    event_id: str
+    trigger_id: str
+    trigger_service: str
+    trigger_type: str
+    status: str
+    reason: str
 
 
 class AutomationQueueStore:
@@ -108,6 +130,7 @@ class AutomationQueueStore:
         return AutomationQueueDefinition(
             queue_id=DEFAULT_AUTOMATION_QUEUE_ID,
             name=DEFAULT_AUTOMATION_QUEUE_NAME,
+            max_length=DEFAULT_PENDING_LIMIT,
         )
 
     def default(self) -> AutomationQueueDefinition:
@@ -130,9 +153,10 @@ class AutomationQueueStore:
         self,
         name: str,
         *,
-        max_length: int = 100,
+        max_length: int = DEFAULT_PENDING_LIMIT,
         duplicate_policy: str = "allow",
         delay_seconds: float = 0,
+        overflow_policy: str = "reject_new",
     ) -> AutomationQueueDefinition:
         queue = AutomationQueueDefinition(
             uuid4().hex,
@@ -140,6 +164,7 @@ class AutomationQueueStore:
             max_length=max_length,
             duplicate_policy=duplicate_policy,
             delay_seconds=delay_seconds,
+            overflow_policy=overflow_policy,
         )
         values = [*deepcopy(self.queues), queue]
         self._validate(values)
@@ -158,7 +183,7 @@ class AutomationQueueStore:
             and str(changes["name"]).strip() != DEFAULT_AUTOMATION_QUEUE_NAME
         ):
             raise ValueError("The Default Queue cannot be renamed.")
-        for key in ("name", "paused", "max_length", "duplicate_policy", "delay_seconds"):
+        for key in ("name", "paused", "max_length", "duplicate_policy", "delay_seconds", "overflow_policy"):
             if key in changes:
                 setattr(queue, key, changes[key])
         self._validate(values)
@@ -213,6 +238,9 @@ class AutomationQueueStore:
             queue.duplicate_policy = queue.duplicate_policy.strip().casefold()
             if queue.duplicate_policy not in DUPLICATE_POLICIES:
                 raise ValueError("Choose a valid duplicate policy.")
+            queue.overflow_policy = queue.overflow_policy.strip().casefold()
+            if queue.overflow_policy not in OVERFLOW_POLICIES:
+                raise ValueError("Choose a valid overflow policy.")
 
 
 class AutomationQueueManager:
@@ -222,6 +250,9 @@ class AutomationQueueManager:
         self.current: dict[str, QueuedRoutine] = {}
         self._cancellations: dict[str, AutomationCancellation] = {}
         self.ready_at: dict[str, float] = {}
+        self._rejected: dict[str, int] = defaultdict(int)
+        self._cancelled: dict[str, int] = defaultdict(int)
+        self._dispositions: deque[PendingDisposition] = deque(maxlen=200)
         self._lock = RLock()
 
     def enqueue(
@@ -271,11 +302,26 @@ class AutomationQueueManager:
             and self.current[queue_id].routine_id == routine_id
         )
         if duplicate and queue.duplicate_policy == "ignore":
+            self._rejected[queue_id] += 1
             return QueueAddResult(False, detail=f'Ignored duplicate routine "{routine_name}".')
         if duplicate and queue.duplicate_policy == "replace":
+            for item in items:
+                if item.routine_id == routine_id:
+                    self._displace(item, "Superseded", "Replaced by a newer matching routine.")
             items[:] = [item for item in items if item.routine_id != routine_id]
         if len(items) >= queue.max_length:
-            return QueueAddResult(False, detail=f'Queue "{queue.name}" is full.')
+            if queue.overflow_policy == "reject_new":
+                self._rejected[queue_id] += 1
+                return QueueAddResult(False, detail=f'Queue "{queue.name}" is full.', outcome="Rejected")
+            if queue.overflow_policy == "drop_oldest":
+                # An edited limit may be below the existing backlog.
+                displaced = items[:len(items) - queue.max_length + 1]
+                del items[:len(displaced)]
+            else:
+                displaced = items[:]
+                items.clear()
+            for previous in displaced:
+                self._displace(previous, "Superseded", f"Queue overflow: {OVERFLOW_POLICIES[queue.overflow_policy]}.")
         item = QueuedRoutine(
             uuid4().hex,
             queue_id,
@@ -332,14 +378,43 @@ class AutomationQueueManager:
             if item is None:
                 return False
             items.remove(item)
+            self._displace(item, "Cancelled", "Pending execution removed by user.")
             return True
 
-    def clear(self, queue_id: str) -> int:
+    def _displace(self, item: QueuedRoutine, status: str, reason: str) -> None:
+        self._cancelled[item.queue_id] += 1
+        trigger = item.trigger
+        self._dispositions.append(PendingDisposition(
+            item.queue_id, item.routine_id, trigger.event_id, trigger.trigger_id,
+            trigger.service, trigger.trigger_type, status, reason,
+        ))
+
+    def clear(self, queue_id: str, reason: str = "Pending queue cleared.") -> int:
         with self._lock:
             items = self.pending.get(queue_id, [])
             count = len(items)
+            for item in items:
+                self._displace(item, "Cancelled", reason)
             items.clear()
             return count
+
+    def clear_all_pending(self, reason: str) -> int:
+        with self._lock:
+            return sum(self.clear(queue_id, reason) for queue_id in self.pending)
+
+    def outcome_counts(self, queue_id: str) -> tuple[int, int]:
+        with self._lock:
+            return self._rejected.get(queue_id, 0), self._cancelled.get(queue_id, 0)
+
+    def drain_dispositions(self) -> tuple[PendingDisposition, ...]:
+        with self._lock:
+            results = tuple(self._dispositions)
+            self._dispositions.clear()
+            return results
+
+    def record_active_cancelled(self, queue_id: str) -> None:
+        with self._lock:
+            self._cancelled[queue_id] += 1
 
     def cancellation_for(self, item: QueuedRoutine) -> AutomationCancellation:
         with self._lock:
@@ -369,9 +444,7 @@ class AutomationQueueManager:
     ) -> tuple[bool, int]:
         """Cancel the current routine and remove every waiting queue item."""
         with self._lock:
-            items = self.pending.get(queue_id, [])
-            cleared = len(items)
-            items.clear()
+            cleared = self.clear(queue_id, reason)
             cancellation = self._cancellations.get(queue_id)
             cancelled = (
                 cancellation.cancel(reason)

@@ -179,6 +179,9 @@ ID, resolves the routine's queue, and executes ordered task definitions through
 `TaskRegistry`. Nested routines retain the same root execution scope.
 Conditions and control-flow tasks live in Core; provider actions remain with
 their providers. Completed executions produce bounded/sanitized Run History.
+Live Twitch WebSocket events enqueue matching routines without executing them
+inline. The existing Qt queue timer claims at most one ready root per tick.
+Queue bounds and overflow rules apply to pending work, not active routines.
 
 Task providers return `TaskExecutionResult`. The module foundation extends this
 with an explicit skipped state for unavailable providers so later tasks can

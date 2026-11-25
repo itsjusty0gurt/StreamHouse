@@ -28,7 +28,7 @@ from products.hub.twitch.automation_triggers import (
     TwitchEventTriggerStore,
     TwitchSubscriptionEventCorrelator,
 )
-from products.hub.twitch.models import TwitchEvent, TwitchMessage
+from products.hub.twitch.models import TwitchEvent, TwitchEventTransport, TwitchMessage
 from products.hub.twitch.raid_contract import OutgoingRaidStartedEvent
 from products.hub.twitch.service import TwitchConnectionState, TwitchService
 from products.hub.twitch.channel_information import ChannelInformationStore
@@ -823,15 +823,23 @@ class TwitchModule:
         if self.trigger_store is None:
             return
         for trigger in self.trigger_store.evaluate(event):
-            self._publish_trigger(trigger, f"Twitch event {event.subscription_type}")
+            self._publish_trigger(
+                trigger, f"Twitch event {event.subscription_type}",
+                defer=event.transport is TwitchEventTransport.WEBSOCKET,
+            )
 
-    def _publish_trigger(self, trigger: TriggerEvent, label: str) -> None:
+    def _publish_trigger(self, trigger: TriggerEvent, label: str, *, defer: bool = False) -> None:
         context = self._context
         if not self._started or context is None or context.automation is None:
             return
-        execution = context.automation.publish_trigger(trigger)
+        execution = (
+            context.automation.publish_trigger(trigger, defer=True)
+            if defer else context.automation.publish_trigger(trigger)
+        )
         if context.execution_recorder is not None:
             context.execution_recorder(execution, label)
+        if defer:
+            return  # Core owns admission and completion reporting for scheduled events.
         if execution.succeeded:
             Logger.info(f'Executed Twitch automation for "{label}".', source="AUTOMATION")
         elif execution.handled:

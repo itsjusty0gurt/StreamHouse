@@ -61,8 +61,12 @@ class AutomationService:
         )
         self.variable_registry = variable_registry
         self.max_routine_depth = 10
+        self._next_queue_index = 0
+        self._reported_queue_fallbacks: set[tuple[str, str]] = set()
 
-    def publish_trigger(self, trigger: TriggerEvent) -> AutomationExecutionResult:
+    def publish_trigger(
+        self, trigger: TriggerEvent, *, defer: bool = False
+    ) -> AutomationExecutionResult:
         source_trigger = trigger
         trigger = self._prepare_trigger(source_trigger)
         Events.emit("trigger_fired", trigger=trigger)
@@ -75,7 +79,7 @@ class AutomationService:
             if routine.routine_id in trigger.routine_ancestry:
                 continue
             prepared = self._prepare_trigger(source_trigger)
-            routine_result = self._publish_routine(routine, prepared)
+            routine_result = self._publish_routine(routine, prepared, defer=defer)
             results.append(routine_result)
         return AutomationExecutionResult(
             event_id=trigger.event_id,
@@ -83,24 +87,32 @@ class AutomationService:
             routine_results=tuple(results),
         )
 
-    def _publish_routine(self, routine, trigger: TriggerEvent) -> RoutineExecutionResult:
+    def _publish_routine(
+        self, routine: RoutineDefinition, trigger: TriggerEvent, *, defer: bool = False
+    ) -> RoutineExecutionResult:
         queue = self.queue_manager.store.resolve(routine.queue_id)
-        queued, ready = self.queue_manager.submit(
-            queue.queue_id,
-            routine.routine_id,
-            routine.name,
-            trigger,
-        )
-        Events.emit(
-            "automation_queue_changed",
-            queue_id=queue.queue_id,
-        )
+        if routine.queue_id and queue.queue_id != routine.queue_id:
+            key = (routine.routine_id, routine.queue_id)
+            if key not in self._reported_queue_fallbacks:
+                self._reported_queue_fallbacks.add(key)
+                Logger.warning("Routine queue unavailable; using Default Queue.", source="AUTOMATION")
+        args = (queue.queue_id, routine.routine_id, routine.name, trigger)
+        if defer:
+            queued, ready = self.queue_manager.enqueue(*args), None
+        else:
+            queued, ready = self.queue_manager.submit(*args)
+        if not defer:
+            Events.emit("automation_queue_changed", queue_id=queue.queue_id)
         if not queued.accepted:
             ignored = queued.detail.startswith("Ignored duplicate")
             return RoutineExecutionResult(
                 routine_id=routine.routine_id,
                 succeeded=ignored,
                 detail=queued.detail,
+                queue_id=queue.queue_id,
+                trigger_service=trigger.service,
+                trigger_type=trigger.trigger_type,
+                queue_outcome=queued.outcome,
             )
         if ready is None:
             return RoutineExecutionResult(
@@ -127,26 +139,37 @@ class AutomationService:
                     detail=f'Queued routine "{routine.name}" is disabled.',
                 )
             Events.emit("automation_queue_item_started", item=item)
-            return self._execute_routine(
+            result = self._execute_routine(
                 routine,
                 item.trigger,
                 self.queue_manager.cancellation_for(item),
             )
+            if result.cancelled:
+                self.queue_manager.record_active_cancelled(item.queue_id)
+            return result
         finally:
             self.queue_manager.complete(item.queue_id)
             Events.emit("automation_queue_changed", queue_id=item.queue_id)
 
-    def process_queues(self) -> tuple[AutomationExecutionResult, ...]:
+    def process_queues(self, *, max_items: int | None = None) -> tuple[AutomationExecutionResult, ...]:
         """Run at most one ready item per queue.
 
         The UI calls this periodically on Qt's main thread so Qt-based tasks
         remain thread-safe while paused and delayed queues can build a backlog.
         """
         executions: list[AutomationExecutionResult] = []
-        for queue in tuple(self.queue_manager.store.queues):
+        queues = tuple(self.queue_manager.store.queues)
+        indices = range(len(queues))
+        if max_items is not None and queues:
+            first = self._next_queue_index % len(queues)
+            indices = (*range(first, len(queues)), *range(first))
+        for index in indices:
+            queue = queues[index]
             item = self.queue_manager.take_ready(queue.queue_id)
             if item is None:
                 continue
+            if max_items is not None:
+                self._next_queue_index = (index + 1) % len(queues)
             result = self._execute_queued_item(item)
             execution = AutomationExecutionResult(
                 event_id=item.trigger.event_id,
@@ -159,6 +182,8 @@ class AutomationService:
                 execution=execution,
                 item=item,
             )
+            if max_items is not None and len(executions) >= max_items:
+                break
         return tuple(executions)
 
     def run_routine(

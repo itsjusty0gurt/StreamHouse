@@ -15,7 +15,7 @@ from zipfile import BadZipFile, ZIP_DEFLATED, ZipFile
 
 from products.hub.automation.core_triggers import CoreTriggerStore
 from products.hub.automation.custom_variables import CustomVariableStore
-from products.hub.automation.queues import AutomationQueueStore
+from products.hub.automation.queues import DEFAULT_PENDING_LIMIT, AutomationQueueStore
 from products.hub.automation.routines import RoutineStore
 from products.hub.automation.models import DEFAULT_AUTOMATION_QUEUE_ID
 from products.hub.core.settings import SettingsStore
@@ -732,7 +732,8 @@ class BackupManager:
                         "queue_id": DEFAULT_AUTOMATION_QUEUE_ID,
                         "name": "Default Queue",
                         "paused": False,
-                        "max_length": 100,
+                        "max_length": DEFAULT_PENDING_LIMIT,
+                        "overflow_policy": "reject_new",
                         "duplicate_policy": "allow",
                         "delay_seconds": 0.0,
                     }

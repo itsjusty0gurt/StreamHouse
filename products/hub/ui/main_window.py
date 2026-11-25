@@ -9024,6 +9024,7 @@ class MainWindow(QMainWindow):
         )
 
     def _reload_restored_state(self) -> None:
+        self.automation_queue_manager.clear_all_pending("Hub data was restored.")
         self.automation_queue_manager.cancel_all_current(
             "Hub data was restored."
         )
@@ -9231,6 +9232,8 @@ class MainWindow(QMainWindow):
         self.timers_page.shutdown()
         self.automation_timer_scheduler.shutdown()
         self.core_if_trigger_runtime.stop()
+        self.automation_page.queue_timer.stop()
+        discarded_pending = self.automation_queue_manager.clear_all_pending("Hub is shutting down.")
         self.automation_queue_manager.cancel_all_current(
             "Hub is shutting down."
         )
@@ -9242,6 +9245,12 @@ class MainWindow(QMainWindow):
         if not self._core_closing_fired:
             self._core_closing_fired = True
             self._fire_core_automation_event("application.closing")
+        discarded_pending += self.automation_queue_manager.clear_all_pending("Hub is shutting down.")
+        if discarded_pending:
+            Logger.info(
+                f"Cancelled {discarded_pending} pending Automation execution(s) on shutdown.",
+                source="AUTOMATION",
+            )
         self.module_registry.stop_started()
         self.window_state_store.save(self)
         if not self._save_chatter_history():

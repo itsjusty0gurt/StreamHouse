@@ -722,7 +722,7 @@ _NOTES = {
     "core.wait": ("Stopping the current routine interrupts an active Wait.",),
     "core.close_application": ("Force close can discard unsaved work in the target application.",),
     "core.run_routine": ("Routine nesting is limited to ten levels and recursive loops are blocked.",),
-    "core.clear_queue": ("This removes pending items only; use Stop Queue in the Queues tab to stop the active routine too.",),
+    "core.clear_queue": ("This removes pending items only; use Stop All in the Queues tab to request cancellation of the active routine too.",),
     "core.end_routine": (
         "Tasks after End Routine do not run and completed actions are not undone.",
         "It ends only the containing routine; it does not cancel the queue or parent routine.",

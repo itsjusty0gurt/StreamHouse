@@ -52,10 +52,12 @@ from products.hub.automation.models import (
     DEFAULT_AUTOMATION_QUEUE_ID,
     END_ROUTINE_ACTION,
     AutomationExecutionResult,
+    RoutineExecutionResult,
     TaskDefinition,
     TriggerEvent,
 )
 from products.hub.core.diagnostics import redact_sensitive_text
+from shared.streamhouse_runtime.logger import Logger
 from products.hub.automation.core_triggers import (
     CORE_TRIGGER_TYPES,
     IF_TRIGGER_FIRING_MODES,
@@ -107,6 +109,8 @@ from products.hub.integrations.music_triggers import (
 )
 from products.hub.automation.file_tasks import FILE_TASK_TYPES
 from products.hub.automation.queues import (
+    DEFAULT_PENDING_LIMIT,
+    OVERFLOW_POLICIES,
     AutomationQueueDefinition,
     AutomationQueueManager,
     AutomationQueueStore,
@@ -3513,7 +3517,12 @@ class QueueEditorDialog(QDialog):
             self.name_edit.setReadOnly(True)
         self.max_length_spin = QSpinBox()
         self.max_length_spin.setRange(1, 10_000)
-        self.max_length_spin.setValue(queue.max_length if queue else 100)
+        self.max_length_spin.setValue(queue.max_length if queue else DEFAULT_PENDING_LIMIT)
+        self.overflow_combo = QComboBox()
+        for value, label in OVERFLOW_POLICIES.items():
+            self.overflow_combo.addItem(label, value)
+        if queue:
+            self.overflow_combo.setCurrentIndex(self.overflow_combo.findData(queue.overflow_policy))
         self.duplicate_combo = QComboBox()
         self.duplicate_combo.addItem("Allow every trigger", "allow")
         self.duplicate_combo.addItem("Ignore if already queued or running", "ignore")
@@ -3529,6 +3538,7 @@ class QueueEditorDialog(QDialog):
         self.delay_spin.setValue(queue.delay_seconds if queue else 0)
         form.addRow("Name", self.name_edit)
         form.addRow("Maximum pending", self.max_length_spin)
+        form.addRow("When full", self.overflow_combo)
         form.addRow("Duplicate triggers", self.duplicate_combo)
         form.addRow("Delay between routines", self.delay_spin)
         layout.addLayout(form)
@@ -3558,6 +3568,7 @@ class QueueEditorDialog(QDialog):
             "max_length": self.max_length_spin.value(),
             "duplicate_policy": str(self.duplicate_combo.currentData()),
             "delay_seconds": self.delay_spin.value(),
+            "overflow_policy": str(self.overflow_combo.currentData()),
         }
 
 
@@ -3744,6 +3755,10 @@ class AutomationPage(QWidget):
         self.soundboard_store = soundboard_store
         self.user_groups = user_groups
         self.history: list[dict[str, object]] = []
+        self._pending_history_rows: list[dict[str, object]] = []
+        self._history_render_scheduled = False
+        self._history_sequence = 0
+        self._routine_history_sequence = 0
         self._selected_routine_id = ""
         self._selected_task_id = ""
         self._task_items_by_id: dict[
@@ -3966,16 +3981,24 @@ class AutomationPage(QWidget):
         self.queue_title_label.setFont(title_font)
         self.pause_queue_button = QPushButton("Pause")
         self.stop_current_routine_button = QPushButton("Stop Current Routine")
-        self.stop_queue_button = QPushButton("Stop Queue")
+        self.clear_pending_button = QPushButton("Clear Pending")
+        self.stop_queue_button = QPushButton("Stop All")
+        self.stop_queue_button.setToolTip(
+            "Clear this queue and request cancellation of its current routine. "
+            "Tasks that cannot cancel safely finish first."
+        )
         header.addWidget(self.queue_title_label)
         header.addStretch()
         header.addWidget(self.pause_queue_button)
         header.addWidget(self.stop_current_routine_button)
+        header.addWidget(self.clear_pending_button)
         header.addWidget(self.stop_queue_button)
         details_layout.addLayout(header)
         self.queue_status_label = QLabel("Choose a custom queue to inspect it.")
         self.queue_status_label.setWordWrap(True)
         details_layout.addWidget(self.queue_status_label)
+        self.queue_feedback_label = QLabel()
+        details_layout.addWidget(self.queue_feedback_label)
         details_layout.addWidget(QLabel("Pending routines — drag to reorder"))
         self.pending_queue_list = QListWidget()
         self.pending_queue_list.setAlternatingRowColors(True)
@@ -4003,6 +4026,7 @@ class AutomationPage(QWidget):
             self._stop_current_routine
         )
         self.stop_queue_button.clicked.connect(self._stop_queue)
+        self.clear_pending_button.clicked.connect(self._clear_pending)
         self.remove_queue_item_button.clicked.connect(self._remove_queue_item)
         self.queue_list.itemSelectionChanged.connect(self._queue_selected)
         self.pending_queue_list.model().rowsMoved.connect(
@@ -4011,6 +4035,7 @@ class AutomationPage(QWidget):
             )
         )
         self._queue_state_snapshot: tuple = ()
+        self._reported_queue_counts: dict[str, tuple[int, int]] = {}
 
     def _selected_queue_id(self) -> str:
         item = self.queue_list.currentItem()
@@ -4031,6 +4056,8 @@ class AutomationPage(QWidget):
                     queue.max_length,
                     queue.duplicate_policy,
                     queue.delay_seconds,
+                    queue.overflow_policy,
+                    self.queue_manager.outcome_counts(queue.queue_id),
                     getattr(current, "item_id", ""),
                     self.queue_manager.current_cancelled(queue.queue_id),
                     tuple(item.item_id for item in pending),
@@ -4101,6 +4128,7 @@ class AutomationPage(QWidget):
         self.pause_queue_button.setEnabled(enabled)
         self.stop_current_routine_button.setEnabled(False)
         self.stop_queue_button.setEnabled(False)
+        self.clear_pending_button.setEnabled(False)
         self.remove_queue_item_button.setEnabled(False)
         self.pending_queue_list.clear()
         if queue is None:
@@ -4113,6 +4141,8 @@ class AutomationPage(QWidget):
         self.pause_queue_button.setText("Resume" if queue.paused else "Pause")
         current, pending = self.queue_manager.state(queue.queue_id)
         current_cancelled = self.queue_manager.current_cancelled(queue.queue_id)
+        rejected, cancelled = self.queue_manager.outcome_counts(queue.queue_id)
+        self.clear_pending_button.setEnabled(bool(pending))
         self.stop_current_routine_button.setEnabled(
             current is not None and not current_cancelled
         )
@@ -4120,9 +4150,13 @@ class AutomationPage(QWidget):
             bool(pending) or (current is not None and not current_cancelled)
         )
         self.queue_status_label.setText(
+            f"{'Paused' if queue.paused else 'Running' if current else 'Ready'}"
+            f"  •  Active: {int(current is not None)}  •  Pending: {len(pending)}"
+            f"  •  Rejected: {rejected}  •  Cancelled: {cancelled}\n"
             f"Current: {current.routine_name if current else 'None'}"
             f"{' (cancelling)' if current_cancelled else ''}  •  "
-            f"Limit: {queue.max_length}  •  Duplicates: {queue.duplicate_policy.title()}  •  "
+            f"Limit: {queue.max_length} ({OVERFLOW_POLICIES[queue.overflow_policy]})  •  "
+            f"Duplicates: {queue.duplicate_policy.title()}  •  "
             f"Delay: {queue.delay_seconds:g}s"
         )
         for item in pending:
@@ -4211,10 +4245,22 @@ class AutomationPage(QWidget):
         queue = self._selected_queue()
         if queue is None:
             return
-        self.queue_manager.stop(
+        cancelling, cleared = self.queue_manager.stop(
             queue.queue_id,
             "Queue stopped by user.",
         )
+        self.queue_feedback_label.setText(
+            f"Cleared {cleared} pending execution(s)."
+            + (" Cancellation requested for the active execution." if cancelling else "")
+        )
+        self._refresh_queues(queue.queue_id)
+
+    def _clear_pending(self) -> None:
+        queue = self._selected_queue()
+        if queue is None:
+            return
+        count = self.queue_manager.clear(queue.queue_id, "Pending executions cleared by user.")
+        self.queue_feedback_label.setText(f"Cleared {count} pending execution(s).")
         self._refresh_queues(queue.queue_id)
 
     def _remove_queue_item(self) -> None:
@@ -4245,7 +4291,30 @@ class AutomationPage(QWidget):
         self._refresh_queues(queue.queue_id)
 
     def _poll_queues(self) -> None:
-        for execution in self.automation_service.process_queues():
+        rejected = cancelled = 0
+        for queue in self.queue_store.queues:
+            counts = self.queue_manager.outcome_counts(queue.queue_id)
+            previous = self._reported_queue_counts.get(queue.queue_id, (0, 0))
+            rejected += counts[0] - previous[0]
+            cancelled += counts[1] - previous[1]
+            self._reported_queue_counts[queue.queue_id] = counts
+        if rejected or cancelled:
+            Logger.info(
+                f"Automation queues: {rejected} rejected or ignored, {cancelled} cancelled or superseded.",
+                source="AUTOMATION",
+            )
+        for disposition in self.queue_manager.drain_dispositions():
+            self.record_execution(
+                AutomationExecutionResult(disposition.event_id, disposition.trigger_id, (
+                    RoutineExecutionResult(
+                        disposition.routine_id, False, detail=disposition.reason,
+                        queue_id=disposition.queue_id, trigger_service=disposition.trigger_service,
+                        trigger_type=disposition.trigger_type, queue_outcome=disposition.status,
+                    ),
+                )),
+                "Queue disposition", defer_render=True,
+            )
+        for execution in self.automation_service.process_queues(max_items=1):
             routine = (
                 self.routine_store.get(execution.routine_results[0].routine_id)
                 if execution.routine_results
@@ -4254,6 +4323,7 @@ class AutomationPage(QWidget):
             self.record_execution(
                 execution,
                 f"Queued — {routine.name if routine else execution.trigger_id}",
+                defer_render=True,
             )
         if self._queue_snapshot() != self._queue_state_snapshot:
             self._refresh_queues(self._selected_queue_id())
@@ -7194,8 +7264,10 @@ class AutomationPage(QWidget):
         return effects.get(task.task_type, "")
 
     def record_execution(
-        self, execution: AutomationExecutionResult, trigger_label: str = ""
+        self, execution: AutomationExecutionResult, trigger_label: str = "", *,
+        defer_render: bool = False,
     ) -> None:
+        added = []
         for result in execution.routine_results:
             # Queue acceptance is not a completed run. The claimed queue item
             # is recorded later with its actual execution result.
@@ -7206,18 +7278,20 @@ class AutomationPage(QWidget):
             queue_id = result.queue_id or (routine.queue_id if routine else "")
             queue = self.queue_store.resolve(queue_id)
             task_entries = self._history_task_entries(result)
+            self._history_sequence += 1
             status = (
-                "Cancelled"
+                result.queue_outcome
+                or ("Cancelled"
                 if result.cancelled
                 else "Completed Early"
                 if result.succeeded and result.flow_action == END_ROUTINE_ACTION
                 else "Completed"
                 if result.succeeded
-                else "Failed"
+                else "Failed")
             )
-            self.history.insert(
-                0,
+            added.append(
                 {
+                    "history_sequence": self._history_sequence,
                     "when": self._history_time(result.started_at),
                     "routine_id": result.routine_id,
                     "routine": routine.name if routine else result.routine_id,
@@ -7231,7 +7305,7 @@ class AutomationPage(QWidget):
                         if value
                     ),
                     "queue": queue.name,
-                    "queue_id": queue.queue_id,
+                    "queue_id": queue_id or queue.queue_id,
                     "started": self._history_timestamp(result.started_at),
                     "finished": self._history_timestamp(result.finished_at),
                     "duration": self._history_duration(result.duration_ms),
@@ -7249,11 +7323,59 @@ class AutomationPage(QWidget):
                     ),
                 },
             )
+        if not added:
+            return
+        self.history[0:0] = reversed(added)
         del self.history[200:]
-        self._refresh_history_table()
-        self._refresh_routine_history()
+        self._pending_history_rows.extend(added)
+        del self._pending_history_rows[:-200]
+        if defer_render or any(result.queue_outcome for result in execution.routine_results):
+            if not self._history_render_scheduled:
+                self._history_render_scheduled = True
+                QTimer.singleShot(0, self, self._flush_history_rows)
+            return
+        self._flush_history_rows()
+
+    def _flush_history_rows(self) -> None:
+        self._history_render_scheduled = False
+        entries, self._pending_history_rows = self._pending_history_rows[-200:], []
+        if not entries:
+            return
+        self._prepend_history_rows(
+            self.history_table, entries, ("when", "routine", "trigger", "result", "tasks"), len(self.history)
+        )
+        # A selection refresh may already have rendered some or all of the batch.
+        selected = self._selected_routine_id
+        matching_rows = [
+            entry for entry in entries
+            if entry["routine_id"] == selected and entry["history_sequence"] > self._routine_history_sequence
+        ]
+        self._prepend_history_rows(
+            self.routine_history_table, matching_rows, ("when", "trigger", "result", "tasks"),
+            sum(entry["routine_id"] == selected for entry in self.history),
+        )
+        self._routine_history_sequence = self._history_sequence
+        if matching_rows:
+            self.routine_history_table.selectRow(0)
         if self.history_table.rowCount():
             self.history_table.selectRow(0)
+
+    @staticmethod
+    def _prepend_history_rows(table, entries, keys, count: int) -> None:
+        table.setUpdatesEnabled(False)
+        table.blockSignals(True)
+        try:
+            for entry in entries:
+                table.insertRow(0)
+                for column, key in enumerate(keys):
+                    item = QTableWidgetItem(str(entry[key]))
+                    if column == 0:
+                        item.setData(Qt.ItemDataRole.UserRole, entry)
+                    table.setItem(0, column, item)
+            table.setRowCount(count)
+        finally:
+            table.blockSignals(False)
+            table.setUpdatesEnabled(True)
 
     @staticmethod
     def _history_time(value: str) -> str:
@@ -7374,18 +7496,8 @@ class AutomationPage(QWidget):
                 lines.append(f"   {task_result.detail}")
         return "\n".join(lines) or "No task results were recorded."
 
-    def _refresh_history_table(self) -> None:
-        self.history_table.setRowCount(len(self.history))
-        for row, entry in enumerate(self.history):
-            for column, key in enumerate(
-                ("when", "routine", "trigger", "result", "tasks")
-            ):
-                item = QTableWidgetItem(str(entry[key]))
-                if column == 0:
-                    item.setData(Qt.ItemDataRole.UserRole, entry)
-                self.history_table.setItem(row, column, item)
-
     def _refresh_routine_history(self) -> None:
+        self._routine_history_sequence = self._history_sequence
         entries = [
             entry
             for entry in self.history

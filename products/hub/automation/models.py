@@ -186,6 +186,7 @@ class RoutineExecutionResult:
     trigger_type: str = ""
     trigger_occurred_at: str = ""
     context_values: tuple[tuple[str, str], ...] = ()
+    queue_outcome: str = ""
 
 
 @dataclass(frozen=True, slots=True)
