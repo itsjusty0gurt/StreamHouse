@@ -50,7 +50,21 @@
 
 ## Active development focus
 
-Hub 0.4 feature scope is locked. Core Automation Pass 2A is complete: Scheduled
+**Hub 0.4 is now in bug-fixing and stabilization.** Further feature work
+(including Twitch/OBS Automation expansions and the Stream Information dock)
+is deferred until stabilization is complete or priorities explicitly change.
+The following are investigation priorities, not confirmed root causes:
+
+1. Counters UI native access violation.
+2. Historical viewer-memory native crashes.
+3. Intermittent OBS/Qt test-order crashes.
+4. Remaining audio/UI blocking risks.
+5. Twitch reconnect and EventSub lifecycle verification.
+6. Dynamic window resizing.
+7. Twitch Ad Manager reliability.
+8. Other confirmed regressions.
+
+Core Automation Pass 2A is complete: Scheduled
 Time / Cron, Hotkey, Process Started, Process Stopped, and File Watcher all
 passed packaged manual acceptance. Scheduled Time / Cron now uses the
 operating system's local timezone rules rather than Qt's incorrect fallback
@@ -67,10 +81,6 @@ The planned 0.4 Core Automation implementation is complete: Core If Trigger
 and nested If/Else Tasks, Comment, Custom Event and Send Custom Event, Set
 Trigger State, Log Message, the Pass 2A triggers above, and the three Pass 2B
 tasks. Final regression validation passed 1,645 tests and 410 subtests.
-
-Remaining 0.4 work: complete Twitch and OBS Automation; add a separately
-movable Stream Information dock tabbed with Activity Feed by default; and
-finish bug fixes, stabilization, release documentation, versioning, and packaging.
 
 **Twitch Automation Pass 1 — accepted and merged into `develop`.**
 All 16 new triggers are implemented. The
@@ -109,18 +119,27 @@ included 25-, 100-, and 200-event Log Message and mocked Play Audio bursts.
 The user confirmed packaged manual acceptance of queue controls, overflow,
 accounting, restart behavior, and responsiveness under controlled bursts.
 
-**Run History Variable Inspector — implemented on its feature branch; awaiting manual acceptance.**
-Run Details displays bounded initial/final Variable views from the actual
-execution context, with known origins, comparison, filtering, and safe copy.
-Snapshots follow session-only Run History retention. Private chat content,
-HTTP response bodies, and detected credentials or copies are excluded from
-retained values; arbitrary unlabeled or transformed secrets are not reliably
-detectable. No Variable provider is evaluated by the inspector.
-The final headless gate passed 1,696 tests and 410 subtests, with zero failures
-or skips. The OBS callback tests passed in isolation after native test-order
-crashes also reproduced on untouched `develop`. Controlled 25-, 100-, and
-200-execution tests verified event-loop progress, incremental updates, and
-unchanged history retention.
+**Run History Variable Inspector — implemented and merged into `develop`.**
+Run Details → Variables shows execution-scoped Initial and Final snapshots
+of materialized values, with known origins, filtering, comparison, and safe
+copy. Final includes outputs from Tasks, nested If tasks, and nested Routines.
+No Variable provider is evaluated by the inspector. Each view is limited to
+96 Variables, 2,048 characters per value, and 16,384 characters total. Run
+History still retains the latest 200 entries, for the current session only.
+Private chat content, HTTP response bodies, and detected credentials or copies
+are excluded from retained values; arbitrary unlabeled or transformed secrets
+are not reliably detectable.
+
+Final validation: 90 focused tests and 10 subtests; full headless coverage of
+1,696 tests and 410 subtests, with no unresolved failures or skips. Controlled
+25-, 100-, and 200-execution bursts verified event-loop progress, incremental
+updates, and retention. After one native MainWindow runner interruption and
+two Qt timer assertion failures (Core Wait and waited audio), all affected
+tests passed on isolated reruns.
+The previously order-sensitive OBS callback tests passed in a dedicated
+process. The actual Open Details workflow passed offscreen with disposable
+routines. Merge was authorized; a dedicated packaged hands-on pass was not
+reported.
 
 The shared Automation Dependency Resolver, portable Routine sharing,
 improved Routine import/export, prebuilt Automation templates, and their
