@@ -108,6 +108,58 @@ Twitch Account page construction; all seven tests passed in smaller processes.
 The original order passed on untouched `develop` in a comparison run. The known
 OBS order-sensitive tests ran in their own process.
 
+**Qt test lifecycle, Phase 1 — stabilization remains open.**
+The OBS callback tests followed by `test_twitch_account_page.py` aborted
+twice on the baseline (Windows exit `0xC0000409`). Running just a
+`QCoreApplication` followed by a QWidget produced the same exit and the
+explicit Qt diagnostic that a QWidget requires QApplication. The OBS tests
+now retain a QApplication and explicitly destroy their stopped service.
+
+Holding a MainWindow reference across the old fixture teardown showed that
+`close()` plus `processEvents()` left its native tree valid, including the
+Account widget and an active 10-second chatter-history save timer. The
+fixture now delivers the window's deferred deletion before removing
+disposable storage or restoring patches. Three corrected fixture cycles
+destroyed the native tree, restored the global event listeners, and removed
+the disposable storage. This is a test-fixture correction, not evidence that
+the timer caused the historical access violations.
+
+A gated real Account worker delivered its unbound cleanup lambda on the GUI
+thread after the page's native object was destroyed. Runtime cleanup now
+lives in the page's existing Qt completion slots, which Qt disconnects at
+destruction. Account rendering and generation checks are unchanged. Tests
+cover gated completion before, during, and after destruction, stale identity
+results, and a pending local avatar delivery. An OBS nested wait test checks
+disconnect, reconnect-timer shutdown, late-response rejection, and native
+socket and timer destruction; no OBS runtime changes were needed.
+
+The archived Account construction faults show an access violation at network
+manager initialization (`0xC0000005`), distinct from the missing-QApplication
+abort. This phase's uninterrupted baseline run stopped at MainWindow's
+`test_command_context_menu_mirrors_toolbar_for_each_source` without a
+retained fault stack. The Run History validation interruption was reported
+from earlier runner output. Its JUnit reports show that
+`test_nested_qt_event_loop_keeps_ui_events_processing` and
+`test_checked_playback_waits_for_its_own_completion_and_keeps_ui_responsive`
+did not observe their scheduled UI marker before wait/playback finished;
+neither result was a native Qt assertion. A shared cause has not been
+established; native Qt stabilization remains open.
+
+The baseline abort is reproducible by passing `test_obs_module.py` before
+`test_twitch_account_page.py` to the offscreen test wrapper in a fresh
+process. The first Account test was
+`test_bot_profile_failure_marks_only_bot_api_as_error`. After the corrections,
+the 136-test focused gate passed 68 subtests. Standalone Account and OBS gates
+passed 15/4 and 80/50 (tests/subtests). The same 18-case lifecycle sample
+passed in reverse order and in Fisher–Yates shuffles (seeds 17, 73, and
+20261126), each with four subtests and no skips or native exits.
+The standalone MainWindow suite passed 257 tests and 20 subtests. The final
+repository gate passed uninterrupted in one process: 1,704 tests and 414
+subtests, with zero failures, skips, or native exits. No crash recovery or
+test partitioning was needed for that gate. Compilation and diff checks
+passed. The two earlier UI-marker failures did not recur in this gate; that
+does not establish their cause or close the stabilization investigation.
+
 Core Automation Pass 2A is complete: Scheduled
 Time / Cron, Hotkey, Process Started, Process Stopped, and File Watcher all
 passed packaged manual acceptance. Scheduled Time / Cron now uses the

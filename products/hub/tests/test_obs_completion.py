@@ -9,8 +9,9 @@ from datetime import datetime
 from pathlib import Path
 from uuid import uuid4
 
-from PySide6.QtCore import QEventLoop, QThread, QThreadPool, QTimer
+from PySide6.QtCore import QCoreApplication, QEvent, QEventLoop, QThread, QThreadPool, QTimer
 from PySide6.QtWidgets import QApplication
+from shiboken6 import isValid
 
 from products.hub.automation.core_tasks import WaitTask
 from products.hub.automation.models import (
@@ -223,6 +224,36 @@ class ObsCompletionTests(unittest.TestCase):
             self.assertFalse(results[0].succeeded)
             self.assertEqual(results[0].comment, detail)
             self.assertEqual(service._callbacks, {})
+
+    def test_disconnect_stops_nested_wait_and_reconnect_before_destruction(self) -> None:
+        for _ in range(3):
+            service = AutoRespondingObsService()
+            service.auto_respond = False
+            reconnect_timer = service.reconnect_timer
+            socket = service.socket
+            try:
+                reconnect_timer.start()
+                interrupt = QTimer(service)
+                interrupt.setSingleShot(True)
+                # The PySide test subclass resolves QObject.disconnect on the
+                # instance; explicitly exercise the production service method.
+                interrupt.timeout.connect(lambda: ObsWebSocketService.disconnect(service))
+                interrupt.start(0)
+                result = service.request_and_wait("Interrupted", timeout_ms=1000)
+
+                self.assertFalse(result.succeeded)
+                self.assertIn("disconnected", result.comment)
+                self.assertFalse(reconnect_timer.isActive())
+                self.assertFalse(service._callbacks)
+                self.assertFalse(service._request_types)
+                request_type, _data, request_id = service.requests[-1]
+                service.respond(request_id, request_type, response_data={"late": True})
+                self.assertEqual(result.response_data, {})
+            finally:
+                service.deleteLater()
+                QCoreApplication.sendPostedEvents(service, QEvent.Type.DeferredDelete)
+            self.assertFalse(isValid(socket))
+            self.assertFalse(isValid(reconnect_timer))
 
     def test_shutdown_rejects_new_automation_requests(self) -> None:
         service = AutoRespondingObsService()

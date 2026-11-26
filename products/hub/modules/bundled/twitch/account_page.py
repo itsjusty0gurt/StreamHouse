@@ -248,7 +248,7 @@ class TwitchAccountPage(QWidget):
         self._profile_generation = {"main": 0, "bot": 0}
         self._profile_user_id = {"main": "", "bot": ""}
         self._api_state = {"main": "Unavailable", "bot": "Unavailable"}
-        self._workers: set[_ProfileWorker] = set()
+        self._workers: dict[tuple[str, int], _ProfileWorker] = {}
         self._avatar_cache: dict[str, QPixmap] = {}
         self._avatar_requests: dict[QNetworkReply, tuple[str, int, str]] = {}
 
@@ -502,17 +502,14 @@ class TwitchAccountPage(QWidget):
         )
         worker.signals.loaded.connect(self._profile_loaded)
         worker.signals.failed.connect(self._profile_failed)
-        worker.signals.loaded.connect(
-            lambda *_args, item=worker: self._workers.discard(item)
-        )
-        worker.signals.failed.connect(
-            lambda *_args, item=worker: self._workers.discard(item)
-        )
-        self._workers.add(worker)
+        # Keep completion (including worker bookkeeping) bound to this QObject.
+        # Qt drops delivery if the page is destroyed before the worker finishes.
+        self._workers[account, generation] = worker
         self._thread_pool.start(worker)
 
     @Slot(str, int, object)
     def _profile_loaded(self, account: str, generation: int, value: object) -> None:
+        self._workers.pop((account, generation), None)
         if generation != self._profile_generation.get(account) or not isinstance(
             value, dict
         ):
@@ -539,6 +536,7 @@ class TwitchAccountPage(QWidget):
 
     @Slot(str, int)
     def _profile_failed(self, account: str, generation: int) -> None:
+        self._workers.pop((account, generation), None)
         if generation != self._profile_generation.get(account):
             return
         self._profile_user_id[account] = ""

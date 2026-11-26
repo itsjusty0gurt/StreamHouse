@@ -23,6 +23,7 @@ from PySide6.QtCore import (
     Qt,
 )
 from PySide6.QtGui import QContextMenuEvent
+from shiboken6 import isValid
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -192,12 +193,14 @@ class MainWindowTests(unittest.TestCase):
     def setUp(self) -> None:
         self.original_logger = Logger._logger
         Logger._logger = logging.Logger("StreamhouseUITest", logging.DEBUG)
+        self.addCleanup(setattr, Logger, "_logger", self.original_logger)
 
         self.settings_patch = patch(
             "products.hub.ui.main_window.SettingsStore.load_for_startup",
             return_value=AppSettings(),
         )
         self.settings_patch.start()
+        self.addCleanup(self.settings_patch.stop)
         self.window_state_store = Mock()
         self.window_state_store.restore.return_value = False
         self.chatter_history_store = Mock()
@@ -240,6 +243,7 @@ class MainWindowTests(unittest.TestCase):
         }
         self.test_report_store.selected_events.return_value = []
         self.twitch_command_directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.twitch_command_directory.cleanup)
         command_root = Path(self.twitch_command_directory.name)
         self.diagnostics_service = Mock()
         self.diagnostics_service.previous_shutdown_abnormal = False
@@ -337,18 +341,40 @@ class MainWindowTests(unittest.TestCase):
             data_root=command_root,
             auto_upgrade_permissions=False,
         )
+        self.addCleanup(self._dispose_window, self.window)
         if self._testMethodName != "test_hub_starts_with_ai_disconnected":
             generation = self.window.ai_lifecycle.begin_verification(
                 "http://127.0.0.1:8765"
             )
             self.window.ai_lifecycle.mark_ready(generation)
 
-    def tearDown(self) -> None:
-        self.window.close()
+    def _dispose_window(self, window: MainWindow) -> None:
+        if not isValid(window):
+            return
+        try:
+            window.close()
+        finally:
+            # close() shuts down services but does not destroy this QObject tree.
+            # Deliver this window's deletion before its disposable data goes away.
+            window.deleteLater()
+            QCoreApplication.sendPostedEvents(window, QEvent.Type.DeferredDelete)
         self.application.processEvents()
-        self.twitch_command_directory.cleanup()
-        self.settings_patch.stop()
-        Logger._logger = self.original_logger
+
+    def test_fixture_destroys_closed_window_and_children_before_storage_cleanup(self) -> None:
+        window = self.window
+        account = window.twitch_account_page
+        timer = window.chatter_history_save_timer
+        destroyed = []
+        window.destroyed.connect(lambda: destroyed.append(True))
+        timer.start()
+
+        self._dispose_window(window)
+
+        self.assertEqual(destroyed, [True])
+        self.assertFalse(isValid(window))
+        self.assertFalse(isValid(account))
+        self.assertFalse(isValid(timer))
+        self.assertTrue(Path(self.twitch_command_directory.name).is_dir())
 
     def _routine_group_item(self, group_id: str):
         tree = self.window.automation_page.routine_tree

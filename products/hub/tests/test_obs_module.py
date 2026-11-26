@@ -4,7 +4,8 @@ from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
-from PySide6.QtCore import QCoreApplication
+from PySide6.QtCore import QCoreApplication, QEvent
+from PySide6.QtWidgets import QApplication
 
 from products.hub.automation.core_tasks import WaitTask
 from products.hub.automation.models import TaskDefinition, TriggerEvent
@@ -27,6 +28,15 @@ from products.hub.modules.bootstrap import CORE_MODULE_CAPABILITIES
 from products.hub.modules.bundled.obs import OBS_MODULE_ID, ObsModule
 from products.hub.obs_service.config import ObsConnectionConfig
 from products.hub.obs_service.models import ObsConnectionState, ObsEvent, ObsRequestResult
+
+
+@pytest.fixture(scope="module")
+def widget_application() -> QApplication:
+    # A QCoreApplication can survive these cases and is not a QApplication:
+    # the next test that constructs a QWidget would abort the interpreter.
+    application = QApplication.instance() or QApplication([])
+    assert isinstance(application, QApplication)
+    return application
 
 
 def _registry(path: Path, module: ObsModule, *, enabled: bool = True) -> ModuleRegistry:
@@ -186,12 +196,13 @@ def test_obs_action_ids_reject_duplicate_registration(tmp_path: Path) -> None:
 )
 def test_obs_event_automation_runs_after_websocket_event_callback(
     tmp_path: Path,
+    widget_application: QApplication,
     event_type: str,
     filters: dict[str, str],
     matching_data: dict[str, object],
     nonmatching_data: dict[str, object],
 ) -> None:
-    application = QCoreApplication.instance() or QCoreApplication([])
+    application = widget_application
     module = ObsModule()
     tasks = TaskRegistry()
     variables = VariableRegistry()
@@ -274,3 +285,5 @@ def test_obs_event_automation_runs_after_websocket_event_callback(
     finally:
         Events.unsubscribe("obs_event", synchronous_consumer)
         module.stop()
+        module.service.deleteLater()
+        QCoreApplication.sendPostedEvents(module.service, QEvent.Type.DeferredDelete)
