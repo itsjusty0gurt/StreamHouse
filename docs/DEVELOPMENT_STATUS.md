@@ -55,16 +55,17 @@
 is deferred until stabilization is complete or priorities explicitly change.
 The following are investigation priorities, not confirmed root causes:
 
-1. Counters UI native access violation.
+1. Live Counters refresh verification after the lifecycle correction.
 2. Historical viewer-memory native crashes.
 3. Intermittent OBS/Qt test-order crashes.
 4. Remaining audio/UI blocking risks.
 5. Twitch reconnect and EventSub lifecycle verification.
-6. Dynamic window resizing.
+6. Dynamic and multi-monitor window resizing, including small-window Counters
+   control clipping observed during offline acceptance.
 7. Twitch Ad Manager reliability.
 8. Other confirmed regressions.
 
-**Native Qt crash investigation, Pass 1 — Counters correction awaiting packaged validation.**
+**Counters UI lifecycle correction — implemented, offline accepted, and merged.**
 The November 25 local fault log and support-bundle copy show a GUI-thread
 access violation in Counters refresh during channel snapshot application.
 The Python stack identifies the line that reads the selection and clears
@@ -84,15 +85,28 @@ The corrected page passed 500 isolated refresh cycles across 25 widget
 lifetimes. The list reset is a supported failure-path candidate, not a
 confirmed explanation of the packaged access violation.
 
+Packaged Windows offline acceptance used disposable data. Selection, filtering,
+Overview/Viewers/Settings, navigation away and back, seeded lifetime totals
+after restart, and two clean shutdowns all passed. No crash artifacts or
+lingering Hub/QtWebEngine processes were observed, and the streaming profile
+was untouched. Authenticated Twitch snapshots and the original Daily Yogurt
+redemption were not exercised. The correction has not been proven to prevent
+the exact live access violation, and the redemption's role remains unverified.
+Some Counters controls clipped at smaller window sizes; that remains a
+separate layout issue.
+
 The October 28 and 31 support-bundle traces show historical Viewer Memory
 refresh crashes on the snapshot path. That page already received a stable-ID
 and queued-refresh correction; current focused tests passed without further
 changes. A shared native cause with either Viewer Memory or intermittent
 OBS/MainWindow test-runner failures is unverified. No native dump was needed
 or inspected, and the existing diagnostics were preserved.
-Focused validation passed 62 tests and 10 subtests. The full isolated gate
-passed 1,699 tests and 410 subtests without failures, skips, or native runner
-exits; the known OBS order-sensitive tests ran in their own process.
+Final focused validation passed 62 tests and 10 subtests. The partitioned full
+gate passed 1,699 tests and 410 subtests without assertion failures or skips.
+One initial MainWindow partition exited with a native access violation during
+Twitch Account page construction; all seven tests passed in smaller processes.
+The original order passed on untouched `develop` in a comparison run. The known
+OBS order-sensitive tests ran in their own process.
 
 Core Automation Pass 2A is complete: Scheduled
 Time / Cron, Hotkey, Process Started, Process Stopped, and File Watcher all
