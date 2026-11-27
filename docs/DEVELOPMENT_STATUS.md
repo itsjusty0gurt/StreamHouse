@@ -55,9 +55,10 @@
 is deferred until stabilization is complete or priorities explicitly change.
 The following are investigation priorities, not confirmed root causes:
 
-1. Live Counters refresh verification after the lifecycle correction.
+1. Live Counters refresh verification after the lifecycle correction, including
+   the Daily Yogurt redemption.
 2. Historical viewer-memory native crashes.
-3. Intermittent OBS/Qt test-order crashes.
+3. Intermittent native Qt crashes not tied to a confirmed root cause.
 4. Remaining audio/UI blocking risks.
 5. Twitch reconnect and EventSub lifecycle verification.
 6. Dynamic and multi-monitor window resizing, including small-window Counters
@@ -108,7 +109,14 @@ Twitch Account page construction; all seven tests passed in smaller processes.
 The original order passed on untouched `develop` in a comparison run. The known
 OBS order-sensitive tests ran in their own process.
 
-**Qt test lifecycle, Phase 1 — stabilization remains open.**
+**Qt test lifecycle, Phase 1 — accepted and integrated into `develop`.**
+The integrated Phase 1 commit is `09f4013bf7ca591de6d07e8b40bc2e12526d162a`
+(fast-forward, no merge commit). Acceptance was based on source review and
+automated regression evidence. The isolated `0.3.0-alpha` Windows executable
+was built from that commit but not launched. No packaged hands-on or live
+Twitch authentication testing was performed; the streaming profile was
+untouched. Account worker bookkeeping is the only production change.
+
 The OBS callback tests followed by `test_twitch_account_page.py` aborted
 twice on the baseline (Windows exit `0xC0000409`). Running just a
 `QCoreApplication` followed by a QWidget produced the same exit and the
@@ -153,12 +161,21 @@ the 136-test focused gate passed 68 subtests. Standalone Account and OBS gates
 passed 15/4 and 80/50 (tests/subtests). The same 18-case lifecycle sample
 passed in reverse order and in Fisher–Yates shuffles (seeds 17, 73, and
 20261126), each with four subtests and no skips or native exits.
-The standalone MainWindow suite passed 257 tests and 20 subtests. The final
-repository gate passed uninterrupted in one process: 1,704 tests and 414
+The standalone MainWindow suite passed 257 tests and 20 subtests. The feature
+branch's full gate passed uninterrupted in one process: 1,704 tests and 414
 subtests, with zero failures, skips, or native exits. No crash recovery or
 test partitioning was needed for that gate. Compilation and diff checks
 passed. The two earlier UI-marker failures did not recur in this gate; that
 does not establish their cause or close the stabilization investigation.
+
+Final integration revalidation passed the focused lifecycle gate (168 tests,
+74 subtests), Account (15/4), OBS (80/50), Counters (49/10), and standalone
+MainWindow (257/20). The full gate again passed 1,704 tests and 414 subtests
+in one uninterrupted process, with zero failures, errors, skips, or native
+exits. The captured logs contained no Qt lifecycle warnings. Python
+compilation and `git diff --check` passed. The causes of the historical
+`0xC0000005` access violation and wait/audio UI-marker failures remain unknown.
+Hub 0.4 stays in stabilization.
 
 Core Automation Pass 2A is complete: Scheduled
 Time / Cron, Hotkey, Process Started, Process Stopped, and File Watcher all
