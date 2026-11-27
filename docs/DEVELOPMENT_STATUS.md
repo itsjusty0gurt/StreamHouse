@@ -61,8 +61,8 @@ The following are investigation priorities, not confirmed root causes:
 3. Intermittent native Qt crashes not tied to a confirmed root cause.
 4. Remaining audio/UI blocking risks.
 5. Twitch reconnect and EventSub lifecycle verification.
-6. Dynamic and multi-monitor window resizing, including small-window Counters
-   control clipping observed during offline acceptance.
+6. Dynamic and multi-monitor window resizing, including native mixed-DPI
+   monitor moves.
 7. Twitch Ad Manager reliability.
 8. Other confirmed regressions.
 
@@ -93,8 +93,8 @@ lingering Hub/QtWebEngine processes were observed, and the streaming profile
 was untouched. Authenticated Twitch snapshots and the original Daily Yogurt
 redemption were not exercised. The correction has not been proven to prevent
 the exact live access violation, and the redemption's role remains unverified.
-Some Counters controls clipped at smaller window sizes; that remains a
-separate layout issue.
+Some Counters controls clipped at smaller window sizes; the separate
+layout correction is recorded below.
 
 The October 28 and 31 support-bundle traces show historical Viewer Memory
 refresh crashes on the snapshot path. That page already received a stable-ID
@@ -109,7 +109,12 @@ Twitch Account page construction; all seven tests passed in smaller processes.
 The original order passed on untouched `develop` in a comparison run. The known
 OBS order-sensitive tests ran in their own process.
 
-**Counters small-window layout — source correction; packaged visual acceptance pending.**
+**Counters Small-Window Layout — manually accepted and integrated.**
+The user confirmed manual acceptance of the isolated `0.3.0-alpha` build
+from `6bd11c8de4a8b4defc4de92a6e6d304bd25d9d55`. That commit was
+fast-forwarded into `develop`; no merge commit was needed. No additional
+manual display configurations were reported.
+
 The clipping seen in the earlier packaged acceptance was reproduced in an
 offscreen MainWindow with synthetic Counters and Segoe UI. At the existing
 `520 × 360` landscape and `420 × 520` portrait logical window minimums,
@@ -134,18 +139,27 @@ size the workspace needs both scrollbars and the full-width searches/list
 do not fit on screen at once; typing and Counter selection were exercised.
 Use about `900 × 600` logical client pixels or larger for more comfortable
 use. Before/after captures are under the ignored
-`.test-tmp/counters-small-window-layout-review/` directory. Native Windows
-display scaling, taskbar insets, mixed-DPI moves, and packaged visual
-acceptance have not been verified. No live profile or Counter values were
-used.
+`.test-tmp/counters-small-window-layout-review/` directory. The merge review
+rechecked all six sizes at each simulated scale without using a live profile
+or live Counter values. Native mixed-DPI monitor moves remain unverified
+under the separate multi-monitor stabilization issue.
 
 Three new geometry regressions check reachable, non-overlapping actions,
 selection stability while resizing and switching tabs, native Viewer column
 scrolling and filtering, and reachability of Settings fields and dialog
-actions. Focused validation passed 112 tests and 23 subtests; standalone
-MainWindow passed 257 tests and 20 subtests. The full suite passed
+actions. Final merge validation passed 112 focused tests and 23 subtests;
+standalone MainWindow passed 257 tests and 20 subtests. The full suite passed
 1,707 tests and 414 subtests in one process, with no failures, errors,
-skips, or native exits. Compilation and `git diff --check` passed.
+skips, or native exits. There were no Qt lifecycle warnings in the captured
+logs. Compilation and `git diff --check` passed.
+
+**Deferred Counters feature — Manually Add Viewer to Counter.**
+Allow adding any valid Twitch username to an existing Counter, even if the
+viewer has never visited the channel. Resolve the username to a permanent
+Twitch user ID, default new entries to zero, and use that ID to prevent
+duplicates without overwriting an existing total. Searching Hub's known
+viewers may be offered as a convenience. This is backlog only; Hub 0.4
+remains in stabilization.
 
 **Qt test lifecycle, Phase 1 — accepted and integrated into `develop`.**
 The integrated Phase 1 commit is `09f4013bf7ca591de6d07e8b40bc2e12526d162a`
