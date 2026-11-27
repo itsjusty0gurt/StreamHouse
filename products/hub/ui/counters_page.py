@@ -4,16 +4,24 @@ from collections.abc import Callable
 
 from PySide6.QtCore import QSignalBlocker, Qt, Signal
 from PySide6.QtWidgets import (
-    QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout, QHBoxLayout,
+    QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout, QFrame, QGridLayout, QHBoxLayout,
     QInputDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMessageBox,
-    QPushButton, QDoubleSpinBox, QSpinBox, QSplitter, QTabWidget, QTableWidget, QTableWidgetItem,
-    QVBoxLayout, QWidget,
+    QPushButton, QDoubleSpinBox, QSizePolicy, QSpinBox, QSplitter, QTabWidget, QTableWidget, QTableWidgetItem,
+    QScrollArea, QVBoxLayout, QWidget,
 )
 
 from products.hub.counters.models import CounterDefinition, counter_id_from_name
 from products.hub.counters.service import CounterService
 from products.hub.ui.page_header import PageHeader
 from products.hub.ui.table_sizing import configure_semantic_columns
+
+
+def _scrollable_contents(content: QWidget) -> QScrollArea:
+    scroll = QScrollArea()
+    scroll.setFrameShape(QFrame.Shape.NoFrame)
+    scroll.setWidgetResizable(True)
+    scroll.setWidget(content)
+    return scroll
 
 
 class CounterDefinitionDialog(QDialog):
@@ -23,7 +31,11 @@ class CounterDefinitionDialog(QDialog):
         self.definition = definition
         self.setWindowTitle("Counter Settings" if definition else "New Counter")
         layout = QVBoxLayout(self)
+        content = QWidget()
+        body = QVBoxLayout(content)
+        body.setContentsMargins(0, 0, 0, 0)
         form = QFormLayout()
+        form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
         self.name = QLineEdit(definition.display_name if definition else "")
         self.name.setPlaceholderText("Counter name")
         self.counter_id = QLineEdit(definition.counter_id if definition else "")
@@ -60,16 +72,20 @@ class CounterDefinitionDialog(QDialog):
         form.addRow("Display precision", self.display_precision)
         form.addRow("", self.enabled); form.addRow("Track", self.channel); form.addRow("", self.stream); form.addRow("", self.viewer); form.addRow("", self.viewer_stream)
         form.addRow("Options", self.exclude_bots); form.addRow("", self.negative); form.addRow("Minimum", self.minimum)
-        layout.addLayout(form)
+        body.addLayout(form)
         note = QLabel("The stable ID is used by routine outputs and the named storage file. It cannot be casually changed after creation. Disabling a scope preserves its existing values.")
-        note.setWordWrap(True); layout.addWidget(note)
+        note.setWordWrap(True); body.addWidget(note)
+        self.scroll_area = _scrollable_contents(content)
+        layout.addWidget(self.scroll_area, 1)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
         buttons.accepted.connect(self._accept); buttons.rejected.connect(self.reject); layout.addWidget(buttons)
         self.numeric_type.currentIndexChanged.connect(self._numeric_type_changed)
         self._numeric_type_changed()
         if definition is None:
             self.name.textChanged.connect(self._suggest_id)
-            self.counter_id_status = QLabel(""); layout.insertWidget(layout.count() - 1, self.counter_id_status)
+            self.counter_id_status = QLabel("")
+            self.counter_id_status.setWordWrap(True)
+            body.addWidget(self.counter_id_status)
             self.counter_id.textChanged.connect(self._validate_id_live)
 
     def _suggest_id(self, text: str) -> None:
@@ -133,12 +149,15 @@ class CountersPage(QWidget):
     def __init__(self, service: CounterService, stream_id_provider: Callable[[], str], routine_store=None, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.service = service; self.stream_id_provider = stream_id_provider; self.routine_store = routine_store
-        root = QVBoxLayout(self)
-        root.setContentsMargins(12, 10, 12, 12)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(12, 10, 12, 12)
+        content = QWidget()
+        root = QVBoxLayout(content)
+        root.setContentsMargins(0, 0, 0, 0)
         self.page_header = PageHeader(
             "Counters",
             "Track shared, stream, and viewer totals.",
-            self,
+            content,
         )
         self.new_button = QPushButton("+ New Counter")
         self.page_header.add_action(self.new_button)
@@ -147,25 +166,39 @@ class CountersPage(QWidget):
         header.addWidget(self.search, 1); root.addLayout(header)
         self.empty_state = QWidget(); empty_layout = QVBoxLayout(self.empty_state)
         empty_message = QLabel("No counters yet.\nCreate a counter to use it in commands and automation routines.")
+        empty_message.setWordWrap(True)
         empty_message.setAlignment(Qt.AlignmentFlag.AlignCenter); self.empty_create_button = QPushButton("Create Counter")
         empty_layout.addStretch(); empty_layout.addWidget(empty_message); empty_layout.addWidget(self.empty_create_button, alignment=Qt.AlignmentFlag.AlignCenter); empty_layout.addStretch()
         root.addWidget(self.empty_state)
         self.split = QSplitter(); self.list = QListWidget(); self.split.addWidget(self.list)
+        self.split.setChildrenCollapsible(False)
+        self.list.setMinimumHeight(self.list.minimumSizeHint().height())
+        self.list.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Ignored)
         detail = QWidget(); detail_layout = QVBoxLayout(detail); self.title = QLabel("Select or create a counter")
+        self.title.setWordWrap(True)
         detail_layout.addWidget(self.title); self.tabs = QTabWidget(); detail_layout.addWidget(self.tabs)
         self._build_overview(); self._build_viewers(); self._build_settings(); self.split.addWidget(detail); self.split.setStretchFactor(1, 1); root.addWidget(self.split)
+        self.scroll_area = _scrollable_contents(content)
+        outer.addWidget(self.scroll_area)
         self.search.textChanged.connect(self.refresh); self.new_button.clicked.connect(self._create); self.empty_create_button.clicked.connect(self._create); self.list.currentItemChanged.connect(lambda *_: self._refresh_detail())
         self.refresh()
 
     def _build_overview(self) -> None:
         page = QWidget(); layout = QVBoxLayout(page); self.summary = QLabel(); self.summary.setWordWrap(True); layout.addWidget(self.summary)
-        row = QHBoxLayout(); self.plus = QPushButton("Manual +1"); self.minus = QPushButton("Manual -1"); self.set_channel = QPushButton("Set channel total"); self.reset_channel = QPushButton("Reset channel total")
-        for button in (self.plus, self.minus, self.set_channel, self.reset_channel): row.addWidget(button)
-        stream_row = QHBoxLayout(); self.set_stream = QPushButton("Set current-stream total"); self.reset_stream = QPushButton("Reset current-stream total")
+        self.plus = QPushButton("Manual +1"); self.minus = QPushButton("Manual -1"); self.set_channel = QPushButton("Set channel total"); self.reset_channel = QPushButton("Reset channel total")
+        self.set_stream = QPushButton("Set current-stream total"); self.reset_stream = QPushButton("Reset current-stream total")
         self.reset_all_viewer_totals = QPushButton("Danger: Reset all viewer lifetime values")
         self.reset_all_viewer_stream_totals = QPushButton("Danger: Reset all viewer stream values")
-        for button in (self.set_stream, self.reset_stream, self.reset_all_viewer_totals, self.reset_all_viewer_stream_totals): stream_row.addWidget(button)
-        layout.addLayout(row); layout.addLayout(stream_row); layout.addStretch(); self.tabs.addTab(page, "Overview")
+        channel_actions = QGridLayout()
+        for index, button in enumerate((self.plus, self.minus, self.set_channel, self.reset_channel)):
+            channel_actions.addWidget(button, index // 2, index % 2)
+        channel_actions.setColumnStretch(2, 1)
+        layout.addLayout(channel_actions)
+        # The longest labels need their own row so the detail pane has a
+        # useful minimum size even inside a narrow (or vertical) splitter.
+        for button in (self.set_stream, self.reset_stream, self.reset_all_viewer_totals, self.reset_all_viewer_stream_totals):
+            layout.addWidget(button, alignment=Qt.AlignmentFlag.AlignLeft)
+        layout.addStretch(); self.tabs.addTab(page, "Overview")
         self.plus.clicked.connect(lambda: self._adjust(1)); self.minus.clicked.connect(lambda: self._adjust(-1)); self.set_channel.clicked.connect(self._set_channel); self.reset_channel.clicked.connect(self._reset_channel)
         self.set_stream.clicked.connect(self._set_stream); self.reset_stream.clicked.connect(self._reset_stream)
         self.reset_all_viewer_totals.clicked.connect(lambda: self._reset_all_viewers("viewer_total"))
@@ -180,8 +213,25 @@ class CountersPage(QWidget):
             compact=(1, 2, 3),
         )
         self.viewer_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.viewer_table.setHorizontalScrollMode(QTableWidget.ScrollMode.ScrollPerPixel)
+        # Reserve a header, one readable row, and a horizontal scrollbar without
+        # turning the table's preferred height into workspace overflow.
+        self.viewer_table.setMinimumHeight(max(
+            self.viewer_table.minimumSizeHint().height(),
+            self.viewer_table.horizontalHeader().sizeHint().height()
+            + self.viewer_table.verticalHeader().defaultSectionSize()
+            + self.viewer_table.horizontalScrollBar().sizeHint().height()
+            + 2 * self.viewer_table.frameWidth(),
+        ))
+        self.viewer_table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Ignored)
         self.viewer_table.setSortingEnabled(True); layout.addWidget(self.viewer_table)
-        row = QHBoxLayout(); self.edit_viewer = QPushButton("Edit selected values"); self.remove_viewer_button = QPushButton("Remove viewer from this counter"); row.addWidget(self.edit_viewer); row.addWidget(self.remove_viewer_button); row.addStretch(); layout.addLayout(row); self.tabs.addTab(page, "Viewers")
+        self.edit_viewer = QPushButton("Edit selected values"); self.remove_viewer_button = QPushButton("Remove viewer from this counter")
+        actions = QFormLayout()
+        actions.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
+        actions.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.FieldsStayAtSizeHint)
+        actions.addRow(self.edit_viewer, self.remove_viewer_button)
+        layout.addLayout(actions)
+        self.tabs.addTab(page, "Viewers")
         self.viewer_search.textChanged.connect(self._refresh_viewers); self.edit_viewer.clicked.connect(self._edit_viewer); self.remove_viewer_button.clicked.connect(self._remove_viewer)
         self.viewer_table.itemDoubleClicked.connect(lambda _item: self._edit_viewer())
 

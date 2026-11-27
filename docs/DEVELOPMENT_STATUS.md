@@ -109,6 +109,44 @@ Twitch Account page construction; all seven tests passed in smaller processes.
 The original order passed on untouched `develop` in a comparison run. The known
 OBS order-sensitive tests ran in their own process.
 
+**Counters small-window layout — source correction; packaged visual acceptance pending.**
+The clipping seen in the earlier packaged acceptance was reproduced in an
+offscreen MainWindow with synthetic Counters and Segoe UI. At the existing
+`520 × 360` landscape and `420 × 520` portrait logical window minimums,
+the Counters area was only `288 × 186` and `374 × 316`, respectively.
+The original wide action rows and lack of an overflow viewport compressed
+the detail tabs to `0` and `18` pixels high, clipping totals, adjustment and
+reset buttons, viewer search/table/actions, and Settings actions. The edit
+dialog also forced a `500`-pixel minimum height in that fixture.
+
+The workspace now scrolls without changing the Hub window minimums or its
+orientation rules. Related channel actions stay compact, the long reset
+actions have separate rows, and the list/detail splitter still resizes. The
+Viewer table keeps its semantic columns and native scrollbars, and the
+create/edit dialog scrolls its fields while keeping Save and Cancel visible.
+Counter storage, calculations, selection reconciliation, and integrations
+are unchanged.
+
+Offscreen geometry and interaction checks used 100%, 125%, and 150% simulated
+scaling, client sizes derived from 1920×1080, 1600×900, 1366×768, and 1280×720,
+and the reduced landscape/portrait sizes above. At the tightest landscape
+size the workspace needs both scrollbars and the full-width searches/list
+do not fit on screen at once; typing and Counter selection were exercised.
+Use about `900 × 600` logical client pixels or larger for more comfortable
+use. Before/after captures are under the ignored
+`.test-tmp/counters-small-window-layout-review/` directory. Native Windows
+display scaling, taskbar insets, mixed-DPI moves, and packaged visual
+acceptance have not been verified. No live profile or Counter values were
+used.
+
+Three new geometry regressions check reachable, non-overlapping actions,
+selection stability while resizing and switching tabs, native Viewer column
+scrolling and filtering, and reachability of Settings fields and dialog
+actions. Focused validation passed 112 tests and 23 subtests; standalone
+MainWindow passed 257 tests and 20 subtests. The full suite passed
+1,707 tests and 414 subtests in one process, with no failures, errors,
+skips, or native exits. Compilation and `git diff --check` passed.
+
 **Qt test lifecycle, Phase 1 — accepted and integrated into `develop`.**
 The integrated Phase 1 commit is `09f4013bf7ca591de6d07e8b40bc2e12526d162a`
 (fast-forward, no merge commit). Acceptance was based on source review and

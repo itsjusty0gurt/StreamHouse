@@ -7,9 +7,9 @@ import unittest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QCoreApplication, QEvent, QPoint, QRect, Qt
 from PySide6.QtTest import QSignalSpy
-from PySide6.QtWidgets import QApplication, QComboBox, QHeaderView, QPushButton
+from PySide6.QtWidgets import QApplication, QComboBox, QDialogButtonBox, QHeaderView, QPushButton
 from shiboken6 import isValid
 from unittest.mock import patch
 
@@ -36,7 +36,112 @@ class CountersPageTests(unittest.TestCase):
         self.page = CountersPage(self.service, lambda: "stream-1", self.routines)
 
     def tearDown(self) -> None:
-        self.page.deleteLater(); self.application.processEvents(); self.temp.cleanup()
+        self.page.deleteLater()
+        QCoreApplication.sendPostedEvents(self.page, QEvent.Type.DeferredDelete)
+        self.temp.cleanup()
+
+    def _reveal_and_check(self, scroll, widget) -> None:
+        # Leave room for the whole field, not just its input-method cursor.
+        scroll.ensureWidgetVisible(widget, 0, widget.height())
+        self.application.processEvents()
+        viewport = scroll.viewport()
+        rect = QRect(widget.mapTo(viewport, QPoint()), widget.size())
+        self.assertTrue(viewport.rect().contains(rect), (widget, rect, viewport.rect()))
+        self.assertGreaterEqual(widget.height(), widget.minimumSizeHint().height())
+
+    def test_compact_layout_keeps_actions_reachable_without_refreshing_selection(self) -> None:
+        page = self.page
+        self.service.create_counter(CounterDefinition("coffee", "Coffee", "cup", "cups"))
+        self.service.update_values("farts", 123456789, ("channel_total", "stream_total"), stream_id="stream-1")
+        page.refresh()
+        page._select_counter("farts")
+        selected = page.list.currentItem()
+        resets = QSignalSpy(page.list.model().modelReset)
+        overview = (page.plus, page.minus, page.set_channel, page.reset_channel, page.set_stream,
+                    page.reset_stream, page.reset_all_viewer_totals, page.reset_all_viewer_stream_totals)
+        buttons = (overview, (page.edit_viewer, page.remove_viewer_button), (page.settings_button, page.delete_button))
+        # Derive the test width from the active Qt font/style instead of fixed
+        # button pixels; the short viewport forces page scrolling either way.
+        compact_width = max(360, max(button.sizeHint().width() for tab in buttons for button in tab) + 100)
+        page.show()
+        with patch.object(page, "_refresh_detail", wraps=page._refresh_detail) as refresh_detail:
+            for orientation in (Qt.Orientation.Horizontal, Qt.Orientation.Vertical):
+                page.split.setOrientation(orientation)
+                page.resize(compact_width, 240)
+                for index, controls in enumerate(buttons):
+                    page.tabs.setCurrentIndex(index)
+                    self.application.processEvents()
+                    self.assertGreater(page.scroll_area.verticalScrollBar().maximum(), 0)
+                    for button in controls:
+                        self._reveal_and_check(page.scroll_area, button)
+                        self.assertGreaterEqual(button.width(), button.minimumSizeHint().width())
+                    for index, left in enumerate(controls):
+                        for right in controls[index + 1:]:
+                            self.assertFalse(left.geometry().intersects(right.geometry()))
+            page.resize(1700, 1100)
+            self.application.processEvents()
+            self.assertEqual(page.scroll_area.verticalScrollBar().maximum(), 0)
+            self.assertEqual(page.scroll_area.horizontalScrollBar().maximum(), 0)
+            refresh_detail.assert_not_called()
+        self.assertIs(page.list.currentItem(), selected)
+        self.assertEqual(page.selected_id(), "farts")
+        self.assertEqual(resets.count(), 0)
+        self.assertIn("Channel lifetime: 123,456,789 farts", page.summary.text())
+        self.assertIn("Current Twitch stream: 123,456,789 farts", page.summary.text())
+        page.search.setText("farts")
+        self.assertEqual(page.list.count(), 1)
+        self.assertIs(page.list.currentItem(), selected)
+
+    def test_narrow_viewers_can_scroll_to_numeric_and_identity_columns(self) -> None:
+        page = self.page
+        user_id = "12345678901234567890"
+        self.service.update_counter("farts", track_viewer_stream_total=True)
+        self.service.update_values("farts", 123456789, ("viewer_total", "viewer_stream_total"),
+                                   user_id=user_id, login="fixture", display_name="Fixture Viewer",
+                                   stream_id="stream-1")
+        page.refresh()
+        page.resize(340, 360)
+        page.tabs.setCurrentIndex(1)
+        page.show()
+        self.application.processEvents()
+        table = page.viewer_table
+        header = table.horizontalHeader()
+        self.assertGreater(table.horizontalScrollBar().maximum(), 0)
+        self.assertEqual(table.item(0, 1).data(Qt.ItemDataRole.EditRole), 123456789)
+        self.assertEqual(table.item(0, 2).data(Qt.ItemDataRole.EditRole), 123456789)
+        table.horizontalScrollBar().setValue(table.horizontalScrollBar().maximum())
+        self.application.processEvents()
+        right = header.sectionViewportPosition(3) + header.sectionSize(3)
+        self.assertLessEqual(right, header.viewport().width())
+        self.assertGreater(right, 0)
+        self.assertEqual(table.item(0, 3).text(), user_id)
+        self.assertFalse(any(table.isColumnHidden(i) for i in range(table.columnCount())))
+        page.viewer_search.setText("nobody")
+        self.assertEqual(table.rowCount(), 0)
+        page.viewer_search.setText("fixture")
+        self.assertEqual(table.rowCount(), 1)
+        table.selectRow(0)
+        self.assertEqual(table.currentRow(), 0)
+
+    def test_short_counter_dialog_scrolls_fields_but_keeps_save_and_cancel_visible(self) -> None:
+        dialog = CounterDefinitionDialog(self.service, self.page, self.service.get_counter("farts"))
+        try:
+            dialog.resize(460, 280)
+            dialog.show()
+            self.application.processEvents()
+            box = dialog.findChild(QDialogButtonBox)
+            self.assertLess(dialog.height(), dialog.scroll_area.widget().minimumSizeHint().height())
+            self.assertGreater(dialog.scroll_area.verticalScrollBar().maximum(), 0)
+            for field in (dialog.name, dialog.viewer_stream, dialog.minimum):
+                self._reveal_and_check(dialog.scroll_area, field)
+            for action in (QDialogButtonBox.StandardButton.Save, QDialogButtonBox.StandardButton.Cancel):
+                button = box.button(action)
+                self.assertTrue(button.isVisible())
+                self.assertTrue(dialog.rect().contains(QRect(button.mapTo(dialog, QPoint()), button.size())))
+                self.assertFalse(dialog.scroll_area.widget().isAncestorOf(button))
+        finally:
+            dialog.deleteLater()
+            QCoreApplication.sendPostedEvents(dialog, QEvent.Type.DeferredDelete)
 
     def test_list_search_manual_adjustment_and_viewer_removal_are_scoped(self) -> None:
         self.assertEqual(self.page.page_header.title_label.text(), "Counters")
