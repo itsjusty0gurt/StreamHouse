@@ -66,6 +66,43 @@ The following are investigation priorities, not confirmed root causes:
 7. Twitch Ad Manager reliability.
 8. Other confirmed regressions.
 
+**Twitch Ad Manager reliability — Phase 1 (mocked/offscreen; live acceptance pending).**
+The compact Live → Chat controls and remembered 30–180-second duration
+(default 180) are unchanged. No OAuth scopes were added.
+
+| Capability | Verified behavior and limits |
+| --- | --- |
+| Read schedule | Helix GET `/channels/ads`; broadcaster `channel:read:ads`. Empty/failed responses no longer present an actionable stale schedule. UTC countdowns accept Unix seconds and RFC3339. |
+| Snooze | Helix POST `/channels/ads/schedule/snooze`; broadcaster `channel:manage:ads`. The UI requires a known upcoming automatic ad and a remaining snooze. The returned schedule is applied immediately and then refreshed. |
+| Run Ads | Helix POST `/channels/commercial`; broadcaster `channel:edit:commercial` and an eligible live channel. Success comes from Twitch, not worker submission. Only Twitch's returned `retry_after` sets the local cooldown; the schedule does not establish a cooldown. |
+| Ad start | The existing authenticated WebSocket subscribes to `channel.ad_break.begin` v1 with `channel:read:ads`. Delivery uses the existing EventSub message-ID deduplication; reconnect cannot recover missed events. |
+| Ad warnings/end | The existing 5/3/2/1-minute warnings are estimates derived from the schedule; Ads Ended is estimated from the EventSub start and duration. Neither has an independent Twitch EventSub notification. No new triggers or schedule-change notification were added. |
+
+Mocked requests demonstrated a repeated POST after an ambiguous failure, a
+45-second Twitch cooldown incorrectly raised to 480 seconds by a schedule
+refresh, and active-ad state surviving offline. Ad POSTs no longer replay on
+failure; one write at a time is allowed across Ad Manager and Automation.
+Schedule revisions and account/request guards prevent old responses overwriting
+new state. Worker results use receiver-owned Qt slots and are ignored after
+shutdown or account replacement. Ad triggers use the existing deferred
+Automation queue rather than running routines inline from the UI clock.
+
+Twenty retained session logs and eight log entries in four support bundles
+contained no ad-specific error markers; two session log entries concerned
+general channel API authorization recovery, not a proven Ads failure. Still verify
+the broadcaster's granted scopes, eligibility and actual ad schedule on an
+authorized test profile. A lost write response can leave the result unknown;
+check Twitch before retrying. No live commercial, snooze, or reauthorization
+was performed during this audit. See the
+[Twitch Ads API](https://dev.twitch.tv/docs/api/reference/ads) and
+[Ad Break Begin contract](https://dev.twitch.tv/docs/eventsub/reference/channel#channel-ad-break-begin).
+
+Offscreen validation: 479 focused tests and 97 subtests; 1,718 tests and
+427 subtests in one uninterrupted full suite, with no failures, skips, or
+native Qt exits. The new regressions cover non-replayed writes, cooldown
+preservation, stale schedule rejection, snooze eligibility, warning deduplication,
+account changes, and late worker completion. Compilation and diff checks passed.
+
 **Counters UI lifecycle correction — implemented, offline accepted, and merged.**
 The November 25 local fault log and support-bundle copy show a GUI-thread
 access violation in Counters refresh during channel snapshot application.

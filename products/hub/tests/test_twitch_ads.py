@@ -3,6 +3,8 @@ from __future__ import annotations
 import unittest
 from datetime import datetime, timedelta, timezone
 
+from unittest.mock import Mock
+
 from products.hub.automation.variable_providers import AdsVariableProvider
 from products.hub.automation.variable_registry import VariableRegistry
 from products.hub.twitch.ads import AdsService
@@ -52,7 +54,7 @@ class AdsServiceTests(unittest.TestCase):
         self.assertEqual(values["snooze_count"], 2)
         self.assertFalse(values["in_progress"])
 
-    def test_live_helix_unix_timestamps_drive_countdowns_and_cooldown(self) -> None:
+    def test_live_helix_unix_timestamps_drive_countdowns_not_cooldown(self) -> None:
         source = self.schedule(seconds=301)
         source["last_ad_at"] = (self.now - timedelta(minutes=2)).isoformat()
         for encode in (int, str):
@@ -64,7 +66,7 @@ class AdsServiceTests(unittest.TestCase):
                 values = self.service.state.values(self.now)
                 self.assertEqual(values["next_in"], 301)
                 self.assertEqual(values["snooze_refresh_in"], 900)
-                self.assertEqual(values["manual_retry_after"], 360)
+                self.assertIsNone(values["manual_retry_after"])
         events = self.service.tick(self.now + timedelta(seconds=1))
         self.assertEqual([event.event_type for event in events], ["ads.warning.5_minutes"])
 
@@ -154,18 +156,76 @@ class AdsServiceTests(unittest.TestCase):
 
     def test_commercial_cooldown_blocks_repeat_api_requests(self) -> None:
         result = self.service.run_commercial(180, now=self.now)
+        schedule = {**self.schedule(), "last_ad_at": self.now.isoformat()}
+        self.service.apply_schedule(schedule, now=self.now)
 
         self.assertEqual(result["retry_after"], 45)
         self.assertEqual(self.client.commercial_calls, [180])
         with self.assertRaisesRegex(ValueError, "45 seconds"):
             self.service.run_commercial(60, now=self.now)
         self.assertEqual(self.client.commercial_calls, [180])
+        self.service.run_commercial(60, now=self.now + timedelta(seconds=45))
+        self.assertEqual(self.client.commercial_calls, [180, 60])
+
+    def test_pending_action_rejects_another_write_without_blocking(self) -> None:
+        def snooze() -> dict:
+            with self.assertRaisesRegex(ValueError, "already in progress"):
+                self.service.run_commercial(60, now=self.now)
+            return self.schedule()
+
+        self.client.snooze_next_ad = Mock(side_effect=snooze)
+        self.service.snooze(now=self.now)
+        self.assertEqual(self.client.commercial_calls, [])
+        self.service.run_commercial(60, now=self.now)
+        self.assertEqual(self.client.commercial_calls, [60])
 
     def test_offline_state_has_no_schedule_warnings(self) -> None:
         self.service.apply_schedule(self.schedule(seconds=301), now=self.now)
+        self.service.observe_ad_break(
+            {"started_at": self.now.isoformat(), "duration_seconds": 60},
+            received_at=self.now,
+        )
         self.service.set_channel_live(False)
 
-        self.assertEqual(self.service.tick(self.now + timedelta(seconds=1)), ())
+        self.assertFalse(self.service.state.in_progress)
+        self.assertFalse(self.service.state.schedule_available)
+        self.assertEqual(self.service.tick(self.now + timedelta(seconds=61)), ())
+
+    def test_a_past_schedule_does_not_emit_late_warnings(self) -> None:
+        self.service.apply_schedule(self.schedule(seconds=301), now=self.now)
+        self.assertEqual(self.service.tick(self.now + timedelta(seconds=302)), ())
+
+    def test_account_reset_drops_a_pending_snooze_response(self) -> None:
+        def snooze() -> dict:
+            self.service.reset()
+            return self.schedule()
+
+        self.client.snooze_next_ad = Mock(side_effect=snooze)
+        self.service.snooze(now=self.now)
+        self.assertFalse(self.service.state.schedule_available)
+        self.assertIsNone(self.service.state.next_at)
+
+    def test_snooze_invalidates_earlier_schedule_responses(self) -> None:
+        old = self.schedule()
+        new = self.schedule(seconds=900)
+        revision = self.service.schedule_revision
+        self.service.apply_schedule(old, now=self.now, expected_revision=revision)
+        self.client.snooze_result = new
+        self.service.snooze(now=self.now)
+        self.assertFalse(self.service.apply_schedule(old, now=self.now, expected_revision=revision))
+        self.assertEqual(self.service.state.values(self.now)["next_in"], 900)
+        self.assertTrue(self.service.apply_schedule(
+            new, now=self.now, expected_revision=self.service.schedule_revision
+        ))
+
+    def test_schedule_unavailable_then_restored_does_not_repeat_a_warning(self) -> None:
+        schedule = self.schedule(seconds=301)
+        self.service.apply_schedule(schedule, now=self.now)
+        self.assertEqual(len(self.service.tick(self.now + timedelta(seconds=1))), 1)
+        self.service.apply_schedule(None, error="Twitch timed out")
+        self.assertFalse(self.service.state.schedule_available)
+        self.service.apply_schedule(schedule, now=self.now + timedelta(seconds=3))
+        self.assertEqual(self.service.tick(self.now + timedelta(seconds=4)), ())
 
     def test_failed_snooze_does_not_fake_a_schedule_change(self) -> None:
         self.service.apply_schedule(self.schedule(), now=self.now)

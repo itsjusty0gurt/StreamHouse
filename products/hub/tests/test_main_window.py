@@ -6306,7 +6306,7 @@ class MainWindowTests(unittest.TestCase):
                 self.window.handle_twitch_activity(event)
                 self.assertEqual(self.window.stream_is_live, is_live)
                 self.assertEqual(self.window.run_ad_button.isEnabled(), is_live)
-                self.assertEqual(self.window.snooze_ad_button.isEnabled(), is_live)
+                self.assertFalse(self.window.snooze_ad_button.isEnabled())
                 self.window._apply_channel_snapshot(ChannelSnapshotResult(
                     request_id=old_request,
                     snapshot={"stream": None if is_live else {"id": "old-stream"}},
@@ -6417,18 +6417,73 @@ class MainWindowTests(unittest.TestCase):
         self.assertIn("see Logs", self.window.ad_detail_label.text())
 
     def test_ad_worker_failure_is_visible_from_chat_workspace(self) -> None:
-        worker = Mock()
-
-        self.window._ads_action_failed(
-            worker,
-            "commercial",
-            "Twitch could not start the commercial (HTTP 400): channel offline",
-        )
+        self.window.twitch_auth.token = Mock(scopes=["channel:edit:commercial"])
+        self.window._apply_stream_live_state({"id": "test"})
+        operation = Mock(side_effect=ValueError("HTTP 400: channel offline"))
+        self.window._start_ads_action("commercial", operation)
+        self.assertTrue(self.window.ads_thread_pool.waitForDone(2_000))
+        self.application.processEvents()
 
         self.assertIn(
             "Could not start commercial", self.window.ad_detail_label.text()
         )
         self.assertIn("channel offline", self.window.ad_detail_label.text())
+        self.assertTrue(self.window.run_ad_button.isEnabled())
+
+    def test_snooze_blocks_double_activation_and_old_snapshot(self) -> None:
+        window = self.window
+        now = datetime.now(timezone.utc)
+        old_time = now + timedelta(minutes=5)
+        new_time = now + timedelta(minutes=10)
+        window.twitch_auth.token = Mock(scopes=["channel:read:ads", "channel:manage:ads"])
+        window._apply_stream_live_state({"id": "test"})
+        old_schedule = {"next_ad_at": old_time.isoformat(), "snooze_count": 2}
+        window._apply_ad_schedule(old_schedule)
+        window._update_ad_control_state()
+        window.twitch_service.snooze_next_ad = Mock(
+            return_value={"next_ad_at": new_time.isoformat(), "snooze_count": 1}
+        )
+        old_id = window.channel_snapshot_request_id
+        window.channel_snapshot_in_flight = True
+        old_result = ChannelSnapshotResult(
+            request_id=old_id, snapshot={"stream": {"id": "test"}, "ad_schedule": old_schedule}
+        )
+        with patch.object(window.ads_thread_pool, "start") as start, patch.object(
+            window, "refresh_channel_snapshot"
+        ) as refresh:
+            window.snooze_ad_button.click()
+            self.assertFalse(window.snooze_ad_button.isEnabled())
+            window.snooze_next_ad()
+            start.assert_called_once()
+            worker = start.call_args.args[0]
+            window._apply_channel_snapshot(old_result)
+            worker.run()
+            window._apply_channel_snapshot(old_result)
+            refresh.assert_called_once_with()
+        window.twitch_service.snooze_next_ad.assert_called_once_with()
+        self.assertEqual(window.ads_service.state.next_at, new_time)
+        self.assertEqual(window.ads_service.state.snooze_count, 1)
+        self.assertTrue(window.snooze_ad_button.isEnabled())
+
+    def test_snooze_completion_cannot_apply_to_replaced_broadcaster_or_closed_window(self) -> None:
+        window = self.window
+        refresh = Mock()
+        window.refresh_channel_snapshot = refresh
+        for transition in ("account reset", "shutdown"):
+            with self.subTest(transition=transition):
+                def finish_during_transition():
+                    if transition == "shutdown":
+                        window.close()
+                    else:
+                        window.ads_service.reset()
+                    return {"next_ad_at": 1796000000}
+
+                with patch.object(window.ads_thread_pool, "start") as start:
+                    window._start_ads_action("snooze", finish_during_transition)
+                    start.call_args.args[0].run()
+                self.assertFalse(window.ads_action_in_flight)
+                self.assertNotEqual(window.statusBar().currentMessage(), "Next ad snoozed.")
+        refresh.assert_not_called()
 
     def test_twitch_event_viewer_filters_details_and_clears(self) -> None:
         self.window.ui.twitchChannelEdit.setText("channel")
@@ -6915,12 +6970,14 @@ class MainWindowTests(unittest.TestCase):
         self.assertIn("Ads Running -", self.window.ad_next_label.text())
         started_trigger = self.window.automation_service.publish_trigger.call_args_list[0].args[0]
         self.assertEqual(started_trigger.context["ads.is_automatic"], "true")
+        self.assertEqual(self.window.automation_service.publish_trigger.call_args.kwargs, {"defer": True})
 
         ended = self.window.ads_service.tick(now + timedelta(seconds=60))[0]
         with patch("products.hub.ui.main_window.QTimer.singleShot"):
             self.window._publish_ads_event(ended)
 
         self.assertFalse(self.window.ads_service.state.in_progress)
+        self.assertEqual(self.window.automation_service.publish_trigger.call_args.kwargs, {"defer": True})
         self.assertEqual(
             self.window.automation_service.publish_trigger.call_args_list[-1].args[0].trigger_id,
             self.twitch_event_trigger_store.for_routine(ended_routine.routine_id)[0].trigger_id,

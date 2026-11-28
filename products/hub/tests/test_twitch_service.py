@@ -778,6 +778,25 @@ class TwitchServiceTests(unittest.TestCase):
         helix.start_commercial.assert_not_called()
         helix.snooze_ad.assert_not_called()
 
+    def test_ads_actions_do_not_use_a_new_token_with_an_old_broadcaster_id(self) -> None:
+        token = TwitchToken(
+            "access", "refresh", 999,
+            ["channel:edit:commercial", "channel:manage:ads"],
+            user_id="new-broadcaster",
+        )
+        helix = Mock()
+        service = TwitchService(auth=Mock(token=token), helix=helix)
+        service.broadcaster_user_id = "old-broadcaster"
+        with self.assertRaisesRegex(ValueError, "identity is changing"):
+            service.run_commercial(60)
+        with self.assertRaisesRegex(ValueError, "identity is changing"):
+            service.snooze_next_ad()
+        helix.start_commercial.assert_not_called()
+        helix.snooze_ad.assert_not_called()
+        service.broadcaster_user_id = "new-broadcaster"
+        service.snooze_next_ad()
+        helix.snooze_ad.assert_called_once_with("new-broadcaster", token)
+
     def test_get_user_clips_resolves_target_instead_of_using_broadcaster(self) -> None:
         token = TwitchToken(
             "access",

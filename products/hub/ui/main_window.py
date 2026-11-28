@@ -861,7 +861,10 @@ class MainWindow(QMainWindow):
         self.ads_thread_pool.setMaxThreadCount(1)
         self._ads_workers: set[AdsActionWorker] = set()
         self.ads_action_in_flight = False
+        self._ads_action_state = None
+        self._ads_broadcaster_id = ""
         self.channel_snapshot_request_id = 0
+        self._snapshot_ads_revision = self.ads_service.schedule_revision
         self.channel_snapshot_in_flight = False
         self.channel_snapshot_warning_cache: set[str] = set()
         self.last_channel_snapshot: ChannelSnapshotResult | None = None
@@ -4217,6 +4220,15 @@ class MainWindow(QMainWindow):
         self.channel_snapshot_in_flight = False
         signed_in = state is TwitchAuthState.SIGNED_IN
         waiting = state is TwitchAuthState.WAITING
+        token_user_id = getattr(self.twitch_auth.token, "user_id", "")
+        if state in {TwitchAuthState.SIGNED_OUT, TwitchAuthState.ERROR} or (
+            signed_in and isinstance(token_user_id, str)
+            and token_user_id and token_user_id != self._ads_broadcaster_id
+        ):
+            if self._ads_broadcaster_id:
+                self._apply_stream_live_state(None)
+            self.ads_service.reset()
+            self._ads_broadcaster_id = token_user_id if signed_in else ""
         missing_scopes = (
             self.twitch_auth.missing_scopes(set(TWITCH_SCOPES))
             if signed_in
@@ -5985,9 +5997,14 @@ class MainWindow(QMainWindow):
 
     @Slot(object)
     def handle_twitch_activity(self, twitch_event: TwitchEvent) -> None:
+        if self._shutting_down:
+            return
         if twitch_event.subscription_type == "channel.ad_break.begin":
             event_payload = twitch_event.payload.get("event", {})
-            if isinstance(event_payload, dict):
+            if isinstance(event_payload, dict) and (
+                not self._ads_broadcaster_id
+                or twitch_event.broadcaster_user_id == self._ads_broadcaster_id
+            ):
                 self._publish_ads_event(
                     self.ads_service.observe_ad_break(
                         event_payload,
@@ -7580,13 +7597,15 @@ class MainWindow(QMainWindow):
         token = self.twitch_auth.token
         broadcaster_id = self.twitch_service.broadcaster_user_id
         if (
-            token is None
+            self._shutting_down
+            or token is None
             or not broadcaster_id
             or self.channel_snapshot_in_flight
         ):
             return
         self.channel_snapshot_request_id += 1
         request_id = self.channel_snapshot_request_id
+        self._snapshot_ads_revision = self.ads_service.schedule_revision
         worker = ChannelSnapshotWorker(
             request_id,
             self.twitch_service.helix,
@@ -7604,7 +7623,7 @@ class MainWindow(QMainWindow):
         self,
         result: ChannelSnapshotResult,
     ) -> None:
-        if result.request_id != self.channel_snapshot_request_id:
+        if self._shutting_down or result.request_id != self.channel_snapshot_request_id:
             return
         self.last_channel_snapshot = result
         self.channel_snapshot_in_flight = False
@@ -7671,10 +7690,13 @@ class MainWindow(QMainWindow):
             ),
             "",
         )
-        self._apply_ad_schedule(
-            snapshot.get("ad_schedule"),
-            error=ad_schedule_error,
-        )
+        # A GET started before Snooze/Run Ads cannot supersede the action result.
+        if not self.ads_action_in_flight:
+            self._apply_ad_schedule(
+                snapshot.get("ad_schedule") if self.stream_is_live else None,
+                error=ad_schedule_error,
+                expected_revision=self._snapshot_ads_revision,
+            )
         self._update_stream_overview_clock()
         self._apply_chatter_groups(result)
         if result.followers:
@@ -7692,6 +7714,7 @@ class MainWindow(QMainWindow):
 
     def _apply_stream_live_state(self, stream: object) -> None:
         self.stream_is_live = isinstance(stream, dict)
+        self.ads_service.set_channel_live(self.stream_is_live)
         self.stream_live_label.setText("LIVE" if self.stream_is_live else "OFFLINE")
         self.stream_status_card.set_accent(
             "#ff4f64" if self.stream_is_live else "#8c8cff"
@@ -7704,8 +7727,13 @@ class MainWindow(QMainWindow):
         else:
             self.stream_started_at = None
             self.stream_viewers_label.setText("0")
-    def _apply_ad_schedule(self, value: object, *, error: str = "") -> None:
-        self.ads_service.apply_schedule(value, error=error)
+    def _apply_ad_schedule(
+        self, value: object, *, error: str = "", expected_revision: int | None = None
+    ) -> None:
+        if not self.ads_service.apply_schedule(
+            value, error=error, expected_revision=expected_revision
+        ):
+            return
         self.variable_registry.notify_changed(
             definition.name
             for definition in self.variable_registry.definitions()
@@ -7721,6 +7749,8 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def _update_stream_overview_clock(self) -> None:
+        if self._shutting_down:
+            return
         now = datetime.now(timezone.utc)
         self.stream_time_label.setText(self._stream_uptime_text(now))
 
@@ -7738,7 +7768,7 @@ class MainWindow(QMainWindow):
             if self.stream_is_live and can_read_schedule and state.schedule_available
             else "Preroll-free: —"
         )
-        if state.in_progress and state.ends_at is not None:
+        if self.stream_is_live and state.in_progress and state.ends_at is not None:
             remaining = max(int((state.ends_at - now).total_seconds()), 0)
             self.ad_next_label.setText(
                 f"Ads Running - {self._clock_text(remaining)}"
@@ -7835,9 +7865,14 @@ class MainWindow(QMainWindow):
             not self.ads_action_in_flight
             and self.stream_is_live
             and can_run_ads
+            and not state.in_progress
             and retry_ready
         )
-        if not retry_ready and state.manual_retry_until is not None:
+        if self.ads_action_in_flight:
+            self.run_ad_button.setToolTip("Waiting for Twitch to respond.")
+        elif state.in_progress:
+            self.run_ad_button.setToolTip("An ad break is already running.")
+        elif not retry_ready and state.manual_retry_until is not None:
             remaining = max(
                 int((state.manual_retry_until - current).total_seconds()),
                 0,
@@ -7855,24 +7890,23 @@ class MainWindow(QMainWindow):
             self.run_ad_button.setToolTip(
                 "Requires channel:edit:commercial and an eligible live channel."
             )
-        schedule_known = (
-            "channel:read:ads" in scopes and state.schedule_available
-        )
-        can_snooze_ads = "channel:manage:ads" in scopes
-        self.snooze_ad_button.setEnabled(
-            not self.ads_action_in_flight
-            and self.stream_is_live
-            and can_snooze_ads
-            and (
-                not schedule_known
-                or (state.next_at is not None and state.snooze_count > 0)
-            )
-        )
-        self.snooze_ad_button.setToolTip(
-            "Requires an upcoming scheduled ad and an available snooze."
-            if can_snooze_ads
-            else "Reconnect Twitch to grant channel:manage:ads."
-        )
+        snooze_unavailable = ""
+        if self.ads_action_in_flight:
+            snooze_unavailable = "Waiting for Twitch to respond."
+        elif "channel:manage:ads" not in scopes:
+            snooze_unavailable = "Reconnect Twitch to grant channel:manage:ads."
+        elif "channel:read:ads" not in scopes:
+            snooze_unavailable = "Reconnect Twitch to grant channel:read:ads."
+        elif not self.stream_is_live:
+            snooze_unavailable = "Available when Twitch reports your channel live."
+        elif state.in_progress:
+            snooze_unavailable = "An ad break is already running."
+        elif not state.schedule_available or state.next_at is None or state.next_at <= current:
+            snooze_unavailable = "No upcoming automatic ad is known."
+        elif not state.snooze_count:
+            snooze_unavailable = "No snoozes remaining."
+        self.snooze_ad_button.setEnabled(not snooze_unavailable)
+        self.snooze_ad_button.setToolTip(snooze_unavailable or "Snooze the next automatic ad.")
 
     @staticmethod
     def _parse_twitch_timestamp(value: object) -> datetime | None:
@@ -8557,9 +8591,15 @@ class MainWindow(QMainWindow):
         request_id: int,
         message: str,
     ) -> None:
-        if request_id != self.channel_snapshot_request_id:
+        if self._shutting_down or request_id != self.channel_snapshot_request_id:
             return
         self.channel_snapshot_in_flight = False
+        if not self.ads_action_in_flight:
+            self._apply_ad_schedule(
+                None, error=redact_secret_text(message),
+                expected_revision=self._snapshot_ads_revision,
+            )
+            self._update_stream_overview_clock()
         self.twitch_health.channel_snapshot_failed(message)
         self._refresh_twitch_health()
         if "401" in message and self.twitch_auth.recover_unauthorized():
@@ -8711,7 +8751,8 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def run_commercial(self) -> None:
-        if self.ads_action_in_flight:
+        self._update_ad_control_state()
+        if self._shutting_down or not self.run_ad_button.isEnabled():
             return
         duration = int(self.ad_length_combo.currentData())
         if self.settings.twitch_last_ad_duration != duration:
@@ -8723,10 +8764,8 @@ class MainWindow(QMainWindow):
                     f"Could not save the last ad duration: {error}",
                     source="SETTINGS",
                 )
-        self._start_ads_action(
-            "commercial",
-            lambda: self.ads_service.run_commercial(duration),
-        )
+        service = self.ads_service
+        self._start_ads_action("commercial", lambda: service.run_commercial(duration))
 
     @Slot()
     def _ad_duration_changed(self) -> None:
@@ -8744,59 +8783,64 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def snooze_next_ad(self) -> None:
-        if self.ads_action_in_flight:
+        self._update_ad_control_state()
+        if self._shutting_down or not self.snooze_ad_button.isEnabled():
             return
         self._start_ads_action("snooze", self.ads_service.snooze)
 
     def _start_ads_action(self, action: str, operation) -> None:
+        if self._shutting_down or self.ads_action_in_flight:
+            return
         self.ads_action_in_flight = True
+        service = self.ads_service
+        action_state = self._ads_action_state = service.state
+
+        def run_for_current_account() -> dict:
+            if service.state is not action_state:
+                raise ValueError("Twitch account changed before the ad request.")
+            return operation()
+
         self._update_ad_control_state()
-        worker = AdsActionWorker(action, operation)
+        worker = AdsActionWorker(action, run_for_current_account)
         self._ads_workers.add(worker)
-        worker.signals.completed.connect(
-            lambda completed_action, result, current=worker: self._ads_action_completed(
-                current, completed_action, result
-            )
-        )
-        worker.signals.failed.connect(
-            lambda failed_action, error, current=worker: self._ads_action_failed(
-                current, failed_action, error
-            )
-        )
+        worker.signals.completed.connect(self._ads_action_completed)
+        worker.signals.failed.connect(self._ads_action_failed)
         self.ads_thread_pool.start(worker)
 
-    def _ads_action_completed(
-        self,
-        worker: AdsActionWorker,
-        action: str,
-        result: object,
-    ) -> None:
-        self._ads_workers.discard(worker)
-        if self._shutting_down:
-            return
+    def _finish_ads_action(self) -> bool:
+        self._ads_workers.clear()
         self.ads_action_in_flight = False
+        action_state, self._ads_action_state = self._ads_action_state, None
+        if self._shutting_down:
+            return False
+        if action_state is not self.ads_service.state:
+            self._update_ad_control_state()
+            return False
+        return True
+
+    @Slot(str, object)
+    def _ads_action_completed(self, action: str, result: object) -> None:
+        if not self._finish_ads_action():
+            return
+        self.channel_snapshot_request_id += 1
+        self.channel_snapshot_in_flight = False
         payload = result if isinstance(result, dict) else {}
         if action == "commercial":
             self.statusBar().showMessage(
-                str(payload.get("message") or "Commercial requested."), 8000
+                redact_secret_text(str(payload.get("message") or "Commercial started.")), 8000
             )
             QTimer.singleShot(1_000, self, self.refresh_channel_snapshot)
         else:
             self.statusBar().showMessage("Next ad snoozed.", 8000)
+            self.refresh_channel_snapshot()
         self._update_stream_overview_clock()
 
-    def _ads_action_failed(
-        self,
-        worker: AdsActionWorker,
-        action: str,
-        error: str,
-    ) -> None:
-        self._ads_workers.discard(worker)
-        if self._shutting_down:
+    @Slot(str, str)
+    def _ads_action_failed(self, action: str, error: str) -> None:
+        if not self._finish_ads_action():
             return
-        self.ads_action_in_flight = False
         label = "start commercial" if action == "commercial" else "snooze ad"
-        message = f"Could not {label}: {error}"
+        message = f"Could not {label}: {redact_secret_text(error)}"
         self.handle_twitch_error(message)
         self.ad_detail_label.setText(message)
         self.statusBar().showMessage(message, 12_000)

@@ -340,16 +340,18 @@ state. Unknown/offline values display a dash rather than an invented countdown.
 Live Helix Ads responses use Unix-second timestamps (zero means unavailable),
 while EventSub and Twitch's documented examples use RFC3339. `AdsService`
 normalizes these external wire formats to UTC before calculating countdowns,
-warnings, cooldowns and snooze refresh times.
-API operations run on the existing Qt worker pattern and
-call `AdsService`, not Helix from the widget.
+warnings and snooze refresh times. Only the successful commercial response sets
+the local manual-ad cooldown; a schedule snapshot does not estimate it. Snooze
+requires a known upcoming automatic ad and a remaining snooze. API operations
+use the existing Qt worker pattern. Ad writes are not retried automatically:
+if the response is lost, Twitch may already have accepted the request.
 
 Stream online/offline EventSub notifications update stream status and Ads
 controls immediately, then request a fresh snapshot. A snapshot requested
 before that transition cannot overwrite it. The normal periodic snapshot path
 still detects live state when Hub connects to an already-live channel.
 
-With `channel:read:ads`, Hub subscribes to `channel.ad_break.begin`. The service
+With `channel:read:ads`, Hub subscribes to `channel.ad_break.begin` v1. The service
 retains Twitch's start time, duration, automatic/manual flag, and requester
 identity when supplied. Twitch has no public ad-break-end EventSub event, so
 Hub calculates the estimated end as start time plus duration, clears active

@@ -748,7 +748,7 @@ class TwitchService:
         )
 
     def run_commercial(self, length: int) -> dict:
-        broadcaster_id, token = self._broadcaster_credentials(
+        broadcaster_id, token = self._ads_credentials(
             "channel:edit:commercial"
         )
         return self.helix.start_commercial(
@@ -756,10 +756,16 @@ class TwitchService:
         )
 
     def snooze_next_ad(self) -> dict:
-        broadcaster_id, token = self._broadcaster_credentials(
+        broadcaster_id, token = self._ads_credentials(
             "channel:manage:ads"
         )
         return self.helix.snooze_ad(broadcaster_id, token)
+
+    def _ads_credentials(self, required_scope: str):
+        broadcaster_id, token = self._broadcaster_credentials(required_scope)
+        if isinstance(token.user_id, str) and token.user_id and token.user_id != broadcaster_id:
+            raise ValueError("Twitch broadcaster identity is changing. Wait for Twitch to reconnect.")
+        return broadcaster_id, token
 
     def update_stream_title(self, title: str) -> None:
         clean_title = title.strip()

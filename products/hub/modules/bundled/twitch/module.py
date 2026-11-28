@@ -604,7 +604,9 @@ class TwitchModule:
             event.context,
             trigger_type="ads",
         ):
-            self._publish_trigger(trigger, event.event_type.replace(".", " ").title())
+            self._publish_trigger(
+                trigger, event.event_type.replace(".", " ").title(), defer=True
+            )
 
     def handle_command(
         self,

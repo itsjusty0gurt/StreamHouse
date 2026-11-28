@@ -882,6 +882,8 @@ class TwitchHelixClient:
                 result["warnings"].append(f"subscribers: {error}")
         if "channel:read:ads" in scopes:
             try:
+                if token.user_id and token.user_id != broadcaster_id:
+                    raise ValueError("Twitch broadcaster identity is changing.")
                 ad_payload = self._read_json(
                     Request(
                         f"{self.AD_SCHEDULE_URL}?"
@@ -889,7 +891,10 @@ class TwitchHelixClient:
                         headers=headers,
                     )
                 )
-                result["ad_schedule"] = (ad_payload.get("data") or [None])[0]
+                entries = ad_payload.get("data")
+                if not isinstance(entries, list) or (entries and not isinstance(entries[0], dict)):
+                    raise ValueError("Twitch returned an invalid ad schedule.")
+                result["ad_schedule"] = entries[0] if entries and entries[0] else None
             except (HTTPError, URLError, OSError, ValueError) as error:
                 result["warnings"].append(f"ad schedule: {error}")
         return result
@@ -951,7 +956,9 @@ class TwitchHelixClient:
                     data=body,
                     headers=headers,
                     method="POST",
-                )
+                ),
+                # An ambiguous failure can occur after Twitch accepted the ad.
+                attempts=1,
             )
         except HTTPError as error:
             self._raise_ads_api_error("start the commercial", error)
@@ -966,7 +973,9 @@ class TwitchHelixClient:
                     data=b"",
                     headers=self._headers(token),
                     method="POST",
-                )
+                ),
+                # Retrying can consume a second snooze.
+                attempts=1,
             )
         except HTTPError as error:
             self._raise_ads_api_error("snooze the next ad", error)
@@ -979,6 +988,7 @@ class TwitchHelixClient:
             not isinstance(values, list)
             or not values
             or not isinstance(values[0], dict)
+            or not values[0]
         ):
             raise ValueError(f"Twitch returned no result for the {action}.")
         return values[0]
@@ -989,7 +999,7 @@ class TwitchHelixClient:
         try:
             payload = json.loads(error.read().decode("utf-8", errors="replace"))
             if isinstance(payload, dict):
-                detail = str(payload.get("message") or "").strip()
+                detail = redact_secret_text(str(payload.get("message") or "")).strip()
         except (OSError, json.JSONDecodeError):
             pass
         raise ValueError(

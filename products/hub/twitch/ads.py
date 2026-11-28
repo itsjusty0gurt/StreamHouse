@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from threading import Lock
 from typing import Mapping, Protocol
 
 
@@ -72,12 +74,32 @@ class AdsService:
     def __init__(self, twitch: TwitchAdsClient) -> None:
         self.twitch = twitch
         self.state = AdsState()
+        self._action_lock = Lock()
+        self._state_lock = Lock()
+        self.schedule_revision = 0
         self._schedule_key = ""
         self._fired_warnings: set[int] = set()
         self._previous_next_remaining: int | None = None
 
     def set_channel_live(self, live: bool) -> None:
-        self.state.channel_live = bool(live)
+        with self._state_lock:
+            if not live and self.state.channel_live:
+                self._finish_active_ad()
+                self._apply_schedule(None, now=None, error="")
+                self._schedule_key = ""
+                self._fired_warnings.clear()
+                self._previous_next_remaining = None
+                self.state.last_at = None
+            self.state.channel_live = bool(live)
+
+    def reset(self) -> None:
+        """Drop a retired broadcaster's state without waiting for its requests."""
+        with self._state_lock:
+            self.state = AdsState()
+            self.schedule_revision += 1
+            self._schedule_key = ""
+            self._fired_warnings.clear()
+            self._previous_next_remaining = None
 
     def apply_schedule(
         self,
@@ -85,6 +107,16 @@ class AdsService:
         *,
         now: datetime | None = None,
         error: str = "",
+        expected_revision: int | None = None,
+    ) -> bool:
+        with self._state_lock:
+            if expected_revision is not None and expected_revision != self.schedule_revision:
+                return False
+            self._apply_schedule(value, now=now, error=error)
+            return True
+
+    def _apply_schedule(
+        self, value: object, *, now: datetime | None, error: str
     ) -> None:
         current = _aware(now or datetime.now(timezone.utc))
         self.state.schedule_available = isinstance(value, Mapping)
@@ -97,7 +129,7 @@ class AdsService:
             self.state.preroll_free_until = None
         next_at = _timestamp(schedule.get("next_ad_at"))
         next_key = _iso(next_at)
-        if next_key != self._schedule_key:
+        if self.state.schedule_available and next_key != self._schedule_key:
             self._schedule_key = next_key
             self._fired_warnings.clear()
             self._previous_next_remaining = (
@@ -123,13 +155,17 @@ class AdsService:
                 if preroll_seconds
                 else None
             )
-        if self.state.last_at is not None:
-            schedule_retry = self.state.last_at + timedelta(minutes=8)
-            if schedule_retry > current and (
-                self.state.manual_retry_until is None
-                or schedule_retry > self.state.manual_retry_until
-            ):
-                self.state.manual_retry_until = schedule_retry
+
+    @contextmanager
+    def _ad_action(self):
+        # Dashboard and Automation share this service. Never wait for an
+        # already-running write or hold the state lock across a Helix request.
+        if not self._action_lock.acquire(blocking=False):
+            raise ValueError("Another Twitch ad action is already in progress.")
+        try:
+            yield
+        finally:
+            self._action_lock.release()
 
     def run_commercial(
         self,
@@ -137,26 +173,37 @@ class AdsService:
         *,
         now: datetime | None = None,
     ) -> dict:
-        current = _aware(now or datetime.now(timezone.utc))
-        if (
-            self.state.manual_retry_until is not None
-            and self.state.manual_retry_until > current
-        ):
-            remaining = _remaining(self.state.manual_retry_until, current)
-            raise ValueError(
-                f"Another commercial can run in {remaining} seconds."
-            )
-        result = self.twitch.run_commercial(duration)
-        retry_after = _nonnegative_int(result.get("retry_after"))
-        self.state.manual_retry_until = (
-            current + timedelta(seconds=retry_after) if retry_after else None
-        )
-        return result
+        with self._ad_action():
+            current = _aware(now or datetime.now(timezone.utc))
+            with self._state_lock:
+                state = self.state
+                remaining = _remaining(state.manual_retry_until, current)
+                if state.in_progress:
+                    raise ValueError("A Twitch ad break is already in progress.")
+                if state.manual_retry_until is not None and state.manual_retry_until > current:
+                    raise ValueError(f"Another commercial can run in {remaining} seconds.")
+            result = self.twitch.run_commercial(duration)
+            retry_after = _nonnegative_int(result.get("retry_after"))
+            completed = _aware(now or datetime.now(timezone.utc))
+            with self._state_lock:
+                if self.state is state:
+                    self.schedule_revision += 1
+                    state.manual_retry_until = (
+                        completed + timedelta(seconds=retry_after) if retry_after else None
+                    )
+            return result
 
     def snooze(self, *, now: datetime | None = None) -> dict:
-        result = self.twitch.snooze_next_ad()
-        self.apply_schedule(result, now=now)
-        return result
+        with self._ad_action():
+            with self._state_lock:
+                state = self.state
+                was_live = state.channel_live
+            result = self.twitch.snooze_next_ad()
+            with self._state_lock:
+                if self.state is state and state.channel_live == was_live:
+                    self.schedule_revision += 1
+                    self._apply_schedule(result, now=now, error="")
+            return result
 
     def snooze_next_ad(self) -> dict:
         return self.snooze()
@@ -166,6 +213,15 @@ class AdsService:
         event: Mapping[str, object],
         *,
         received_at: datetime | None = None,
+    ) -> AdsDomainEvent:
+        with self._state_lock:
+            return self._observe_ad_break(event, received_at=received_at)
+
+    def _observe_ad_break(
+        self,
+        event: Mapping[str, object],
+        *,
+        received_at: datetime | None,
     ) -> AdsDomainEvent:
         fallback = _aware(received_at or datetime.now(timezone.utc))
         started_at = _timestamp(event.get("started_at")) or fallback
@@ -195,6 +251,10 @@ class AdsService:
         return AdsDomainEvent("ads.started", self.event_context(now=fallback))
 
     def tick(self, now: datetime | None = None) -> tuple[AdsDomainEvent, ...]:
+        with self._state_lock:
+            return self._tick(now)
+
+    def _tick(self, now: datetime | None) -> tuple[AdsDomainEvent, ...]:
         current = _aware(now or datetime.now(timezone.utc))
         events: list[AdsDomainEvent] = []
         if (
@@ -206,7 +266,11 @@ class AdsService:
             self._finish_active_ad()
             events.append(AdsDomainEvent("ads.ended", context))
 
-        if self.state.next_at is not None and self.state.channel_live:
+        if (
+            self.state.channel_live
+            and self.state.next_at is not None
+            and self.state.next_at > current
+        ):
             remaining = max(int((self.state.next_at - current).total_seconds()), 0)
             previous = self._previous_next_remaining
             for threshold, event_type in AD_WARNING_SECONDS.items():

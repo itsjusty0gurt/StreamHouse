@@ -3,7 +3,7 @@ import os
 import unittest
 from io import BytesIO
 from datetime import datetime, timezone
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 from unittest.mock import Mock, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -301,8 +301,67 @@ class TwitchHelixClientTests(unittest.TestCase):
         self.assertIn("helix/channels", channel_request.full_url)
         self.assertIn("broadcaster_id=channel-1", channel_request.full_url)
         request = open_url.call_args_list[2].args[0]
+        self.assertEqual(request.get_method(), "GET")
         self.assertIn("channels/ads", request.full_url)
         self.assertIn("broadcaster_id=channel-1", request.full_url)
+
+    @patch("products.hub.twitch.live.urlopen")
+    def test_missing_or_invalid_ad_schedule_is_not_a_usable_schedule(self, open_url) -> None:
+        client = TwitchHelixClient()
+        for ads, warning in (({"data": []}, False), ({"data": [{}]}, False),
+                             ({"data": ["invalid"]}, True)):
+            with self.subTest(ads=ads):
+                open_url.side_effect = (
+                    _JsonResponse({"data": [{"id": "stream-1"}]}),
+                    _JsonResponse({"data": []}),
+                    _JsonResponse(ads),
+                )
+                token = TwitchToken("test", "refresh", 999, ["channel:read:ads"])
+                snapshot = client.get_channel_snapshot("channel-1", token)
+                self.assertIsNone(snapshot["ad_schedule"])
+                self.assertEqual(bool(snapshot["warnings"]), warning)
+
+    @patch("products.hub.twitch.live.urlopen")
+    def test_ads_mutations_use_broadcaster_and_return_the_accepted_result(self, open_url) -> None:
+        client = TwitchHelixClient()
+        token = TwitchToken("test", "refresh", 999, [])
+        commercial = {"length": 90, "retry_after": 45, "message": ""}
+        snooze = {"next_ad_at": 1793000000, "snooze_count": 1}
+        open_url.side_effect = [
+            _JsonResponse({"data": [commercial]}),
+            _JsonResponse({"data": [snooze]}),
+        ]
+        self.assertEqual(client.start_commercial("channel-1", 120, token), commercial)
+        self.assertEqual(client.snooze_ad("channel-1", token), snooze)
+        first, second = [call.args[0] for call in open_url.call_args_list]
+        self.assertEqual(first.method, "POST")
+        self.assertEqual(first.full_url, client.COMMERCIAL_URL)
+        self.assertEqual(json.loads(first.data), {"broadcaster_id": "channel-1", "length": 120})
+        self.assertEqual(second.method, "POST")
+        self.assertEqual(second.full_url, f"{client.SNOOZE_AD_URL}?broadcaster_id=channel-1")
+
+    @patch("products.hub.twitch.live.urlopen")
+    def test_ads_mutations_do_not_replay_after_ambiguous_or_rejected_responses(self, open_url) -> None:
+        client = TwitchHelixClient()
+        token = TwitchToken("test", "refresh", 999, [])
+        for operation in (lambda: client.start_commercial("channel-1", 60, token),
+                          lambda: client.snooze_ad("channel-1", token)):
+            for code in (None, 401, 429, 503):
+                with self.subTest(code=code):
+                    open_url.reset_mock()
+                    error = (
+                        URLError(TimeoutError("timed out")) if code is None else
+                        HTTPError("https://example.test", code, "rejected", {},
+                                  BytesIO(b'{"message":"rejected"}'))
+                    )
+                    open_url.side_effect = [error, _JsonResponse({"data": [{"length": 60}]})]
+                    if code is None:
+                        with self.assertRaisesRegex(URLError, "timed out"):
+                            operation()
+                    else:
+                        with self.assertRaisesRegex(ValueError, f"HTTP {code}.*rejected"):
+                            operation()
+                    open_url.assert_called_once()
 
     @patch("products.hub.twitch.live.urlopen")
     def test_paginated_collection_follows_cursor(self, open_url) -> None:
