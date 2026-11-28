@@ -10,6 +10,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication
 
+from products.hub.twitch.ads import SnoozeRejected
 from products.hub.twitch.auth import TwitchToken
 from products.hub.twitch.automation_triggers import CHANNEL_POINT_REDEMPTION_EVENT_TYPE
 from products.hub.twitch.live import TwitchEventSubSocket, TwitchHelixClient
@@ -344,10 +345,12 @@ class TwitchHelixClientTests(unittest.TestCase):
     def test_ads_mutations_do_not_replay_after_ambiguous_or_rejected_responses(self, open_url) -> None:
         client = TwitchHelixClient()
         token = TwitchToken("test", "refresh", 999, [])
-        for operation in (lambda: client.start_commercial("channel-1", 60, token),
-                          lambda: client.snooze_ad("channel-1", token)):
-            for code in (None, 401, 429, 503):
-                with self.subTest(code=code):
+        for action, operation in (
+            ("commercial", lambda: client.start_commercial("channel-1", 60, token)),
+            ("snooze", lambda: client.snooze_ad("channel-1", token)),
+        ):
+            for code in (None, 400, 401, 404, 429, 503):
+                with self.subTest(action=action, code=code):
                     open_url.reset_mock()
                     error = (
                         URLError(TimeoutError("timed out")) if code is None else
@@ -359,8 +362,10 @@ class TwitchHelixClientTests(unittest.TestCase):
                         with self.assertRaisesRegex(URLError, "timed out"):
                             operation()
                     else:
-                        with self.assertRaisesRegex(ValueError, f"HTTP {code}.*rejected"):
+                        expected = SnoozeRejected if action == "snooze" and code != 503 else ValueError
+                        with self.assertRaisesRegex(expected, f"HTTP {code}.*rejected") as caught:
                             operation()
+                        self.assertIs(type(caught.exception), expected)
                     open_url.assert_called_once()
 
     @patch("products.hub.twitch.live.urlopen")

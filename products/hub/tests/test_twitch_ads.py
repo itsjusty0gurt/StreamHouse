@@ -7,7 +7,7 @@ from unittest.mock import Mock
 
 from products.hub.automation.variable_providers import AdsVariableProvider
 from products.hub.automation.variable_registry import VariableRegistry
-from products.hub.twitch.ads import AdsService
+from products.hub.twitch.ads import AdsService, SnoozeRejected
 
 
 class FakeTwitchAdsClient:
@@ -227,16 +227,46 @@ class AdsServiceTests(unittest.TestCase):
         self.service.apply_schedule(schedule, now=self.now + timedelta(seconds=3))
         self.assertEqual(self.service.tick(self.now + timedelta(seconds=4)), ())
 
-    def test_failed_snooze_does_not_fake_a_schedule_change(self) -> None:
+    def test_uncertain_snooze_blocks_service_writes_and_preserves_confirmed_read_only_state(self) -> None:
         self.service.apply_schedule(self.schedule(), now=self.now)
-        original = self.service.state.next_at
-        self.client.snooze_error = OSError("Twitch unavailable")
+        self.service.run_commercial(60, now=self.now)
+        self.service.observe_ad_break(
+            {"started_at": self.now.isoformat(), "duration_seconds": 60},
+            received_at=self.now,
+        )
+        revision = self.service.schedule_revision
+        self.client.snooze_next_ad = Mock(side_effect=TimeoutError("response lost"))
+        for _ in range(2):
+            with self.assertRaisesRegex(ValueError, "Snooze outcome unknown"):
+                self.service.snooze(now=self.now)
+        self.client.snooze_next_ad.assert_called_once()
+        self.assertEqual(self.service.state.snooze_unreconciled, "unknown")
+        self.assertIsNone(self.service.state.next_at)
+        self.assertIsNone(self.service.state.values(self.now)["snooze_count"])
+        self.assertTrue(self.service.state.in_progress)
+        self.assertEqual(self.service.state.values(self.now)["manual_retry_after"], 45)
+        self.assertFalse(self.service.apply_schedule(self.schedule(), expected_revision=revision))
 
-        with self.assertRaisesRegex(OSError, "unavailable"):
+    def test_definitive_snooze_rejection_invalidates_schedule_without_claiming_uncertainty(self) -> None:
+        self.service.apply_schedule(self.schedule(), now=self.now)
+        self.client.snooze_error = SnoozeRejected("Twitch rejected Snooze (HTTP 429)")
+        with self.assertRaisesRegex(SnoozeRejected, "HTTP 429"):
             self.service.snooze(now=self.now)
+        self.assertEqual(self.service.state.snooze_unreconciled, "rejected")
+        self.assertFalse(self.service.state.schedule_available)
+        self.assertFalse(self.service.apply_schedule(self.schedule()))
+        self.assertTrue(self.service.apply_schedule(
+            {**self.schedule(), "snooze_count": 0}, now=self.now,
+            expected_revision=self.service.schedule_revision,
+        ))
+        self.assertEqual(self.service.state.snooze_unreconciled, "")
+        self.assertEqual(self.service.state.snooze_count, 0)
 
-        self.assertEqual(self.service.state.next_at, original)
-        self.assertEqual(self.service.state.snooze_count, 2)
+    def test_incomplete_success_reply_does_not_confirm_a_snooze(self) -> None:
+        self.client.snooze_result = {"snooze_count": 1}
+        with self.assertRaisesRegex(ValueError, "Snooze outcome unknown"):
+            self.service.snooze(now=self.now)
+        self.assertEqual(self.service.state.snooze_unreconciled, "unknown")
 
     def test_ads_variables_use_registry_provider_and_types(self) -> None:
         self.service.apply_schedule(self.schedule(), now=self.now)

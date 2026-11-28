@@ -343,8 +343,13 @@ normalizes these external wire formats to UTC before calculating countdowns,
 warnings and snooze refresh times. Only the successful commercial response sets
 the local manual-ad cooldown; a schedule snapshot does not estimate it. Snooze
 requires a known upcoming automatic ad and a remaining snooze. API operations
-use the existing Qt worker pattern. Ad writes are not retried automatically:
-if the response is lost, Twitch may already have accepted the request.
+use the existing Qt worker pattern. Ad writes are not retried automatically.
+If a Snooze response is lost, Twitch may already have accepted it: Hub shows
+the outcome as unknown, clears the stale countdown and snooze count, and
+disables Snooze. An explicit Twitch rejection shows the reason instead. In
+either case, only a new valid schedule for the current broadcaster
+and authentication session restores current eligibility. That read establishes
+whether Snooze is available now, not whether the earlier request succeeded.
 
 Stream online/offline EventSub notifications update stream status and Ads
 controls immediately, then request a fresh snapshot. A snapshot requested

@@ -66,7 +66,7 @@ The following are investigation priorities, not confirmed root causes:
 7. Twitch Ad Manager reliability.
 8. Other confirmed regressions.
 
-**Twitch Ad Manager reliability — Phase 1 (mocked/offscreen; live acceptance pending).**
+**Twitch Ad Manager reliability — Phase 1 (awaiting final acceptance and integration).**
 The compact Live → Chat controls and remembered 30–180-second duration
 (default 180) are unchanged. No OAuth scopes were added.
 
@@ -102,6 +102,28 @@ Offscreen validation: 479 focused tests and 97 subtests; 1,718 tests and
 native Qt exits. The new regressions cover non-replayed writes, cooldown
 preservation, stale schedule rejection, snooze eligibility, warning deduplication,
 account changes, and late worker completion. Compilation and diff checks passed.
+
+Merge review blocked integration after reproducing a Snooze race: a failed or
+empty schedule read was ignored while Snooze was pending, then a timed-out POST
+cleared the UI's pending flag without invalidating the cached schedule. This
+restored the old countdown and enabled a possible duplicate manual Snooze.
+The fix invalidates cached eligibility and advances the schedule revision
+on failed writes. It distinguishes explicit rejection from an unknown outcome
+and never replays the POST. Only a valid schedule requested afterward for the
+current broadcaster and token can restore eligibility. That read does not
+prove whether the earlier write succeeded. Deterministic regressions cover
+callback ordering, obsolete reads, reconciliation, and continued write safety.
+Offline packaged acceptance applied to `0fa9871cd6a1dc7b8d7e817a23b4f183cf934b39`
+only; the corrected build awaits acceptance. No real Twitch Snooze, commercial,
+or authenticated live ad timing was verified.
+
+Snooze blocker revalidation: 253 focused tests and 100 subtests passed. The
+first full run exited with Windows access violation `0xC0000005` at
+`test_first_message_editor_shows_shared_raid_suppression_settings`, after
+542 logged test passes. The dialog/lifecycle check passed on both the accepted
+commit and the correction (3 tests each); the native cause is unverified.
+The unchanged full-suite retry passed in one process: 1,724 tests and 444
+subtests, no failures, skips, or native exits. Compilation and diff checks passed.
 
 **Counters UI lifecycle correction — implemented, offline accepted, and merged.**
 The November 25 local fault log and support-bundle copy show a GUI-thread

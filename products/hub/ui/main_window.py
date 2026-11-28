@@ -201,7 +201,7 @@ from products.hub.modules import (
 from products.hub.modules.bootstrap import create_bundled_module_registry
 from products.hub.modules.bundled.twitch import TWITCH_MODULE_ID, TwitchModule
 from products.hub.version import HUB_VERSION
-from products.hub.twitch.ads import AdsDomainEvent
+from products.hub.twitch.ads import AdsDomainEvent, SNOOZE_OUTCOME_UNKNOWN
 from products.hub.twitch.automation_triggers import TwitchEventTriggerStore
 from products.hub.twitch.models import (
     TwitchChatNotice,
@@ -865,6 +865,7 @@ class MainWindow(QMainWindow):
         self._ads_broadcaster_id = ""
         self.channel_snapshot_request_id = 0
         self._snapshot_ads_revision = self.ads_service.schedule_revision
+        self._snapshot_ads_identity = None
         self.channel_snapshot_in_flight = False
         self.channel_snapshot_warning_cache: set[str] = set()
         self.last_channel_snapshot: ChannelSnapshotResult | None = None
@@ -4218,6 +4219,7 @@ class MainWindow(QMainWindow):
         self._last_twitch_auth_state = state
         self.channel_snapshot_request_id += 1
         self.channel_snapshot_in_flight = False
+        self._snapshot_ads_identity = None
         signed_in = state is TwitchAuthState.SIGNED_IN
         waiting = state is TwitchAuthState.WAITING
         token_user_id = getattr(self.twitch_auth.token, "user_id", "")
@@ -7606,6 +7608,7 @@ class MainWindow(QMainWindow):
         self.channel_snapshot_request_id += 1
         request_id = self.channel_snapshot_request_id
         self._snapshot_ads_revision = self.ads_service.schedule_revision
+        self._snapshot_ads_identity = (broadcaster_id, token)
         worker = ChannelSnapshotWorker(
             request_id,
             self.twitch_service.helix,
@@ -7691,7 +7694,7 @@ class MainWindow(QMainWindow):
             "",
         )
         # A GET started before Snooze/Run Ads cannot supersede the action result.
-        if not self.ads_action_in_flight:
+        if not self.ads_action_in_flight and self._snapshot_ad_identity_is_current():
             self._apply_ad_schedule(
                 snapshot.get("ad_schedule") if self.stream_is_live else None,
                 error=ad_schedule_error,
@@ -7740,6 +7743,15 @@ class MainWindow(QMainWindow):
             if definition.name.startswith("ads.")
         )
 
+    def _snapshot_ad_identity_is_current(self) -> bool:
+        if self._snapshot_ads_identity is None:
+            return not self.ads_service.state.snooze_unreconciled
+        broadcaster_id, token = self._snapshot_ads_identity
+        return (
+            token is self.twitch_auth.token
+            and broadcaster_id == self.twitch_service.broadcaster_user_id
+        )
+
     def _stream_uptime_text(self, now: datetime | None = None) -> str:
         started_at = self.stream_started_at
         if not self.stream_is_live or started_at is None:
@@ -7762,6 +7774,7 @@ class MainWindow(QMainWindow):
         scopes = set(token.scopes) if token is not None else set()
         can_read_schedule = "channel:read:ads" in scopes
         state = self.ads_service.state
+        snooze_unknown = state.snooze_unreconciled == "unknown"
         preroll = state.values(now)["preroll_free_time"]
         self.ad_preroll_label.setText(
             f"Preroll-free: {self._clock_text(preroll or 0)}"
@@ -7780,11 +7793,20 @@ class MainWindow(QMainWindow):
             )
             self.ad_detail_label.setText(
                 f"{mode} break • {state.duration} sec"
+                + (" • Snooze outcome unknown" if snooze_unknown else "")
             )
             self.ad_snooze_status_label.setText(
                 f"Snoozes: {state.snooze_count}"
                 if state.schedule_available else "Snoozes —"
             )
+            self._update_ad_control_state(now)
+            return
+        if snooze_unknown:
+            self.ad_next_label.setText(
+                "Ad schedule unconfirmed" if self.stream_is_live else "Channel offline"
+            )
+            self.ad_detail_label.setText(SNOOZE_OUTCOME_UNKNOWN)
+            self.ad_snooze_status_label.setText("Snoozes —")
             self._update_ad_control_state(now)
             return
         if not self.stream_is_live:
@@ -7893,6 +7915,10 @@ class MainWindow(QMainWindow):
         snooze_unavailable = ""
         if self.ads_action_in_flight:
             snooze_unavailable = "Waiting for Twitch to respond."
+        elif state.snooze_unreconciled == "unknown":
+            snooze_unavailable = SNOOZE_OUTCOME_UNKNOWN
+        elif state.snooze_unreconciled:
+            snooze_unavailable = "Waiting for a fresh ad schedule from Twitch."
         elif "channel:manage:ads" not in scopes:
             snooze_unavailable = "Reconnect Twitch to grant channel:manage:ads."
         elif "channel:read:ads" not in scopes:
@@ -8594,7 +8620,7 @@ class MainWindow(QMainWindow):
         if self._shutting_down or request_id != self.channel_snapshot_request_id:
             return
         self.channel_snapshot_in_flight = False
-        if not self.ads_action_in_flight:
+        if not self.ads_action_in_flight and self._snapshot_ad_identity_is_current():
             self._apply_ad_schedule(
                 None, error=redact_secret_text(message),
                 expected_revision=self._snapshot_ads_revision,
@@ -8840,7 +8866,18 @@ class MainWindow(QMainWindow):
         if not self._finish_ads_action():
             return
         label = "start commercial" if action == "commercial" else "snooze ad"
-        message = f"Could not {label}: {redact_secret_text(error)}"
+        snooze_failure = self.ads_service.state.snooze_unreconciled if action == "snooze" else ""
+        message = (
+            SNOOZE_OUTCOME_UNKNOWN if snooze_failure == "unknown"
+            else f"Could not {label}: {redact_secret_text(error)}"
+        )
+        if snooze_failure:
+            # Replace any pre-failure GET with one issued at the new revision.
+            # This refresh is read-only; never replay the Snooze POST.
+            self.channel_snapshot_request_id += 1
+            self.channel_snapshot_in_flight = False
+            self.refresh_channel_snapshot()
+            self._update_stream_overview_clock()
         self.handle_twitch_error(message)
         self.ad_detail_label.setText(message)
         self.statusBar().showMessage(message, 12_000)

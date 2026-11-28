@@ -14,6 +14,7 @@ from PySide6.QtNetwork import QAbstractSocket
 from PySide6.QtWebSockets import QWebSocket
 
 from products.hub.config.twitch import TWITCH_CLIENT_ID, TWITCH_REDEMPTION_SCOPES
+from products.hub.twitch.ads import SnoozeRejected
 from products.hub.twitch.auth import TwitchToken
 from products.hub.twitch.catalog import AUTOMATION_ACTIVITY_GROUPS
 from products.hub.twitch.models import (
@@ -978,7 +979,10 @@ class TwitchHelixClient:
                 attempts=1,
             )
         except HTTPError as error:
-            self._raise_ads_api_error("snooze the next ad", error)
+            # Only a documented rejection establishes that Twitch did not
+            # accept the write. A server error may follow processing.
+            error_type = SnoozeRejected if error.code in {400, 401, 404, 429} else ValueError
+            self._raise_ads_api_error("snooze the next ad", error, error_type)
         return self._ads_result(payload, "ad action")
 
     @staticmethod
@@ -994,7 +998,9 @@ class TwitchHelixClient:
         return values[0]
 
     @staticmethod
-    def _raise_ads_api_error(action: str, error: HTTPError) -> None:
+    def _raise_ads_api_error(
+        action: str, error: HTTPError, error_type: type[ValueError] = ValueError
+    ) -> None:
         detail = ""
         try:
             payload = json.loads(error.read().decode("utf-8", errors="replace"))
@@ -1002,7 +1008,7 @@ class TwitchHelixClient:
                 detail = redact_secret_text(str(payload.get("message") or "")).strip()
         except (OSError, json.JSONDecodeError):
             pass
-        raise ValueError(
+        raise error_type(
             f"Twitch could not {action} (HTTP {error.code})"
             + (f": {detail}" if detail else ".")
         ) from error

@@ -8,6 +8,7 @@ from urllib.error import HTTPError, URLError
 
 from products.hub.config.twitch import TWITCH_REDEMPTION_SCOPES
 from products.hub.core.events import Events
+from products.hub.twitch.ads import SnoozeRejected
 from shared.streamhouse_runtime.logger import Logger
 from shared.streamhouse_runtime.redaction import redact_secret_text
 from products.hub.twitch.eventsub import EventSubWebhookProcessor, LocalEventSubListener
@@ -756,9 +757,10 @@ class TwitchService:
         )
 
     def snooze_next_ad(self) -> dict:
-        broadcaster_id, token = self._ads_credentials(
-            "channel:manage:ads"
-        )
+        try:
+            broadcaster_id, token = self._ads_credentials("channel:manage:ads")
+        except ValueError as error:
+            raise SnoozeRejected(str(error)) from error
         return self.helix.snooze_ad(broadcaster_id, token)
 
     def _ads_credentials(self, required_scope: str):

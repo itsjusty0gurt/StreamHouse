@@ -4,7 +4,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from threading import Lock
-from typing import Mapping, Protocol
+from typing import Literal, Mapping, Protocol
 
 
 AD_WARNING_SECONDS = {
@@ -13,6 +13,11 @@ AD_WARNING_SECONDS = {
     120: "ads.warning.2_minutes",
     60: "ads.warning.1_minute",
 }
+SNOOZE_OUTCOME_UNKNOWN = "Snooze outcome unknown. Check Twitch for the current ad schedule."
+
+
+class SnoozeRejected(ValueError):
+    """The POST was not accepted or failed a local preflight before sending."""
 
 
 class TwitchAdsClient(Protocol):
@@ -37,6 +42,7 @@ class AdsState:
     preroll_free_until: datetime | None = None
     snooze_count: int = 0
     snooze_refresh_at: datetime | None = None
+    snooze_unreconciled: Literal["", "rejected", "unknown"] = ""
     manual_retry_until: datetime | None = None
     in_progress: bool = False
     started_at: datetime | None = None
@@ -112,6 +118,15 @@ class AdsService:
         with self._state_lock:
             if expected_revision is not None and expected_revision != self.schedule_revision:
                 return False
+            if self.state.snooze_unreconciled:
+                if (
+                    expected_revision is None
+                    or not self.state.channel_live
+                    or error
+                    or not _valid_snooze_schedule(value)
+                ):
+                    return False
+                self.state.snooze_unreconciled = ""
             self._apply_schedule(value, now=now, error=error)
             return True
 
@@ -198,7 +213,26 @@ class AdsService:
             with self._state_lock:
                 state = self.state
                 was_live = state.channel_live
-            result = self.twitch.snooze_next_ad()
+                if state.snooze_unreconciled == "unknown":
+                    raise ValueError(SNOOZE_OUTCOME_UNKNOWN)
+                if state.snooze_unreconciled:
+                    raise ValueError("Wait for Twitch's current ad schedule before snoozing again.")
+            try:
+                result = self.twitch.snooze_next_ad()
+                if not _valid_snooze_schedule(result):
+                    raise ValueError("Twitch returned an incomplete Snooze result.")
+            except Exception as error:
+                rejected = isinstance(error, SnoozeRejected)
+                with self._state_lock:
+                    if self.state is state:
+                        # Neither an older GET nor the previous cached schedule
+                        # establishes eligibility after a failed or unconfirmed write.
+                        self.schedule_revision += 1
+                        self._apply_schedule(None, now=now, error="")
+                        state.snooze_unreconciled = "rejected" if rejected else "unknown"
+                if rejected:
+                    raise
+                raise ValueError(SNOOZE_OUTCOME_UNKNOWN) from error
             with self._state_lock:
                 if self.state is state and state.channel_live == was_live:
                     self.schedule_revision += 1
@@ -329,8 +363,22 @@ def _timestamp(value: object) -> datetime | None:
             return None
     try:
         return _aware(datetime.fromisoformat(text.replace("Z", "+00:00")))
-    except ValueError:
+    except (OverflowError, ValueError):
         return None
+
+
+def _valid_snooze_schedule(value: object) -> bool:
+    if not isinstance(value, Mapping):
+        return False
+    count = value.get("snooze_count")
+    if type(count) is not int or count < 0:
+        return False
+    next_at = value.get("next_ad_at")
+    return (
+        (type(next_at) is int and next_at == 0)
+        or next_at == "0"
+        or _timestamp(next_at) is not None
+    )
 
 
 def _aware(value: datetime) -> datetime:

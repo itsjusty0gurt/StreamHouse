@@ -50,6 +50,7 @@ from shared.streamhouse_shared.models import (
 )
 from products.hub.core.settings import AppSettings, SettingsStore
 from products.hub.core.backup import BackupComponent
+from products.hub.twitch.ads import SnoozeRejected
 from products.hub.twitch.auth import TwitchAuthState, TwitchToken
 from products.hub.config.twitch import TWITCH_BOT_SCOPES, TWITCH_SCOPES
 from products.hub.twitch.chatter_history import ChatterHistoryStore, ChatterRecord
@@ -6464,6 +6465,206 @@ class MainWindowTests(unittest.TestCase):
         self.assertEqual(window.ads_service.state.next_at, new_time)
         self.assertEqual(window.ads_service.state.snooze_count, 1)
         self.assertTrue(window.snooze_ad_button.isEnabled())
+
+    def test_snooze_timeout_requires_a_fresh_authoritative_schedule(self) -> None:
+        window = self.window
+        window.twitch_auth.token = Mock(
+            user_id="42", scopes=["channel:read:ads", "channel:manage:ads"]
+        )
+        window.twitch_service.broadcaster_user_id = "42"
+        stream = {"id": "test"}
+        window._apply_stream_live_state(stream)
+        old_time = datetime.now(timezone.utc) + timedelta(minutes=5)
+        old_schedule = {"next_ad_at": old_time.isoformat(), "snooze_count": 2}
+        new_time = old_time + timedelta(minutes=5)
+        new_schedule = {"next_ad_at": new_time.isoformat(), "snooze_count": 1}
+
+        with (
+            patch.object(window.ads_thread_pool, "start") as start_write,
+            patch.object(window.channel_snapshot_thread_pool, "start") as start_read,
+            patch.object(window.twitch_service, "snooze_next_ad", side_effect=TimeoutError()) as post,
+        ):
+            for invalid_refresh in ("failed", "empty", "arrives after timeout"):
+                with self.subTest(invalid_refresh=invalid_refresh):
+                    window._apply_ad_schedule(old_schedule)
+                    window._update_stream_overview_clock()
+                    self.assertTrue(window.snooze_ad_button.isEnabled())
+                    window.refresh_channel_snapshot()
+                    old_id = window.channel_snapshot_request_id
+                    window.snooze_ad_button.click()
+                    self.assertFalse(window.snooze_ad_button.isEnabled())
+                    reads_before_timeout = start_read.call_count
+                    writes_before_timeout = start_write.call_count
+                    posts_before_timeout = post.call_count
+                    worker = start_write.call_args.args[0]
+
+                    if invalid_refresh == "failed":
+                        window._channel_snapshot_failed(old_id, "read timed out")
+                    elif invalid_refresh == "empty":
+                        window._apply_channel_snapshot(ChannelSnapshotResult(
+                            old_id, {"stream": stream, "ad_schedule": None}
+                        ))
+
+                    worker.run()
+                    if invalid_refresh == "arrives after timeout":
+                        window._channel_snapshot_failed(old_id, "read timed out")
+                    window._update_stream_overview_clock()
+                    self.assertFalse(window.snooze_ad_button.isEnabled())
+                    self.assertNotIn("Next ads in", window.ad_next_label.text())
+                    self.assertIn("unknown", window.ad_detail_label.text().lower())
+                    self.assertEqual(post.call_count, posts_before_timeout + 1)
+                    self.assertEqual(start_read.call_count, reads_before_timeout + 1)
+
+                    window._apply_channel_snapshot(ChannelSnapshotResult(
+                        old_id, {"stream": stream, "ad_schedule": old_schedule}
+                    ))
+                    window.snooze_next_ad()
+                    self.assertFalse(window.snooze_ad_button.isEnabled())
+                    self.assertEqual(start_write.call_count, writes_before_timeout)
+
+                    fresh_id = window.channel_snapshot_request_id
+                    self.assertNotEqual(fresh_id, old_id)
+                    window._apply_channel_snapshot(ChannelSnapshotResult(
+                        fresh_id, {"stream": stream, "ad_schedule": new_schedule}
+                    ))
+                    self.assertTrue(window.snooze_ad_button.isEnabled())
+                    self.assertIn("Next ads in", window.ad_next_label.text())
+                    self.assertIn("Snoozes: 1", window.ad_snooze_status_label.text())
+                    self.assertEqual(window.ads_service.state.next_at, new_time)
+
+    def test_snooze_reconciliation_rejects_bad_reads_and_prior_authentication(self) -> None:
+        window = self.window
+        scopes = ["channel:read:ads", "channel:manage:ads", "channel:edit:commercial"]
+        window.twitch_auth.token = Mock(user_id="42", scopes=scopes)
+        window.twitch_service.broadcaster_user_id = "42"
+        stream = {"id": "test"}
+        upcoming = int((datetime.now(timezone.utc) + timedelta(minutes=5)).timestamp())
+        schedule = {"next_ad_at": upcoming, "snooze_count": 2}
+        window._apply_stream_live_state(stream)
+        window._apply_ad_schedule(schedule)
+        with (
+            patch.object(window.ads_thread_pool, "start") as start,
+            patch.object(window.channel_snapshot_thread_pool, "start") as read,
+            patch.object(window.twitch_service, "snooze_next_ad", side_effect=TimeoutError()) as post,
+        ):
+            window.snooze_next_ad()
+            start.call_args.args[0].run()
+            old_id = window.channel_snapshot_request_id
+            window.handle_twitch_status_changed(TwitchConnectionState.RECONNECTING, "test")
+            window.twitch_auth.token = Mock(user_id="42", scopes=scopes)
+            window.handle_twitch_status_changed(TwitchConnectionState.CONNECTED, "test")
+            window._apply_channel_snapshot(ChannelSnapshotResult(
+                old_id, {"stream": stream, "ad_schedule": schedule}
+            ))
+            self.assertEqual(window.ads_service.state.snooze_unreconciled, "unknown")
+
+            for invalid, warning in (
+                (None, ()), ({}, ()), ({"next_ad_at": "invalid", "snooze_count": 2}, ()),
+                ({"next_ad_at": upcoming, "snooze_count": True}, ()),
+                ({"next_ad_at": upcoming}, ()), (schedule, ("ad schedule: HTTP 401",)),
+            ):
+                with self.subTest(invalid=invalid, warning=warning):
+                    with patch.object(window.twitch_auth, "recover_unauthorized", return_value=False):
+                        window.refresh_channel_snapshot()
+                        window._apply_channel_snapshot(ChannelSnapshotResult(
+                            window.channel_snapshot_request_id,
+                            {"stream": stream, "ad_schedule": invalid}, warnings=warning,
+                        ))
+                    self.assertFalse(window.snooze_ad_button.isEnabled())
+                    self.assertTrue(window.run_ad_button.isEnabled())
+                    self.assertIn("unknown", window.ad_detail_label.text().lower())
+
+            window.refresh_channel_snapshot()
+            self.assertIs(read.call_args.args[0].token, window.twitch_auth.token)
+            window._apply_channel_snapshot(ChannelSnapshotResult(
+                window.channel_snapshot_request_id,
+                {"stream": stream, "ad_schedule": {**schedule, "snooze_count": 0}},
+            ))
+            self.assertEqual(window.ads_service.state.snooze_unreconciled, "")
+            self.assertFalse(window.snooze_ad_button.isEnabled())
+            self.assertIn("No snoozes remaining", window.snooze_ad_button.toolTip())
+            self.assertIn("Snoozes: 0", window.ad_snooze_status_label.text())
+            post.assert_called_once()
+
+    def test_snooze_reconciliation_from_replaced_broadcaster_is_ignored(self) -> None:
+        window = self.window
+        scopes = ["channel:read:ads", "channel:manage:ads"]
+        stream = {"id": "test"}
+        next_ad = int((datetime.now(timezone.utc) + timedelta(minutes=5)).timestamp())
+        schedule = {"next_ad_at": next_ad, "snooze_count": 2}
+        with (
+            patch.object(window.ads_thread_pool, "start") as start,
+            patch.object(window.channel_snapshot_thread_pool, "start"),
+            patch.object(window.twitch_module, "reconcile_broadcaster_auth", return_value=False),
+            patch.object(window.twitch_service, "snooze_next_ad", side_effect=TimeoutError()) as post,
+        ):
+            old_result = None
+            for account in ("42", "43"):
+                with self.subTest(account=account):
+                    window.twitch_auth.token = Mock(user_id=account, scopes=scopes)
+                    window.twitch_service.broadcaster_user_id = account
+                    window.handle_twitch_auth_changed(TwitchAuthState.SIGNED_IN, account)
+                    window.refresh_channel_snapshot()
+                    window._apply_channel_snapshot(ChannelSnapshotResult(
+                        window.channel_snapshot_request_id, {"stream": stream, "ad_schedule": schedule}
+                    ))
+                    self.assertTrue(window.snooze_ad_button.isEnabled())
+                    window.snooze_next_ad()
+                    start.call_args.args[0].run()
+                    self.assertEqual(window.ads_service.state.snooze_unreconciled, "unknown")
+                    if old_result is None:
+                        old_result = ChannelSnapshotResult(
+                            window.channel_snapshot_request_id,
+                            {"stream": stream, "ad_schedule": schedule},
+                        )
+                    else:
+                        window._apply_channel_snapshot(old_result)
+                        self.assertEqual(window.ads_service.state.snooze_unreconciled, "unknown")
+                        self.assertFalse(window.snooze_ad_button.isEnabled())
+            self.assertEqual(post.call_count, 2)
+
+    def test_snooze_failure_and_success_after_an_unavailable_schedule(self) -> None:
+        window = self.window
+        window.twitch_auth.token = Mock(
+            user_id="42", scopes=["channel:read:ads", "channel:manage:ads"]
+        )
+        window.twitch_service.broadcaster_user_id = "42"
+        stream = {"id": "test"}
+        window._apply_stream_live_state(stream)
+        upcoming = int((datetime.now(timezone.utc) + timedelta(minutes=5)).timestamp())
+        old_schedule = {"next_ad_at": upcoming, "snooze_count": 2}
+        window._apply_ad_schedule(old_schedule)
+        new_schedule = {"next_ad_at": upcoming + 300, "snooze_count": 1}
+
+        with (
+            patch.object(window.ads_thread_pool, "start") as start,
+            patch.object(window.channel_snapshot_thread_pool, "start"),
+            patch.object(window.twitch_service, "snooze_next_ad") as post,
+        ):
+            post.side_effect = [SnoozeRejected("No snoozes left (HTTP 429)"), new_schedule]
+            for rejected in (True, False):
+                with self.subTest(rejected=rejected):
+                    window.refresh_channel_snapshot()
+                    old_id = window.channel_snapshot_request_id
+                    window.snooze_next_ad()
+                    self.assertFalse(window.snooze_ad_button.isEnabled())
+                    window._channel_snapshot_failed(old_id, "read failed")
+                    start.call_args.args[0].run()
+                    if rejected:
+                        self.assertIn("HTTP 429", window.statusBar().currentMessage())
+                        self.assertNotIn("unknown", window.statusBar().currentMessage().lower())
+                        self.assertFalse(window.snooze_ad_button.isEnabled())
+                        self.assertFalse(window.ads_service.state.schedule_available)
+                        window._apply_channel_snapshot(ChannelSnapshotResult(
+                            window.channel_snapshot_request_id,
+                            {"stream": stream, "ad_schedule": old_schedule},
+                        ))
+                        self.assertTrue(window.snooze_ad_button.isEnabled())
+                    else:
+                        self.assertEqual(window.statusBar().currentMessage(), "Next ad snoozed.")
+                        self.assertEqual(window.ads_service.state.next_at.timestamp(), upcoming + 300)
+                        self.assertIn("Snoozes: 1", window.ad_snooze_status_label.text())
+            self.assertEqual(post.call_count, 2)
 
     def test_snooze_completion_cannot_apply_to_replaced_broadcaster_or_closed_window(self) -> None:
         window = self.window
